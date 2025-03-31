@@ -61,7 +61,7 @@ class AzureOCRStrategy(OCRStrategy):
                     # Create searchable PDF after successful OCR
                     # logger.info("📄 Creating searchable PDF...")
                     # self.ocr_pdf_content = await self._create_searchable_pdf(content)
-                    logger.info("✅ Searchable PDF created successfully")
+                    # logger.info("✅ Searchable PDF created successfully")
 
                 logger.info("✅ Azure document analysis completed successfully")
             except Exception as e:
@@ -513,6 +513,7 @@ class AzureOCRStrategy(OCRStrategy):
         if needs_ocr:
             logger.debug("self.doc has attribute pages")
             doc_pages = self.doc.pages
+            logger.debug(f"Number of pages: {len(doc_pages)}")
             
         else:
             logger.debug("self.doc does not have attribute pages")
@@ -523,7 +524,6 @@ class AzureOCRStrategy(OCRStrategy):
 
         # First pass: collect all lines and paragraphs by page
         for page in doc_pages:
-            logger.debug("Page attributes: %s", dir(page))
             if hasattr(page, 'page_number'):
                 logger.debug(f"📄 Processing page {page.page_number}")
             else:
@@ -677,7 +677,7 @@ class AzureOCRStrategy(OCRStrategy):
             logger.debug(f"- Total paragraphs: {len(result['paragraphs'])}")
             logger.debug(f"- Total sentences: {len(result['sentences'])}")
                 
-            return result
+        return result
         
     def _get_lines_for_paragraph(
         self,

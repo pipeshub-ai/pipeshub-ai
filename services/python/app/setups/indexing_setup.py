@@ -197,15 +197,16 @@ class AppContainer(containers.DeclarativeContainer):
     )
 
     # Event processor - depends on processor
-    async def _create_event_processor(processor):
+    async def _create_event_processor(processor, arango_service):
         """Async factory for EventProcessor"""
-        event_processor = EventProcessor(processor=processor)
+        event_processor = EventProcessor(processor=processor, arango_service=arango_service)
         # Add any necessary async initialization
         return event_processor
 
     event_processor = providers.Resource(
         _create_event_processor,
-        processor=processor
+        processor=processor,
+        arango_service=arango_service
     )
 
     # Kafka consumer with async initialization

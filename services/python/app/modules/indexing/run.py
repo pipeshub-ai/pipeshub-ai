@@ -365,7 +365,7 @@ class IndexingPipeline:
             
             # Use vector_store's delete method with appropriate filter
             filter_dict = {"recordId": {"$eq": record_id}}
-            self.vector_store.delete(filter=filter_dict)
+            await self.vector_store.adelete(filter=filter_dict)
             
             logger.info(f"✅ Successfully deleted embeddings for record {record_id}")
         except Exception as e:
@@ -394,19 +394,6 @@ class IndexingPipeline:
             )
             for sentence in sentences
         ]
-
-        record_id = sentences[0]['metadata']['recordId']
-
-        record = await self.arango_service.get_document(record_id, CollectionNames.RECORDS.value)
-        doc = dict(record)  # Create a copy of all existing fields
-
-        # Update with new metadata fields
-        doc.update({
-            "indexingStatus": "IN_PROGRESS"
-        })
-
-        docs = [doc]
-        await self.arango_service.batch_upsert_nodes(docs, CollectionNames.RECORDS.value)   
              
         # Process documents into chunks
         chunks = self.text_splitter.split_documents(documents)

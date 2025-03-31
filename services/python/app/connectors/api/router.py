@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse
+import asyncio
 import base64
 import json
 import jwt
@@ -567,7 +567,6 @@ async def download_file(
                     if response.status != 200:
                         raise Exception(f"Failed to fetch credentials: {await response.json()}")
                     creds_data = await response.json()
-                    print("creds_data", creds_data)
 
             # Create credentials object from the response using google.oauth2.credentials.Credentials
             creds = google.oauth2.credentials.Credentials(

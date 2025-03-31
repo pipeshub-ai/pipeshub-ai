@@ -1,4 +1,3 @@
-
 from dependency_injector import containers, providers
 from app.config.configuration_service import ConfigurationService, config_node_constants
 from app.config.arangodb_constants import QdrantCollectionNames
@@ -64,14 +63,12 @@ class AppContainer(containers.DeclarativeContainer):
     # Vector search service
     async def _create_retrieval_service(config):
         """Async factory for RetrievalService"""
-        print("config", config)
         service = RetrievalService(
             collection_name=config['collectionName'],
             qdrant_api_key=config['apiKey'],
             qdrant_host=config['host'],
             grpc_port=config['grpcPort']
         )
-        print("service", service)
         return service
 
     retrieval_service = providers.Resource(

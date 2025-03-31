@@ -2,11 +2,13 @@ from app.utils.logger import logger
 import aiohttp
 from io import BytesIO
 from app.config.arangodb_constants import EventTypes
+from app.config.arangodb_constants import CollectionNames
 
 class EventProcessor:
-    def __init__(self, processor):
+    def __init__(self, processor, arango_service):
         logger.info("🚀 Initializing EventProcessor")
         self.processor = processor
+        self.arango_service = arango_service
 
     async def on_event(self, event_data: dict):
         """
@@ -28,11 +30,22 @@ class EventProcessor:
                 'eventType', EventTypes.NEW_RECORD.value)  # default to create
             event_data = event_data.get('payload')
             record_id = event_data.get('recordId')
-            print(event_data, "event_data")
-            print(record_id, "value of record_id.... ")
+
             if not record_id:
                 logger.error("❌ No record ID provided in event data")
                 return
+            
+            # Update indexing status to IN_PROGRESS
+            record = await self.arango_service.get_document(record_id, CollectionNames.RECORDS.value)
+            doc = dict(record)
+
+            # Update with new metadata fields
+            doc.update({
+                "indexingStatus": "IN_PROGRESS"
+            })
+
+            docs = [doc]
+            await self.arango_service.batch_upsert_nodes(docs, CollectionNames.RECORDS.value)   
 
             # Handle delete event
             if event_type == EventTypes.DELETE_RECORD.value:
@@ -43,8 +56,7 @@ class EventProcessor:
             # For both create and update events, we need to process the document
             if event_type == EventTypes.UPDATE_RECORD.value:
                 # For updates, first delete existing embeddings
-                logger.info(f"""🔄 Updating record {
-                            record_id} - deleting existing embeddings""")
+                logger.info(f"""🔄 Updating record {record_id} - deleting existing embeddings""")
                 await self.processor.indexing_pipeline.delete_embeddings(record_id)
 
             # Extract necessary data
