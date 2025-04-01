@@ -23,12 +23,13 @@ class CSVParser:
         self.quotechar = quotechar
         self.encoding = encoding
 
-    def read_file(self, file_path: str | Path) -> List[Dict[str, Any]]:
+    def read_file(self, file_path: str | Path, encoding: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Read a CSV file and return its contents as a list of dictionaries.
 
         Args:
             file_path: Path to the CSV file
+            encoding: Optional encoding to use for this specific read (overrides default)
 
         Returns:
             List of dictionaries where keys are column headers and values are row values
@@ -36,12 +37,16 @@ class CSVParser:
         Raises:
             FileNotFoundError: If the specified file doesn't exist
             ValueError: If the CSV file is empty or malformed
+            UnicodeDecodeError: If the file cannot be decoded with the specified encoding
         """
         file_path = Path(file_path)
         if not file_path.exists():
             raise FileNotFoundError(f"CSV file not found: {file_path}")
 
-        with open(file_path, 'r', encoding=self.encoding) as file:
+        # Use provided encoding or fall back to default
+        file_encoding = encoding or self.encoding
+        
+        with open(file_path, 'r', encoding=file_encoding) as file:
             return self.read_stream(file)
 
     def read_stream(self, file_stream: TextIO) -> List[Dict[str, Any]]:

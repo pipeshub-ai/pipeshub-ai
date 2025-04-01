@@ -1243,15 +1243,11 @@ class ArangoService(BaseArangoService):
         try:
             logger.info("🚀 Updating %s sync state for user %s to %s", 
                        service_type, user_email, state)
+            
+            user_key = await self.get_entity_id_by_email(user_email)
 
-            # Get user key and app key based on service type
+            # Get user key and app key based on service type and update the sync state
             query = f"""
-            LET user = FIRST(FOR u IN {CollectionNames.USERS.value} 
-                           FILTER u.email == @email 
-                           RETURN {{
-                               _key: u._key,
-                               email: u.email
-                           }})
             LET app = FIRST(FOR a IN {CollectionNames.APPS.value} 
                           FILTER LOWER(a.name) == LOWER(@service_type)
                           RETURN {{
@@ -1261,9 +1257,10 @@ class ArangoService(BaseArangoService):
             
             LET edge = FIRST(
                 FOR rel in {CollectionNames.USER_APP_RELATION.value}
-                    FILTER rel._from == CONCAT('users/', user._key)
+                    FILTER rel._from == CONCAT('users/', @user_key)
                     FILTER rel._to == CONCAT('apps/', app._key)
-                    RETURN rel
+                    UPDATE rel WITH {{ syncState: @state }} IN {CollectionNames.USER_APP_RELATION.value}
+                    RETURN NEW
             )
             
             RETURN edge
@@ -1272,15 +1269,16 @@ class ArangoService(BaseArangoService):
             cursor = self.db.aql.execute(
                 query,
                 bind_vars={
-                    'email': user_email,
+                    'user_key': user_key,
                     'service_type': service_type,
+                    'state': state
                 }
             )
 
             result = next(cursor, None)
             if result:
-                logger.info("✅ Successfully updated %s sync state for user %s", 
-                           service_type, user_email)
+                logger.info("✅ Successfully updated %s sync state for user %s to %s", 
+                           service_type, user_email, state)
                 return result
 
             logger.warning("⚠️ UPDATE:No user-app relation found for email %s and service %s", 
@@ -1307,13 +1305,9 @@ class ArangoService(BaseArangoService):
             logger.info("🔍 Getting %s sync state for user %s", 
                        service_type, user_email)
             
+            user_key = await self.get_entity_id_by_email(user_email)
+            
             query = f"""
-            LET user = FIRST(FOR u IN {CollectionNames.USERS.value} 
-                           FILTER u.email == @email 
-                           RETURN {{
-                               _key: u._key,
-                               email: u.email
-                           }})
             LET app = FIRST(FOR a IN {CollectionNames.APPS.value} 
                           FILTER LOWER(a.name) == LOWER(@service_type)
                           RETURN {{
@@ -1323,7 +1317,7 @@ class ArangoService(BaseArangoService):
             
             LET edge = FIRST(
                 FOR rel in {CollectionNames.USER_APP_RELATION.value}
-                    FILTER rel._from == CONCAT('users/', user._key)
+                    FILTER rel._from == CONCAT('users/', @user_key)
                     FILTER rel._to == CONCAT('apps/', app._key)
                     RETURN rel
             )
@@ -1334,7 +1328,7 @@ class ArangoService(BaseArangoService):
             cursor = self.db.aql.execute(
                 query,
                 bind_vars={
-                    'email': user_email,
+                    'user_key': user_key,
                     'service_type': service_type,
                 }
             )

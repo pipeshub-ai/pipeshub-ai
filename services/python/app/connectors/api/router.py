@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 from dependency_injector.wiring import inject, Provide
 from fastapi import Request, Depends, HTTPException, BackgroundTasks, status
 from app.setups.connector_setup import AppContainer
-from app.utils.logger import logger
+from app.utils.logger import create_logger
 from fastapi.responses import StreamingResponse
 import os
 import aiohttp
@@ -24,6 +24,8 @@ import io
 from jose import JWTError
 from pydantic import ValidationError
 from app.connectors.api.middleware import WebhookAuthVerifier
+
+logger = create_logger("connector_routers")
 
 router = APIRouter()
 
@@ -472,7 +474,7 @@ async def download_file(
     record_id: str,
     connector: str,
     token: str,
-    config_service=Depends(Provide[AppContainer.config_service]),
+    google_token_handler=Depends(Provide[AppContainer.google_token_handler]),
     arango_service=Depends(Provide[AppContainer.arango_service]),
     signed_url_handler=Depends(Provide[AppContainer.signed_url_handler]),
 ):
@@ -483,42 +485,12 @@ async def download_file(
             # Load service account credentials from environment or secure storage
             SCOPES = GOOGLE_CONNECTOR_ENTERPRISE_SCOPES
             
-            payload = {
-                "orgId": org_id,
-                "scopes": [TokenScopes.FETCH_CONFIG.value]
-            }
-            
-            # Create JWT token
-            jwt_token = jwt.encode(
-                payload,
-                os.getenv('SCOPED_JWT_SECRET'),
-                algorithm='HS256'
-            )
-            
-            headers = {
-                "Authorization": f"Bearer {jwt_token}"
-            }
-            
-            nodejs_config = await config_service.get_config(config_node_constants.NODEJS.value)
-            nodejs_endpoint = nodejs_config.get('common', {}).get('endpoint')
-            
-            user = await arango_service.get_user_by_user_id(user_id)
-            # Call credentials API
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    f"{nodejs_endpoint}{Routes.BUSINESS_CREDENTIALS.value}",
-                    json=payload,
-                    headers=headers
-                ) as response:
-                    if response.status != 200:
-                        raise Exception(f"Failed to fetch credentials: {await response.json()}")
-                    credentials_json = await response.json()
-                    logger.info(f"🚀 Credentials JSON: {credentials_json}")
-
+            credentials_json = await google_token_handler.get_enterprise_token(org_id)
             credentials = service_account.Credentials.from_service_account_info(
                 credentials_json,
                 scopes=SCOPES
             )
+            user = await arango_service.get_user_by_user_id(user_id)
             
             # # Get the user email from the record to impersonate
             credentials = credentials.with_subject(user['email'])
@@ -536,38 +508,9 @@ async def download_file(
         try:
             SCOPES = GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES
 
-            # Prepare payload for credentials API
-            payload = {
-                "orgId": org_id,
-                "userId": user_id,
-                "scopes": [TokenScopes.FETCH_CONFIG.value]
-            }
-
-            # Create JWT token
-            jwt_token = jwt.encode(
-                payload,
-                os.getenv('SCOPED_JWT_SECRET'),
-                algorithm='HS256'
-            )
-
-            headers = {
-                "Authorization": f"Bearer {jwt_token}"
-            }
-            
-            nodejs_config = await config_service.get_config(config_node_constants.NODEJS.value)
-            nodejs_endpoint = nodejs_config.get('common', {}).get('endpoint')
-
-            # Fetch credentials from API
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    f"{nodejs_endpoint}{Routes.INDIVIDUAL_CREDENTIALS.value}",
-                    json=payload,
-                    headers=headers
-                ) as response:
-                    if response.status != 200:
-                        raise Exception(f"Failed to fetch credentials: {await response.json()}")
-                    creds_data = await response.json()
-
+            logger.info(f"🚀 Getting user credentials for {user_id}")
+            logger.info(f"🚀 Getting user credentials for {org_id}")
+            creds_data = await google_token_handler.get_individual_token(org_id, user_id)
             # Create credentials object from the response using google.oauth2.credentials.Credentials
             creds = google.oauth2.credentials.Credentials(
                 token=creds_data.get('access_token'),
@@ -632,10 +575,7 @@ async def download_file(
                 
                 # Create a BytesIO object to store the file content
                 file_buffer = io.BytesIO()
-                
-                # Get the file metadata first to get mimeType
-                # file_metadata = drive_service.files().get(fileId=file_id).execute()
-                
+                                
                 # Download the file
                 request = drive_service.files().get_media(fileId=file_id)
                 downloader = MediaIoBaseDownload(file_buffer, request)
@@ -765,7 +705,7 @@ async def download_file(
 async def stream_record(
     request: Request,
     record_id: str,
-    config_service=Depends(Provide[AppContainer.config_service]),
+    google_token_handler=Depends(Provide[AppContainer.google_token_handler]),
     arango_service=Depends(Provide[AppContainer.arango_service]),
 ):
     async def get_service_account_credentials(user_id):
@@ -774,46 +714,15 @@ async def stream_record(
             # Load service account credentials from environment or secure storage
             SCOPES = GOOGLE_CONNECTOR_ENTERPRISE_SCOPES
             
-            payload = {
-                "orgId": org_id,
-                "scopes": [TokenScopes.FETCH_CONFIG.value]
-            }
-            
-            # Create JWT token
-            jwt_token = jwt.encode(
-                payload,
-                os.getenv('SCOPED_JWT_SECRET'),
-                algorithm='HS256'
-            )
-            
-            headers = {
-                "Authorization": f"Bearer {jwt_token}"
-            }
-            
-            nodejs_config = await config_service.get_config(config_node_constants.NODEJS.value)
-            nodejs_endpoint = nodejs_config.get('common', {}).get('endpoint')
-
-            user = await arango_service.get_user_by_user_id(user_id)
-            # Call credentials API
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    f"{nodejs_endpoint}{Routes.BUSINESS_CREDENTIALS.value}",
-                    json=payload,
-                    headers=headers
-                ) as response:
-                    if response.status != 200:
-                        raise Exception(f"Failed to fetch credentials: {await response.json()}")
-                    credentials_json = await response.json()
-                    logger.info(f"🚀 Credentials JSON: {credentials_json}")
-
+            credentials_json = await google_token_handler.get_enterprise_token(org_id)
             credentials = service_account.Credentials.from_service_account_info(
                 credentials_json,
                 scopes=SCOPES
             )
-
+            user = await arango_service.get_user_by_user_id(user_id)
+            
             # # Get the user email from the record to impersonate
             credentials = credentials.with_subject(user['email'])
-            logger.info(f"Credentials: {credentials}")
             return credentials
         
         except Exception as e:
@@ -822,44 +731,14 @@ async def stream_record(
                 status_code=500,
                 detail="Error accessing service account credentials"
             )
-
+            
     async def get_user_credentials(user_id):
         """Helper function to get user credentials"""
         try:
             SCOPES = GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES
 
-            # Prepare payload for credentials API
-            payload = {
-                "orgId": org_id,
-                "userId": user_id,
-                "scopes": [TokenScopes.FETCH_CONFIG.value]
-            }
-
-            # Create JWT token
-            jwt_token = jwt.encode(
-                payload,
-                os.getenv('SCOPED_JWT_SECRET'),
-                algorithm='HS256'
-            )
-            headers = {
-                "Authorization": f"Bearer {jwt_token}"
-            }
+            creds_data = await google_token_handler.get_individual_token(org_id, user_id)
             
-            nodejs_config = await config_service.get_config(config_node_constants.NODEJS.value)
-            nodejs_endpoint = nodejs_config.get('common', {}).get('endpoint')
-
-            # Fetch credentials from API
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    f"{nodejs_endpoint}{Routes.INDIVIDUAL_CREDENTIALS.value}",
-                    json=payload,
-                    headers=headers
-                ) as response:
-                    if response.status != 200:
-                        raise Exception(f"Failed to fetch credentials: {await response.json()}")
-                    creds_data = await response.json()
-                    print("creds_data", creds_data)
-
             # Create credentials object from the response using google.oauth2.credentials.Credentials
             creds = google.oauth2.credentials.Credentials(
                 token=creds_data.get('access_token'),
@@ -879,8 +758,7 @@ async def stream_record(
             raise HTTPException(
                 status_code=500,
                 detail="Error accessing user credentials"
-            )
-            
+            )            
     try:
         try:
             auth_header = request.headers.get('Authorization')

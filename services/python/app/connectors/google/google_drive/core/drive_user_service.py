@@ -3,30 +3,26 @@ import json
 import asyncio
 import uuid
 import os
-import pickle
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta, timezone
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import BatchHttpRequest
 from app.config.arangodb_constants import Connectors, RecordTypes
-from app.config.configuration_service import ConfigurationService, config_node_constants, Routes, TokenScopes
+from app.config.configuration_service import ConfigurationService, config_node_constants, WebhookConfig
 from app.utils.logger import logger
-from app.connectors.utils.decorators import exponential_backoff
+from app.connectors.utils.decorators import exponential_backoff, token_refresh
 from app.connectors.utils.rate_limiter import GoogleAPIRateLimiter
 from app.connectors.google.scopes import GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES
 from app.config.arangodb_constants import OriginTypes
 from uuid import uuid4
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-import jwt
-import aiohttp
 import google.oauth2.credentials
-
 
 class DriveUserService:
     """DriveService class for interacting with Google Drive API"""
 
-    def __init__(self, config: ConfigurationService, rate_limiter: GoogleAPIRateLimiter, credentials=None):
+    def __init__(self, config: ConfigurationService, rate_limiter: GoogleAPIRateLimiter, google_token_handler, credentials=None):
         """Initialize DriveService with config and rate limiter
 
         Args:
@@ -42,11 +38,12 @@ class DriveUserService:
         # Rate limiters
         self.rate_limiter = rate_limiter
         self.google_limiter = self.rate_limiter.google_limiter
-
+        self.google_token_handler = google_token_handler
         self.token_expiry = None
         self.org_id = None
         self.user_id = None
 
+    @token_refresh
     async def connect_individual_user(self, org_id: str, user_id: str) -> bool:
         """Connect using OAuth2 credentials for individual user"""
         try:
@@ -55,39 +52,7 @@ class DriveUserService:
             
             SCOPES = GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES
             
-            # Prepare payload for credentials API
-            payload = {
-                "orgId": org_id,
-                "userId": user_id,
-                "scopes": [TokenScopes.FETCH_CONFIG.value]
-            }
-            print("payload: ", payload)
-            
-            # Create JWT token
-            jwt_token = jwt.encode(
-                payload,
-                os.getenv('SCOPED_JWT_SECRET'),
-                algorithm='HS256'
-            )
-            
-            headers = {
-                "Authorization": f"Bearer {jwt_token}"
-            }
-            
-            nodejs_config = await self.config_service.get_config(config_node_constants.NODEJS.value)
-            nodejs_endpoint = nodejs_config.get('common', {}).get('endpoint')
-
-            # Fetch credentials from API
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    f"{nodejs_endpoint}{Routes.INDIVIDUAL_CREDENTIALS.value}",
-                    json=payload,
-                    headers=headers
-                ) as response:
-                    if response.status != 200:
-                        raise Exception(f"Failed to fetch credentials: {await response.json()}")
-                    creds_data = await response.json()
-                    logger.info("🚀 Fetch refreshed access token response: %s", creds_data)
+            creds_data = await self.google_token_handler.get_individual_token(org_id, user_id)
 
             # Create credentials object from the response using google.oauth2.credentials.Credentials
             creds = google.oauth2.credentials.Credentials(
@@ -98,17 +63,16 @@ class DriveUserService:
                 client_secret=creds_data.get('client_secret'),
                 scopes=SCOPES
             )
-
-            self.service = build('drive', 'v3', credentials=creds)
-
-            # Store token expiry time
+            # Update token expiry time
             self.token_expiry = datetime.fromtimestamp(
                 creds_data.get('access_token_expiry_time', 0) / 1000,
                 tz=timezone.utc
             )
             
-            # Start token refresh background task
-            asyncio.create_task(self._refresh_token_periodic())
+            logger.info("✅ Token expiry time: %s", self.token_expiry)
+
+            self.service = build('drive', 'v3', credentials=creds)
+            logger.info("✅ DriveUserService connected successfully")
 
             return True
 
@@ -117,103 +81,45 @@ class DriveUserService:
                 "❌ Failed to connect to Individual Drive Service: %s", str(e))
             return False
 
-    async def _refresh_token_periodic(self):
-        """Background task to refresh token before expiry"""
-        while True:
-            try:
-                if not self.token_expiry:
-                    await asyncio.sleep(60)  # Check every minute if expiry is set
-                    continue
+        
+    async def _check_and_refresh_token(self):
+        """Check token expiry and refresh if needed"""
+        if not self.token_expiry:
+            logger.warning("⚠️ Token expiry time not set.")
+            return
+        
+        if not self.org_id or not self.user_id:
+            logger.warning("⚠️ Org ID or User ID not set yet.")
+            return
 
-                now = datetime.now(timezone.utc)
-                time_until_refresh = self.token_expiry - now - timedelta(minutes=20)
-                logger.info(f"Time until refresh: {time_until_refresh.total_seconds()}")
-
-                if time_until_refresh.total_seconds() <= 0:
-                    # Time to refresh
-                    await self._refresh_token()
-                    # After refresh, wait a minute before checking again
-                    await asyncio.sleep(60)
-                else:
-                    # Wait until 20 minutes before expiry
-                    await asyncio.sleep(time_until_refresh.total_seconds())
-
-            except Exception as e:
-                logger.error(f"Error in token refresh task: {str(e)}")
-                await asyncio.sleep(60)  # Wait a minute before retrying
-
-    async def _refresh_token(self):
-        """Refresh the access token"""
-        try:
-            logger.info("🔄 Refreshing access token")
-            SCOPES = GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES
-            
-            payload = {
-                "orgId": self.org_id,
-                "userId": self.user_id,
-                "scopes": [TokenScopes.FETCH_CONFIG.value]
-            }
-            
-            jwt_token = jwt.encode(
-                payload,
-                os.getenv('SCOPED_JWT_SECRET'),
-                algorithm='HS256'
-            )
-            
-            headers = {
-                "Authorization": f"Bearer {jwt_token}"
-            }
-            
-            nodejs_config = await self.config_service.get_config(config_node_constants.NODEJS.value)
-            nodejs_endpoint = nodejs_config.get('common', {}).get('endpoint')
-
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"{nodejs_endpoint}{Routes.INDIVIDUAL_REFRESH_TOKEN.value}",
-                    json=payload,
-                    headers=headers
-                ) as response:
-                    if response.status != 200:
-                        raise Exception(f"Failed to refresh token: {await response.json()}")
+        now = datetime.now(timezone.utc)
+        time_until_refresh = self.token_expiry - now - timedelta(minutes=20)
+        logger.info(f"Time until refresh: {time_until_refresh.total_seconds()} seconds")
+        
+        if time_until_refresh.total_seconds() <= 0:
+            await self.google_token_handler.refresh_token(self.org_id, self.user_id)
                     
-                    creds_data = await response.json()
-                    logger.info("🚀 Access Token Refresh response: %s", creds_data)
-                        
-            # Fetch credentials from API
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    f"{nodejs_endpoint}{Routes.INDIVIDUAL_CREDENTIALS.value}",
-                    json=payload,
-                    headers=headers
-                ) as response:
-                    if response.status != 200:
-                        raise Exception(f"Failed to fetch credentials: {await response.json()}")
-                    creds_data = await response.json()
-                    logger.info("🚀 Fetch refreshed access token response: %s", creds_data)
+            creds_data = await self.google_token_handler.get_individual_token(self.org_id, self.user_id)
 
-            # Create credentials object from the response using google.oauth2.credentials.Credentials
             creds = google.oauth2.credentials.Credentials(
                 token=creds_data.get('access_token'),
                 refresh_token=creds_data.get('refresh_token'),
                 token_uri="https://oauth2.googleapis.com/token",
                 client_id=creds_data.get('client_id'),
                 client_secret=creds_data.get('client_secret'),
-                scopes=SCOPES
+                scopes=GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES
             )
 
             self.service = build('drive', 'v3', credentials=creds)
 
-            # Store token expiry time
+            # Update token expiry time
             self.token_expiry = datetime.fromtimestamp(
                 creds_data.get('access_token_expiry_time', 0) / 1000,
                 tz=timezone.utc
             )
-       
-            logger.info("✅ Successfully refreshed access token, expiry: %s", self.token_expiry)
 
-        except Exception as e:
-            logger.error(f"❌ Failed to refresh token: {str(e)}")
-            raise
+            logger.info("✅ Token refreshed, new expiry: %s", self.token_expiry)
+
 
     async def connect_enterprise_user(self) -> bool:
         """Connect using OAuth2 credentials for enterprise user"""
@@ -251,6 +157,7 @@ class DriveUserService:
             return False
 
     @exponential_backoff()
+    @token_refresh
     async def list_individual_user(self, org_id) -> List[Dict]:
         """Get individual user info"""
         try:
@@ -285,6 +192,7 @@ class DriveUserService:
             return []
 
     @exponential_backoff()
+    @token_refresh
     async def list_files_in_folder(self, folder_id: str, include_subfolders: bool = True) -> List[Dict]:
         """List all files in a folder and optionally its subfolders using BFS
 
@@ -357,6 +265,7 @@ class DriveUserService:
             return []
 
     @exponential_backoff()
+    @token_refresh
     async def list_shared_drives(self) -> List[Dict]:
         """List all shared drives"""
         try:
@@ -386,6 +295,7 @@ class DriveUserService:
             return []
 
     @exponential_backoff()
+    @token_refresh
     async def create_changes_watch(self) -> Optional[Dict]:
         """Set up changes.watch for all changes"""
         try:
@@ -394,17 +304,17 @@ class DriveUserService:
             async with self.google_limiter:
                 # await self.stop_webhook_channels(channels_log_path='logs/channels_log.json')
                 channel_id = str(uuid.uuid4())
-                webhook_config = await self.config_service.get_config(config_node_constants.WEBHOOK.value)
-                webhook_expiration_days = webhook_config['expirationDays']
-                webhook_expiration_hours = webhook_config['expirationHours']
-                webhook_expiration_minutes = webhook_config['expirationMinutes']
-                webhook_base_url = webhook_config['baseUrl']
+                webhook_config = await self.config_service.get_config(config_node_constants.CONNECTORS_SERVICE.value)
+                webhook_expiration_days = WebhookConfig.EXPIRATION_DAYS.value
+                webhook_expiration_hours = WebhookConfig.EXPIRATION_HOURS.value
+                webhook_expiration_minutes = WebhookConfig.EXPIRATION_MINUTES.value
+                webhook_base_url = webhook_config.get('publicEndpoint')
 
                 webhook_url = f"{webhook_base_url.rstrip('/')}/drive/webhook"
 
                 # Set expiration to 7 days (maximum allowed by Google)
                 expiration_time = datetime.now(
-                    timezone.utc) + timedelta(days=0, hours=0, minutes=webhook_expiration_minutes)
+                    timezone.utc) + timedelta(days=0, hours=webhook_expiration_hours, minutes=webhook_expiration_minutes)
 
                 body = {
                     'id': channel_id,
@@ -472,6 +382,7 @@ class DriveUserService:
             return None
 
     @exponential_backoff()
+    @token_refresh
     async def get_changes(self, page_token: str) -> Tuple[List[Dict], Optional[str]]:
         """
         Get all changes since the given page token
@@ -528,6 +439,7 @@ class DriveUserService:
             return [], None
 
     @exponential_backoff()
+    @token_refresh
     async def list_file_revisions(self, file_id: str, max_results: int = 10) -> List[Dict]:
         """
         List revisions for a specific file
@@ -558,6 +470,7 @@ class DriveUserService:
             return []
 
     @exponential_backoff()
+    @token_refresh
     async def get_start_page_token_api(self) -> Optional[str]:
         """Get current page token for changes"""
         try:
@@ -579,6 +492,7 @@ class DriveUserService:
         return self.service.new_batch_http_request()
 
     @exponential_backoff()
+    @token_refresh
     async def batch_fetch_metadata_and_permissions(self, file_ids: List[str], files: Optional[List[Dict]] = None) -> List[Dict]:
         """Fetch comprehensive metadata using batch requests
 
@@ -696,6 +610,7 @@ class DriveUserService:
             return [None] * len(file_ids)
 
     @exponential_backoff()
+    @token_refresh
     async def stop_webhook_channels(self, channels_log_path='logs/webhook_headers/headers_log.json'):
         """
         Stop all webhook channels found in the headers log file.
@@ -762,6 +677,7 @@ class DriveUserService:
         }
         
     @exponential_backoff()
+    @token_refresh
     async def get_drive_info(self, drive_id: str, org_id: str) -> dict:
         """Get drive information for root or shared drive
 

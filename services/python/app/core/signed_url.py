@@ -50,8 +50,10 @@ class SignedUrlHandler:
             expiration = datetime.now(timezone(timedelta(
                 hours=5, minutes=30))) + timedelta(minutes=self.signed_url_config.expiration_minutes)
             
-            connector_config = await self.config_service.get_config(config_node_constants.CONNECTORS_COMMON.value)
+            connector_config = await self.config_service.get_config(config_node_constants.CONNECTORS_SERVICE.value)
             connector_endpoint = connector_config.get('endpoint')
+            
+            logger.info(f"user_id: {user_id}")
 
             payload = TokenPayload(
                 record_id=record_id,

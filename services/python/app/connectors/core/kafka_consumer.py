@@ -6,7 +6,7 @@ from app.utils.logger import logger
 from dependency_injector.wiring import inject
 from typing import Dict, List
 from app.config.arangodb_constants import CollectionNames, Connectors
-from app.config.configuration_service import Routes
+from app.config.configuration_service import Routes, KafkaConfig
 from uuid import uuid4
 import time
 from app.setups.connector_setup import initialize_individual_account_services_fn, initialize_enterprise_account_services_fn
@@ -65,7 +65,7 @@ class KafkaRouteConsumer:
                     'enable.auto.commit': True,
                     'isolation.level': 'read_committed',
                     'enable.partition.eof': False,
-                    'client.id': kafka_config['clientIdRecords']
+                    'client.id': KafkaConfig.CLIENT_ID_RECORDS.value
                 }
 
             KAFKA_CONFIG = await get_kafka_config()
@@ -167,7 +167,7 @@ class KafkaRouteConsumer:
             path_params = value.get('path_params', {})
             formatted_path = route_handler.format(**path_params)
             
-            connector_config = await self.config_service.get_config(config_node_constants.CONNECTORS_COMMON.value)
+            connector_config = await self.config_service.get_config(config_node_constants.CONNECTORS_SERVICE.value)
             connector_endpoint = connector_config.get('endpoint')
             
             print(formatted_path)

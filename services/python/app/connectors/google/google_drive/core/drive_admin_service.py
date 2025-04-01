@@ -1,12 +1,12 @@
 """DriveService module for interacting with Google Drive API"""
 
 # pylint: disable=E1101, W0718
-import os
+
 from typing import Dict, List, Optional
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from app.config.configuration_service import ConfigurationService, config_node_constants, TokenScopes, Routes
+from app.config.configuration_service import ConfigurationService
 from app.connectors.google.google_drive.core.drive_user_service import DriveUserService
 from app.utils.logger import logger
 from app.connectors.utils.decorators import exponential_backoff
@@ -14,8 +14,7 @@ from app.connectors.utils.rate_limiter import GoogleAPIRateLimiter
 from app.connectors.google.scopes import GOOGLE_CONNECTOR_ENTERPRISE_SCOPES
 from app.utils.time_conversion import parse_timestamp
 from uuid import uuid4
-import aiohttp
-import jwt
+
 
 class DriveAdminService:
     """DriveAdminService class for interacting with Google Drive API"""
@@ -32,37 +31,9 @@ class DriveAdminService:
         try:
             SCOPES = GOOGLE_CONNECTOR_ENTERPRISE_SCOPES
             
-            # Prepare payload for credentials API
-            payload = {
-                "orgId": org_id,
-                "scopes": [TokenScopes.FETCH_CONFIG.value]
-            }
+            credentials_json = await self.google_token_handler.get_enterprise_token(org_id)
+            admin_email = credentials_json.get('adminEmail')
             
-            # Create JWT token
-            jwt_token = jwt.encode(
-                payload,
-                os.getenv('SCOPED_JWT_SECRET'),
-                algorithm='HS256'
-            )
-            
-            headers = {
-                "Authorization": f"Bearer {jwt_token}"
-            }
-            nodejs_config = await self.config_service.get_config(config_node_constants.NODEJS.value)
-            nodejs_endpoint = nodejs_config.get('common', {}).get('endpoint')
-            
-            # Call credentials API
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    f"{nodejs_endpoint}{Routes.BUSINESS_CREDENTIALS.value}",
-                    json=payload,
-                    headers=headers
-                ) as response:
-                    if response.status != 200:
-                        raise Exception(f"Failed to fetch credentials: {await response.json()}")
-                    credentials_json = await response.json()
-                    admin_email = credentials_json.get('adminEmail')
-
             # Create credentials from JSON
             self.credentials = service_account.Credentials.from_service_account_info(
                 credentials_json,

@@ -4,6 +4,13 @@ import random
 from googleapiclient.errors import HttpError
 from app.utils.logger import logger
 
+def token_refresh(func):
+    """Decorator to check and refresh token before API call"""
+    @wraps(func)
+    async def wrapper(self, *args, **kwargs):
+        await self._check_and_refresh_token()
+        return await func(self, *args, **kwargs)
+    return wrapper
 
 def exponential_backoff(max_retries: int = 5, initial_delay: float = 1.0, max_delay: float = 32.0):
     """

@@ -4,7 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 import json
 import os
-
+from app.config.arangodb_constants import CollectionNames
 from app.config.configuration_service import ConfigurationService
 from app.utils.logger import logger
 
@@ -205,6 +205,7 @@ class IndividualGmailWebhookHandler(AbstractGmailWebhookHandler):
                 await self.arango_service.store_channel_history_id(changes, email_address)
                 
                 user_id = await self.arango_service.get_entity_id_by_email(email_address)
+                
                 # Get org_id from belongsTo relation for this user
                 query = f"""
                 FOR edge IN belongsTo
@@ -216,6 +217,9 @@ class IndividualGmailWebhookHandler(AbstractGmailWebhookHandler):
                 org_id = next(cursor, None)
 
                 if changes:
+                    user = await self.arango_service.get_document(user_id, CollectionNames.USERS.value)
+                    user_id = user.get('userId')
+
                     logger.info("%s webhook: Found %s changes to process",
                                 self.handler_type, len(changes))
                     await self.change_handler.process_changes(user_service, changes, org_id, user_id)
@@ -320,6 +324,9 @@ class EnterpriseGmailWebhookHandler(AbstractGmailWebhookHandler):
                 if changes:
                     logger.info("%s webhook: Found %s changes to process",
                                 self.handler_type, len(changes))
+                    user = await self.arango_service.get_document(user_id, CollectionNames.USERS.value)
+                    user_id = user.get('userId')
+
                     await self.change_handler.process_changes(user_service, changes, org_id, user_id)
                 else:
                     logger.info("%s webhook: No changes to process",

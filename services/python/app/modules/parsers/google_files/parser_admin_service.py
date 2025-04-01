@@ -32,38 +32,8 @@ class ParserAdminService:
         try:
             SCOPES = GOOGLE_PARSER_SCOPES
             
-            # Prepare payload for credentials API
-            payload = {
-                "orgId": org_id,
-                "scopes": [TokenScopes.FETCH_CONFIG.value]
-            }
-            
-            # Create JWT token
-            jwt_token = jwt.encode(
-                payload,
-                os.getenv('SCOPED_JWT_SECRET'),
-                algorithm='HS256'
-            )
-            
-            headers = {
-                "Authorization": f"Bearer {jwt_token}"
-            }
-            
-            nodejs_config = await self.config_service.get_config(config_node_constants.NODEJS.value)
-            nodejs_endpoint = nodejs_config.get('common', {}).get('endpoint')
-
-            # Call credentials API
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    f"{nodejs_endpoint}{Routes.BUSINESS_CREDENTIALS.value}",
-                    json=payload,
-                    headers=headers
-                ) as response:
-                    if response.status != 200:
-                        raise Exception(f"Failed to fetch credentials: {await response.json()}")
-                    credentials_json = await response.json()
-                    admin_email = credentials_json.get('adminEmail')
-
+            credentials_json = await self.google_token_handler.get_enterprise_token(org_id)
+            admin_email = credentials_json.get('adminEmail')
             # Create credentials from JSON
             self.credentials = service_account.Credentials.from_service_account_info(
                 credentials_json,

@@ -9,17 +9,19 @@ from redis.asyncio import Redis
 from redis.exceptions import RedisError
 from arango import ArangoClient
 from dependency_injector import containers, providers
-from app.config.configuration_service import ConfigurationService, config_node_constants
+from app.config.configuration_service import ConfigurationService, config_node_constants, RedisConfig
 from app.config.arangodb_constants import QdrantCollectionNames
 from app.config.ai_models_named_constants import LLMProvider, AzureOpenAILLM
 from app.core.ai_arango_service import ArangoService
 from app.services.kafka_consumer import KafkaConsumerManager
 from app.modules.extraction.domain_extraction import DomainExtractor
-from app.utils.logger import logger
+from app.utils.logger import create_logger
 from app.core.llm_service import AzureLLMConfig, OpenAILLMConfig
 from app.events.events import EventProcessor
 from app.events.processor import Processor
 from app.modules.indexing.run import IndexingPipeline
+from qdrant_client import QdrantClient
+
 
 from app.modules.parsers.docx.docling_docx import DocxParser
 from app.modules.parsers.doc.docparser import DocParser
@@ -36,6 +38,7 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
+logger = create_logger("indexing_setup")
 class AppContainer(containers.DeclarativeContainer):
     """Dependency injection container for the application."""
     # Log when container is initialized
@@ -112,7 +115,6 @@ class AppContainer(containers.DeclarativeContainer):
             'collectionName': QdrantCollectionNames.RECORDS.value,
             'apiKey': qdrant_config['apiKey'],
             'host': qdrant_config['host'],
-            'port': qdrant_config['port'],
             'grpcPort': qdrant_config['grpcPort']
         }
 
@@ -335,7 +337,7 @@ async def health_check_redis(container):
     logger.info("🔍 Starting Redis health check...")
     try:
         redis_config = await container.config_service().get_config(config_node_constants.REDIS.value)
-        redis_url = f"redis://{redis_config['host']}:{redis_config['port']}/{redis_config['db']}"
+        redis_url = f"redis://{redis_config['host']}:{redis_config['port']}/{RedisConfig.REDIS_DB.value}"
         logger.debug(f"Checking Redis connection at: {redis_url}")        
         # Create Redis client and attempt to ping
         redis_client = Redis.from_url(redis_url, socket_timeout=5.0)
@@ -360,30 +362,23 @@ async def health_check_qdrant(container):
     logger.info("🔍 Starting Qdrant health check...")
     try:
         qdrant_config = await container.config_service().get_config(config_node_constants.QDRANT.value)
-        print("qdrant_config", qdrant_config)
-        qdrant_url = f"http://{qdrant_config['host']}:{qdrant_config['port']}"
+        host = qdrant_config['host']
+        grpc_port = qdrant_config['grpcPort']
         
-        logger.debug(f"Checking Qdrant health at endpoint: {qdrant_url}/healthz")
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"{qdrant_url}/healthz") as response:
-                if response.status == 200:
-                    response_text = await response.text()
-                    logger.info("✅ Qdrant health check passed")
-                    logger.debug(f"Qdrant health response: {response_text}")
-                else:
-                    error_msg = f"Qdrant health check failed with status {response.status}"
-                    logger.error(f"❌ {error_msg}")
-                    raise Exception(error_msg)
-    except aiohttp.ClientError as e:
-        error_msg = f"Connection error during Qdrant health check: {str(e)}"
-        logger.error(f"❌ {error_msg}")
-        raise Exception(error_msg)
+        client = QdrantClient(host=host, grpc_port=grpc_port, prefer_grpc=True)
+
+        try:
+            # Fetch collections to check gRPC connectivity
+            collections = client.get_collections()
+            print("Qdrant gRPC is healthy!")
+        except Exception as e:
+            error_msg = f"GRPC Qdrant health check failed: {str(e)}"
+            logger.error(f"❌ {error_msg}")
+            raise
     except Exception as e:
         error_msg = f"Qdrant health check failed: {str(e)}"
         logger.error(f"❌ {error_msg}")
         raise
-
 
 async def health_check(container):
     """Run health checks sequentially using HTTP requests."""

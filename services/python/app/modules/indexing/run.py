@@ -8,6 +8,7 @@ from typing import List, Dict, Optional, Any
 from dataclasses import dataclass
 from app.config.arangodb_constants import CollectionNames
 from app.utils.logger import create_logger
+from qdrant_client.http.models import Filter, FieldCondition, MatchValue
 
 from typing import List, Optional
 from dotenv import load_dotenv
@@ -363,9 +364,25 @@ class IndexingPipeline:
         try:
             logger.info(f"🗑️ Deleting embeddings for record {record_id}")
             
+            filter_dict = Filter(
+            should=[
+                FieldCondition(   # org_id condition
+                    key="metadata.recordId",
+                    match=MatchValue(value=record_id)
+                )]
+            )
+            result = self.qdrant_client.scroll(
+                collection_name=self.collection_name,
+                scroll_filter=filter_dict,
+                limit=1000000
+            )
+            ids = [point.id for point in result[0]]
+            logger.info(f"🎯 Filter: {filter_dict}")
+            logger.info(f"🎯 Ids: {ids}")
             # Use vector_store's delete method with appropriate filter
-            filter_dict = {"recordId": {"$eq": record_id}}
-            await self.vector_store.adelete(filter=filter_dict)
+            # filter_dict = {"recordId": {"$eq": record_id}}
+            if ids:
+                await self.vector_store.adelete(ids=ids)
             
             logger.info(f"✅ Successfully deleted embeddings for record {record_id}")
         except Exception as e:

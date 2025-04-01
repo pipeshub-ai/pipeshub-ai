@@ -17,27 +17,18 @@ class config_node_constants(Enum):
     """Constants for ETCD configuration paths"""
     
     # Service paths
-    STORAGE_SERVICE = "/services/storageService"
-    AUTH = "/services/auth"
-    SMTP = "/services/smtp"
     ARANGODB = "/services/arangodb"
     QDRANT = "/services/qdrant"
-    NODEJS = "/services/nodejs"
+    CONFIGURATION_MANAGER = "/services/cmBackend"
     REDIS = "/services/redis"
-    WEBHOOK = "/services/webhook"
     AI_MODELS = "/services/aiModels"
     KAFKA = "/services/kafka"
-
-    CONNECTORS_COMMON = "/connectors/common"
-    CONNECTORS_GOOGLE_WORKSPACE = "/connectors/googleWorkspace"
-    FRONTEND = "/services/frontend"
+    INDEXING = "/services/indexing"
+    QUERY_BACKEND = "/services/queryBackend"
+    CONNECTORS_SERVICE = "/services/connectors"
     
     # Non-service paths
     LOG_LEVEL = "/logLevel"
-    MAX_WORKERS = "/maxWorkers"
-    
-    # Celery related constants
-    CELERY = "/services/celery"
     
 class TokenScopes(Enum):
     """Constants for token scopes"""
@@ -53,7 +44,35 @@ class Routes(Enum):
     INDIVIDUAL_REFRESH_TOKEN = "/api/v1/connectors/internal/refreshIndividualConnectorToken"
     BUSINESS_CREDENTIALS = "/api/v1/configurationManager/internal/connectors/business/googleWorkspaceCredentials"
     LLM_CONFIG = "/api/v1/configurationManager/internal/aiModelsConfig"
-
+    
+class WebhookConfig(Enum):
+    """Constants for webhook configuration"""
+    EXPIRATION_DAYS = 5
+    EXPIRATION_HOURS = 11 #23
+    EXPIRATION_MINUTES = 59
+    COALESCEDELAY = 30
+    
+class KafkaConfig(Enum):
+    """Constants for kafka configuration"""
+    CLIENT_ID_RECORDS = "record-processor"
+    CLIENT_ID_MAIN = "enterprise-search"
+    
+class CeleryConfig(Enum):
+    """Constants for celery configuration"""
+    TASK_SERIALIZER = "json"
+    RESULT_SERIALIZER = "json"
+    ACCEPT_CONTENT = ["json"]
+    TIMEZONE = "UTC"
+    ENABLE_UTC = True
+    SCHEDULE = {
+        "syncStartTime": "23:00",
+        "syncPauseTime": "05:00"
+    }
+    
+class RedisConfig(Enum):
+    """Constants for redis configuration"""
+    REDIS_DB = 0
+    
 class ConfigurationService:
     """Service to manage configuration using etcd store"""
 

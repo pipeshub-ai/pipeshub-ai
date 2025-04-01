@@ -10,7 +10,7 @@ from app.config.arangodb_constants import (CollectionNames, Connectors,
                                            RecordTypes, RecordRelations, 
                                            OriginTypes, EventTypes)
 
-from app.utils.logger import logger
+from app.utils.logger import create_logger
 from app.connectors.google.core.arango_service import ArangoService
 from app.connectors.google.gmail.core.gmail_admin_service import GmailAdminService
 from app.connectors.google.gmail.core.gmail_user_service import GmailUserService
@@ -18,6 +18,8 @@ from app.connectors.google.gmail.handlers.change_handler import GmailChangeHandl
 from app.connectors.core.kafka_service import KafkaService
 from app.config.configuration_service import ConfigurationService, config_node_constants
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+logger = create_logger("google_gmail_sync_service")
 
 class GmailSyncProgress:
     """Class to track sync progress"""
@@ -1002,7 +1004,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                             "Failed to process batch starting at index %s", i)
                         continue
                     
-                    connector_config = await self.config_service.get_config(config_node_constants.CONNECTORS_COMMON.value)
+                    connector_config = await self.config_service.get_config(config_node_constants.CONNECTORS_SERVICE.value)
                     connector_endpoint = connector_config.get('endpoint')
 
                     # Send events to Kafka for the batch
@@ -1037,6 +1039,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                     for attachment in metadata['attachments']:
                         attachment_key = await self.arango_service.get_key_by_attachment_id(attachment['attachment_id'])
                         attachment_event = {
+                            "orgId": org_id,
                             "recordId": attachment_key,
                             "recordName": attachment.get('filename', 'Unnamed Attachment'),
                             "recordType": RecordTypes.ATTACHMENT.value,
@@ -1207,7 +1210,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                     logger.warning("Failed to process batch starting at index %s", i)
                     continue
                 
-                connector_config = await self.config_service.get_config(config_node_constants.CONNECTORS_COMMON.value)
+                connector_config = await self.config_service.get_config(config_node_constants.CONNECTORS_SERVICE.value)
                 connector_endpoint = connector_config.get('endpoint')
 
                 # Send events to Kafka
@@ -1242,6 +1245,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                     for attachment in metadata['attachments']:
                         attachment_key = await self.arango_service.get_key_by_attachment_id(attachment['attachment_id'])
                         attachment_event = {
+                            "orgId": org_id,
                             "recordId": attachment_key,
                             "recordName": attachment.get('filename', 'Unnamed Attachment'),
                             "recordType": RecordTypes.ATTACHMENT.value,
@@ -1252,7 +1256,6 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                             "connectorName": Connectors.GOOGLE_MAIL.value,
                             "origin": OriginTypes.CONNECTOR.value,
                             "mimeType": attachment.get('mimeType', 'application/octet-stream'),
-                            "size": attachment.get('size', 0),
                             "createdAtSourceTimestamp": get_epoch_timestamp_in_ms(),
                             "modifiedAtSourceTimestamp": get_epoch_timestamp_in_ms()
                         }
@@ -1473,7 +1476,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                 # Send events to Kafka for threads, messages and attachments
                 logger.info("🚀 Preparing events for Kafka for batch %s", i)
                                 
-                connector_config = await self.config_service.get_config(config_node_constants.CONNECTORS_COMMON.value)
+                connector_config = await self.config_service.get_config(config_node_constants.CONNECTORS_SERVICE.value)
                 connector_endpoint = connector_config.get('endpoint')
 
                 for metadata in batch_metadata:   
@@ -1509,6 +1512,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                     for attachment in metadata['attachments']:
                         attachment_key = await self.arango_service.get_key_by_attachment_id(attachment['attachment_id'])
                         attachment_event = {
+                            "orgId": org_id,
                             "recordId": attachment_key,
                             "recordName": attachment.get('filename', 'Unnamed Attachment'),
                             "recordType": RecordTypes.ATTACHMENT.value,
@@ -1519,7 +1523,6 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                             "connectorName": Connectors.GOOGLE_MAIL.value,
                             "origin": OriginTypes.CONNECTOR.value,
                             "mimeType": attachment.get('mimeType', 'application/octet-stream'),
-                            "size": attachment.get('size', 0),
                             "createdAtSourceTimestamp": get_epoch_timestamp_in_ms(),
                             "modifiedAtSourceTimestamp": get_epoch_timestamp_in_ms()
                         }

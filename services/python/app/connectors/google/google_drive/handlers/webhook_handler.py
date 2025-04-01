@@ -5,7 +5,8 @@ from datetime import datetime, timezone, timedelta
 import json
 import os
 
-from app.config.configuration_service import ConfigurationService, config_node_constants
+from app.config.configuration_service import ConfigurationService, config_node_constants, WebhookConfig
+from app.config.arangodb_constants import CollectionNames
 from app.utils.logger import logger
 
 class AbstractDriveWebhookHandler(ABC):
@@ -111,8 +112,7 @@ class IndividualDriveWebhookHandler(AbstractDriveWebhookHandler):
     async def _delayed_process_notifications(self, user_email: str = None):
         """Process notifications for a specific user"""
         try:
-            webhook_config = await self.config_service.get_config(config_node_constants.WEBHOOK.value)
-            coalesce_delay = webhook_config['coalesceDelay']
+            coalesce_delay = WebhookConfig.COALESCEDELAY.value
             await asyncio.sleep(coalesce_delay)
 
             async with self.processing_lock:
@@ -127,6 +127,7 @@ class IndividualDriveWebhookHandler(AbstractDriveWebhookHandler):
 
                 # Clear processed notifications for this user
                 self.pending_notifications.clear()
+                logger.info(f"🚀 Cleared processed notifications for user {user_email}")
 
         except asyncio.CancelledError:
             logger.info(f"Processing delayed for user {user_email}")
@@ -160,6 +161,8 @@ class IndividualDriveWebhookHandler(AbstractDriveWebhookHandler):
         """
         cursor = self.arango_service.db.aql.execute(query)
         org_id = next(cursor, None)
+        user = await self.arango_service.get_document(user_id, CollectionNames.USERS.value)
+        user_id = user.get('userId')
 
         if changes:
             for change in changes:
@@ -176,6 +179,7 @@ class IndividualDriveWebhookHandler(AbstractDriveWebhookHandler):
                 user_email=user_email,
                 token=new_token
             )
+            logger.info(f"🚀 Updated token for user {user_email}")
 
     async def handle_downtime(self, org_id):
         """Handle downtime for individual users"""
@@ -235,8 +239,7 @@ class EnterpriseDriveWebhookHandler(AbstractDriveWebhookHandler):
     async def _delayed_process_notifications(self):
         """Process notifications for the entire organization"""
         try:
-            webhook_config = await self.config_service.get_config(config_node_constants.WEBHOOK.value)
-            coalesce_delay = webhook_config['coalesceDelay']
+            coalesce_delay = WebhookConfig.COALESCEDELAY.value
             await asyncio.sleep(coalesce_delay)
 
             async with self.processing_lock:
@@ -296,6 +299,8 @@ class EnterpriseDriveWebhookHandler(AbstractDriveWebhookHandler):
                 cursor = self.arango_service.db.aql.execute(query)
                 org_id = next(cursor, None)
 
+                user = await self.arango_service.get_document(user_id, CollectionNames.USERS.value)
+                user_id = user.get('userId')
 
                 if changes:
                     logger.info("Processing %s changes for channel %s",

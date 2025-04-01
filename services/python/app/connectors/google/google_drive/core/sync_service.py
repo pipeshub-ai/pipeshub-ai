@@ -11,13 +11,15 @@ from app.config.arangodb_constants import (CollectionNames, Connectors,
                                            OriginTypes, EventTypes)
 
 from app.connectors.utils.drive_worker import DriveWorker
-from app.utils.logger import logger
+from app.utils.logger import create_logger
 from app.connectors.google.core.arango_service import ArangoService
 from app.connectors.google.google_drive.core.drive_admin_service import DriveAdminService
 from app.connectors.google.google_drive.core.drive_user_service import DriveUserService
 from app.connectors.core.kafka_service import KafkaService
 from app.config.configuration_service import ConfigurationService, config_node_constants
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
+
+logger = create_logger("google_drive_sync_service")
 
 class DriveSyncProgress:
     """Class to track sync progress"""
@@ -726,6 +728,7 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                         continue
 
                     channel_data = await self.setup_changes_watch(user_service)
+                    logger.info(f"🚀 Channel data: {channel_data}")
                     if not channel_data:
                         logger.warning(
                             "❌ Failed to set up changes watch for user: %s", user['email'])
@@ -872,7 +875,7 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                                     
                                     user_id = user['userId']
                                     
-                                    connector_config = await self.config_service.get_config(config_node_constants.CONNECTORS_COMMON.value)
+                                    connector_config = await self.config_service.get_config(config_node_constants.CONNECTORS_SERVICE.value)
                                     connector_endpoint = connector_config.get('endpoint')
             
                                     record_version = 0  # Initial version for new files
@@ -1074,7 +1077,7 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
 
                                 user_id = user['userId']
                                 
-                                connector_config = await self.config_service.get_config(config_node_constants.CONNECTORS_COMMON.value)
+                                connector_config = await self.config_service.get_config(config_node_constants.CONNECTORS_SERVICE.value)
                                 connector_endpoint = connector_config.get('endpoint')
 
                                 # Send Kafka indexing event
@@ -1342,7 +1345,7 @@ class DriveSyncIndividualService(BaseDriveSyncService):
                                 mime_type = file.get('mimeType')
                                 user_id = user['userId']
                                 
-                                connector_config = await self.config_service.get_config(config_node_constants.CONNECTORS_COMMON.value)
+                                connector_config = await self.config_service.get_config(config_node_constants.CONNECTORS_SERVICE.value)
                                 connector_endpoint = connector_config.get('endpoint')
                                                     
                                 index_event = {

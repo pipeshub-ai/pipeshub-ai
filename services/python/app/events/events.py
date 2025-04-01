@@ -35,18 +35,6 @@ class EventProcessor:
                 logger.error("❌ No record ID provided in event data")
                 return
             
-            # Update indexing status to IN_PROGRESS
-            record = await self.arango_service.get_document(record_id, CollectionNames.RECORDS.value)
-            doc = dict(record)
-
-            # Update with new metadata fields
-            doc.update({
-                "indexingStatus": "IN_PROGRESS"
-            })
-
-            docs = [doc]
-            await self.arango_service.batch_upsert_nodes(docs, CollectionNames.RECORDS.value)   
-
             # Handle delete event
             if event_type == EventTypes.DELETE_RECORD.value:
                 logger.info(f"🗑️ Deleting embeddings for record {record_id}")
@@ -58,6 +46,18 @@ class EventProcessor:
                 # For updates, first delete existing embeddings
                 logger.info(f"""🔄 Updating record {record_id} - deleting existing embeddings""")
                 await self.processor.indexing_pipeline.delete_embeddings(record_id)
+
+            # Update indexing status to IN_PROGRESS
+            record = await self.arango_service.get_document(record_id, CollectionNames.RECORDS.value)
+            doc = dict(record)
+
+            # Update with new metadata fields
+            doc.update({
+                "indexingStatus": "IN_PROGRESS"
+            })
+
+            docs = [doc]
+            await self.arango_service.batch_upsert_nodes(docs, CollectionNames.RECORDS.value)   
 
             # Extract necessary data
             record_version = event_data.get('version', 0)
@@ -180,7 +180,15 @@ class EventProcessor:
             else:
                 logger.warning(f"""🔴🔴🔴 Unsupported file extension: {
                                extension} 🔴🔴🔴""")
+                doc = docs[0]
+                doc.update({
+                    "indexingStatus": "FILE_TYPE_NOT_SUPPORTED"
+                })
+                docs = [doc]
+                await self.arango_service.batch_upsert_nodes(docs, CollectionNames.RECORDS.value)
+                
                 return
+
 
             logger.info(
                 f"✅ Successfully processed document for record {record_id}")

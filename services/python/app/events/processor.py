@@ -266,6 +266,7 @@ class Processor:
             # Get OCR configurations
             ai_models = await self.config_service.get_config(config_node_constants.AI_MODELS.value)
             ocr_configs = ai_models['ocr']
+            print("OCR configs", ocr_configs)
             
             # Configure OCR handler
             logger.debug("🛠️ Configuring OCR handler")
@@ -642,8 +643,7 @@ class Processor:
             orgId (str): Organization ID
             csv_binary (bytes): Binary content of the CSV file
         """
-        logger.info(
-            f"🚀 Starting CSV document processing for record: {recordName}")
+        logger.info(f"🚀 Starting CSV document processing for record: {recordName}")
 
         try:
             # Initialize CSV parser
@@ -656,8 +656,22 @@ class Processor:
                 with open(temp_file_path, "wb") as f:
                     f.write(csv_binary)
 
-                # Parse CSV file
-                csv_result = parser.read_file(temp_file_path)
+                # Try different encodings
+                encodings = ['utf-8', 'latin1', 'cp1252', 'iso-8859-1']
+                csv_result = None
+                
+                for encoding in encodings:
+                    try:
+                        logger.debug(f"Attempting to read CSV with {encoding} encoding")
+                        csv_result = parser.read_file(temp_file_path, encoding=encoding)
+                        logger.debug(f"Successfully read CSV with {encoding} encoding")
+                        break
+                    except UnicodeDecodeError:
+                        continue
+
+                if csv_result is None:
+                    raise ValueError("Unable to decode CSV file with any supported encoding")
+
                 logger.debug(f"📑 CSV result processed, {csv_result}")
 
                 # Extract domain metadata from CSV content

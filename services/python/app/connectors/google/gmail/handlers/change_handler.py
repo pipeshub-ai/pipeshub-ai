@@ -235,10 +235,9 @@ class GmailChangeHandler:
                                 f"❌ Error processing message addition: {str(e)}")
                             continue
                         
-                        connector_config = await self.config_service.get_config(config_node_constants.CONNECTORS_COMMON.value)
+                        connector_config = await self.config_service.get_config(config_node_constants.CONNECTORS_SERVICE.value)
                         connector_endpoint = connector_config.get('endpoint')
-
-                        
+                                                
                         message_event = {
                             "orgId": org_id,
                             "recordId": message_record['_key'],
@@ -265,6 +264,7 @@ class GmailChangeHandler:
                             for attachment in attachments:
                                 attachment_key = await self.arango_service.get_key_by_attachment_id(attachment['attachment_id'])
                                 attachment_event = {
+                                    "orgId": org_id,
                                     "recordId": attachment_key,
                                     "recordName": attachment.get('filename', 'Unnamed Attachment'),
                                     "recordType": RecordTypes.ATTACHMENT.value,
@@ -275,7 +275,6 @@ class GmailChangeHandler:
                                     "connectorName": Connectors.GOOGLE_MAIL.value,
                                     "origin": OriginTypes.CONNECTOR.value,
                                     "mimeType": attachment.get('mimeType', 'application/octet-stream'),
-                                    "size": attachment.get('size', 0),
                                     "createdAtSourceTimestamp":  get_epoch_timestamp_in_ms(),
                                     "modifiedAtSourceTimestamp":  get_epoch_timestamp_in_ms()
                                 }

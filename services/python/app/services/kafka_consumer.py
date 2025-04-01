@@ -7,7 +7,7 @@ import asyncio
 import os
 from datetime import datetime, timedelta, timezone
 from jose import jwt
-from app.config.configuration_service import ConfigurationService, config_node_constants
+from app.config.configuration_service import ConfigurationService, config_node_constants, KafkaConfig
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -108,7 +108,7 @@ class KafkaConsumerManager:
                     'enable.auto.commit': True,
                     'isolation.level': 'read_committed',
                     'enable.partition.eof': False,
-                    'client.id': kafka_config['clientIdMain']
+                    'client.id': KafkaConfig.CLIENT_ID_MAIN.value
                 }
 
             KAFKA_CONFIG = await get_kafka_config()

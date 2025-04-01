@@ -1,6 +1,6 @@
 from typing import Dict
 from datetime import datetime
-from app.utils.logger import logger
+from app.utils.logger import create_logger
 import uuid
 import traceback
 from app.config.arangodb_constants import (CollectionNames, Connectors, 
@@ -8,6 +8,8 @@ from app.config.arangodb_constants import (CollectionNames, Connectors,
                                            OriginTypes, EventTypes)
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 from app.config.configuration_service import config_node_constants
+
+logger = create_logger("google_drive_change_handler")
 
 class DriveChangeHandler:
     def __init__(self, config_service, arango_service):
@@ -18,6 +20,7 @@ class DriveChangeHandler:
         """Process a single change with revision checking"""
         txn = None
         try:
+            logger.info(f"user_id: {user_id}")
             file_id = change.get('fileId')
             if not file_id:
                 logger.warning("⚠️ Change missing fileId")
@@ -84,11 +87,11 @@ class DriveChangeHandler:
 
             if not file_key:
                 await self.handle_insert(new_file, org_id, transaction=txn)
-                change = EventTypes.NEW_RECORD.value
+                change_type = EventTypes.NEW_RECORD.value
             else:
                 if removed or is_trashed:
                     await self.handle_removal(db_file, db_record, transaction=txn)
-                    change = EventTypes.DELETE_RECORD.value
+                    change_type = EventTypes.DELETE_RECORD.value
                 else:
                     if not new_file:
                         return
@@ -96,39 +99,51 @@ class DriveChangeHandler:
                     if needs_update_var:
                         await self.handle_update(new_file, db_file, db_record, org_id, transaction=txn)
                         if reindex_var:
-                            change = EventTypes.UPDATE_RECORD.value
+                            change_type = EventTypes.UPDATE_RECORD.value
                         else:
-                            change = ""
+                            change_type = ""
                     else:
                         logger.info(
                             f"✅ File {file_id} is up to date, skipping update")
-                        change = ""
+                        change_type = ""
 
             txn.commit_transaction()
             txn = None
             logger.info("Transaction committed for file: %s", {file_id})
 
             # SEND KAFKA EVENT FOR REINDEXING
+            logger.info(f"🚀 Change: {change_type}")
+            if change_type == EventTypes.NEW_RECORD.value or change_type == EventTypes.UPDATE_RECORD.value:
+                file_key = await self.arango_service.get_key_by_external_file_id(file_id)
+                logger.info(f"🚀 File key: {file_key}")
+                record = await self.arango_service.get_document(file_key, CollectionNames.RECORDS.value)
+                file = await self.arango_service.get_document(file_key, CollectionNames.FILES.value)
+                
+                if file:
+                    record_version = 0  # Initial version for new files
+                    extension = file.get('extension')
+                    mime_type = file.get('mimeType')
 
-            file_key = await self.arango_service.get_key_by_external_file_id(file_id)
-            record = await self.arango_service.get_document(file_key, CollectionNames.RECORDS.value)
-            file = await self.arango_service.get_document(file_key, CollectionNames.FILES.value)
-
-            record_version = 0  # Initial version for new files
-            extension = file.get('extension')
-            mime_type = file.get('mimeType')
-            
-            connector_config = await self.config_service.get_config(config_node_constants.CONNECTORS_COMMON.value)
+            else:
+                record = {}
+                file = {}
+                extension = None
+                mime_type = None
+                
+            connector_config = await self.config_service.get_config(config_node_constants.CONNECTORS_SERVICE.value)
             connector_endpoint = connector_config.get('endpoint')
+            
+            reindex_event = None
 
             # INSERTION
-            if change == EventTypes.NEW_RECORD.value:
+            if change_type == EventTypes.NEW_RECORD.value:
                 reindex_event = {
+                    "orgId": org_id,
                     'recordId': file_key,
                     "recordName": record.get('recordName'),
                     "recordVersion": 0,
                     "recordType": record.get('recordType'),
-                    'eventType': change,
+                    'eventType': change_type,
                     "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user_id}/drive/record/{file_key}/signedUrl",
                     "metadataRoute": f"/api/v1/drive/files/{file_key}/metadata",
                     "connectorName": Connectors.GOOGLE_DRIVE.value,
@@ -140,13 +155,14 @@ class DriveChangeHandler:
                 }
 
             # UPDATION
-            elif change == EventTypes.UPDATE_RECORD.value:
+            elif change_type == EventTypes.UPDATE_RECORD.value:
                 reindex_event = {
+                    "orgId": org_id,
                     'recordId': file_key,
                     "recordName": record.get('recordName'),
                     'recordVersion': 0,
                     'recordType': record.get('recordType'),
-                    'eventType': change,
+                    'eventType': change_type,
                     "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user_id}/drive/record/{file_key}/signedUrl",
                     "metadataRoute": f"/api/v1/drive/files/{file_key}/metadata",
                     "connectorName": Connectors.GOOGLE_DRIVE.value,
@@ -158,13 +174,14 @@ class DriveChangeHandler:
                 }
 
             # DELETION
-            elif change == EventTypes.DELETE_RECORD.value:
+            elif change_type == EventTypes.DELETE_RECORD.value:
                 reindex_event = {
+                    "orgId": org_id,
                     'recordId': file_key,
-                    "recordName": record.get('recordName'),
+                    "recordName": "",
                     'recordVersion': 0,
-                    'recordType': record.get('recordType'),
-                    'eventType': change,
+                    'recordType': "",
+                    'eventType': change_type,
                     "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user_id}/drive/record/{file_key}/signedUrl",
                     "metadataRoute": f"/api/v1/drive/files/{file_key}/metadata",
                     "connectorName": Connectors.GOOGLE_DRIVE.value,

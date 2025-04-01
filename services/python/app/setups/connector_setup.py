@@ -4,8 +4,7 @@ src/api/setup.py
 import os
 from dependency_injector import containers, providers
 from arango import ArangoClient
-from app.config.configuration_service import ConfigurationService
-from app.config.configuration_service import config_node_constants
+from app.config.configuration_service import ConfigurationService, RedisConfig, config_node_constants
 from app.connectors.google.core.arango_service import ArangoService
 from app.connectors.core.kafka_service import KafkaService
 from confluent_kafka import Consumer, KafkaError
@@ -20,28 +19,39 @@ from app.connectors.google.google_drive.handlers.change_handler import DriveChan
 from app.connectors.google.gmail.handlers.change_handler import GmailChangeHandler
 from app.connectors.google.google_drive.handlers.webhook_handler import IndividualDriveWebhookHandler, EnterpriseDriveWebhookHandler
 from app.connectors.google.gmail.handlers.webhook_handler import IndividualGmailWebhookHandler, EnterpriseGmailWebhookHandler
+from app.connectors.google.helpers.google_token_handler import GoogleTokenHandler
 from app.core.signed_url import SignedUrlHandler, SignedUrlConfig
 from app.core.celery_app import CeleryApp
 from app.connectors.google.core.sync_tasks import SyncTasks
 from redis import asyncio as aioredis
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
-
+from qdrant_client import QdrantClient
 import aiohttp
-from app.utils.logger import logger
+from app.utils.logger import create_logger
+
+logger = create_logger("connector_setup")
 
 async def initialize_individual_account_services_fn(container):
     """Initialize services for an individual account type."""
     try:    
         # Initialize base services
         container.drive_service.override(
-            providers.Singleton(DriveUserService, config=container.config_service, rate_limiter=container.rate_limiter)
+            providers.Singleton(
+                DriveUserService, 
+                config=container.config_service, 
+                rate_limiter=container.rate_limiter, 
+                google_token_handler = await container.google_token_handler())
         )
         drive_service = container.drive_service()
         assert isinstance(drive_service, DriveUserService)
         
         container.gmail_service.override(
-            providers.Singleton(GmailUserService, config=container.config_service, rate_limiter=container.rate_limiter)
+            providers.Singleton(
+                GmailUserService, 
+                config=container.config_service, 
+                rate_limiter=container.rate_limiter,
+                google_token_handler = await container.google_token_handler())
         )
         gmail_service = container.gmail_service()
         assert isinstance(gmail_service, GmailUserService)
@@ -129,13 +139,22 @@ async def initialize_enterprise_account_services_fn(container):
     """Initialize services for an enterprise account type."""
     
     try:
-        
         # Initialize base services
         container.drive_service.override(
-            providers.Singleton(DriveAdminService, config=container.config_service, rate_limiter=container.rate_limiter)
+            providers.Singleton(
+                DriveAdminService, 
+                config=container.config_service, 
+                rate_limiter=container.rate_limiter,
+                google_token_handler = await container.google_token_handler()
+            )
         )
         container.gmail_service.override(
-            providers.Singleton(GmailAdminService, config=container.config_service, rate_limiter=container.rate_limiter)
+            providers.Singleton(
+                GmailAdminService, 
+                config=container.config_service, 
+                rate_limiter=container.rate_limiter,
+                google_token_handler = await container.google_token_handler()
+            )
         )
 
         # Initialize webhook handlers
@@ -237,7 +256,7 @@ class AppContainer(containers.DeclarativeContainer):
     async def _create_redis_client(config_service):
         """Async method to initialize RedisClient."""
         redis_config = await config_service.get_config(config_node_constants.REDIS.value)
-        url = redis_config['url']
+        url = f"redis://{redis_config['host']}:{redis_config['port']}/{RedisConfig.REDIS_DB.value}"
         return await aioredis.from_url(url, encoding="utf-8", decode_responses=True)
 
     # Core Resources
@@ -256,7 +275,13 @@ class AppContainer(containers.DeclarativeContainer):
         kafka_service=kafka_service,
         config=config_service,
     )
-
+    
+    google_token_handler = providers.Singleton(
+        GoogleTokenHandler,
+        config_service=config_service,
+        arango_service=arango_service,
+    )
+    
     # Change Handlers 
     drive_change_handler = providers.Singleton(
         DriveChangeHandler,
@@ -375,7 +400,6 @@ async def health_check_kafka(container):
         brokers = kafka_config['brokers']
         logger.debug(f"Checking Kafka connection at: {brokers}")
         
-        
         # Try to create a consumer with a short timeout
         try:
             config = {
@@ -411,7 +435,7 @@ async def health_check_redis(container):
     try:
         config_service = container.config_service()
         redis_config = await config_service.get_config(config_node_constants.REDIS.value)
-        redis_url = f"redis://{redis_config['host']}:{redis_config['port']}/{redis_config['db']}"
+        redis_url = f"redis://{redis_config['host']}:{redis_config['port']}/{RedisConfig.REDIS_DB.value}"
         logger.debug(f"Checking Redis connection at: {redis_url}")        
         # Create Redis client and attempt to ping
         redis_client = Redis.from_url(redis_url, socket_timeout=5.0)
@@ -436,28 +460,23 @@ async def health_check_qdrant(container):
     logger.info("🔍 Starting Qdrant health check...")
     try:
         qdrant_config = await container.config_service().get_config(config_node_constants.QDRANT.value)
-        qdrant_url = f"http://{qdrant_config['host']}:{qdrant_config['port']}"
-        logger.debug(f"Checking Qdrant health at endpoint: {qdrant_url}/healthz")
+        host = qdrant_config['host']
+        grpc_port = qdrant_config['grpcPort']
         
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"{qdrant_url}/healthz") as response:
-                if response.status == 200:
-                    response_text = await response.text()
-                    logger.info("✅ Qdrant health check passed")
-                    logger.debug(f"Qdrant health response: {response_text}")
-                else:
-                    error_msg = f"Qdrant health check failed with status {response.status}"
-                    logger.error(f"❌ {error_msg}")
-                    raise Exception(error_msg)
-    except aiohttp.ClientError as e:
-        error_msg = f"Connection error during Qdrant health check: {str(e)}"
-        logger.error(f"❌ {error_msg}")
-        raise Exception(error_msg)
+        client = QdrantClient(host=host, grpc_port=grpc_port, prefer_grpc=True)
+        logger.debug(f"Checking Qdrant health at endpoint: {host}:{grpc_port}")
+        try:
+            # Fetch collections to check gRPC connectivity
+            collections = client.get_collections()
+            print("Qdrant gRPC is healthy!")
+        except Exception as e:
+            error_msg = f"GRPC Qdrant health check failed: {str(e)}"
+            logger.error(f"❌ {error_msg}")
+            raise
     except Exception as e:
         error_msg = f"Qdrant health check failed: {str(e)}"
         logger.error(f"❌ {error_msg}")
         raise
-
 
 async def health_check(container):
     """Run health checks sequentially using HTTP requests."""
