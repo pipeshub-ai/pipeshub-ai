@@ -1057,12 +1057,11 @@ class Processor:
                     metadata = await self.domain_extractor.extract_metadata(text_content)
                     logger.info(f"✅ Extracted metadata: {metadata}")
                     record = await self.domain_extractor.save_metadata_to_arango(recordId, metadata)
-                    domain_metadata = record
-                    md_result["metadata"] = record
+                    file = await self.arango_service.get_document(recordId, CollectionNames.FILES.value)
+                    domain_metadata = {**record, **file}
                 except Exception as e:
                     logger.error(f"❌ Error extracting metadata: {str(e)}")
                     domain_metadata = None
-                    md_result["metadata"] = None
 
             # Format content for output
             formatted_content = ""
@@ -1088,8 +1087,22 @@ class Processor:
             # Create sentence data for indexing
             logger.debug("📑 Creating semantic sentences")
             sentence_data = []
+            
+            # Keep track of previous items for context
+            context_window = []
+            context_window_size = 3  # Number of previous items to include for context
+
             for idx, item in enumerate(doc_dict.get('texts', []), 1):
                 if item.get('text') and item.get('label') != 'code':  # Skip code blocks
+                    # Create context text from previous items
+                    previous_context = " ".join([prev.get('text', '').strip() for prev in context_window])
+                    
+                    # Current item's context with previous items
+                    full_context = {
+                        "previous": previous_context,
+                        "current": item['text'].strip()
+                    }
+
                     sentence_data.append({
                         'text': item['text'].strip(),
                         'bounding_box': None,
@@ -1098,10 +1111,16 @@ class Processor:
                             "recordId": recordId,
                             "blockType": item.get('label', 'text'),
                             "blockNum": idx,
+                            "blockText": json.dumps(full_context),  # Include full context
                             "level": item.get('level'),
                             "codeLanguage": item.get('language') if item.get('label') == 'code' else None
                         }
                     })
+
+                    # Update context window
+                    context_window.append(item)
+                    if len(context_window) > context_window_size:
+                        context_window.pop(0)
 
             # Index sentences if available
             if sentence_data:
@@ -1171,6 +1190,7 @@ class Processor:
             logger.debug("📄 Processing PPTX content")
             parser = self.parsers['pptx']
             pptx_result = parser.parse_binary(pptx_binary)
+            pptx_result["metadata"] = None
 
             # Get the full document structure
             doc_dict = pptx_result.export_to_dict()

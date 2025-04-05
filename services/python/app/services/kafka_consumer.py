@@ -359,14 +359,15 @@ class KafkaConsumerManager:
             })
 
             if error_details:
-                doc["processingError"] = error_details
+                doc["reason"] = error_details
 
             docs = [doc]
+            logger.debug(f"docs: {docs}")
             await self.event_processor.arango_service.batch_upsert_nodes(
                 docs, 
                 CollectionNames.RECORDS.value
             )
-            logger.info(f"✅ Updated document status for record {record_id}")
+            logger.info(f"✅ Updated document status for record {record_id}. Indexing status: {indexing_status}, Extraction status: {extraction_status}")
 
         except Exception as e:
             logger.error(f"❌ Failed to update document status: {str(e)}")
