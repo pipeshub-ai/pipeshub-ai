@@ -12,7 +12,7 @@ async def get_arango_service(request: Request) -> ArangoService:
     arango_service = await container.arango_service()
     return arango_service
 
-@router.get("/check-record-access/{record_id}")
+@router.get("/records/{record_id}")
 @inject
 async def check_record_access(
     record_id: str,
