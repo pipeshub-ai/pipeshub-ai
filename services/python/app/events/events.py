@@ -167,7 +167,6 @@ class EventProcessor:
                 file_content = event_data.get('buffer')
             
             self.logger.debug(f"file_content type: {type(file_content)}")
-            self.logger.debug(f"file_content: {file_content}")
                 
             if mime_type == "application/vnd.google-apps.presentation":
                 self.logger.info("🚀 Processing Google Slides")

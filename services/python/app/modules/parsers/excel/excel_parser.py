@@ -162,32 +162,6 @@ class ExcelParser:
         except Exception as e:
             raise
 
-    def get_sheet_data(self, sheet_name: str = None) -> Dict[str, Any]:
-        """
-        Get data for a specific sheet or all sheets
-
-        Args:
-            sheet_name: Name of the sheet to get data from. If None, returns all sheets.
-
-        Returns:
-            Dictionary containing sheet data with headers and rows
-        """
-        try:
-            if not self.workbook:
-                self.parse()
-
-            if sheet_name:
-                if sheet_name not in self.workbook.sheetnames:
-                    raise ValueError(
-                        f"Sheet '{sheet_name}' not found in workbook")
-                sheet = self.workbook[sheet_name]
-                return self._process_sheet(sheet)
-
-            return {name: self._process_sheet(self.workbook[name]) for name in self.workbook.sheetnames}
-
-        except Exception as e:
-            raise
-
     def find_tables(self, sheet) -> List[Dict[str, Any]]:
         """Find and process all tables in a sheet"""
         try:
@@ -350,7 +324,8 @@ class ExcelParser:
                 self.parse()
 
             if sheet_name not in self.workbook.sheetnames:
-                raise ValueError(f"Sheet '{sheet_name}' not found in workbook")
+                self.logger.error(f"Sheet '{sheet_name}' not found in workbook")
+                return []
 
             sheet = self.workbook[sheet_name]
             tables = self.find_tables(sheet)            
@@ -495,13 +470,11 @@ class ExcelParser:
             self.parse()
 
         if sheet_name not in self.workbook.sheetnames:
-            raise ValueError(f"Sheet '{sheet_name}' not found in workbook")
+            self.logger.error(f"Sheet '{sheet_name}' not found in workbook")
+            return None
 
         # Get tables in the sheet
         tables = await self.get_tables_in_sheet(sheet_name)
-
-        # # Get sheet-level summary
-        # sheet_summary = await self.get_sheet_summary(sheet_name, tables)
 
         # Process each table
         processed_tables = []
@@ -542,39 +515,3 @@ class ExcelParser:
             'sheet_name': sheet_name,
             'tables': processed_tables
         }
-
-async def main():
-    """Test function to demonstrate Excel parsing with summaries"""
-    test_file = "modules/parsers/excel/test4.xlsx"
-
-    try:
-        parser = ExcelParser(file_path=test_file)
-        parsed_data = parser.parse()
-        logger.debug(f"\nAvailable sheets: {parsed_data['sheet_names']}")
-
-        # Process each sheet
-        for sheet_name in parsed_data['sheet_names']:
-            logger.debug(f"\n{'='*50}")
-            logger.debug(f"Processing sheet: {sheet_name}")
-            logger.debug(f"{'='*50}")
-
-            sheet_data = await parser.process_sheet_with_summaries(sheet_name)
-
-            for idx, table in enumerate(sheet_data['tables'], 1):
-                logger.debug(f"\nTable {idx} Summary:")
-                logger.debug(table['summary'])
-
-                logger.debug("\nSample row texts:")
-                for row in table['rows'][:2]:  # Show first 2 rows
-                    logger.debug(f"\nRaw data: {row['raw_data']}")
-                    logger.debug(f"Natural text: {row['natural_language_text']}")
-
-                if len(table['rows']) > 2:
-                    logger.debug("...")
-
-    except Exception as e:
-        logger.error(f"Error processing Excel file: {str(e)}")
-
-if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())

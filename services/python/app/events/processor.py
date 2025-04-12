@@ -857,6 +857,8 @@ class Processor:
             self.logger.debug("📝 Processing sheets")
             for sheet_idx, sheet_name in enumerate(excel_result['sheet_names'], 1):
                 sheet_data = await parser.process_sheet_with_summaries(llm, sheet_name)
+                if sheet_data is None:
+                    continue
                 # Add sheet entry
                 sheet_entry = {
                     "number": f"S{sheet_idx}",

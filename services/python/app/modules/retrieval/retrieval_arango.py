@@ -430,6 +430,82 @@ class ArangoService():
                 # Format the webUrl with the user's email
                 additional_data['webUrl'] = f"https://mail.google.com/mail?authuser={user['email']}#all/{message_id}"
             
+            metadata_query = f"""
+            LET record = DOCUMENT(CONCAT('{CollectionNames.RECORDS.value}/', @recordId))
+            
+            LET departments = (
+                FOR dept IN OUTBOUND record._id {CollectionNames.BELONGS_TO_DEPARTMENT.value}
+                RETURN {{
+                    id: dept._key,
+                    name: dept.departmentName
+                }}
+            )
+            
+            LET categories = (
+                FOR cat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                FILTER PARSE_IDENTIFIER(cat._id).collection == '{CollectionNames.CATEGORIES.value}'
+                RETURN {{
+                    id: cat._key,
+                    name: cat.name
+                }}
+            )
+            
+            LET subcategories1 = (
+                FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                FILTER PARSE_IDENTIFIER(subcat._id).collection == '{CollectionNames.SUBCATEGORIES1.value}'
+                RETURN {{
+                    id: subcat._key,
+                    name: subcat.name
+                }}
+            )
+            
+            LET subcategories2 = (
+                FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                FILTER PARSE_IDENTIFIER(subcat._id).collection == '{CollectionNames.SUBCATEGORIES2.value}'
+                RETURN {{
+                    id: subcat._key,
+                    name: subcat.name
+                }}
+            )
+            
+            LET subcategories3 = (
+                FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                FILTER PARSE_IDENTIFIER(subcat._id).collection == '{CollectionNames.SUBCATEGORIES3.value}'
+                RETURN {{
+                    id: subcat._key,
+                    name: subcat.name
+                }}
+            )
+            
+            LET topics = (
+                FOR topic IN OUTBOUND record._id {CollectionNames.BELONGS_TO_TOPIC.value}
+                RETURN {{
+                    id: topic._key,
+                    name: topic.name
+                }}
+            )
+            
+            LET languages = (
+                FOR lang IN OUTBOUND record._id {CollectionNames.BELONGS_TO_LANGUAGE.value}
+                RETURN {{
+                    id: lang._key,
+                    name: lang.name
+                }}
+            )
+            
+            RETURN {{
+                departments: departments,
+                categories: categories,
+                subcategories1: subcategories1,
+                subcategories2: subcategories2,
+                subcategories3: subcategories3,
+                topics: topics,
+                languages: languages
+            }}
+            """
+            metadata_cursor = self.db.aql.execute(metadata_query, bind_vars={'recordId': record_id})
+            metadata_result = next(metadata_cursor, None)
+            
             # Get knowledge base info if record is in a KB
             kb_info = None
             for access in access_result:
@@ -460,6 +536,7 @@ class ArangoService():
                     'mailRecord': additional_data if record['recordType'] == RecordTypes.MAIL.value else None,
                 },
                 'knowledgeBase': kb_info,
+                'metadata': metadata_result,
                 'permissions': permissions
             }
 
