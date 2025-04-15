@@ -25,6 +25,7 @@ import tempfile
 from pathlib import Path
 import asyncio
 import time
+import uuid
 
 logger = create_logger("Python Connector Service")
 
@@ -1244,6 +1245,36 @@ async def stream_record(
     except Exception as e:
         logger.error("Error downloading file: %s", str(e))
         raise HTTPException(status_code=500, detail="Error downloading file")
+
+@router.get("/api/v1/stream/kb/{buffer}")
+async def get_record_stream(request: Request, buffer: str):
+    source = request.query_params.get('source')
+    convertTo = request.query_params.get('convertTo')
+    file_name = str(uuid.uuid4())
+    
+    if convertTo == 'pdf':
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Write the buffer content to a temporary file
+            temp_file_path = os.path.join(temp_dir, f"{file_name}.{source}")
+            with open(temp_file_path, 'wb') as f:
+                f.write(buffer.encode())
+            
+            # Convert to PDF
+            pdf_path = await convert_to_pdf(temp_file_path, temp_dir)
+            
+            # Read the PDF file and return it as a streaming response
+            return StreamingResponse(
+                open(pdf_path, 'rb'),
+                media_type='application/pdf',
+                headers={
+                    'Content-Disposition': f'inline; filename="{file_name}.pdf"'
+                }
+            )
+    
+    raise HTTPException(
+        status_code=400,
+        detail="Invalid conversion request"
+    )
 
 async def get_admin_webhook_handler(request: Request) -> Optional[Any]:
     try:

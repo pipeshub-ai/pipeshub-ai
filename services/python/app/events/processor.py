@@ -1368,12 +1368,8 @@ class Processor:
             self.logger.debug("📄 Processing Markdown content")
             parser = self.parsers['md']
             md_result = parser.parse_string(md_content)
-            
             # Get the full document structure
             doc_dict = md_result.export_to_dict()
-            self.logger.debug(f"Document structure: {doc_dict}")
-            html_content = md_result.export_to_html()
-            self.logger.debug(f"HTML content: {html_content}")
 
             # Extract text content from all text elements
             text_content = "\n".join(
@@ -1404,7 +1400,6 @@ class Processor:
             self.logger.debug("📝 Processing text items")
             for idx, item in enumerate(doc_dict.get('texts', []), 1):
                 if item.get('text', '').strip():
-                    self.logger.debug(f"Item: {item}")
                     # Create item entry with metadata
                     item_entry = {
                         "number": idx,
@@ -1427,33 +1422,32 @@ class Processor:
             context_window_size = 3  # Number of previous items to include for context
 
             for idx, item in enumerate(doc_dict.get('texts', []), 1):
-                if item.get('text') and item.get('label') != 'code':  # Skip code blocks
-                    # Create context text from previous items
-                    previous_context = " ".join([prev.get('text', '').strip() for prev in context_window])
-                    
-                    # Current item's context with previous items
-                    full_context = {
-                        "previous": previous_context,
-                        "current": item['text'].strip()
+                # Create context text from previous items
+                previous_context = " ".join([prev.get('text', '').strip() for prev in context_window])
+                
+                # Current item's context with previous items
+                full_context = {
+                    "previous": previous_context,
+                    "current": item['text'].strip()
+                }
+
+                sentence_data.append({
+                    'text': item['text'].strip(),
+                    'bounding_box': None,
+                    'metadata': {
+                        **(domain_metadata or {}),
+                        "recordId": recordId,
+                        "blockType": item.get('label', 'text'),
+                        "blockNum": [idx],
+                        "blockText": json.dumps(full_context),  # Include full context
+                        "codeLanguage": item.get('language') if item.get('label') == 'code' else None
                     }
+                })
 
-                    sentence_data.append({
-                        'text': item['text'].strip(),
-                        'bounding_box': None,
-                        'metadata': {
-                            **(domain_metadata or {}),
-                            "recordId": recordId,
-                            "blockType": item.get('label', 'text'),
-                            "blockNum": [idx],
-                            "blockText": json.dumps(full_context),  # Include full context
-                            "codeLanguage": item.get('language') if item.get('label') == 'code' else None
-                        }
-                    })
-
-                    # Update context window
-                    context_window.append(item)
-                    if len(context_window) > context_window_size:
-                        context_window.pop(0)
+                # Update context window
+                context_window.append(item)
+                if len(context_window) > context_window_size:
+                    context_window.pop(0)
 
             # Index sentences if available
             if sentence_data:

@@ -1,8 +1,7 @@
 from io import BytesIO
 from docling.document_converter import DocumentConverter
-from docling.datamodel.base_models import DocumentStream
-
-
+from docling.datamodel.base_models import DocumentStream, InputFormat
+import markdown
 class MarkdownParser:
     def __init__(self):
         self.converter = DocumentConverter()
@@ -21,7 +20,9 @@ class MarkdownParser:
             ValueError: If parsing fails
         """
         # Convert string to bytes
-        md_bytes = md_content.encode('utf-8')
+        
+        html = markdown.markdown(md_content, extensions=['md_in_html'])
+        md_bytes = html.encode('utf-8')
         
         # Create a BytesIO object from the bytes
         stream = BytesIO(md_bytes)
