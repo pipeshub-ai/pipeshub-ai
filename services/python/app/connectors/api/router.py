@@ -25,8 +25,6 @@ from app.connectors.api.middleware import WebhookAuthVerifier
 import tempfile
 from pathlib import Path
 import asyncio
-import time
-import uuid
 
 logger = create_logger("Python Connector Service")
 
@@ -652,39 +650,58 @@ async def download_file(
                 
                 # Enhanced logging for regular file download
                 logger.info(f"Starting binary file download for file_id: {file_id}")
-                file_buffer = io.BytesIO()
+                async def file_stream():
+                    file_buffer = io.BytesIO()
+                    try:
+                        logger.info("Initiating download process...")
+                        request = drive_service.files().get_media(fileId=file_id)
+                        downloader = MediaIoBaseDownload(file_buffer, request)
 
-                # Download the file with enhanced progress logging
-                logger.info("Initiating download process...")
-                request = drive_service.files().get_media(fileId=file_id)
-                
-                downloader = MediaIoBaseDownload(file_buffer, request)
+                        done = False
+                        while not done:
+                            status, done = downloader.next_chunk()
+                            logger.info(f"Download {int(status.progress() * 100)}%.")
 
-                done = False
-                try:
-                    while not done:
-                        status, done = downloader.next_chunk()
-                        logger.info(f"Download {int(status.progress() * 100)}%.")
-
-                    # Reset buffer position to start
-                    file_buffer.seek(0)
+                        # Reset buffer position to start
+                        file_buffer.seek(0)
                                     
-                    # Stream the response with content type from metadata
-                    logger.info("Initiating streaming response...")
-                    return StreamingResponse(
-                        file_buffer,
-                        media_type=mime_type
-                    )
+                        # Stream the response with content type from metadata
+                        logger.info("Initiating streaming response...")
+                        yield file_buffer.read()
 
-                except Exception as download_error:
-                    logger.error(f"Download failed: {repr(download_error)}")
-                    if hasattr(download_error, 'response'):
-                        logger.error(f"Response status: {download_error.response.status_code}")
-                        logger.error(f"Response content: {download_error.response.content}")
-                    raise HTTPException(
-                        status_code=500,
-                        detail=f"File download failed: {repr(download_error)}"
-                    )
+                    except Exception as download_error:
+                        logger.error(f"Download failed: {repr(download_error)}")
+                        if hasattr(download_error, 'response'):
+                            logger.error(f"Response status: {download_error.response.status_code}")
+                            logger.error(f"Response content: {download_error.response.content}")
+                        raise HTTPException(
+                            status_code=500,
+                            detail=f"File download failed: {repr(download_error)}"
+                        )
+                    finally:
+                        file_buffer.close()
+                
+                # Get file metadata to set correct content type
+                try:
+                    file_metadata = drive_service.files().get(
+                        fileId=file_id, 
+                        fields='mimeType'
+                    ).execute()
+                    mime_type = file_metadata.get('mimeType', 'application/octet-stream')
+                except Exception as e:
+                    logger.warning(f"Could not get file mime type: {str(e)}")
+                    mime_type = 'application/octet-stream'
+                
+                # Return streaming response with proper headers
+                headers = {
+                    'Content-Disposition': f'attachment; filename="{record.get("recordName", "")}"'
+                }
+                
+                return StreamingResponse(
+                    file_stream(),
+                    media_type=mime_type,
+                    headers=headers
+                )
 
             elif connector == "gmail":
                 logger.info(f"Downloading Gmail attachment for record_id: {record_id}")
@@ -704,70 +721,69 @@ async def download_file(
                 cursor = arango_service.db.aql.execute(aql_query)
                 messages = list(cursor)
 
-                # First try getting the attachment from Gmail
-                try:
-                    message_id = None
-                    if messages and messages[0]:
-                        message = messages[0]
-                        message_id = message['messageId']
-                        logger.info(f"Found message ID: {message_id}")
-                    else:
-                        raise Exception("Related message not found")
-
-                    attachment = gmail_service.users().messages().attachments().get(
-                        userId='me',
-                        messageId=message_id,
-                        id=file_id
-                    ).execute()
-                    
-                    # Decode the attachment data
-                    file_data = base64.urlsafe_b64decode(attachment['data'])
-                    
-                    # Stream the response
-                    return StreamingResponse(
-                        iter([file_data]),
-                        media_type='application/octet-stream'
-                    )
-                    
-                except Exception as gmail_error:
-                    logger.info(f"Failed to get attachment from Gmail: {str(gmail_error)}, trying Drive...")
-                    
-                    # Try to get the file from Drive as fallback
+                async def attachment_stream():
                     try:
-                        drive_service = build('drive', 'v3', credentials=creds)
-                        file_buffer = io.BytesIO()
-                        
-                        logger.info("Initiating download process...")
-                                                
-                        request = drive_service.files().get_media(fileId=file_id)
-                        downloader = MediaIoBaseDownload(file_buffer, request)
-                        
-                        done = False
-                        
-                        try:                        
-                            while not done:
-                                status, done = downloader.next_chunk()
-                                logger.info(f"Download {int(status.progress() * 100)}%.")
-                        
-                            file_buffer.seek(0)
-                        
-                            return StreamingResponse(
-                                file_buffer,
-                                media_type='application/octet-stream'
-                            )
-                        except Exception as download_error:
-                            logger.error(f"Download failed: {repr(download_error)}")
-                            raise HTTPException(
-                                status_code=500,
-                                detail=f"File download failed: {repr(download_error)}"
-                            )
+                        # First try getting the attachment from Gmail
+                        message_id = None
+                        if messages and messages[0]:
+                            message = messages[0]
+                            message_id = message['messageId']
+                            logger.info(f"Found message ID: {message_id}")
+                        else:
+                            raise Exception("Related message not found")
 
-                    except Exception as drive_error:
-                        logger.error(f"Failed to get file from both Gmail and Drive. Gmail error: {str(gmail_error)}, Drive error: {str(drive_error)}")
+                        try:
+                            attachment = gmail_service.users().messages().attachments().get(
+                                userId='me',
+                                messageId=message_id,
+                                id=file_id
+                            ).execute()
+                            
+                            # Decode the attachment data
+                            file_data = base64.urlsafe_b64decode(attachment['data'])
+                            yield file_data
+                            
+                        except Exception as gmail_error:
+                            logger.info(f"Failed to get attachment from Gmail: {str(gmail_error)}, trying Drive...")
+                            
+                            # Try to get the file from Drive as fallback
+                            file_buffer = io.BytesIO()
+                            try:
+                                drive_service = build('drive', 'v3', credentials=creds)
+                                request = drive_service.files().get_media(fileId=file_id)
+                                downloader = MediaIoBaseDownload(file_buffer, request)
+                                
+                                done = False
+                                while not done:
+                                    status, done = downloader.next_chunk()
+                                    logger.info(f"Download {int(status.progress() * 100)}%.")
+                                    
+                                    # Yield current chunk and reset buffer
+                                    file_buffer.seek(0)
+                                    yield file_buffer.getvalue()
+                                    file_buffer.seek(0)
+                                    file_buffer.truncate()
+                                    
+                            except Exception as drive_error:
+                                logger.error(f"Failed to get file from both Gmail and Drive. Gmail error: {str(gmail_error)}, Drive error: {str(drive_error)}")
+                                raise HTTPException(
+                                    status_code=500,
+                                    detail="Failed to download file from both Gmail and Drive"
+                                )
+                            finally:
+                                file_buffer.close()
+                                
+                    except Exception as e:
+                        logger.error(f"Error in attachment stream: {str(e)}")
                         raise HTTPException(
                             status_code=500,
-                            detail="Failed to download file from both Gmail and Drive"
+                            detail=f"Error streaming attachment: {str(e)}"
                         )
+
+                return StreamingResponse(
+                    attachment_stream(),
+                    media_type='application/octet-stream'
+                )
             else:
                 raise HTTPException(status_code=400, detail="Invalid connector type")
 
@@ -927,8 +943,21 @@ async def stream_record(
                         
                         # Convert to PDF
                         pdf_path = await convert_to_pdf(temp_file_path, temp_dir)
+                        
+                        # Create async generator to properly handle file cleanup
+                        async def file_iterator():
+                            try:
+                                with open(pdf_path, 'rb') as pdf_file:
+                                    yield await asyncio.to_thread(pdf_file.read)
+                            except Exception as e:
+                                logger.error(f"Error reading PDF file: {str(e)}")
+                                raise HTTPException(
+                                    status_code=500,
+                                    detail="Error reading converted PDF file"
+                                )
+
                         return StreamingResponse(
-                            open(pdf_path, 'rb'),
+                            file_iterator(),
                             media_type='application/pdf',
                             headers={
                                 'Content-Disposition': f'inline; filename="{Path(file_name).stem}.pdf"'
@@ -1253,27 +1282,85 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)):
     to_format = request.query_params.get('to')
 
     if to_format == 'pdf':
-        with tempfile.TemporaryDirectory() as tmpdir:
-            ppt_path = os.path.join(tmpdir, file.filename)
-            with open(ppt_path, "wb") as f:
-                f.write(await file.read())
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                try:
+                    ppt_path = os.path.join(tmpdir, file.filename)
+                    with open(ppt_path, "wb") as f:
+                        f.write(await file.read())
 
-            subprocess.run([
-                "libreoffice",
-                "--headless",
-                "--convert-to", "pdf",
-                "--outdir", tmpdir,
-                ppt_path
-            ], check=True)
+                    conversion_cmd = [
+                        "libreoffice",
+                        "--headless",
+                        "--convert-to", "pdf",
+                        "--outdir", tmpdir,
+                        ppt_path
+                    ]
+                    process = await asyncio.create_subprocess_exec(
+                        *conversion_cmd,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
 
-            pdf_filename = file.filename.rsplit(".", 1)[0] + ".pdf"
-            pdf_path = os.path.join(tmpdir, pdf_filename)
+                    try:
+                        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30.0)
+                    except asyncio.TimeoutError:
+                        process.terminate()
+                        try:
+                            await asyncio.wait_for(process.wait(), timeout=5.0)
+                        except asyncio.TimeoutError:
+                            process.kill()
+                        logger.error("LibreOffice conversion timed out after 30 seconds")
+                        raise HTTPException(
+                            status_code=500,
+                            detail="PDF conversion timed out"
+                        )
 
-            return StreamingResponse(
-                open(pdf_path, "rb"),
-                media_type="application/pdf",
-                headers={"Content-Disposition": f"attachment; filename={pdf_filename}"}
-            )
+                    pdf_filename = file.filename.rsplit(".", 1)[0] + ".pdf"
+                    pdf_path = os.path.join(tmpdir, pdf_filename)
+
+                    if process.returncode != 0:
+                        error_msg = f"LibreOffice conversion failed: {stderr.decode('utf-8', errors='replace')}"
+                        logger.error(error_msg)
+                        raise HTTPException(
+                            status_code=500,
+                            detail="Failed to convert file to PDF"
+                        )
+
+                    if not os.path.exists(pdf_path):
+                        raise FileNotFoundError("PDF conversion failed - output file not found")
+
+                    async def file_iterator():
+                        try:
+                            with open(pdf_path, "rb") as pdf_file:
+                                yield await asyncio.to_thread(pdf_file.read)
+                        except Exception as e:
+                            logger.error(f"Error reading PDF file: {str(e)}")
+                            raise HTTPException(
+                                status_code=500,
+                                detail="Error reading converted PDF file"
+                            )
+
+                    return StreamingResponse(
+                        file_iterator(),
+                        media_type="application/pdf",
+                        headers={"Content-Disposition": f"attachment; filename={pdf_filename}"}
+                    )
+
+                except FileNotFoundError as e:
+                    logger.error(str(e))
+                    raise HTTPException(
+                        status_code=500,
+                        detail=str(e)
+                    )
+                except Exception as e:
+                    logger.error(f"Conversion error: {str(e)}")
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Conversion error: {str(e)}"
+                    )
+        finally:
+            await file.close() 
 
     raise HTTPException(
         status_code=400,
@@ -1358,10 +1445,26 @@ async def convert_to_pdf(file_path: str, temp_dir: str) -> str:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        stdout, stderr = await process.communicate()
+        
+        # Add timeout to communicate
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30.0)
+        except asyncio.TimeoutError:
+            # Make sure to terminate the process if it times out
+            process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                process.kill()  # Force kill if termination takes too long
+            logger.error("LibreOffice conversion timed out after 30 seconds")
+            raise HTTPException(
+                status_code=500,
+                detail="PDF conversion timed out"
+            )
         
         if process.returncode != 0:
-            logger.error(f"LibreOffice conversion failed: {stderr.decode()}")
+            error_msg = f"LibreOffice conversion failed: {stderr.decode('utf-8', errors='replace')}"
+            logger.error(error_msg)
             raise HTTPException(
                 status_code=500,
                 detail="Failed to convert file to PDF"
@@ -1372,8 +1475,15 @@ async def convert_to_pdf(file_path: str, temp_dir: str) -> str:
         else:
             raise HTTPException(
                 status_code=500,
-                detail="PDF conversion failed"
+                detail="PDF conversion failed - output file not found"
             )
+    except asyncio.TimeoutError:
+        # This catch is for any other timeout that might occur
+        logger.error("Timeout during PDF conversion")
+        raise HTTPException(
+            status_code=500,
+            detail="PDF conversion timed out"
+        )
     except Exception as conv_error:
         logger.error(f"Error during conversion: {str(conv_error)}")
         raise HTTPException(

@@ -510,6 +510,9 @@ class Processor:
                         "current": item['text'].strip()
                     }
 
+                    # Handle potentially None page numbers
+                    page_num = context.get('pageNum')
+
                     sentence_data.append({
                         'text': item['text'].strip(),
                         'bounding_box': None,
@@ -518,9 +521,7 @@ class Processor:
                             "recordId": recordId,
                             "blockType": context.get('label', 'text'),
                             "blockNum": [idx],
-                            "blockText": json.dumps(full_context),  # Include full context
-                            # "slideNumber": context.get('slide_number'),
-                            "level": context.get('level')
+                            "blockText": json.dumps(full_context),
                         }
                     })
 
@@ -1302,7 +1303,6 @@ class Processor:
                             "blockType": context.get('label', 'text'),
                             "blockNum": [idx],
                             "blockText": json.dumps(full_context),
-                            "pageNum": [int(context.get('pageNum', 0))],
                         }
                     })
 

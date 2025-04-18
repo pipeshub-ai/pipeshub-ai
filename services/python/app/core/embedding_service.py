@@ -9,7 +9,6 @@ class BaseEmbeddingConfig(BaseModel):
 
 class AzureEmbeddingConfig(BaseEmbeddingConfig):
     azure_endpoint: str
-    azure_deployment: str
     azure_api_version: str
 
 class OpenAIEmbeddingConfig(BaseEmbeddingConfig):
@@ -19,11 +18,10 @@ class EmbeddingFactory:
     """Factory for creating LangChain-compatible embedding models"""
 
     @staticmethod
-    def create_embeddings(config: BaseEmbeddingConfig):
+    def create_embedding_model(config: BaseEmbeddingConfig):
         if isinstance(config, AzureEmbeddingConfig):
             return AzureOpenAIEmbeddings(
                 model=config.model,
-                deployment=config.azure_deployment,
                 api_key=config.api_key,
                 api_version=config.azure_api_version,
                 azure_endpoint=config.azure_endpoint

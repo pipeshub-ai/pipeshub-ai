@@ -687,18 +687,12 @@ class GoogleAdminService:
                 )
 
             webhook_url = f"{webhook_endpoint.rstrip('/')}/admin/webhook"
-            expiration_time = int((datetime.now(timezone.utc) + timedelta(
-                days=WebhookConfig.EXPIRATION_DAYS.value,
-                hours=WebhookConfig.EXPIRATION_HOURS.value,
-                minutes=WebhookConfig.EXPIRATION_MINUTES.value
-            )).timestamp() * 1000)  # Convert to milliseconds timestamp
 
             channel_body = {
                 "id": channel_id,
                 "type": "web_hook",
                 "address": webhook_url,
                 "token": channel_token,
-                "expiration": str(expiration_time),  # Must be string of milliseconds timestamp
                 "payload": True
             }
             
@@ -711,6 +705,8 @@ class GoogleAdminService:
                         applicationName="admin",
                         body=channel_body
                     ).execute()
+                    self.logger.info(f"🔍 Admin watch created successfully for {org_id}")
+                    self.logger.info(f"🔍 Admin watch response: {response}")
             except HttpError as http_err:
                 # Decode the error content if needed
                 error_details = http_err.content.decode('utf-8')
@@ -739,7 +735,7 @@ class GoogleAdminService:
             if not enable_real_time_updates:
                 return {}
             
-            topic = creds_data.get('topic', '')
+            topic = creds_data.get('topicName', '')
             self.logger.info(f"🚀 Topic: {topic}")
 
             try:

@@ -7,7 +7,7 @@ from app.config.configuration_service import config_node_constants, KafkaConfig
 from datetime import datetime, timezone
 from app.modules.retrieval.retrieval_service import RetrievalService
 
-class LLMConfigHandler:
+class RetrievalAiConfigHandler:
     def __init__(self, logger, config_service, retrieval_service: RetrievalService):
         """Initialize the LLM config handler with required services
         
@@ -19,6 +19,7 @@ class LLMConfigHandler:
         self.running = False
         self.logger = logger
         self.config_service = config_service
+        
         self.retrieval_service = retrieval_service
         self.processed_messages: Dict[str, List[int]] = {}
 
@@ -64,7 +65,7 @@ class LLMConfigHandler:
             self.processed_messages[topic_partition] = []
         self.processed_messages[topic_partition].append(offset)
 
-    async def handle_llm_configured(self, payload: dict) -> bool:
+    async def handle_llm_configured(self) -> bool:
         """Handle LLM configuration update
         
         Args:
@@ -75,7 +76,6 @@ class LLMConfigHandler:
         """
         try:
             self.logger.info("📥 Processing LLM configured event")
-            credentials_route = payload.get('credentialsRoute')
             
             await self.retrieval_service.get_llm_instance()
                     
@@ -85,7 +85,18 @@ class LLMConfigHandler:
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch AI configuration: {str(e)}")
             return False
-                    
+        
+    async def handle_embedding_model_configured(self) -> bool:
+        try:
+            self.logger.info("📥 Processing embedding model configured event")
+            
+            await self.retrieval_service.get_embedding_model_instance()
+            self.logger.info("✅ Successfully updated embedding model in all services")
+            return True
+        except Exception as e:
+            self.logger.error(f"❌ Failed to fetch embedding model: {str(e)}")
+            return False
+
     async def process_message(self, message):
         """Process incoming Kafka messages"""
         try:
@@ -108,7 +119,9 @@ class LLMConfigHandler:
                     event_type = value.get('eventType')
                     
                     if event_type == 'llmConfigured':
-                        return await self.handle_llm_configured(value['payload'])
+                        return await self.handle_llm_configured()
+                    elif event_type == 'embeddingModelConfigured':
+                        return await self.handle_embedding_model_configured()
                     
                 except json.JSONDecodeError as e:
                     self.logger.error(f"Failed to parse JSON: {e}")

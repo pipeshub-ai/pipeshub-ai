@@ -92,10 +92,11 @@ class AppContainer(containers.DeclarativeContainer):
     )
 
     # Indexing pipeline
-    async def _create_indexing_pipeline(logger, arango_service, config):
+    async def _create_indexing_pipeline(logger, config_service, arango_service, config):
         """Async factory for IndexingPipeline"""
         pipeline = IndexingPipeline(
             logger=logger,
+            config_service=config_service,
             arango_service=arango_service,
             collection_name=config['collectionName'],
             qdrant_api_key=config['apiKey'],
@@ -107,6 +108,7 @@ class AppContainer(containers.DeclarativeContainer):
     indexing_pipeline = providers.Resource(
         _create_indexing_pipeline,
         logger=logger,
+        config_service=config_service,
         arango_service=arango_service,
         config=qdrant_config
     )

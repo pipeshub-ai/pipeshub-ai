@@ -24,6 +24,7 @@ Instructions must be strictly followed, failure to do so will result in terminat
       Category: "Legal"
       Sub-category Level 1: "Contract"
       Sub-category Level 2: "Non Disclosure Agreement"
+      Sub-category Level 3: "Confidentiality Agreement"
 
 3. Languages:
    - List all languages found in the content

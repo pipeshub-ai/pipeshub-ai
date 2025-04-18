@@ -66,7 +66,7 @@ qna_prompt = """
             "reason": "<Explain how the answer was derived using the chunks/user information and reasoning>",
             "confidence": "<Choose one: Very High, High, Medium, Low>",
             "answerMatchType": "<Choose one: Exact Match, Derived From Chunks, Derived from User Info>",
-            "chunkIndexes": ["<List chunk verbatim indexes referred as "Chunk Index: <Index>" highly relevant to the answer. Keep empty for user-info only answers>"]
+            "chunkIndexes": ["<List chunk verbatim indexes referred as "Chunk Index: <Index>" highly relevant to the answer. Keep count to atmost 4-5 highly relevant citations>"], e.g. ["2", "5"]. Keep empty for user-info only answers>"]
         }
         
         "Your entire response/output is going to consist of a single JSON, and you will NOT wrap it within JSON md markers"

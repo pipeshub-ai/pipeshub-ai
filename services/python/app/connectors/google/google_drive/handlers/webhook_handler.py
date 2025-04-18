@@ -250,8 +250,6 @@ class EnterpriseDriveWebhookHandler(AbstractDriveWebhookHandler):
                 )
 
                 if not page_token:
-                    self.logger.error(
-                        "No page token found for channel %s", channel_id)
                     continue
                 user_service = await self.drive_admin_service.create_drive_user_service(page_token['userEmail'])
 
