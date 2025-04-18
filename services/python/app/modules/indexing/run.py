@@ -9,9 +9,11 @@ from dataclasses import dataclass
 from app.config.arangodb_constants import CollectionNames
 from qdrant_client.http.models import Filter, FieldCondition, MatchValue
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.core.embedding_service import AzureEmbeddingConfig, OpenAIEmbeddingConfig, EmbeddingFactory
+from app.config.ai_models_named_constants import AzureOpenAILLM, EmbeddingProvider, EmbeddingModel
+from app.config.configuration_service import config_node_constants
 
 from typing import List, Optional
-from dotenv import load_dotenv
 from app.exceptions.indexing_exceptions import *
 from datetime import datetime, timezone
 
@@ -290,6 +292,7 @@ class IndexingPipeline:
     def __init__(
         self,
         logger,
+        config_service,
         arango_service,
         collection_name: str,
         qdrant_api_key: str,
@@ -297,6 +300,8 @@ class IndexingPipeline:
         grpc_port,
     ):
         self.logger = logger
+        self.config_service = config_service
+        self.arango_service = arango_service
         """
         Initialize the indexing pipeline with necessary configurations.
 
@@ -306,40 +311,6 @@ class IndexingPipeline:
             qdrant_api_key: Optional API key for Qdrant
         """
         try:
-            load_dotenv()  # Load environment variables
-
-            # Initialize dense embeddings with BGE
-            try:
-                model_name = "BAAI/bge-large-en-v1.5"
-                # Recommended by model authors
-                encode_kwargs = {'normalize_embeddings': True}
-
-                self.dense_embeddings = HuggingFaceEmbeddings(
-                    model_name=model_name,
-                    model_kwargs={'device': 'cpu'},
-                    encode_kwargs=encode_kwargs
-                )
-            except Exception as e:
-                raise IndexingError(
-                    "Failed to initialize dense embeddings: " + str(e),
-                    details={"error": str(e)}
-                )
-            
-            self.arango_service = arango_service
-
-            # Initialize custom semantic chunker with BGE embeddings
-            try:
-                self.text_splitter = CustomChunker(
-                    logger=self.logger,
-                    embeddings=self.dense_embeddings,
-                    breakpoint_threshold_type="percentile",
-                    breakpoint_threshold_amount=95,
-                )
-            except Exception as e:
-                raise IndexingError(
-                    "Failed to initialize text splitter: " + str(e),
-                    details={"error": str(e)}
-                )
 
             # Initialize sparse embeddings
             try:
@@ -367,24 +338,6 @@ class IndexingPipeline:
                 )
 
             self.collection_name = collection_name
-            self._initialize_collection()
-
-            # Initialize vector store
-            try:
-                self.vector_store = QdrantVectorStore(
-                    client=self.qdrant_client,
-                    collection_name=collection_name,
-                    vector_name="dense",
-                    sparse_vector_name="sparse",
-                    embedding=self.dense_embeddings,
-                    sparse_embedding=self.sparse_embeddings,
-                    retrieval_mode=RetrievalMode.HYBRID,
-                )
-            except Exception as e:
-                raise VectorStoreError(
-                    "Failed to initialize vector store: " + str(e),
-                    details={"error": str(e)}
-                )
 
         except (IndexingError, VectorStoreError):
             raise
@@ -394,17 +347,27 @@ class IndexingPipeline:
                 details={"error": str(e)}
             )
 
-    def _initialize_collection(self, sparse_idf: bool = False):
+    def _initialize_collection(self, embedding_size: int = 1024, sparse_idf: bool = False):
         """Initialize Qdrant collection with proper configuration."""
         try:
-            self.qdrant_client.get_collection(self.collection_name)
+            collection_info = self.qdrant_client.get_collection(self.collection_name)
+            current_vector_size = collection_info.config.params.vectors["dense"].size
+
+            if current_vector_size != embedding_size:
+                self.logger.warning(
+                    f"Collection {self.collection_name} has size {current_vector_size}, but {embedding_size} is required."
+                    " Recreating collection."
+                )
+                self.qdrant_client.delete_collection(self.collection_name)
+                raise Exception("Recreating collection due to vector dimension mismatch.")
+
         except Exception as e:
             self.logger.info(f"Collection {self.collection_name} not found, creating new collection")
             try:
                 self.qdrant_client.create_collection(
                     collection_name=self.collection_name,
                     vectors_config={'dense': models.VectorParams(
-                        size=1024, on_disk=False, distance=models.Distance.COSINE)},
+                        size=embedding_size, on_disk=False, distance=models.Distance.COSINE)},
                     sparse_vectors_config={
                         "sparse": models.SparseVectorParams(
                             index=models.SparseIndexParams(
@@ -424,6 +387,84 @@ class IndexingPipeline:
                         "error": str(e)
                     }
                 )
+                
+    async def get_embedding_model_instance(self):
+        try:
+            self.logger.info("Getting embedding model")
+            ai_models = await self.config_service.get_config(config_node_constants.AI_MODELS.value)
+            embedding_configs = ai_models['embedding']
+            embedding_model = None
+            
+            for config in embedding_configs:
+                provider = config['provider']
+                if provider == EmbeddingProvider.AZURE_OPENAI_PROVIDER.value:
+                    embedding_model = AzureEmbeddingConfig(
+                        model=config['configuration']['model'],
+                        api_key=config['configuration']['apiKey'],
+                        azure_endpoint=config['configuration']['endpoint'],
+                        azure_api_version=EmbeddingModel.AZURE_EMBEDDING_VERSION.value,
+                    )
+
+                elif provider == EmbeddingProvider.OPENAI_PROVIDER.value:
+                    embedding_model = OpenAIEmbeddingConfig(
+                        model=config['configuration']['model'],
+                        api_key=config['configuration']['apiKey'],
+                    )
+                        
+            if not embedding_model:
+                self.logger.info("No embedding model found, using default embedding model")
+                model_name = EmbeddingModel.DEFAULT_EMBEDDING_MODEL.value
+                encode_kwargs = {'normalize_embeddings': True}
+                self.dense_embeddings = HuggingFaceEmbeddings(
+                    model_name=model_name,
+                    model_kwargs={'device': 'cpu'},
+                    encode_kwargs=encode_kwargs
+                )
+            else:
+                self.logger.info(f"Using embedding model: {embedding_model}")
+                self.dense_embeddings = EmbeddingFactory.create_embedding_model(embedding_model)
+
+            # Get the embedding dimensions from the model
+            sample_embedding = self.dense_embeddings.embed_query("test")
+            embedding_size = len(sample_embedding)
+
+            self.logger.info(f"Using embedding size: {embedding_size}")
+                
+            # Initialize collection with correct embedding size
+            self._initialize_collection(embedding_size=embedding_size)
+            
+            # Initialize vector store with same configuration
+            self.vector_store: QdrantVectorStore = QdrantVectorStore(
+                client=self.qdrant_client,
+                collection_name=self.collection_name,
+                vector_name="dense",
+                sparse_vector_name="sparse",
+                embedding=self.dense_embeddings,
+                sparse_embedding=self.sparse_embeddings,
+                retrieval_mode=RetrievalMode.HYBRID,
+            )
+            
+            # Initialize custom semantic chunker with BGE embeddings
+            try:
+                self.text_splitter = CustomChunker(
+                    logger=self.logger,
+                    embeddings=self.dense_embeddings,
+                    breakpoint_threshold_type="percentile",
+                    breakpoint_threshold_amount=95,
+                )
+            except Exception as e:
+                raise IndexingError(
+                    "Failed to initialize text splitter: " + str(e),
+                    details={"error": str(e)}
+                )
+                
+            return True
+        except Exception as e:
+            self.logger.error(f"Error getting embedding model: {str(e)}")
+            raise IndexingError(
+                "Failed to get embedding model: " + str(e),
+                details={"error": str(e)}
+            )
 
     async def _create_embeddings(self, chunks: List[Document]):
         """
@@ -600,6 +641,8 @@ class IndexingPipeline:
                     "Failed to create document objects: " + str(e),
                     details={"error": str(e)}
                 )
+                
+            await self.get_embedding_model_instance()
 
             # Process documents into chunks
             if merge_documents:

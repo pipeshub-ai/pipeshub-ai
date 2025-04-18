@@ -1160,11 +1160,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
             if not channel_data:
                 self.logger.info("🚀 Creating new changes watch for user %s", user_email)
                 channel_data = await self.gmail_admin_service.create_gmail_user_watch(org_id, user_email)
-                
-                if not channel_data:
-                    self.logger.warning("Changes watch not created for user: %s", user_email)
-                    return False
-                
+
             current_timestamp = get_epoch_timestamp_in_ms()
             expiration_timestamp = channel_data.get('expiration', 0)
             if not channel_data or current_timestamp > expiration_timestamp:

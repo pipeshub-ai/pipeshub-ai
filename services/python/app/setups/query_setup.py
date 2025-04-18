@@ -6,7 +6,7 @@ from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.retrieval.retrieval_arango import ArangoService
 from app.utils.logger import create_logger
 from app.modules.reranker.reranker import RerankerService
-from app.services.llm_config_handler import LLMConfigHandler
+from app.services.llm_config_handler import RetrievalAiConfigHandler
 
 
 class AppContainer(containers.DeclarativeContainer):
@@ -86,7 +86,7 @@ class AppContainer(containers.DeclarativeContainer):
     )
     
     llm_config_handler = providers.Singleton(
-        LLMConfigHandler,
+        RetrievalAiConfigHandler,
         logger=logger,
         config_service=config_service,
         retrieval_service=retrieval_service

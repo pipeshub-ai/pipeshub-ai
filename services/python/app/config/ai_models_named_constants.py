@@ -16,6 +16,13 @@ class EmbeddingProvider(Enum):
     AZURE_OPENAI_PROVIDER = "azureOpenAI"
     OPENAI_PROVIDER = "openAI"
 
+class EmbeddingModel(Enum):
+    DEFAULT_EMBEDDING_MODEL = "BAAI/bge-large-en-v1.5"
+    DEFAULT_EMBEDDING_SIZE = 1024
+    TE3_SMALL = "text-embedding-3-small"
+    TE3_LARGE = "text-embedding-3-large"
+    AZURE_EMBEDDING_VERSION = "2024-02-01"
+
 class AzureOpenAILLM(Enum):
     AZURE_OPENAI_VERSION = "2023-07-01-preview"
     

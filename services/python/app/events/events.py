@@ -6,7 +6,6 @@ import json
 import asyncio
 import io
 
-
 class EventProcessor:
     def __init__(self, logger, processor, arango_service):
         self.logger = logger
@@ -123,49 +122,62 @@ class EventProcessor:
                 log_interval = chunk_size  # Log at same interval as chunk size
                 # Increase timeouts significantly
                 timeout = aiohttp.ClientTimeout(
-                    total=1800,      # 30 minutes total
-                    connect=60,      # 1 minute for initial connection
-                    sock_read=300    # 5 minutes per chunk read
+                    total=600,      # 10 minutes total
+                    connect=30,      # 1/2 minute for initial connection
+                    sock_read=60    # 1 minute per chunk read
                 )
-                # Pre-allocate a BytesIO buffer for better memory efficiency
                 file_buffer = io.BytesIO()
-                async with aiohttp.ClientSession(timeout=timeout) as session:
-                    try:
-                        async with session.get(signed_url) as response:
-                            if response.status != 200:
-                                self.logger.error(f"❌ Failed to download file: {response.status}")
-                                self.logger.error(f"Response headers: {response.headers}")
-                                return
-                            
-                            # Get content length if available
-                            content_length = response.headers.get('Content-Length')
-                            if content_length:
-                                self.logger.info(f"Expected file size: {int(content_length) / (1024*1024):.2f} MB")
-                            
-                            self.logger.info("Starting chunked download...")
-                            try:
-                                async for chunk in response.content.iter_chunked(chunk_size):
-                                    file_buffer.write(chunk)
-                                    total_size += len(chunk)
-                                    if total_size - last_logged_size >= log_interval:
-                                        self.logger.debug(f"Total size so far: {total_size / (1024*1024):.2f} MB")
-                                        last_logged_size = total_size
+                try:
+                    async with aiohttp.ClientSession(timeout=timeout) as session:
+                        try:
+                            async with session.get(signed_url) as response:
+                                if response.status != 200:
+                                    self.logger.error(f"❌ Failed to download file: {response.status}")
+                                    self.logger.error(f"Response headers: {response.headers}")
+                                    return
                                 
-                                # Get the final content and clear the buffer
-                                file_content = file_buffer.getvalue()
-                                file_buffer.close()
-                            except asyncio.TimeoutError as e:
-                                self.logger.error(f"❌ Timeout during file download at {total_size / (1024*1024):.2f} MB: {repr(e)}")
-                                raise
-                            
-                            self.logger.info(f"✅ Download complete. Total size: {total_size / (1024*1024):.2f} MB")
-                            
-                    except aiohttp.ClientError as e:
-                        self.logger.error(f"❌ Network error during download: {repr(e)}")
-                        raise
-                    except Exception as e:
-                        self.logger.error(f"❌ Unexpected error during download: {repr(e)}")
-                        raise
+                                # Get content length if available
+                                content_length = response.headers.get('Content-Length')
+                                if content_length:
+                                    self.logger.info(f"Expected file size: {int(content_length) / (1024*1024):.2f} MB")
+                                
+                                self.logger.info("Starting chunked download...")
+                                try:
+                                    async for chunk in response.content.iter_chunked(chunk_size):
+                                        file_buffer.write(chunk)
+                                        total_size += len(chunk)
+                                        if total_size - last_logged_size >= log_interval:
+                                            self.logger.debug(f"Total size so far: {total_size / (1024*1024):.2f} MB")
+                                            last_logged_size = total_size
+                                    
+                                    file_content = file_buffer.getvalue()
+                                except asyncio.TimeoutError as e:
+                                    self.logger.error(f"❌ Timeout during file download at {total_size / (1024*1024):.2f} MB: {repr(e)}")
+                                    doc.update({
+                                        "indexingStatus": "FAILED",
+                                        "extractionStatus": "FAILED",
+                                        "errorMessage": f"Timeout during file download: {str(e)}"
+                                    })
+                                    await self.arango_service.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
+                                    raise
+                                finally:
+                                    file_buffer.close()
+                                
+                                self.logger.info(f"✅ Download complete. Total size: {total_size / (1024*1024):.2f} MB")
+
+                        except aiohttp.ClientError as e:
+                            self.logger.error(f"❌ Network error during download: {repr(e)}")
+                            doc.update({
+                                "indexingStatus": "FAILED",
+                                "extractionStatus": "FAILED",
+                                "errorMessage": f"Network error during download: {str(e)}"
+                            })
+                            await self.arango_service.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
+                            raise
+                finally:
+                    # Ensure buffer is closed even if an error occurs outside the inner try blocks
+                    if not file_buffer.closed:
+                        file_buffer.close()
             else:
                 file_content = event_data.get('buffer')
             
