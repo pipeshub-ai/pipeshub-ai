@@ -122,9 +122,9 @@ class EventProcessor:
                 log_interval = chunk_size  # Log at same interval as chunk size
                 # Increase timeouts significantly
                 timeout = aiohttp.ClientTimeout(
-                    total=600,      # 10 minutes total
-                    connect=30,      # 1/2 minute for initial connection
-                    sock_read=60    # 1 minute per chunk read
+                    total=900,      # 15 minutes total
+                    connect=60,      # 1 minute for initial connection
+                    sock_read=300    # 5 minutes per chunk read
                 )
                 file_buffer = io.BytesIO()
                 try:
@@ -151,26 +151,25 @@ class EventProcessor:
                                             last_logged_size = total_size
                                     
                                     file_content = file_buffer.getvalue()
+                                    self.logger.info(f"✅ Download complete. Total size: {total_size / (1024*1024):.2f} MB")
                                 except asyncio.TimeoutError as e:
                                     self.logger.error(f"❌ Timeout during file download at {total_size / (1024*1024):.2f} MB: {repr(e)}")
                                     doc.update({
                                         "indexingStatus": "FAILED",
                                         "extractionStatus": "FAILED",
-                                        "errorMessage": f"Timeout during file download: {str(e)}"
+                                        "reason": f"Timeout during file download: {str(e)}"
                                     })
                                     await self.arango_service.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
-                                    raise
                                 finally:
                                     file_buffer.close()
-                                
-                                self.logger.info(f"✅ Download complete. Total size: {total_size / (1024*1024):.2f} MB")
+                            
 
                         except aiohttp.ClientError as e:
                             self.logger.error(f"❌ Network error during download: {repr(e)}")
                             doc.update({
                                 "indexingStatus": "FAILED",
                                 "extractionStatus": "FAILED",
-                                "errorMessage": f"Network error during download: {str(e)}"
+                                "reason": f"Network error during download: {str(e)}"
                             })
                             await self.arango_service.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
                             raise

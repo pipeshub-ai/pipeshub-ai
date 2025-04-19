@@ -950,7 +950,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                     attachment_ids = [attachment['attachment_id']
                                       for attachment in attachments_for_message]
                     headers = message.get("headers", {})
-                    permissions.append({
+                    permission = {
                         'messageId': message['id'],
                         'attachmentIds': attachment_ids,
                         'role': 'reader',
@@ -960,7 +960,8 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                             headers.get("Cc", []),
                             headers.get("Bcc", [])
                         ]
-                    })
+                    }
+                    permissions.append(permission)
 
                 if not threads:
                     self.logger.info(f"No threads found for user {user['email']}")
@@ -1073,7 +1074,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                             }
                             await self.kafka_service.send_event_to_kafka(message_event)
                             self.logger.info("📨 Sent Kafka Indexing event for message %s", message_key)
-                            
+
                     # Attachment events
                     for attachment in metadata['attachments']:
                         attachment_key = await self.arango_service.get_key_by_attachment_id(attachment['attachment_id'])

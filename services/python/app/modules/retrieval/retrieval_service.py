@@ -122,8 +122,7 @@ class RetrievalService:
                         model=config['configuration']['model'],
                         api_key=config['configuration']['apiKey'],
                         azure_endpoint=config['configuration']['endpoint'],
-                        azure_deployment=config['configuration']['deploymentName'],
-                        azure_api_version=AzureOpenAILLM.AZURE_OPENAI_VERSION.value,
+                        azure_api_version=EmbeddingModel.AZURE_EMBEDDING_VERSION.value,
                     )
                 elif provider == EmbeddingProvider.OPENAI_PROVIDER.value:
                     embedding_model = OpenAIEmbeddingConfig(
@@ -132,15 +131,18 @@ class RetrievalService:
                     )
                 
             if not embedding_model:
-                raise ValueError("No supported embedding provider found in configuration")
-            
-            self.dense_embeddings = EmbeddingFactory.create_embedding_model(embedding_model)
+                self.logger.info("No embedding model found in configuration, using default embedding model")
+                embedding_model = EmbeddingModel.DEFAULT_EMBEDDING_MODEL.value
+                self.dense_embeddings = await get_default_embedding_model()
+            else:
+                self.logger.info(f"Using embedding model: {embedding_model}")
+                self.dense_embeddings = EmbeddingFactory.create_embedding_model(embedding_model)
             
             self.logger.info(f"Embedding model: {embedding_model}")
-            return True
+            return self.dense_embeddings
         except Exception as e:
             self.logger.error(f"Error getting embedding model: {str(e)}")
-            return False
+            return None
         
     def _preprocess_query(self, query: str) -> str:
         """
@@ -248,7 +250,12 @@ class RetrievalService:
                     return {"searchResults": [], "records": []}
 
                 if not self.dense_embeddings:
-                    self.dense_embeddings = await get_default_embedding_model()
+                    self.logger.info("No dense embeddings found, using default embedding model")
+                    self.dense_embeddings = await self.get_embedding_model_instance()
+                if not self.dense_embeddings:
+                    raise ValueError("No dense embeddings found, indexing may not be complete")
+                
+                self.logger.info("Dense embeddings: %s", self.dense_embeddings)
                 self.vector_store = QdrantVectorStore(
                     client=self.qdrant_client,
                     collection_name=self.collection_name,

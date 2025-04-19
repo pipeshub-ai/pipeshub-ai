@@ -220,6 +220,14 @@ class KafkaConsumerManager:
                 
         except Exception as e:
             self.logger.error(f"Error processing message {message_id}: {e}")
+            record_id = payload_data.get('recordId')
+            if record_id:
+                await self._update_document_status(
+                    record_id=record_id,
+                    indexing_status="FAILED",
+                    extraction_status="FAILED",
+                    error_details=f"Unexpected error: {str(e)}"
+                )
             return False
 
     def is_message_processed(self, topic_partition: str, offset: int) -> bool:
