@@ -1,6 +1,6 @@
 from typing import List, Dict, Any, Optional, Set, Tuple
 from app.config.configuration_service import config_node_constants
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from app.utils.embeddings import get_default_embedding_model
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Filter, FieldCondition, MatchValue
 from langchain_qdrant import QdrantVectorStore, FastEmbedSparse, RetrievalMode
@@ -241,12 +241,14 @@ class RetrievalService:
             seen_chunks = set()
             
             if not self.vector_store:
+                # Check if collection exists in Qdrant
+                collections = self.qdrant_client.get_collections()
+                if not any(col.name == self.collection_name for col in collections.collections):
+                    self.logger.info(f"Collection {self.collection_name} not found in Qdrant. Indexing may not be complete.")
+                    return {"searchResults": [], "records": []}
+
                 if not self.dense_embeddings:
-                    self.dense_embeddings = HuggingFaceEmbeddings(
-                        model_name=EmbeddingModel.DEFAULT_EMBEDDING_MODEL.value,
-                        model_kwargs={'device': 'cpu'},
-                        encode_kwargs={'normalize_embeddings': True}
-                    )
+                    self.dense_embeddings = await get_default_embedding_model()
                 self.vector_store = QdrantVectorStore(
                     client=self.qdrant_client,
                     collection_name=self.collection_name,

@@ -67,7 +67,7 @@ class DocParser:
                     e.cmd, 
                     output=e.output, 
                     stderr=error_msg.encode()
-                ) from None
+                )
             except subprocess.TimeoutExpired as e:
                 raise Exception("LibreOffice conversion timed out after 30 seconds") from e
             except Exception as e:

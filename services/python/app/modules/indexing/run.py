@@ -1,5 +1,4 @@
 from langchain_experimental.text_splitter import SemanticChunker
-from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_qdrant import QdrantVectorStore, FastEmbedSparse, RetrievalMode
 from langchain.schema import Document as LangchainDocument
 from qdrant_client import QdrantClient
@@ -11,6 +10,7 @@ from qdrant_client.http.models import Filter, FieldCondition, MatchValue
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.core.embedding_service import AzureEmbeddingConfig, OpenAIEmbeddingConfig, EmbeddingFactory
 from app.config.ai_models_named_constants import AzureOpenAILLM, EmbeddingProvider, EmbeddingModel
+from app.utils.embeddings import get_default_embedding_model
 from app.config.configuration_service import config_node_constants
 
 from typing import List, Optional
@@ -412,14 +412,8 @@ class IndexingPipeline:
                     )
                         
             if not embedding_model:
-                self.logger.info("No embedding model found, using default embedding model")
-                model_name = EmbeddingModel.DEFAULT_EMBEDDING_MODEL.value
-                encode_kwargs = {'normalize_embeddings': True}
-                self.dense_embeddings = HuggingFaceEmbeddings(
-                    model_name=model_name,
-                    model_kwargs={'device': 'cpu'},
-                    encode_kwargs=encode_kwargs
-                )
+                self.logger.info("No embedding model found in configuration, using default embedding model")
+                self.dense_embeddings = await get_default_embedding_model()
             else:
                 self.logger.info(f"Using embedding model: {embedding_model}")
                 self.dense_embeddings = EmbeddingFactory.create_embedding_model(embedding_model)
@@ -452,14 +446,14 @@ class IndexingPipeline:
                     breakpoint_threshold_type="percentile",
                     breakpoint_threshold_amount=95,
                 )
-            except Exception as e:
+            except IndexingError as e:
                 raise IndexingError(
                     "Failed to initialize text splitter: " + str(e),
                     details={"error": str(e)}
                 )
                 
             return True
-        except Exception as e:
+        except IndexingError as e:
             self.logger.error(f"Error getting embedding model: {str(e)}")
             raise IndexingError(
                 "Failed to get embedding model: " + str(e),
@@ -625,6 +619,14 @@ class IndexingPipeline:
         try:
             if not sentences:
                 raise DocumentProcessingError("No sentences provided for indexing")
+            
+            try:
+                await self.get_embedding_model_instance()
+            except Exception as e:
+                raise IndexingError(
+                    "Failed to get embedding model instance: " + str(e),
+                    details={"error": str(e)}
+                )
 
             # Convert sentences to custom Document class
             try:
@@ -641,8 +643,6 @@ class IndexingPipeline:
                     "Failed to create document objects: " + str(e),
                     details={"error": str(e)}
                 )
-                
-            await self.get_embedding_model_instance()
 
             # Process documents into chunks
             if merge_documents:
