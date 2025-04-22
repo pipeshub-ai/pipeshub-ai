@@ -169,10 +169,7 @@ class Etcd3DistributedKeyValueStore(DistributedKeyValueStore[T], Generic[T]):
                 return None
 
             try:
-                logger.debug("🔄 Deserializing value: %s", value_bytes)
                 deserialized = self.deserializer(value_bytes)
-                logger.debug(
-                    "✅ Successfully deserialized value: %s", deserialized)
                 return deserialized
             except json.JSONDecodeError as e:
                 logger.error("❌ Failed to deserialize value: %s", str(e))

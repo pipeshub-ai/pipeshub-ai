@@ -6,7 +6,7 @@ from typing import Dict, List, Optional
 from arango import ArangoClient
 from arango.database import TransactionDatabase
 
-from app.config.arangodb_constants import CollectionNames
+from app.config.utils.named_constants.arangodb_constants import CollectionNames
 from app.config.configuration_service import ConfigurationService, config_node_constants
 
 

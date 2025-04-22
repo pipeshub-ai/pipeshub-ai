@@ -1,6 +1,6 @@
 from typing import Any, Dict
 
-from app.config.arangodb_constants import CollectionNames
+from app.config.utils.named_constants.arangodb_constants import CollectionNames
 
 
 class AdminWebhookHandler:

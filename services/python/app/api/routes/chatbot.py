@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from jinja2 import Template
 from pydantic import BaseModel
 
-from app.config.arangodb_constants import CollectionNames
+from app.config.utils.named_constants.arangodb_constants import CollectionNames
 from app.config.configuration_service import ConfigurationService
 from app.modules.qna.prompt_templates import qna_prompt
 from app.modules.reranker.reranker import RerankerService

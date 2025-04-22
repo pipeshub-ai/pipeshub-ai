@@ -8,11 +8,10 @@ from typing import Dict, List, Optional, Set, Tuple
 from arango import ArangoClient
 from arango.database import TransactionDatabase
 
-from app.config.arangodb_constants import CollectionNames, Connectors
+from app.config.utils.named_constants.arangodb_constants import CollectionNames, Connectors
 from app.config.configuration_service import ConfigurationService
 from app.connectors.core.base_arango_service import BaseArangoService
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-
 
 class ArangoService(BaseArangoService):
     """ArangoDB service class for interacting with the database"""
@@ -1398,7 +1397,7 @@ class ArangoService(BaseArangoService):
 
             result = next(cursor, None)
             if result:
-                self.logger.info("✅ Successfully updated sync state for drive %s", drive_id)
+                self.logger.info("✅ Successfully updated sync state for drive %s to %s", drive_id, state)
                 return result
 
             self.logger.warning("⚠️ No drive found with ID %s", drive_id)

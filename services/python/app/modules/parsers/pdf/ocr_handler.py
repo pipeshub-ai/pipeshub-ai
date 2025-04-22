@@ -3,7 +3,7 @@ from typing import Any, Dict
 
 import fitz
 
-from app.config.ai_models_named_constants import OCRProvider
+from app.config.utils.named_constants.ai_models_named_constants import OCRProvider
 
 
 class OCRStrategy(ABC):

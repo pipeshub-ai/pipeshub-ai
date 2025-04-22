@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import Dict
 
-from app.config.arangodb_constants import (
+from app.config.utils.named_constants.arangodb_constants import (
     CollectionNames,
     Connectors,
     EventTypes,

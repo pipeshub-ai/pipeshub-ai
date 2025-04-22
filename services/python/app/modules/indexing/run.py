@@ -7,11 +7,11 @@ from qdrant_client import QdrantClient
 from qdrant_client.http import models
 from qdrant_client.http.models import FieldCondition, Filter, MatchValue
 
-from app.config.ai_models_named_constants import (
-    AZURE_EMBEDDING_API_VERSION,
+from app.config.utils.named_constants.ai_models_named_constants import (
     EmbeddingProvider,
+    AZURE_EMBEDDING_API_VERSION
 )
-from app.config.arangodb_constants import CollectionNames
+from app.config.utils.named_constants.arangodb_constants import CollectionNames
 from app.config.configuration_service import config_node_constants
 from app.core.embedding_service import (
     AzureEmbeddingConfig,
