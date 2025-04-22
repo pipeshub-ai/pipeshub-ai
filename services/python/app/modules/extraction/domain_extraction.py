@@ -11,7 +11,7 @@ from sklearn.decomposition import LatentDirichletAllocation
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-from app.config.arangodb_constants import CollectionNames, DepartmentNames
+from app.config.utils.named_constants.arangodb_constants import CollectionNames, DepartmentNames
 from app.modules.extraction.prompt_template import prompt
 from app.utils.llm import get_llm
 

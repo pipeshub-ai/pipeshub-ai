@@ -134,7 +134,6 @@ class ConfigurationService():
             return serialized
 
         def deserialize(value: bytes) -> Any:
-            self.logger.debug("🔄 Deserializing bytes: %s", value)
             if not value:
                 self.logger.debug("⚠️ Empty bytes, returning None")
                 return None
@@ -146,8 +145,6 @@ class ConfigurationService():
                 try:
                     # Try parsing as JSON
                     result = json.loads(decoded)
-                    self.logger.debug(
-                        "✅ Deserialized JSON value: (type: %s)", type(result))
                     return result
                 except json.JSONDecodeError:
                     # If JSON parsing fails, return the string directly

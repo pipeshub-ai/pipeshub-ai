@@ -1,6 +1,6 @@
 from langchain_huggingface import HuggingFaceEmbeddings
 
-from app.config.ai_models_named_constants import EmbeddingModel
+from app.config.utils.named_constants.ai_models_named_constants import EmbeddingModel
 
 
 async def get_default_embedding_model():

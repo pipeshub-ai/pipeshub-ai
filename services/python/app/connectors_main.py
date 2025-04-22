@@ -1,23 +1,23 @@
 import asyncio
-from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from app.connectors.api.router import router
+from app.connectors.core.entity_kafka_consumer import EntityKafkaRouteConsumer
 from typing import AsyncGenerator
+from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api.middlewares.auth import authMiddleware
-from app.config.arangodb_constants import Connectors
-from app.connectors.api.router import router
-from app.connectors.core.kafka_consumer import KafkaRouteConsumer
 from app.setups.connector_setup import (
     AppContainer,
     initialize_container,
     initialize_enterprise_account_services_fn,
     initialize_individual_account_services_fn,
 )
+from app.config.utils.named_constants.arangodb_constants import Connectors
+from datetime import datetime, timezone, timedelta
+from app.api.middlewares.auth import authMiddleware
 
 container = AppContainer()
 
@@ -212,7 +212,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     ]
 
     # Kafka Consumer - pass the app_container
-    kafka_consumer = KafkaRouteConsumer(
+    kafka_consumer = EntityKafkaRouteConsumer(
         logger=logger,
         config_service= app.container.config_service(),
         arango_service=await app.container.arango_service(),
@@ -234,6 +234,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Shutdown
     logger.info("🔄 Shutting down application")
+    
+    # Stop main consumer
     consumer.stop()
     # Cancel the consume task
     consume_task.cancel()
@@ -242,6 +244,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except asyncio.CancelledError:
         logger.info("Kafka consumer task cancelled")
 
+    
+    # Stop sync kafka consumer if it exists
+    if hasattr(app.container, 'sync_kafka_consumer'):
+        sync_consumer = app.container.sync_kafka_consumer()
+        if sync_consumer:
+            sync_consumer.stop()
+            logger.info("Sync Kafka consumer stopped")
+    
     logger.debug("🔄 Shutting down application")
 
 

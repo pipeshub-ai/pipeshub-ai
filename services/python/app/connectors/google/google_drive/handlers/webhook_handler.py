@@ -3,7 +3,7 @@ import json
 from abc import ABC, abstractmethod
 from typing import Dict, Set
 
-from app.config.arangodb_constants import CollectionNames
+from app.config.utils.named_constants.arangodb_constants import CollectionNames
 from app.config.configuration_service import (
     ConfigurationService,
     WebhookConfig,

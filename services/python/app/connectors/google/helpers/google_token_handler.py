@@ -1,8 +1,8 @@
 import aiohttp
 import jwt
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
-from app.config.configuration_service import Routes, TokenScopes, config_node_constants
-
+from app.config.configuration_service import config_node_constants, Routes, TokenScopes
 
 class GoogleTokenHandler:
     def __init__(self, logger, config_service, arango_service):
@@ -11,7 +11,13 @@ class GoogleTokenHandler:
         self.service = None
         self.config_service = config_service
         self.arango_service = arango_service
-
+        
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        retry=retry_if_exception_type((aiohttp.ClientError, Exception)),
+        reraise=True
+    )
     async def get_individual_token(self, org_id, user_id):
         # Prepare payload for credentials API
         payload = {
@@ -50,6 +56,12 @@ class GoogleTokenHandler:
 
         return creds_data
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        retry=retry_if_exception_type((aiohttp.ClientError, Exception)),
+        reraise=True
+    )
     async def refresh_token(self, org_id, user_id):
         """Refresh the access token"""
         try:
@@ -93,6 +105,12 @@ class GoogleTokenHandler:
             self.logger.error(f"❌ Failed to refresh token: {str(e)}")
             raise
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        retry=retry_if_exception_type((aiohttp.ClientError, Exception)),
+        reraise=True
+    )
     async def get_enterprise_token(self, org_id):
         # Prepare payload for credentials API
         payload = {

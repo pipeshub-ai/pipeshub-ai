@@ -12,7 +12,7 @@ from qdrant_client import QdrantClient
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
-from app.config.arangodb_constants import QdrantCollectionNames
+from app.config.utils.named_constants.arangodb_constants import QdrantCollectionNames
 from app.config.configuration_service import (
     ConfigurationService,
     RedisConfig,
