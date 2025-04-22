@@ -9,7 +9,7 @@ from langchain_community.chat_models import AzureChatOpenAI, ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
 from pydantic import BaseModel, Field
 
-from app.config.ai_models_named_constants import AzureOpenAILLM
+from app.config.utils.named_constants.ai_models_named_constants import AzureOpenAILLM
 
 
 class BaseLLMConfig(BaseModel):

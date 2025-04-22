@@ -10,7 +10,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import BatchHttpRequest
 
-from app.config.arangodb_constants import Connectors, OriginTypes, RecordTypes
+from app.config.utils.named_constants.arangodb_constants import Connectors, OriginTypes, RecordTypes, MimeTypes
 from app.config.configuration_service import (
     ConfigurationService,
     WebhookConfig,
@@ -291,7 +291,7 @@ class DriveUserService:
                     files = response.get('files', [])
                     for file in files:
                         file_path = f"{current_path}{file['name']}"
-                        if file['mimeType'] == 'application/vnd.google-apps.folder':
+                        if file['mimeType'] == MimeTypes.GOOGLE_DRIVE_FOLDER.value:
                             folder_path = f"{file_path}/"
                             folder_paths[file['id']] = folder_path
                             if include_subfolders:
@@ -686,7 +686,7 @@ class DriveUserService:
             final_results = []
             for file_id in file_ids:
                 result = metadata_results.get(file_id)
-                if result and result.get('mimeType') and result.get('mimeType').startswith('application/vnd.google-apps') and result.get('mimeType') != 'application/vnd.google-apps.folder':
+                if result and result.get('mimeType') and result.get('mimeType').startswith('application/vnd.google-apps') and result.get('mimeType') != MimeTypes.GOOGLE_DRIVE_FOLDER.value:
                     try:
                         revisions = self.service.revisions().list(
                             fileId=file_id,

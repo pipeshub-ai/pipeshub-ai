@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import Dict, Optional
 
-from app.config.arangodb_constants import (
+from app.config.utils.named_constants.arangodb_constants import (
     CollectionNames,
     Connectors,
     EventTypes,
@@ -417,7 +417,7 @@ class BaseDriveSyncService(ABC):
                             '_key': str(uuid.uuid4()),
                             'orgId': org_id,
                             'name': str(metadata.get('name')),
-                            'isFile': metadata.get('mimeType', '') != 'application/vnd.google-apps.folder',
+                            'isFile': metadata.get('mimeType', '') != MimeTypes.GOOGLE_DRIVE_FOLDER.value,
                             'extension': metadata.get('fileExtension', None),
                             'mimeType': metadata.get('mimeType', None),
                             'sizeInBytes': int(metadata.get('size', 0)),

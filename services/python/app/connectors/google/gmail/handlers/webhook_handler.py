@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import Dict, Optional
 
-from app.config.arangodb_constants import CollectionNames
+from app.config.utils.named_constants.arangodb_constants import CollectionNames
 from app.config.configuration_service import ConfigurationService
 
 

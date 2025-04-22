@@ -3,7 +3,7 @@ import json
 
 from confluent_kafka import Producer
 
-from app.config.arangodb_constants import EventTypes
+from app.config.utils.named_constants.arangodb_constants import EventTypes
 from app.config.configuration_service import ConfigurationService, config_node_constants
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 

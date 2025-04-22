@@ -2,13 +2,14 @@ import traceback
 import uuid
 from typing import Dict
 
-from app.config.arangodb_constants import (
+from app.config.utils.named_constants.arangodb_constants import (
     CollectionNames,
     Connectors,
     EventTypes,
     OriginTypes,
     RecordRelations,
     RecordTypes,
+    MimeTypes,
 )
 from app.config.configuration_service import config_node_constants
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
@@ -402,7 +403,7 @@ class DriveChangeHandler:
                     'extension': file_metadata.get('fileExtension', None),
                     'mimeType': file_metadata.get('mimeType', None),
                     'sizeInBytes': int(file_metadata.get('size', 0)),
-                    'isFile': file_metadata.get('mimeType', '') != 'application/vnd.google-apps.folder',
+                    'isFile': file_metadata.get('mimeType', '') != MimeTypes.GOOGLE_DRIVE_FOLDER.value,
                     'webUrl': file_metadata.get('webViewLink', None),
                     'etag': file_metadata.get('etag', None),
                     'ctag': file_metadata.get('ctag', None),

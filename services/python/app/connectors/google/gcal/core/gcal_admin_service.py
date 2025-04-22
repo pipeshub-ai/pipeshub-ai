@@ -7,7 +7,7 @@ from uuid import uuid4
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
-from app.config.arangodb_constants import CollectionNames
+from app.config.utils.named_constants.arangodb_constants import CollectionNames
 from app.config.configuration_service import ConfigurationService
 from app.connectors.google.scopes import GOOGLE_CONNECTOR_ENTERPRISE_SCOPES
 from app.connectors.utils.decorators import exponential_backoff
