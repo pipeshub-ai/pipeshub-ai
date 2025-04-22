@@ -27,11 +27,12 @@ from googleapiclient.http import MediaIoBaseDownload
 from jose import JWTError
 from pydantic import ValidationError
 
-from app.config.arangodb_constants import (
+from app.config.utils.named_constants.arangodb_constants import (
     CollectionNames,
     Connectors,
     RecordRelations,
     RecordTypes,
+    MimeTypes
 )
 from app.config.configuration_service import config_node_constants
 from app.connectors.api.middleware import WebhookAuthVerifier
@@ -173,234 +174,6 @@ async def handle_gmail_webhook(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)
         )
-
-@router.get("/drive/{org_id}")
-@router.post("/drive/{org_id}")
-@inject
-async def root(
-    background_tasks: BackgroundTasks,
-    org_id,
-    sync_tasks=Depends(Provide[AppContainer.sync_tasks])
-):
-    """Initialize sync service and wait for schedule"""
-    try:
-        # Add initialization to background tasks
-        background_tasks.add_task(sync_tasks.drive_sync_service.initialize, org_id)
-        return {
-            "status": "accepted",
-            "message": "Sync service initialization queued",
-            "service": "Google Drive Sync"
-        }
-    except Exception as e:
-        logger.error(
-            "Failed to queue sync service initialization: %s", {str(e)})
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
-        ) from e
-
-@router.get("/drive/{org_id}/sync/start")
-@router.post("/drive/{org_id}/sync/start")
-@inject
-async def start_sync(
-    org_id: str,
-    background_tasks: BackgroundTasks,
-    sync_tasks=Depends(Provide[AppContainer.sync_tasks])
-):
-    """Queue immediate start of the sync service"""
-    try:
-        logger.info(f"Sync tasks: {sync_tasks}, {type(sync_tasks)}")
-        background_tasks.add_task(
-            sync_tasks.drive_manual_sync_control, 'start', org_id)
-        return {
-            "status": "accepted",
-            "message": "Sync service start request queued"
-        }
-    except Exception as e:
-        logger.error("Failed to queue sync service start: %s", {str(e)})
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
-        ) from e
-
-
-@router.get("/drive/{org_id}/sync/pause")
-@router.post("/drive/{org_id}/sync/pause")
-@inject
-async def pause_sync(
-    org_id: str,
-    background_tasks: BackgroundTasks,
-    sync_tasks=Depends(Provide[AppContainer.sync_tasks])
-):
-    """Pause the sync service"""
-    try:
-        background_tasks.add_task(
-            sync_tasks.drive_manual_sync_control, 'pause', org_id)
-        return {
-            "status": "accepted",
-            "message": "Sync service pause request queued"
-        }
-    except Exception as e:
-        logger.error("Failed to queue sync service pause: %s", {str(e)})
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
-        ) from e
-
-
-@router.get("/drive/{org_id}/sync/resume")
-@router.post("/drive/{org_id}/sync/resume")
-@inject
-async def resume_sync(
-    org_id: str,
-    background_tasks: BackgroundTasks,
-    sync_tasks=Depends(Provide[AppContainer.sync_tasks])
-):
-    """Resume the sync service"""
-    try:
-        background_tasks.add_task(
-            sync_tasks.drive_manual_sync_control, 'resume', org_id)
-        return {
-            "status": "accepted",
-            "message": "Sync service resume request queued"
-        }
-    except Exception as e:
-        logger.error("Failed to queue sync service resume: %s", {str(e)})
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
-        ) from e
-
-
-@router.get("/drive/sync/user/{user_email}")
-@router.post("/drive/sync/user/{user_email}")
-@inject
-async def sync_user(
-    user_email: str,
-    drive_sync_service=Depends(Provide[AppContainer.drive_sync_service])
-):
-    """Sync a user's Google Drive"""
-    try:
-        return await drive_sync_service.sync_specific_user(user_email)
-    except Exception as e:
-        logger.error("Error syncing user: %s", str(e))
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
-        ) from e
-
-@router.get("/gmail/{org_id}")
-@router.post("/gmail/{org_id}")
-@inject
-async def root(
-    org_id,
-    background_tasks: BackgroundTasks,
-    sync_tasks=Depends(Provide[AppContainer.sync_tasks])
-):
-    """Initialize sync service and wait for schedule"""
-    try:
-        # Add initialization to background tasks
-        background_tasks.add_task(sync_tasks.gmail_sync_service.initialize, org_id)
-        return {
-            "status": "accepted",
-            "message": "Sync service initialization queued",
-            "service": "Google Gmail Sync"
-        }
-    except Exception as e:
-        logger.error(
-            "Failed to queue sync service initialization: %s", {str(e)})
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
-        ) from e
-
-@router.get("/gmail/{org_id}/sync/start")
-@router.post("/gmail/{org_id}/sync/start")
-@inject
-async def start_sync(
-    org_id,
-    background_tasks: BackgroundTasks,
-    sync_tasks=Depends(Provide[AppContainer.sync_tasks])
-):
-    """Queue immediate start of the sync service"""
-    try:
-        background_tasks.add_task(
-            sync_tasks.gmail_manual_sync_control, 'start', org_id)
-        return {
-            "status": "accepted",
-            "message": "Sync service start request queued"
-        }
-    except Exception as e:
-        logger.error("Failed to queue sync service start: %s", {str(e)})
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
-        ) from e
-
-@router.get("/gmail/{org_id}/sync/pause")
-@router.post("/gmail/{org_id}/sync/pause")
-@inject
-async def pause_sync(
-    org_id,
-    background_tasks: BackgroundTasks,
-    sync_tasks=Depends(Provide[AppContainer.sync_tasks])
-):
-    """Pause the sync service"""
-    try:
-        background_tasks.add_task(
-            sync_tasks.gmail_manual_sync_control, 'pause', org_id)
-        return {
-            "status": "accepted",
-            "message": "Sync service pause request queued"
-        }
-    except Exception as e:
-        logger.error("Failed to queue sync service pause: %s", {str(e)})
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
-        ) from e
-
-
-@router.get("/gmail/{org_id}/sync/resume")
-@router.post("/gmail/{org_id}/sync/resume")
-@inject
-async def resume_sync(
-    org_id,
-    background_tasks: BackgroundTasks,
-    sync_tasks=Depends(Provide[AppContainer.sync_tasks])
-):
-    """Resume the sync service"""
-    try:
-        background_tasks.add_task(
-            sync_tasks.gmail_manual_sync_control, 'resume', org_id)
-        return {
-            "status": "accepted",
-            "message": "Sync service resume request queued"
-        }
-    except Exception as e:
-        logger.error("Failed to queue sync service resume: %s", {str(e)})
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
-        ) from e
-
-@router.get("/gmail/sync/user/{user_email}")
-@router.post("/gmail/sync/user/{user_email}")
-@inject
-async def sync_user(
-    user_email: str,
-    gmail_sync_service=Depends(Provide[AppContainer.gmail_sync_service])
-):
-    """Sync a user's Google Drive"""
-    try:
-        return await gmail_sync_service.sync_specific_user(user_email)
-    except Exception as e:
-        logger.error("Error syncing user: %s", str(e))
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
-        ) from e
-
 
 @router.get("/api/v1/{org_id}/{user_id}/{connector}/record/{record_id}/signedUrl")
 @inject
@@ -945,7 +718,7 @@ async def stream_record(
                 file_name = record.get('recordName', '')
 
                 # Check if PDF conversion is requested
-                if convertTo == 'pdf':
+                if convertTo == MimeTypes.PDF.value:
                     with tempfile.TemporaryDirectory() as temp_dir:
                         temp_file_path = os.path.join(temp_dir, file_name)
 
@@ -1149,8 +922,8 @@ async def stream_record(
                     ).execute()
 
                     file_data = base64.urlsafe_b64decode(attachment['data'])
-
-                    if convertTo == 'pdf':
+                    
+                    if convertTo == MimeTypes.PDF.value:
                         with tempfile.TemporaryDirectory() as temp_dir:
                             temp_file_path = os.path.join(temp_dir, file_name)
 
@@ -1180,8 +953,8 @@ async def stream_record(
                     # Try Drive as fallback
                     try:
                         drive_service = build('drive', 'v3', credentials=creds)
-
-                        if convertTo == 'pdf':
+                        
+                        if convertTo == MimeTypes.PDF.value:
                             with tempfile.TemporaryDirectory() as temp_dir:
                                 temp_file_path = os.path.join(temp_dir, file_name)
 
@@ -1299,7 +1072,7 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)):
     request.query_params.get('from')
     to_format = request.query_params.get('to')
 
-    if to_format == 'pdf':
+    if to_format == MimeTypes.PDF.value:
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
                 try:

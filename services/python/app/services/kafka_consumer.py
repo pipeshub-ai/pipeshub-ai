@@ -7,19 +7,20 @@ import aiohttp
 from confluent_kafka import Consumer, KafkaError
 from jose import jwt
 
-from app.config.arangodb_constants import CollectionNames
 from app.config.configuration_service import (
     ConfigurationService,
     KafkaConfig,
     config_node_constants,
 )
 from app.exceptions.indexing_exceptions import IndexingError
+from app.config.utils.named_constants.arangodb_constants import CollectionNames, ProgressStatus
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 # Concurrency control settings
 MAX_CONCURRENT_TASKS = 5  # Maximum number of messages to process concurrently
 RATE_LIMIT_PER_SECOND = 2  # Maximum number of new tasks to start per second
 
-
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=15))
 async def make_api_call(signed_url_route: str, token: str) -> dict:
     """
     Make an API call with the JWT token.
@@ -120,7 +121,9 @@ class KafkaConsumerManager:
         topic_partition = f"{message.topic()}-{message.partition()}"
         offset = message.offset()
         message_id = f"{topic_partition}-{offset}"
-
+        record_id = None
+        error_occurred = False
+        
         # Check for DUPLICATE processing first
         if self.is_message_processed(topic_partition, offset):
             self.logger.info(f"Message {message_id} already processed, skipping")
@@ -132,106 +135,76 @@ class KafkaConsumerManager:
                 message_value = message_value.decode('utf-8')
 
             # Parse JSON only once with proper error handling
-            try:
-                data = json.loads(message_value)
-                # Handle nested JSON strings
-                if isinstance(data, str):
-                    data = json.loads(data)
-                self.logger.debug(f"Parsed message data: {type(data)}")
-            except json.JSONDecodeError as e:
-                self.logger.error(f"Failed to parse JSON: {e}")
-                return False
+            data = json.loads(message_value)
+            # Handle nested JSON strings
+            if isinstance(data, str):
+                data = json.loads(data)
+            self.logger.debug(f"Parsed message data: {type(data)}")
 
             event_type = data.get('eventType')
             if not event_type:
-                self.logger.error(f"Missing event_type for topic: {message.topic()}")
-                return False
+                raise ValueError(f"Missing event_type for topic: {message.topic()}")
 
             self.logger.info(f"Processing file record with event type: {event_type}")
             payload_data = data.get('payload')
-
+            record_id = payload_data.get('recordId') if payload_data else None
+            
             # Get signed URL from the route
             if payload_data and payload_data.get('signedUrlRoute'):
-                try:
-                    # Make request to get signed URL
-                    payload = {
-                        'orgId': payload_data['orgId'],
-                        'scopes': ["storage:token"]
-                    }
-                    # Generate the JWT token
-                    token = await self.generate_jwt(payload)
+                # Make request to get signed URL
+                payload = {
+                    'orgId': payload_data['orgId'],
+                    'scopes': ["storage:token"]
+                }
+                # Generate the JWT token
+                token = await self.generate_jwt(payload)
 
-                    # Make the API call with the token
-                    response = await make_api_call(payload_data['signedUrlRoute'], token)
-                    self.logger.debug("Signed URL response received")
+                # Make the API call with the token
+                response = await make_api_call(payload_data['signedUrlRoute'], token)
+                self.logger.debug(f"Signed URL response received")
+                
+                if response.get('is_json') is True:
+                    response_data = response.get('data')
+                    signed_url = response_data['signedUrl']
+                    # Process the file using signed URL
+                    payload_data['signedUrl'] = signed_url
+                    data["payload"] = payload_data
+                else:
+                    response_data = response.get('data')
+                    payload_data['buffer'] = response_data
 
-                    if response.get('is_json') is True:
-                        response_data = response.get('data')
-                        signed_url = response_data['signedUrl']
-                        # Process the file using signed URL
-                        payload_data['signedUrl'] = signed_url
-                        data["payload"] = payload_data
-                    else:
-                        response_data = response.get('data')
-                        payload_data['buffer'] = response_data
-
-                    try:
-                        await self.event_processor.on_event(data)
-                        self.logger.info(f"✅ Successfully processed document for event: {event_type}")
-                        self.mark_message_processed(topic_partition, offset)
-                        return True
-                    except IndexingError as e:
-                        # Handle indexing-specific errors
-                        self.logger.error(f"❌ Indexing error: {str(e)}")
-                        record_id = payload_data.get('recordId')
-                        if record_id:
-                            await self._update_document_status(
-                                record_id=record_id,
-                                indexing_status="FAILED",
-                                extraction_status="FAILED",
-                                reason=str(e)
-                            )
-                        return False
-
-                    except Exception as e:
-                        # Handle unexpected errors
-                        self.logger.error(f"❌ Unexpected error: {str(e)}")
-                        record_id = payload_data.get('recordId')
-                        if record_id:
-                            await self._update_document_status(
-                                record_id=record_id,
-                                indexing_status="FAILED",
-                                extraction_status="FAILED",
-                                reason=f"Unexpected error: {str(e)}"
-                            )
-                        return False
-
-                except Exception as e:
-                    self.logger.error(f"Error getting signed URL: {repr(e)}")
-                    record_id = payload_data.get('recordId')
-                    if record_id:
-                        await self._update_document_status(
-                            record_id=record_id,
-                            indexing_status="FAILED",
-                            extraction_status="FAILED",
-                            reason=f"Unexpected error: {str(e)}"
-                        )
-                    return False
+                await self.event_processor.on_event(data)
+                self.logger.info(f"✅ Successfully processed document for event: {event_type}")
+                self.mark_message_processed(topic_partition, offset)
+                return True
             else:
-                self.logger.warning("No signedUrlRoute found in payload")
-                return False
-
+                raise ValueError(f"No signedUrlRoute found in payload")
+                
+        except IndexingError as e:
+            error_occurred = True
+            error_msg = f"❌ Indexing error: {str(e)}"
+            self.logger.error(error_msg)
+            raise
+        except json.JSONDecodeError as e:
+            error_occurred = True
+            error_msg = f"Failed to parse JSON: {str(e)}"
+            self.logger.error(error_msg)
+            raise
         except Exception as e:
-            self.logger.error(f"Error processing message {message_id}: {e}")
-            record_id = payload_data.get('recordId')
-            if record_id:
+            error_occurred = True
+            error_msg = f"Error processing message {message_id}: {str(e)}"
+            self.logger.error(error_msg)
+            raise
+        finally:
+            # Handle any failures by updating document status
+            if error_occurred and record_id:
                 await self._update_document_status(
                     record_id=record_id,
-                    indexing_status="FAILED",
-                    extraction_status="FAILED",
-                    reason=f"Unexpected error: {str(e)}"
+                    indexing_status=ProgressStatus.FAILED.value,
+                    extraction_status=ProgressStatus.FAILED.value,
+                    reason=error_msg or "Unknown error occurred"
                 )
-            return False
+                return False
 
     def is_message_processed(self, topic_partition: str, offset: int) -> bool:
         """Check if a message has already been processed."""
@@ -370,8 +343,8 @@ class KafkaConsumerManager:
                 return
 
             doc = dict(record)
-            if doc.get("extractionStatus") == "COMPLETED":
-                extraction_status = "COMPLETED"
+            if doc.get("extractionStatus") == ProgressStatus.COMPLETED.value:
+                extraction_status = ProgressStatus.COMPLETED.value
             doc.update({
                 "indexingStatus": indexing_status,
                 "extractionStatus": extraction_status

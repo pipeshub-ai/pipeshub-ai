@@ -2,8 +2,8 @@ import json
 import os
 from datetime import datetime
 
-from app.config.ai_models_named_constants import AzureDocIntelligenceModel, OCRProvider
-from app.config.arangodb_constants import CollectionNames
+from app.config.utils.named_constants.ai_models_named_constants import AzureDocIntelligenceModel, OCRProvider
+from app.config.utils.named_constants.arangodb_constants import CollectionNames
 from app.config.configuration_service import config_node_constants
 from app.modules.parsers.pdf.ocr_handler import OCRHandler
 from app.utils.llm import get_llm

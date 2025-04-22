@@ -4,7 +4,7 @@
 import asyncio
 from abc import ABC, abstractmethod
 
-from app.config.arangodb_constants import CollectionNames
+from app.config.utils.named_constants.arangodb_constants import CollectionNames
 from app.config.configuration_service import ConfigurationService
 from app.connectors.core.kafka_service import KafkaService
 from app.connectors.google.core.arango_service import ArangoService

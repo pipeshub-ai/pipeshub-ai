@@ -52,6 +52,7 @@ from app.modules.parsers.google_files.google_docs_parser import GoogleDocsParser
 from app.modules.parsers.google_files.google_sheets_parser import GoogleSheetsParser
 from app.modules.parsers.google_files.google_slides_parser import GoogleSlidesParser
 from app.modules.parsers.google_files.parser_user_service import ParserUserService
+from app.connectors.core.sync_kafka_consumer import SyncKafkaRouteConsumer
 from app.utils.logger import create_logger
 
 
@@ -193,7 +194,22 @@ async def initialize_individual_account_services_fn(org_id, container):
         )
         google_slides_parser = container.google_slides_parser()
         assert isinstance(google_slides_parser, GoogleSlidesParser)
-
+        
+        container.sync_kafka_consumer.override(
+            providers.Singleton(
+                SyncKafkaRouteConsumer,
+                logger=logger,
+                config_service=container.config_service,
+                arango_service=await container.arango_service(),
+                sync_tasks=container.sync_tasks(),
+            )
+        )
+        sync_kafka_consumer = container.sync_kafka_consumer()
+        assert isinstance(sync_kafka_consumer, SyncKafkaRouteConsumer)
+        
+        # Start the sync Kafka consumer
+        await sync_kafka_consumer.start()
+        logger.info("✅ Sync Kafka consumer initialized")
 
     except Exception as e:
         logger.error(f"❌ Failed to initialize services for individual account: {str(e)}")
@@ -361,7 +377,23 @@ async def initialize_enterprise_account_services_fn(org_id, container):
         )
         google_slides_parser = container.google_slides_parser()
         assert isinstance(google_slides_parser, GoogleSlidesParser)
-
+        
+        container.sync_kafka_consumer.override(
+            providers.Singleton(
+                SyncKafkaRouteConsumer,
+                logger=logger,
+                config_service=container.config_service,
+                arango_service=await container.arango_service(),
+                sync_tasks=container.sync_tasks(),
+            )
+        )
+        sync_kafka_consumer = container.sync_kafka_consumer()
+        assert isinstance(sync_kafka_consumer, SyncKafkaRouteConsumer)
+        
+        # Start the sync Kafka consumer
+        await sync_kafka_consumer.start()
+        logger.info("✅ Sync Kafka consumer initialized")
+        
     except Exception as e:
         logger.error(f"❌ Failed to initialize services for enterprise account: {str(e)}")
         raise
@@ -480,6 +512,7 @@ class AppContainer(containers.DeclarativeContainer):
     google_sheets_parser = providers.Dependency()
     google_slides_parser = providers.Dependency()
     parser_user_service = providers.Dependency()
+    sync_kafka_consumer = providers.Dependency()
     # Wire everything up
     wiring_config = containers.WiringConfiguration(
         modules=[

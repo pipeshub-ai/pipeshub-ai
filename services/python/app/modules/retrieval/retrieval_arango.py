@@ -2,7 +2,7 @@ from typing import Dict, Optional
 
 from arango import ArangoClient
 
-from app.config.arangodb_constants import CollectionNames, RecordTypes
+from app.config.utils.named_constants.arangodb_constants import CollectionNames, RecordTypes
 from app.config.configuration_service import ConfigurationService, config_node_constants
 
 

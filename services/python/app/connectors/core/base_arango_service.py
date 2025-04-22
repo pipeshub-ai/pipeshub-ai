@@ -5,8 +5,8 @@ import uuid
 
 from arango import ArangoClient
 
-from app.config.arangodb_constants import CollectionNames, DepartmentNames
-from app.config.configuration_service import ConfigurationService, config_node_constants
+from app.config.configuration_service import config_node_constants, ConfigurationService
+from app.config.utils.named_constants.arangodb_constants import CollectionNames, DepartmentNames
 from app.schema.arango.documents import (
     app_schema,
     department_schema,

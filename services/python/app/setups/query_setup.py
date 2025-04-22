@@ -1,7 +1,7 @@
 from arango import ArangoClient
 from dependency_injector import containers, providers
 
-from app.config.arangodb_constants import QdrantCollectionNames
+from app.config.utils.named_constants.arangodb_constants import QdrantCollectionNames
 from app.config.configuration_service import ConfigurationService, config_node_constants
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_arango import ArangoService

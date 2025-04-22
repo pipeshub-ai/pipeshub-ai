@@ -1,6 +1,5 @@
 from enum import Enum
 
-
 class DepartmentNames(Enum):
     LEGAL = "Legal"
     COMPLIANCE_RISK = "Compliance/Risk Management"
@@ -26,7 +25,7 @@ class DepartmentNames(Enum):
     INVESTOR_RELATIONS = "Investor Relationss"
     CUSTOMER_SUCCESS = "Customer Success"
     OTHERS = "Others"
-
+    
 class Connectors(Enum):
     GOOGLE_DRIVE = "DRIVE"
     GOOGLE_MAIL = "GMAIL"
@@ -38,21 +37,21 @@ class RecordTypes(Enum):
     LINK = "LINK"
     MAIL = "MAIL"
     DRIVE = "DRIVE"
-
+    
 class RecordRelations(Enum):
     PARENT_CHILD = "PARENT_CHILD"
     SIBLING = "SIBLING"
     ATTACHMENT = "ATTACHMENT"
-
+    
 class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"
     UPLOAD = "UPLOAD"
-
+    
 class EventTypes(Enum):
     NEW_RECORD = "newRecord"
     UPDATE_RECORD = "updateRecord"
     DELETE_RECORD = "deleteRecord"
-
+    
 class CollectionNames(Enum):
     # Records and Record relations
     RECORDS = 'records'
@@ -101,8 +100,8 @@ class CollectionNames(Enum):
 
     # Other
     CHANNEL_HISTORY = 'channelHistory'
-    PAGE_TOKENS = 'pageTokens'
-
+    PAGE_TOKENS = 'pageTokens' 
+    
     # Graphs
     FILE_ACCESS_GRAPH = "fileAccessGraph"
 
@@ -110,6 +109,41 @@ class CollectionNames(Enum):
     ORG_APP_RELATION = 'orgAppRelation'
     USER_APP_RELATION = 'userAppRelation'
     ORG_DEPARTMENT_RELATION = 'orgDepartmentRelation'
-
+    
 class QdrantCollectionNames(Enum):
     RECORDS = "records"
+    
+class ExtensionTypes(Enum):
+    PDF = "pdf"
+    DOCX = "docx"
+    DOC = "doc"
+    PPTX = "pptx"
+    PPT = "ppt"
+    XLSX = "xlsx"
+    XLS = "xls"
+    CSV = "csv"
+    TXT = "txt"
+    MD = "md"
+    HTML = "html"
+
+class MimeTypes(Enum):
+    PDF = "application/pdf"
+    GMAIL = "text/gmail_content"
+    GOOGLE_SLIDES = "application/vnd.google-apps.presentation"
+    GOOGLE_DOCS = "application/vnd.google-apps.document"
+    GOOGLE_SHEETS = "application/vnd.google-apps.spreadsheet"
+    GOOGLE_DRIVE_FOLDER = "application/vnd.google-apps.folder"
+    DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    DOC = "application/msword"
+    PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    PPT = "application/vnd.ms-powerpoint"
+    XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    XLS = "application/vnd.ms-excel"
+    CSV = "text/csv"
+
+class ProgressStatus(Enum):
+    NOT_STARTED = "NOT_STARTED"
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    FILE_TYPE_NOT_SUPPORTED = "FILE_TYPE_NOT_SUPPORTED"
