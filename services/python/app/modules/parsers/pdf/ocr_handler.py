@@ -59,14 +59,21 @@ class OCRStrategy(ABC):
 
             # Multiple criteria for OCR need
             has_minimal_text = len(text) < 100  # Less than 100 characters
-            has_significant_images = significant_images > 0  # Contains substantial images
-            text_density = sum((w[2]-w[0])*(w[3]-w[1])
-                               for w in words) / page_area if words else 0
+            has_significant_images = (
+                significant_images > 0
+            )  # Contains substantial images
+            text_density = (
+                sum((w[2] - w[0]) * (w[3] - w[1]) for w in words) / page_area
+                if words
+                else 0
+            )
             low_density = text_density < 0.01
 
-            self.logger.debug(f"📊 OCR metrics - Text length: {len(text)}, "
-                        f"Significant images: {significant_images}, "
-                        f"Text density: {text_density:.4f}")
+            self.logger.debug(
+                f"📊 OCR metrics - Text length: {len(text)}, "
+                f"Significant images: {significant_images}, "
+                f"Text density: {text_density:.4f}"
+            )
 
             # Extract and save images
             for img_index, img in enumerate(images):
@@ -78,14 +85,17 @@ class OCRStrategy(ABC):
                         pix = fitz.Pixmap(fitz.csRGB, pix)
 
                     self.logger.debug(
-                        f"📸 Image {img_index + 1} pixel format: {pix.n} channels")
+                        f"📸 Image {img_index + 1} pixel format: {pix.n} channels"
+                    )
                     # Optionally save the image:
                     # pix.save(f"image_{img_index + 1}.png")
 
                     pix = None  # Free memory
                 except Exception as e:
-                    self.logger.error(f"""❌ Error processing image {
-                                 img_index + 1}: {str(e)}""")
+                    self.logger.error(
+                        f"""❌ Error processing image {
+                                 img_index + 1}: {str(e)}"""
+                    )
 
             needs_ocr = (has_minimal_text and has_significant_images) or low_density
             self.logger.debug(f"🔍 OCR need determination: {needs_ocr}")
@@ -108,8 +118,7 @@ class OCRHandler:
             **kwargs: Strategy-specific configuration parameters
         """
         self.logger = logger
-        self.logger.info(
-            "🛠️ Initializing OCR handler with strategy: %s", strategy_type)
+        self.logger.info("🛠️ Initializing OCR handler with strategy: %s", strategy_type)
         self.strategy = self._create_strategy(strategy_type, **kwargs)
 
     def _create_strategy(self, strategy_type: str, **kwargs) -> OCRStrategy:
@@ -121,20 +130,21 @@ class OCRHandler:
             from app.modules.parsers.pdf.pymupdf_ocrmypdf_processor import (
                 PyMuPDFOCRStrategy,
             )
+
             return PyMuPDFOCRStrategy(
-                logger=self.logger,
-                language=kwargs.get("language", "eng")
+                logger=self.logger, language=kwargs.get("language", "eng")
             )
         elif strategy_type == OCRProvider.AZURE_PROVIDER.value:
             self.logger.debug("☁️ Creating Azure OCR strategy")
             from app.modules.parsers.pdf.azure_document_intelligence_processor import (
                 AzureOCRStrategy,
             )
+
             return AzureOCRStrategy(
                 logger=self.logger,
                 endpoint=kwargs["endpoint"],
                 key=kwargs["key"],
-                model_id=kwargs.get("model_id", "prebuilt-document")
+                model_id=kwargs.get("model_id", "prebuilt-document"),
             )
         else:
             self.logger.error(f"❌ Unsupported OCR strategy: {strategy_type}")

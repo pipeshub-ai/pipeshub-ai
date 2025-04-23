@@ -82,6 +82,11 @@ jobs:
           pip install .[dev]
           pip install ruff pytest
 
+      - name: Fix Python linting issues
+        run: |
+          cd services/python
+          ruff check . --fix
+
       - name: Run Python linting
         run: |
           cd services/python

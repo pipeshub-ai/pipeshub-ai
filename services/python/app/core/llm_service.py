@@ -14,28 +14,37 @@ from app.config.utils.named_constants.ai_models_named_constants import AzureOpen
 
 class BaseLLMConfig(BaseModel):
     """Base configuration for all LLM providers"""
+
     model: str
     temperature: float = Field(default=0.4, ge=0, le=1)
     api_key: str
 
+
 class AzureLLMConfig(BaseLLMConfig):
     """Azure-specific configuration"""
+
     azure_endpoint: str
     azure_deployment: str
     azure_api_version: str
 
+
 class GeminiLLMConfig(BaseLLMConfig):
     """Gemini-specific configuration"""
+
 
 class AnthropicLLMConfig(BaseLLMConfig):
     """Gemini-specific configuration"""
 
+
 class OpenAILLMConfig(BaseLLMConfig):
     """OpenAI-specific configuration"""
+
     organization_id: Optional[str] = None
+
 
 class AwsBedrockLLMConfig(BaseLLMConfig):
     """OpenAI-specific configuration"""
+
     region: str
     access_key: str
     access_secret: str
@@ -50,14 +59,14 @@ class CostTrackingCallback(BaseCallbackHandler):
         # Azure GPT-4 pricing (per 1K tokens)
         self.cost_per_1k_tokens = {
             "gpt-4": {"input": 0.03, "output": 0.06},
-            "gpt-35-turbo": {"input": 0.0015, "output": 0.002}
+            "gpt-35-turbo": {"input": 0.0015, "output": 0.002},
         }
         self.current_usage = {
             "tokens_in": 0,
             "tokens_out": 0,
             "start_time": None,
             "end_time": None,
-            "cost": 0.0
+            "cost": 0.0,
         }
 
     def on_llm_start(self, *args, **kwargs):
@@ -80,6 +89,7 @@ class CostTrackingCallback(BaseCallbackHandler):
         output_cost = (self.current_usage["tokens_out"] / 1000) * rates["output"]
         return input_cost + output_cost
 
+
 class LLMFactory:
     """Factory for creating LLM instances with cost tracking"""
 
@@ -96,7 +106,7 @@ class LLMFactory:
                 api_version=AzureOpenAILLM.AZURE_OPENAI_VERSION.value,
                 temperature=0.3,
                 azure_deployment=config.azure_deployment,
-                callbacks=[cost_callback]
+                callbacks=[cost_callback],
             )
 
         elif isinstance(config, OpenAILLMConfig):
@@ -105,7 +115,7 @@ class LLMFactory:
                 temperature=0.3,
                 api_key=config.api_key,
                 organization=config.organization_id,
-                callbacks=[cost_callback]
+                callbacks=[cost_callback],
             )
 
         elif isinstance(config, GeminiLLMConfig):
@@ -116,7 +126,7 @@ class LLMFactory:
                 timeout=None,
                 max_retries=2,
                 google_api_key=config.api_key,
-                callbacks=[cost_callback]
+                callbacks=[cost_callback],
             )
 
         elif isinstance(config, AnthropicLLMConfig):
@@ -126,7 +136,7 @@ class LLMFactory:
                 timeout=None,
                 max_retries=2,
                 api_key=config.api_key,
-                callbacks=[cost_callback]
+                callbacks=[cost_callback],
             )
         elif isinstance(config, AwsBedrockLLMConfig):
             return ChatBedrock(
@@ -135,7 +145,7 @@ class LLMFactory:
                 aws_access_key_id=config.access_key,
                 aws_secret_access_key=config.access_secret,
                 region_name=config.region,
-                callbacks=[cost_callback]
+                callbacks=[cost_callback],
             )
 
         raise ValueError(f"Unsupported config type: {type(config)}")
@@ -149,9 +159,13 @@ class LLMFactory:
                     "tokens_in": callback.current_usage["tokens_in"],
                     "tokens_out": callback.current_usage["tokens_out"],
                     "processing_time": (
-                        callback.current_usage["end_time"] -
-                        callback.current_usage["start_time"]
-                    ).total_seconds() if callback.current_usage["end_time"] else None,
-                    "cost": callback.calculate_cost(llm.model_name)
+                        (
+                            callback.current_usage["end_time"]
+                            - callback.current_usage["start_time"]
+                        ).total_seconds()
+                        if callback.current_usage["end_time"]
+                        else None
+                    ),
+                    "cost": callback.calculate_cost(llm.model_name),
                 }
         return {}

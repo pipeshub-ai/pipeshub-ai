@@ -7,12 +7,13 @@ import etcd3
 from app.config.utils.retry_policy import RetryPolicy
 from app.utils.logger import create_logger
 
-logger = create_logger('etcd')
+logger = create_logger("etcd")
 
 
 @dataclass
 class ConnectionConfig:
     """Configuration for ETCD connection."""
+
     hosts: List[str]
     port: int = 2379
     timeout: float = 5.0
@@ -23,6 +24,7 @@ class ConnectionConfig:
 
 class ConnectionState:
     """Enum-like class for connection states."""
+
     DISCONNECTED = "disconnected"
     CONNECTING = "connecting"
     CONNECTED = "connected"
@@ -52,8 +54,7 @@ class Etcd3ConnectionManager:
         logger.debug("   - Hosts: %s", config.hosts)
         logger.debug("   - Port: %s", config.port)
         logger.debug("   - Timeout: %s", config.timeout)
-        logger.debug("   - SSL enabled: %s",
-                     bool(config.ca_cert or config.cert_key))
+        logger.debug("   - SSL enabled: %s", bool(config.ca_cert or config.cert_key))
 
         self.config = config
         self.client: Optional[etcd3.client] = None
@@ -74,8 +75,11 @@ class Etcd3ConnectionManager:
             return
 
         self.state = ConnectionState.CONNECTING
-        logger.info("🔄 Connecting to ETCD cluster at %s:%s",
-                    self.config.hosts[0], self.config.port)
+        logger.info(
+            "🔄 Connecting to ETCD cluster at %s:%s",
+            self.config.hosts[0],
+            self.config.port,
+        )
 
         try:
             logger.debug("🔄 Creating client in separate thread")
@@ -104,17 +108,19 @@ class Etcd3ConnectionManager:
             logger.debug("   - Timeout: %s", self.config.timeout)
 
             client_kwargs = {
-                'host': self.config.hosts[0],
-                'port': self.config.port,
-                'timeout': self.config.timeout,
+                "host": self.config.hosts[0],
+                "port": self.config.port,
+                "timeout": self.config.timeout,
             }
 
             if any([self.config.ca_cert, self.config.cert_key, self.config.cert_cert]):
-                client_kwargs.update({
-                    'ca_cert': self.config.ca_cert,
-                    'cert_key': self.config.cert_key,
-                    'cert_cert': self.config.cert_cert,
-                })
+                client_kwargs.update(
+                    {
+                        "ca_cert": self.config.ca_cert,
+                        "cert_key": self.config.cert_key,
+                        "cert_cert": self.config.cert_cert,
+                    }
+                )
 
             # Create client synchronously since etcd3 doesn't support async
             client = etcd3.client(**client_kwargs)

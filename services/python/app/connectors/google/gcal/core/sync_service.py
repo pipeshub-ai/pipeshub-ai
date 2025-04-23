@@ -4,8 +4,8 @@
 import asyncio
 from abc import ABC, abstractmethod
 
-from app.config.utils.named_constants.arangodb_constants import CollectionNames
 from app.config.configuration_service import ConfigurationService
+from app.config.utils.named_constants.arangodb_constants import CollectionNames
 from app.connectors.core.kafka_service import KafkaService
 from app.connectors.google.core.arango_service import ArangoService
 from app.connectors.google.gcal.core.gcal_admin_service import GCalAdminService
@@ -33,7 +33,7 @@ class BaseGCalSyncService(ABC):
         config: ConfigurationService,
         arango_service: ArangoService,
         kafka_service: KafkaService,
-        celery_app
+        celery_app,
     ):
         self.config = config
         self.arango_service = arango_service
@@ -84,12 +84,15 @@ class BaseGCalSyncService(ABC):
                 # Reset states
                 self._stop_requested = False  # Reset for next run
 
-                self.logger.info("✅ Successfully disconnected from app.services.modules")
+                self.logger.info(
+                    "✅ Successfully disconnected from app.services.modules"
+                )
                 return True
 
             except Exception as e:
                 self.logger.error(
-                    "❌ Failed to disconnect from app.services.modules: %s", str(e))
+                    "❌ Failed to disconnect from app.services.modules: %s", str(e)
+                )
                 return False
 
 
@@ -102,7 +105,7 @@ class GCalSyncEnterpriseService(BaseGCalSyncService):
         gcal_admin_service: GCalAdminService,
         arango_service: ArangoService,
         kafka_service: KafkaService,
-        celery_app
+        celery_app,
     ):
         super().__init__(config, arango_service, kafka_service, celery_app)
         self.gcal_admin_service = gcal_admin_service
@@ -139,13 +142,15 @@ class GCalSyncEnterpriseService(BaseGCalSyncService):
             # List and store enterprise users
             source_users = await self.gcal_admin_service.list_enterprise_users(org_id)
             for user in source_users:
-                if not await self.arango_service.get_entity_id_by_email(user['email']):
+                if not await self.arango_service.get_entity_id_by_email(user["email"]):
                     self.logger.info("New user found!")
                     users.append(user)
 
             if users:
                 self.logger.info("🚀 Found %s users", len(users))
-                await self.arango_service.batch_upsert_nodes(users, collection=CollectionNames.USERS.value)
+                await self.arango_service.batch_upsert_nodes(
+                    users, collection=CollectionNames.USERS.value
+                )
 
             # Initialize Redis and Celery
             await self.redis_service.initialize_redis()
@@ -153,34 +158,45 @@ class GCalSyncEnterpriseService(BaseGCalSyncService):
 
             # Check if sync is already running in Redis
             sync_hierarchy = await self.redis_service.get_sync_hierarchy()
-            if sync_hierarchy and sync_hierarchy['status'] == 'IN_PROGRESS':
+            if sync_hierarchy and sync_hierarchy["status"] == "IN_PROGRESS":
                 self.logger.info(
-                    "🔄 Sync already RUNNING, Program likely crashed. Changing state to PAUSED")
-                sync_hierarchy['status'] = 'PAUSED'
+                    "🔄 Sync already RUNNING, Program likely crashed. Changing state to PAUSED"
+                )
+                sync_hierarchy["status"] = "PAUSED"
                 await self.redis_service.store_sync_hierarchy(sync_hierarchy)
 
             # Set up calendar watch for each user
             for user in users:
                 try:
-                    user_service = await self.gcal_admin_service.create_gcal_user_service(user['email'])
+                    user_service = (
+                        await self.gcal_admin_service.create_gcal_user_service(
+                            user["email"]
+                        )
+                    )
                     if not user_service:
-                        self.logger.warning(f"❌ Failed to create user service for: {
-                                       user['email']}")
+                        self.logger.warning(
+                            f"❌ Failed to create user service for: {user['email']}"
+                        )
                         continue
 
                     watch_response = await user_service.create_calendar_watch()
                     if not watch_response:
-                        self.logger.warning(f"❌ Failed to set up calendar watch for user: {
-                                       user['email']}")
+                        self.logger.warning(
+                            f"❌ Failed to set up calendar watch for user: {user['email']}"
+                        )
                         continue
 
-                    self.logger.info(f"✅ Calendar watch set up successfully for user: {
-                                user['email']}")
-                    await self.arango_service.store_calendar_watch_data(watch_response, user['email'])
+                    self.logger.info(
+                        f"✅ Calendar watch set up successfully for user: {user['email']}"
+                    )
+                    await self.arango_service.store_calendar_watch_data(
+                        watch_response, user["email"]
+                    )
 
                 except Exception as e:
-                    self.logger.error(f"❌ Error setting up calendar watch for user {
-                                 user['email']}: {str(e)}")
+                    self.logger.error(
+                        f"❌ Error setting up calendar watch for user {user['email']}: {str(e)}"
+                    )
 
             self.logger.info("✅ Sync service initialized successfully")
             return True
