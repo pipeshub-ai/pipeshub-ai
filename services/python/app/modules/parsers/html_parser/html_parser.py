@@ -22,7 +22,7 @@ class HTMLParser:
             ValueError: If parsing fails
         """
         # Convert string to bytes
-        html_bytes = html_content.encode('utf-8')
+        html_bytes = html_content.encode("utf-8")
 
         # Create a BytesIO object from the bytes
         stream = BytesIO(html_bytes)
@@ -33,7 +33,7 @@ class HTMLParser:
         # Convert the document
         result = self.converter.convert(source)
 
-        if result.status.value != 'success':
+        if result.status.value != "success":
             raise ValueError(f"Failed to parse HTML: {result.status}")
 
         return result.document
@@ -53,7 +53,7 @@ class HTMLParser:
         """
         result = self.converter.convert(file_path)
 
-        if result.status.value != 'success':
+        if result.status.value != "success":
             raise ValueError(f"Failed to parse HTML: {result.status}")
 
         return result.document

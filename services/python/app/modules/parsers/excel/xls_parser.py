@@ -27,32 +27,43 @@ class XLSParser:
         with tempfile.TemporaryDirectory() as temp_dir:
             try:
                 # Check if LibreOffice is installed
-                subprocess.run(['which', 'libreoffice'], check=True, capture_output=True)
+                subprocess.run(
+                    ["which", "libreoffice"], check=True, capture_output=True
+                )
 
                 # Create input file path
-                temp_input = os.path.join(temp_dir, 'input.xls')
+                temp_input = os.path.join(temp_dir, "input.xls")
 
                 # Write binary data to temporary file
-                with open(temp_input, 'wb') as f:
+                with open(temp_input, "wb") as f:
                     f.write(binary)
 
                 # Convert .xls to .xlsx using LibreOffice
-                subprocess.run([
-                    'libreoffice',
-                    '--headless',
-                    '--convert-to', 'xlsx',
-                    '--outdir', temp_dir,
-                    temp_input
-                ], check=True, capture_output=True, timeout=60)
+                subprocess.run(
+                    [
+                        "libreoffice",
+                        "--headless",
+                        "--convert-to",
+                        "xlsx",
+                        "--outdir",
+                        temp_dir,
+                        temp_input,
+                    ],
+                    check=True,
+                    capture_output=True,
+                    timeout=60,
+                )
 
                 # Get the xlsx file path
-                xlsx_file = os.path.join(temp_dir, 'input.xlsx')
+                xlsx_file = os.path.join(temp_dir, "input.xlsx")
 
                 if not os.path.exists(xlsx_file):
-                    raise FileNotFoundError("XLSX conversion failed - output file not found")
+                    raise FileNotFoundError(
+                        "XLSX conversion failed - output file not found"
+                    )
 
                 # Read the converted file as binary
-                with open(xlsx_file, 'rb') as f:
+                with open(xlsx_file, "rb") as f:
                     xlsx_binary = f.read()
 
                 return xlsx_binary
@@ -60,14 +71,15 @@ class XLSParser:
             except subprocess.CalledProcessError as e:
                 error_msg = "LibreOffice is not installed. Please install it using: sudo apt-get install libreoffice"
                 if e.stderr:
-                    error_msg += f"\nError details: {e.stderr.decode('utf-8', errors='replace')}"
+                    error_msg += (
+                        f"\nError details: {e.stderr.decode('utf-8', errors='replace')}"
+                    )
                 raise subprocess.CalledProcessError(
-                    e.returncode,
-                    e.cmd,
-                    output=e.output,
-                    stderr=error_msg.encode()
+                    e.returncode, e.cmd, output=e.output, stderr=error_msg.encode()
                 )
             except subprocess.TimeoutExpired as e:
-                raise Exception("LibreOffice conversion timed out after 30 seconds") from e
+                raise Exception(
+                    "LibreOffice conversion timed out after 30 seconds"
+                ) from e
             except Exception as e:
                 raise Exception(f"Error converting .xls to .xlsx: {str(e)}") from e

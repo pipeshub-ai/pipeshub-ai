@@ -19,6 +19,7 @@ from app.config.providers.etcd3_store import Etcd3DistributedKeyValueStore
 
 dotenv.load_dotenv()
 
+
 class config_node_constants(Enum):
     """Constants for ETCD configuration paths"""
 
@@ -34,61 +35,75 @@ class config_node_constants(Enum):
     # Non-service paths
     LOG_LEVEL = "/logLevel"
 
+
 class TokenScopes(Enum):
     """Constants for token scopes"""
+
     SEND_MAIL = "mail:send"
     FETCH_CONFIG = "fetch:config"
     PASSWORD_RESET = "password:reset"
     USER_LOOKUP = "user:lookup"
     TOKEN_REFRESH = "token:refresh"
 
+
 class Routes(Enum):
     """Constants for routes"""
+
     INDIVIDUAL_CREDENTIALS = "/api/v1/configurationManager/internal/connectors/individual/googleWorkspaceCredentials"
-    INDIVIDUAL_REFRESH_TOKEN = "/api/v1/connectors/internal/refreshIndividualConnectorToken"
+    INDIVIDUAL_REFRESH_TOKEN = (
+        "/api/v1/connectors/internal/refreshIndividualConnectorToken"
+    )
     BUSINESS_CREDENTIALS = "/api/v1/configurationManager/internal/connectors/business/googleWorkspaceCredentials"
     LLM_CONFIG = "/api/v1/configurationManager/internal/aiModelsConfig"
 
+
 class WebhookConfig(Enum):
     """Constants for webhook configuration"""
+
     EXPIRATION_DAYS = 6
     EXPIRATION_HOURS = 23
     EXPIRATION_MINUTES = 59
     COALESCEDELAY = 30
 
+
 class KafkaConfig(Enum):
     """Constants for kafka configuration"""
+
     CLIENT_ID_RECORDS = "record-processor"
     CLIENT_ID_MAIN = "enterprise-search"
     CLIENT_ID_LLM = "llm-configuration"
 
+
 class CeleryConfig(Enum):
     """Constants for celery configuration"""
+
     TASK_SERIALIZER = "json"
     RESULT_SERIALIZER = "json"
     ACCEPT_CONTENT = ["json"]
     TIMEZONE = "UTC"
     ENABLE_UTC = True
-    SCHEDULE = {
-        "syncStartTime": "23:00",
-        "syncPauseTime": "05:00"
-    }
+    SCHEDULE = {"syncStartTime": "23:00", "syncPauseTime": "05:00"}
+
 
 class RedisConfig(Enum):
     """Constants for redis configuration"""
+
     REDIS_DB = 0
 
-class ConfigurationService():
+
+class ConfigurationService:
     """Service to manage configuration using etcd store"""
 
     def __init__(self, logger):
         self.logger = logger
         self.logger.debug("🔧 Initializing ConfigurationService")
 
-        secret_key = os.getenv('SECRET_KEY')
+        secret_key = os.getenv("SECRET_KEY")
         if not secret_key:
             raise ValueError("SECRET_KEY environment variable is required")
-        self.encryption_service = EncryptionService.get_instance("aes-256-gcm", secret_key)
+        self.encryption_service = EncryptionService.get_instance(
+            "aes-256-gcm", secret_key
+        )
         self.logger.debug("🔐 Initialized EncryptionService")
 
         # Initialize LRU cache
@@ -106,30 +121,29 @@ class ConfigurationService():
 
     def _create_store(self) -> Etcd3DistributedKeyValueStore:
         self.logger.debug("🔧 Creating ETCD store configuration...")
-        self.logger.debug("ETCD Host: %s", os.getenv('ETCD_HOST'))
-        self.logger.debug("ETCD Port: %s", os.getenv('ETCD_PORT'))
-        self.logger.debug("ETCD Timeout: %s", os.getenv('ETCD_TIMEOUT', '5.0'))
-        self.logger.debug("ETCD Username: %s", os.getenv('ETCD_USERNAME', 'None'))
+        self.logger.debug("ETCD Host: %s", os.getenv("ETCD_HOST"))
+        self.logger.debug("ETCD Port: %s", os.getenv("ETCD_PORT"))
+        self.logger.debug("ETCD Timeout: %s", os.getenv("ETCD_TIMEOUT", "5.0"))
+        self.logger.debug("ETCD Username: %s", os.getenv("ETCD_USERNAME", "None"))
 
         config = StoreConfig(
-            host=os.getenv('ETCD_HOST', 'localhost'),
-            port=int(os.getenv('ETCD_PORT', '2379')),
-            timeout=float(os.getenv('ETCD_TIMEOUT', '5.0')),
-            username=os.getenv('ETCD_USERNAME', None),
-            password=os.getenv('ETCD_PASSWORD', None)
+            host=os.getenv("ETCD_HOST", "localhost"),
+            port=int(os.getenv("ETCD_PORT", "2379")),
+            timeout=float(os.getenv("ETCD_TIMEOUT", "5.0")),
+            username=os.getenv("ETCD_USERNAME", None),
+            password=os.getenv("ETCD_PASSWORD", None),
         )
 
         def serialize(value: Any) -> bytes:
-            self.logger.debug("🔄 Serializing value: %s (type: %s)",
-                         value, type(value))
+            self.logger.debug("🔄 Serializing value: %s (type: %s)", value, type(value))
             if value is None:
                 self.logger.debug("⚠️ Serializing None value to empty bytes")
-                return b''
+                return b""
             if isinstance(value, (str, int, float, bool)):
-                serialized = json.dumps(value).encode('utf-8')
+                serialized = json.dumps(value).encode("utf-8")
                 self.logger.debug("✅ Serialized primitive value: %s", serialized)
                 return serialized
-            serialized = json.dumps(value, default=str).encode('utf-8')
+            serialized = json.dumps(value, default=str).encode("utf-8")
             self.logger.debug("✅ Serialized complex value: %s", serialized)
             return serialized
 
@@ -139,7 +153,7 @@ class ConfigurationService():
                 return None
             try:
                 # First try to decode as a JSON string
-                decoded = value.decode('utf-8')
+                decoded = value.decode("utf-8")
                 # self.logger.debug("📋 Decoded UTF-8 string: %s", decoded)
 
                 try:
@@ -160,7 +174,7 @@ class ConfigurationService():
             store_type=StoreType.ETCD3,
             serializer=serialize,
             deserializer=deserialize,
-            config=config
+            config=config,
         )
         self.logger.debug("✅ ETCD store created successfully")
         return store
@@ -170,7 +184,7 @@ class ConfigurationService():
         self.logger.debug("🔄 Starting to load default configuration")
         self.logger.debug("📂 Reading default_config.json...")
 
-        with open('default_config.json', 'r') as f:
+        with open("default_config.json", "r") as f:
             default_config = json.load(f)
             self.logger.debug("📋 Default config loaded: %s", default_config)
 
@@ -200,7 +214,7 @@ class ConfigurationService():
             value_json = json.dumps(value)
 
             EXCLUDED_KEYS = [
-                '/services/endpoints',
+                "/services/endpoints",
             ]
             if key not in EXCLUDED_KEYS:
                 # Encrypt the value
@@ -218,7 +232,9 @@ class ConfigurationService():
                 # Verify the stored value
                 encrypted_stored_value = await self.store.get_key(key)
                 if encrypted_stored_value:
-                    decrypted_value = self.encryption_service.decrypt(encrypted_stored_value)
+                    decrypted_value = self.encryption_service.decrypt(
+                        encrypted_stored_value
+                    )
                     stored_value = json.loads(decrypted_value)
 
                     if stored_value != value:
@@ -233,7 +249,9 @@ class ConfigurationService():
                 return False
 
         except Exception as e:
-            self.logger.error("❌ Failed to store config value for key %s: %s", key, str(e))
+            self.logger.error(
+                "❌ Failed to store config value for key %s: %s", key, str(e)
+            )
             self.logger.exception("Detailed error:")
             return False
 
@@ -247,8 +265,7 @@ class ConfigurationService():
             self.logger.debug("✅ Configuration check complete. Exists: %s", exists)
             return exists
         except Exception as e:
-            self.logger.error(
-                "❌ Error checking configuration existence: %s", str(e))
+            self.logger.error("❌ Error checking configuration existence: %s", str(e))
             self.logger.exception("Detailed error:")
             return False
 
@@ -265,6 +282,7 @@ class ConfigurationService():
 
     def _start_watch(self):
         """Start watching etcd changes in a background thread"""
+
         def watch_etcd():
             while self.store.client is None:
                 self.logger.debug("🔄 Waiting for ETCD client to be initialized...")
@@ -288,7 +306,7 @@ class ConfigurationService():
             if encrypted_value is not None:
                 try:
                     # Determine if value needs decryption
-                    UNENCRYPTED_KEYS = ['/services/endpoints']
+                    UNENCRYPTED_KEYS = ["/services/endpoints"]
                     needs_decryption = key not in UNENCRYPTED_KEYS
 
                     # Get decrypted or raw value
@@ -299,18 +317,16 @@ class ConfigurationService():
                     )
 
                     # Parse value if it's not already a dict
-                    result = (
-                        json.loads(value)
-                        if not isinstance(value, dict)
-                        else value
-                    )
+                    result = json.loads(value) if not isinstance(value, dict) else value
 
                     # Cache and return result
                     self.cache[key] = result
                     return result
 
                 except Exception as e:
-                    self.logger.error(f"❌ Failed to process value for key {key}: {str(e)}")
+                    self.logger.error(
+                        f"❌ Failed to process value for key {key}: {str(e)}"
+                    )
                     return default
             else:
                 self.logger.debug(f"⚠️ No value found in ETCD for key: {key}")

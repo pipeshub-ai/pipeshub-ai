@@ -13,12 +13,16 @@ from app.config.configuration_service import (
     config_node_constants,
 )
 from app.exceptions.indexing_exceptions import IndexingError
-from app.config.utils.named_constants.arangodb_constants import CollectionNames, ProgressStatus
+from app.config.utils.named_constants.arangodb_constants import (
+    CollectionNames,
+    ProgressStatus,
+)
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 # Concurrency control settings
 MAX_CONCURRENT_TASKS = 5  # Maximum number of messages to process concurrently
 RATE_LIMIT_PER_SECOND = 2  # Maximum number of new tasks to start per second
+
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=15))
 async def make_api_call(signed_url_route: str, token: str) -> dict:
@@ -32,24 +36,31 @@ async def make_api_call(signed_url_route: str, token: str) -> dict:
     Returns:
         dict: The response from the API
     """
-    async with aiohttp.ClientSession() as session:
-        url = signed_url_route
+    start_time = datetime.now()
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = signed_url_route
 
-        # Add the JWT to the Authorization header
-        headers = {
-            'Authorization': f'Bearer {token}',
-            'Content-Type': 'application/json'
-        }
+            # Add the JWT to the Authorization header
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            }
 
-        # Make the request
-        async with session.get(url, headers=headers) as response:
-            content_type = response.headers.get('Content-Type', '').lower()
-            if response.status == 200 and 'application/json' in content_type:
-                data = await response.json()
-                return {'is_json': True, 'data': data}
-            else:
-                data = await response.read()
-                return {'is_json': False, 'data': data}
+            # Make the request
+            async with session.get(url, headers=headers) as response:
+                duration = (datetime.now() - start_time).total_seconds()
+                content_type = response.headers.get("Content-Type", "").lower()
+
+                if response.status == 200 and "application/json" in content_type:
+                    data = await response.json()
+                    return {"is_json": True, "data": data}
+                else:
+                    data = await response.read()
+                    return {"is_json": False, "data": data}
+    except Exception as e:
+        raise
+
 
 class KafkaConsumerManager:
     def __init__(self, logger, config_service: ConfigurationService, event_processor):
@@ -70,23 +81,25 @@ class KafkaConsumerManager:
         try:
 
             async def get_kafka_config():
-                kafka_config = await self.config_service.get_config(config_node_constants.KAFKA.value)
-                brokers = kafka_config['brokers']
+                kafka_config = await self.config_service.get_config(
+                    config_node_constants.KAFKA.value
+                )
+                brokers = kafka_config["brokers"]
 
                 return {
-                    'bootstrap.servers': ",".join(brokers),
-                    'group.id': 'record_consumer_group',
-                    'auto.offset.reset': 'earliest',
-                    'enable.auto.commit': True,
-                    'isolation.level': 'read_committed',
-                    'enable.partition.eof': False,
-                    'max.poll.interval.ms': 900000,
-                    'client.id': KafkaConfig.CLIENT_ID_MAIN.value
+                    "bootstrap.servers": ",".join(brokers),
+                    "group.id": "record_consumer_group",
+                    "auto.offset.reset": "earliest",
+                    "enable.auto.commit": True,
+                    "isolation.level": "read_committed",
+                    "enable.partition.eof": False,
+                    "max.poll.interval.ms": 900000,
+                    "client.id": KafkaConfig.CLIENT_ID_MAIN.value,
                 }
 
             KAFKA_CONFIG = await get_kafka_config()
             # Topic to consume from
-            KAFKA_TOPIC = 'record-events'
+            KAFKA_TOPIC = "record-events"
 
             self.consumer = Consumer(KAFKA_CONFIG)
             self.consumer.subscribe([KAFKA_TOPIC])
@@ -94,7 +107,8 @@ class KafkaConsumerManager:
         except Exception as e:
             self.logger.error(f"Failed to create consumer: {e}")
             self.logger.info(
-                "Please ensure the topic 'record-events' exists on the Kafka broker")
+                "Please ensure the topic 'record-events' exists on the Kafka broker"
+            )
             raise
 
     async def process_message_wrapper(self, message):
@@ -108,7 +122,9 @@ class KafkaConsumerManager:
         try:
             self.logger.info(f"Starting to process message: {message_id}")
             success = await self._process_message(message)
-            self.logger.info(f"Finished processing message {message_id}: {'Success' if success else 'Failed'}")
+            self.logger.info(
+                f"Finished processing message {message_id}: {'Success' if success else 'Failed'}"
+            )
             return success
         except Exception as e:
             self.logger.error(f"Error in process_message_wrapper for {message_id}: {e}")
@@ -118,98 +134,127 @@ class KafkaConsumerManager:
             self.semaphore.release()
 
     async def _process_message(self, message):
+        start_time = datetime.now()
         topic_partition = f"{message.topic()}-{message.partition()}"
         offset = message.offset()
         message_id = f"{topic_partition}-{offset}"
         record_id = None
         error_occurred = False
-        
-        # Check for DUPLICATE processing first
-        if self.is_message_processed(topic_partition, offset):
-            self.logger.info(f"Message {message_id} already processed, skipping")
-            return True
+        error_msg = None
+
+        self.logger.info(f"Starting processing of message {message_id}")
 
         try:
-            message_value = message.value()
-            if isinstance(message_value, bytes):
-                message_value = message_value.decode('utf-8')
-
-            # Parse JSON only once with proper error handling
-            data = json.loads(message_value)
-            # Handle nested JSON strings
-            if isinstance(data, str):
-                data = json.loads(data)
-            self.logger.debug(f"Parsed message data: {type(data)}")
-
-            event_type = data.get('eventType')
-            if not event_type:
-                raise ValueError(f"Missing event_type for topic: {message.topic()}")
-
-            self.logger.info(f"Processing file record with event type: {event_type}")
-            payload_data = data.get('payload')
-            record_id = payload_data.get('recordId') if payload_data else None
-            
-            # Get signed URL from the route
-            if payload_data and payload_data.get('signedUrlRoute'):
-                # Make request to get signed URL
-                payload = {
-                    'orgId': payload_data['orgId'],
-                    'scopes': ["storage:token"]
-                }
-                # Generate the JWT token
-                token = await self.generate_jwt(payload)
-
-                # Make the API call with the token
-                response = await make_api_call(payload_data['signedUrlRoute'], token)
-                self.logger.debug(f"Signed URL response received")
-                
-                if response.get('is_json') is True:
-                    response_data = response.get('data')
-                    signed_url = response_data['signedUrl']
-                    # Process the file using signed URL
-                    payload_data['signedUrl'] = signed_url
-                    data["payload"] = payload_data
-                else:
-                    response_data = response.get('data')
-                    payload_data['buffer'] = response_data
-
-                await self.event_processor.on_event(data)
-                self.logger.info(f"✅ Successfully processed document for event: {event_type}")
-                self.mark_message_processed(topic_partition, offset)
+            if self.is_message_processed(topic_partition, offset):
+                self.logger.info(f"Message {message_id} already processed, skipping")
                 return True
+
+            # Message parsing
+            try:
+                message_value = message.value()
+                if isinstance(message_value, bytes):
+                    message_value = message_value.decode("utf-8")
+                    self.logger.debug(f"Decoded message {message_id} from bytes")
+
+                data = json.loads(message_value)
+                if isinstance(data, str):
+                    data = json.loads(data)
+                    self.logger.debug(
+                        f"Handled double-encoded JSON for message {message_id}"
+                    )
+            except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                self.logger.error(
+                    f"Failed to parse message {message_id}: {str(e)}\n"
+                    f"Raw value: {message_value[:1000]}..."
+                )
+                raise
+
+            # Event processing
+            event_type = data.get("eventType")
+            if not event_type:
+                raise ValueError(f"Missing event_type in message {message_id}")
+
+            payload_data = data.get("payload", {})
+            record_id = payload_data.get("recordId")
+
+            self.logger.info(
+                f"Processing record {record_id} with event type: {event_type}. "
+                f"Message ID: {message_id}"
+            )
+
+            # Signed URL handling
+            if payload_data and payload_data.get("signedUrlRoute"):
+                try:
+                    payload = {
+                        "orgId": payload_data["orgId"],
+                        "scopes": ["storage:token"],
+                    }
+                    token = await self.generate_jwt(payload)
+                    self.logger.debug(f"Generated JWT token for message {message_id}")
+
+                    response = await make_api_call(
+                        payload_data["signedUrlRoute"], token
+                    )
+                    self.logger.debug(
+                        f"Received signed URL response for message {message_id}"
+                    )
+
+                    if response.get("is_json"):
+                        signed_url = response["data"]["signedUrl"]
+                        payload_data["signedUrl"] = signed_url
+                    else:
+                        payload_data["buffer"] = response["data"]
+                    data["payload"] = payload_data
+
+                    await self.event_processor.on_event(data)
+                    processing_time = (datetime.now() - start_time).total_seconds()
+                    self.logger.info(
+                        f"✅ Successfully processed document for event: {event_type}. "
+                        f"Record: {record_id}, Time: {processing_time:.2f}s"
+                    )
+                    self.mark_message_processed(topic_partition, offset)
+                    return True
+                except Exception as e:
+                    error_occurred = True
+                    error_msg = f"Failed to process signed URL: {str(e)}"
+                    raise
             else:
-                raise ValueError(f"No signedUrlRoute found in payload")
-                
+                raise ValueError(
+                    f"No signedUrlRoute found in payload for message {message_id}"
+                )
+
         except IndexingError as e:
             error_occurred = True
-            error_msg = f"❌ Indexing error: {str(e)}"
-            self.logger.error(error_msg)
-            raise
-        except json.JSONDecodeError as e:
-            error_occurred = True
-            error_msg = f"Failed to parse JSON: {str(e)}"
-            self.logger.error(error_msg)
+            error_msg = f"❌ Indexing error for record {record_id}: {str(e)}"
+            self.logger.error(error_msg, exc_info=True)
             raise
         except Exception as e:
             error_occurred = True
             error_msg = f"Error processing message {message_id}: {str(e)}"
-            self.logger.error(error_msg)
+            self.logger.error(error_msg, exc_info=True)
             raise
         finally:
-            # Handle any failures by updating document status
+            processing_time = (datetime.now() - start_time).total_seconds()
+            self.logger.info(
+                f"Message {message_id} processing completed in {processing_time:.2f}s. "
+                f"Success: {not error_occurred}"
+            )
+
             if error_occurred and record_id:
                 await self._update_document_status(
                     record_id=record_id,
                     indexing_status=ProgressStatus.FAILED.value,
                     extraction_status=ProgressStatus.FAILED.value,
-                    reason=error_msg or "Unknown error occurred"
+                    reason=error_msg,
                 )
                 return False
 
     def is_message_processed(self, topic_partition: str, offset: int) -> bool:
         """Check if a message has already been processed."""
-        return (topic_partition in self.processed_messages and
-                offset in self.processed_messages[topic_partition])
+        return (
+            topic_partition in self.processed_messages
+            and offset in self.processed_messages[topic_partition]
+        )
 
     def mark_message_processed(self, topic_partition: str, offset: int):
         """Mark a message as processed."""
@@ -243,43 +288,80 @@ class KafkaConsumerManager:
         self.cleanup_completed_tasks()
 
         # Log current task count
-        self.logger.debug(f"Active tasks: {len(self.active_tasks)}/{MAX_CONCURRENT_TASKS}")
+        self.logger.debug(
+            f"Active tasks: {len(self.active_tasks)}/{MAX_CONCURRENT_TASKS}"
+        )
 
     async def consume_messages(self):
         """Main consumption loop."""
+        start_time = datetime.now()
+        processed_count = 0
+        error_count = 0
+
         try:
             self.logger.info("Starting Kafka consumer loop")
             while self.running:
                 try:
-                    message = self.consumer.poll(0.1)  # Poll with a shorter timeout
+                    message = self.consumer.poll(0.1)
 
                     if message is None:
-                        # Wait a bit before the next poll if no message was received
                         await asyncio.sleep(0.1)
                         continue
 
                     if message.error():
                         if message.error().code() == KafkaError._PARTITION_EOF:
+                            self.logger.debug("Reached end of partition")
                             continue
                         else:
-                            self.logger.error(f"Kafka error: {message.error()}")
+                            error_count += 1
+                            self.logger.error(
+                                f"Kafka error: {message.error()}, "
+                                f"Code: {message.error().code()}"
+                            )
                             continue
 
-                    # Start processing the message in a new task
                     await self.start_processing_task(message)
+                    processed_count += 1
+
+                    # Log statistics periodically
+                    if processed_count % 100 == 0:
+                        runtime = (datetime.now() - start_time).total_seconds()
+                        self.logger.info(
+                            f"Processing statistics: "
+                            f"Messages: {processed_count}, "
+                            f"Errors: {error_count}, "
+                            f"Runtime: {runtime:.2f}s, "
+                            f"Rate: {processed_count/runtime:.2f} msg/s"
+                        )
 
                 except asyncio.CancelledError:
                     self.logger.info("Kafka consumer task cancelled")
                     break
                 except Exception as e:
-                    self.logger.error(f"Error in consume_messages loop: {e}")
-                    await asyncio.sleep(1)  # Wait a bit before retrying
+                    error_count += 1
+                    self.logger.error(
+                        f"Error in consume_messages loop: {str(e)}", exc_info=True
+                    )
+                    await asyncio.sleep(1)
+
         except Exception as e:
-            self.logger.error(f"Fatal error in consume_messages: {e}")
+            self.logger.error(
+                f"Fatal error in consume_messages: {str(e)}", exc_info=True
+            )
         finally:
-            # Wait for all active tasks to complete before shutting down
+            runtime = (datetime.now() - start_time).total_seconds()
+            self.logger.info(
+                f"Consumer shutting down. Final statistics: "
+                f"Messages: {processed_count}, "
+                f"Errors: {error_count}, "
+                f"Runtime: {runtime:.2f}s, "
+                f"Average rate: {processed_count/runtime:.2f} msg/s"
+            )
+
             if self.active_tasks:
-                self.logger.info(f"Waiting for {len(self.active_tasks)} active tasks to complete...")
+                self.logger.info(
+                    f"Waiting for {len(self.active_tasks)} active tasks to complete..."
+                )
                 await asyncio.gather(*self.active_tasks, return_exceptions=True)
 
             if self.consumer:
@@ -297,22 +379,24 @@ class KafkaConsumerManager:
             str: The generated JWT token
         """
         # Get the JWT secret from environment variable
-        secret_keys = await self.config_service.get_config(config_node_constants.SECRET_KEYS.value)
-        scoped_jwt_secret = secret_keys.get('scopedJwtSecret')
+        secret_keys = await self.config_service.get_config(
+            config_node_constants.SECRET_KEYS.value
+        )
+        scoped_jwt_secret = secret_keys.get("scopedJwtSecret")
         if not scoped_jwt_secret:
             raise ValueError("SCOPED_JWT_SECRET environment variable is not set")
 
         # Add standard claims if not present
-        if 'exp' not in token_payload:
+        if "exp" not in token_payload:
             # Set expiration to 1 hour from now
-            token_payload['exp'] = datetime.now(timezone.utc) + timedelta(hours=1)
+            token_payload["exp"] = datetime.now(timezone.utc) + timedelta(hours=1)
 
-        if 'iat' not in token_payload:
+        if "iat" not in token_payload:
             # Set issued at to current time
-            token_payload['iat'] = datetime.now(timezone.utc)
+            token_payload["iat"] = datetime.now(timezone.utc)
 
         # Generate the JWT token using jose
-        token = jwt.encode(token_payload, scoped_jwt_secret, algorithm='HS256')
+        token = jwt.encode(token_payload, scoped_jwt_secret, algorithm="HS256")
 
         return token
 
@@ -330,13 +414,12 @@ class KafkaConsumerManager:
         record_id: str,
         indexing_status: str,
         extraction_status: str,
-        reason: str = None
+        reason: str = None,
     ):
         """Update document status in Arango"""
         try:
             record = await self.event_processor.arango_service.get_document(
-                record_id,
-                CollectionNames.RECORDS.value
+                record_id, CollectionNames.RECORDS.value
             )
             if not record:
                 self.logger.error(f"❌ Record {record_id} not found for status update")
@@ -345,23 +428,25 @@ class KafkaConsumerManager:
             doc = dict(record)
             if doc.get("extractionStatus") == ProgressStatus.COMPLETED.value:
                 extraction_status = ProgressStatus.COMPLETED.value
-            doc.update({
-                "indexingStatus": indexing_status,
-                "extractionStatus": extraction_status
-            })
+            doc.update(
+                {
+                    "indexingStatus": indexing_status,
+                    "extractionStatus": extraction_status,
+                }
+            )
 
             if reason:
                 doc["reason"] = reason
 
             docs = [doc]
             await self.event_processor.arango_service.batch_upsert_nodes(
-                docs,
-                CollectionNames.RECORDS.value
+                docs, CollectionNames.RECORDS.value
             )
             self.logger.info(f"✅ Updated document status for record {record_id}")
 
         except Exception as e:
             self.logger.error(f"❌ Failed to update document status: {str(e)}")
+
 
 class RateLimiter:
     """Simple rate limiter to control how many tasks start per second"""

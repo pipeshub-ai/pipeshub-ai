@@ -30,7 +30,7 @@ class PPTXParser:
         # Convert the document using PPTX format
         result = self.converter.convert(source)
 
-        if result.status.value != 'success':
+        if result.status.value != "success":
             raise ValueError(f"Failed to parse PPTX: {result.status}")
 
         return result.document
@@ -50,8 +50,7 @@ class PPTXParser:
         """
         result = self.converter.convert(file_path)
 
-        if result.status.value != 'success':
+        if result.status.value != "success":
             raise ValueError(f"Failed to parse PPTX: {result.status}")
 
         return result.document
-

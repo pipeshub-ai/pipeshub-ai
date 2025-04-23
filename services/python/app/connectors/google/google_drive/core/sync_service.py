@@ -14,6 +14,7 @@ from app.config.utils.named_constants.arangodb_constants import (
     OriginTypes,
     RecordRelations,
     RecordTypes,
+    MimeTypes,
 )
 from app.config.configuration_service import ConfigurationService, config_node_constants
 from app.connectors.core.kafka_service import KafkaService
@@ -34,6 +35,7 @@ class DriveSyncProgress:
         self.status = "initializing"
         self.lastUpdatedTimestampAtSource = get_epoch_timestamp_in_ms()
 
+
 class BaseDriveSyncService(ABC):
     """Abstract base class for sync services"""
 
@@ -44,7 +46,7 @@ class BaseDriveSyncService(ABC):
         arango_service: ArangoService,
         change_handler,
         kafka_service: KafkaService,
-        celery_app
+        celery_app,
     ):
         self.logger = logger
         self.config_service = config
@@ -80,37 +82,11 @@ class BaseDriveSyncService(ABC):
         pass
 
     @abstractmethod
-    async def perform_initial_sync(self, org_id, action: str = "start", resume_hierarchy: Dict = None) -> bool:
+    async def perform_initial_sync(
+        self, org_id, action: str = "start", resume_hierarchy: Dict = None
+    ) -> bool:
         """Perform initial sync"""
         pass
-
-    async def setup_changes_watch(self, user_service: DriveUserService, user_email: str) -> Optional[Dict]:
-        """Set up changes.watch after initial sync"""
-        try:
-            # Set up watch
-            page_token = await self.arango_service.get_page_token_db(user_email=user_email)
-            if not page_token:
-                self.logger.warning("⚠️ No page token found for user %s", user_email)
-                return await user_service.create_changes_watch()
-
-            # Check if the page token is expired
-            current_time = get_epoch_timestamp_in_ms()
-            expiration = page_token.get('expiration', 0)
-            self.logger.info("Current time: %s", current_time)
-            self.logger.info("Page token expiration: %s", expiration)
-            if expiration < current_time:
-                self.logger.warning("⚠️ Page token expired for user %s", user_email)
-
-                await user_service.stop_watch(page_token['channelId'], page_token['resourceId'])
-                await self.arango_service.delete_page_token_db(user_email=user_email)
-
-                return await user_service.create_changes_watch()
-
-            self.logger.info("✅ Page token is not expired for user %s. Using existing webhooks", user_email)
-            return page_token
-        except Exception as e:
-            self.logger.error("Failed to set up changes watch: %s", str(e))
-            return None
 
     async def initialize_workers(self, user_service: DriveUserService):
         """Initialize workers for root and shared drives"""
@@ -123,10 +99,8 @@ class BaseDriveSyncService(ABC):
 
                 # Initialize root drive worker
                 self.logger.info("🏠 Setting up root drive worker...")
-                self.drive_workers['root'] = DriveWorker(
-                    'root',
-                    user_service,
-                    self.arango_service
+                self.drive_workers["root"] = DriveWorker(
+                    "root", user_service, self.arango_service
                 )
                 self.logger.info("✅ Root drive worker initialized")
 
@@ -136,26 +110,37 @@ class BaseDriveSyncService(ABC):
                 if drives:
                     self.logger.info(f"📦 Found {len(drives)} shared drives")
                     for drive in drives:
-                        drive_id = drive['id']
-                        drive_name = drive.get('name', 'Unknown')
+                        drive_id = drive["id"]
+                        drive_name = drive.get("name", "Unknown")
                         self.logger.info(
-                            "🔄 Initializing worker for drive: %s (%s)", drive_name, drive_id)
+                            "🔄 Initializing worker for drive: %s (%s)",
+                            drive_name,
+                            drive_id,
+                        )
 
                         self.drive_workers[drive_id] = DriveWorker(
-                            drive_id,
-                            user_service,
-                            self.arango_service
+                            drive_id, user_service, self.arango_service
                         )
                         self.logger.info(
-                            "✅ Worker initialized for drive: %s", drive_name)
+                            "✅ Worker initialized for drive: %s", drive_name
+                        )
 
                 total_workers = len(self.drive_workers)
-                self.logger.info("""
+                self.logger.info(
+                    """
                 🎉 Worker initialization completed:
                 - Total workers: %s
                 - Root drive: %s
                 - Shared drives: %s
-                """, total_workers, '✅' if 'root' in self.drive_workers else '❌', total_workers - 1 if 'root' in self.drive_workers else total_workers)
+                """,
+                    total_workers,
+                    "✅" if "root" in self.drive_workers else "❌",
+                    (
+                        total_workers - 1
+                        if "root" in self.drive_workers
+                        else total_workers
+                    ),
+                )
                 return True
 
             except Exception as e:
@@ -169,14 +154,18 @@ class BaseDriveSyncService(ABC):
                 users = await self.arango_service.get_users(org_id=org_id)
                 for user in users:
                     # Check current state using get_user_sync_state
-                    sync_state = await self.arango_service.get_user_sync_state(user['email'], Connectors.GOOGLE_DRIVE.value)
-                    current_state = sync_state.get('syncState') if sync_state else 'NOT_STARTED'
+                    sync_state = await self.arango_service.get_user_sync_state(
+                        user["email"], Connectors.GOOGLE_DRIVE.value
+                    )
+                    current_state = (
+                        sync_state.get("syncState") if sync_state else "NOT_STARTED"
+                    )
 
-                    if current_state == 'IN_PROGRESS':
+                    if current_state == "IN_PROGRESS":
                         self.logger.warning("💥 Sync service is already running")
                         return False
 
-                    if current_state == 'PAUSED':
+                    if current_state == "PAUSED":
                         self.logger.warning("💥 Sync is paused, use resume to continue")
                         return False
 
@@ -207,10 +196,14 @@ class BaseDriveSyncService(ABC):
                 users = await self.arango_service.get_users(org_id=org_id)
                 for user in users:
                     # Check current state using get_user_sync_state
-                    sync_state = await self.arango_service.get_user_sync_state(user['email'], Connectors.GOOGLE_DRIVE.value)
-                    current_state = sync_state.get('syncState') if sync_state else 'NOT_STARTED'
+                    sync_state = await self.arango_service.get_user_sync_state(
+                        user["email"], Connectors.GOOGLE_DRIVE.value
+                    )
+                    current_state = (
+                        sync_state.get("syncState") if sync_state else "NOT_STARTED"
+                    )
 
-                    if current_state != 'IN_PROGRESS':
+                    if current_state != "IN_PROGRESS":
                         self.logger.warning("💥 Sync service is not running")
                         continue
 
@@ -218,9 +211,9 @@ class BaseDriveSyncService(ABC):
 
                     # Update user state
                     await self.arango_service.update_user_sync_state(
-                        user['email'],
-                        'PAUSED',
-                        service_type=Connectors.GOOGLE_DRIVE.value
+                        user["email"],
+                        "PAUSED",
+                        service_type=Connectors.GOOGLE_DRIVE.value,
                     )
 
                     # Cancel current sync task
@@ -245,17 +238,19 @@ class BaseDriveSyncService(ABC):
                 users = await self.arango_service.get_users(org_id=org_id)
                 for current_user in users:
                     # Check current state using get_user_sync_state
-                    sync_state = await self.arango_service.get_user_sync_state(current_user['email'], Connectors.GOOGLE_DRIVE.value)
+                    sync_state = await self.arango_service.get_user_sync_state(
+                        current_user["email"], Connectors.GOOGLE_DRIVE.value
+                    )
                     if not sync_state:
                         self.logger.warning("⚠️ No sync state found, starting fresh")
                         return await self.start(org_id)
 
-                    current_state = sync_state.get('syncState')
-                    if current_state == 'IN_PROGRESS':
+                    current_state = sync_state.get("syncState")
+                    if current_state == "IN_PROGRESS":
                         self.logger.warning("💥 Sync service is already running")
                         return False
 
-                    if current_state != 'PAUSED':
+                    if current_state != "PAUSED":
                         self.logger.warning("💥 Sync was not paused, use start instead")
                         return False
 
@@ -279,20 +274,26 @@ class BaseDriveSyncService(ABC):
         if self._stop_requested:
             users = await self.arango_service.get_users(org_id=org_id)
             for user in users:
-                current_state = await self.arango_service.get_user_sync_state(user['email'], Connectors.GOOGLE_DRIVE.value)
+                current_state = await self.arango_service.get_user_sync_state(
+                    user["email"], Connectors.GOOGLE_DRIVE.value
+                )
                 if current_state:
-                    current_state = current_state.get('syncState')
-                    if current_state == 'IN_PROGRESS':
+                    current_state = current_state.get("syncState")
+                    if current_state == "IN_PROGRESS":
                         await self.arango_service.update_user_sync_state(
-                            user['email'],
-                            'PAUSED',
-                            service_type=Connectors.GOOGLE_DRIVE.value
+                            user["email"],
+                            "PAUSED",
+                            service_type=Connectors.GOOGLE_DRIVE.value,
                         )
                         self.logger.info("✅ Drive sync state updated before stopping")
                         return True
             return False
         return False
 
+    @abstractmethod
+    async def resync_drive(self, org_id, user):
+        """Resync a user's Google Drive"""
+        pass
 
     async def process_drive_data(self, drive_info, user):
         """Process drive data including drive document, file record, record and permissions
@@ -305,67 +306,75 @@ class BaseDriveSyncService(ABC):
             bool: True if processing successful, False otherwise
         """
         try:
-            self.logger.info("🚀 Processing drive data for drive %s", drive_info['drive']['id'])
+            self.logger.info(
+                "🚀 Processing drive data for drive %s", drive_info["drive"]["id"]
+            )
 
             # Check if drive already exists
             existing_drive = self.arango_service.db.aql.execute(
-                f'FOR doc IN {CollectionNames.RECORDS.value} FILTER doc.externalRecordId == @drive_id RETURN doc',
-                bind_vars={'drive_id': drive_info['drive']['id']}
+                f"FOR doc IN {CollectionNames.RECORDS.value} FILTER doc.externalRecordId == @drive_id RETURN doc",
+                bind_vars={"drive_id": drive_info["drive"]["id"]},
             )
             existing = next(existing_drive, None)
 
             if existing:
-                self.logger.debug("Drive %s already exists in ArangoDB", drive_info['drive']['id'])
-                drive_info['drive']['_key'] = existing['_key']
-                drive_info['record']['_key'] = existing['_key']
+                self.logger.debug(
+                    "Drive %s already exists in ArangoDB", drive_info["drive"]["id"]
+                )
+                drive_info["drive"]["_key"] = existing["_key"]
+                drive_info["record"]["_key"] = existing["_key"]
 
             # Save drive in drives collection
             await self.arango_service.batch_upsert_nodes(
-                [drive_info['drive']],
-                collection=CollectionNames.DRIVES.value
+                [drive_info["drive"]], collection=CollectionNames.DRIVES.value
             )
 
             # Save drive as record
             await self.arango_service.batch_upsert_nodes(
-                [drive_info['record']],
-                collection=CollectionNames.RECORDS.value
+                [drive_info["record"]], collection=CollectionNames.RECORDS.value
             )
 
             # Get user ID for relationships
-            user_id = await self.arango_service.get_entity_id_by_email(user['email'])
+            user_id = await self.arango_service.get_entity_id_by_email(user["email"])
             self.logger.info("user_id: %s", user_id)
 
             # Create user-drive relationship
             user_drive_relation = {
-                '_from': f'users/{user_id}',
-                '_to': f'drives/{drive_info["drive"]["_key"]}',
-                'access_level': drive_info['drive']['access_level']
+                "_from": f"users/{user_id}",
+                "_to": f'drives/{drive_info["drive"]["_key"]}',
+                "access_level": drive_info["drive"]["access_level"],
             }
             self.logger.info("user_drive_relation: %s", user_drive_relation)
 
             await self.arango_service.batch_create_edges(
                 [user_drive_relation],
-                collection=CollectionNames.USER_DRIVE_RELATION.value
+                collection=CollectionNames.USER_DRIVE_RELATION.value,
             )
 
             # Create user-record relationship with permissions
             user_record_relation = {
-                '_to': f'users/{user_id}',
-                '_from': f'records/{drive_info["record"]["_key"]}',
-                'role': 'WRITER' if drive_info['drive']['access_level'] == 'writer' else 'READER',
-                'type': 'USER',
-                'externalPermissionId': None,
-                'createdAtTimestamp': get_epoch_timestamp_in_ms(),
-                'updatedAtTimestamp': get_epoch_timestamp_in_ms(),
-                'lastUpdatedTimestampAtSource': get_epoch_timestamp_in_ms()
+                "_to": f"users/{user_id}",
+                "_from": f'records/{drive_info["record"]["_key"]}',
+                "role": (
+                    "WRITER"
+                    if drive_info["drive"]["access_level"] == "writer"
+                    else "READER"
+                ),
+                "type": "USER",
+                "externalPermissionId": None,
+                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                "lastUpdatedTimestampAtSource": get_epoch_timestamp_in_ms(),
             }
 
             await self.arango_service.batch_create_edges(
-                [user_record_relation],
-                collection=CollectionNames.PERMISSIONS.value
+                [user_record_relation], collection=CollectionNames.PERMISSIONS.value
             )
 
-            self.logger.info("✅ Successfully processed drive data for drive %s", drive_info['drive']['id'])
+            self.logger.info(
+                "✅ Successfully processed drive data for drive %s",
+                drive_info["drive"]["id"],
+            )
             return True
 
         except Exception as e:
@@ -394,76 +403,82 @@ class BaseDriveSyncService(ABC):
                         self.logger.warning("❌ No metadata found for file")
                         continue
 
-                    file_id = metadata.get('id')
+                    file_id = metadata.get("id")
                     if not file_id:
                         self.logger.warning("❌ No file ID found for file")
                         continue
 
                     # Check if file already exists in ArangoDB
                     existing_file = self.arango_service.db.aql.execute(
-                        f'FOR doc IN {CollectionNames.RECORDS.value} FILTER doc.externalRecordId == @file_id RETURN doc',
-                        bind_vars={'file_id': file_id}
+                        f"FOR doc IN {CollectionNames.RECORDS.value} FILTER doc.externalRecordId == @file_id RETURN doc",
+                        bind_vars={"file_id": file_id},
                     )
                     existing = next(existing_file, None)
 
                     if existing:
-                        self.logger.debug(
-                            "File %s already exists in ArangoDB", file_id)
+                        self.logger.debug("File %s already exists in ArangoDB", file_id)
                         existing_files.append(file_id)
 
                     else:
                         # Prepare File, Record and File Metadata
                         file = {
-                            '_key': str(uuid.uuid4()),
-                            'orgId': org_id,
-                            'name': str(metadata.get('name')),
-                            'isFile': metadata.get('mimeType', '') != MimeTypes.GOOGLE_DRIVE_FOLDER.value,
-                            'extension': metadata.get('fileExtension', None),
-                            'mimeType': metadata.get('mimeType', None),
-                            'sizeInBytes': int(metadata.get('size', 0)),
-                            'webUrl': metadata.get('webViewLink', None),
-                            'etag': metadata.get('etag', None),
-                            'ctag': metadata.get('ctag', None),
-                            'quickXorHash': metadata.get('quickXorHash', None),
-                            'crc32Hash': metadata.get('crc32Hash', None),
-                            'md5Checksum': metadata.get('md5Checksum', None),
-                            'sha1Hash': metadata.get('sha1Checksum', None),
-                            'sha256Hash': metadata.get('sha256Checksum', None),
-                            'path': metadata.get('path', None)
+                            "_key": str(uuid.uuid4()),
+                            "orgId": org_id,
+                            "name": str(metadata.get("name")),
+                            "isFile": metadata.get("mimeType", "")
+                            != MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+                            "extension": metadata.get("fileExtension", None),
+                            "mimeType": metadata.get("mimeType", None),
+                            "sizeInBytes": int(metadata.get("size", 0)),
+                            "webUrl": metadata.get("webViewLink", None),
+                            "etag": metadata.get("etag", None),
+                            "ctag": metadata.get("ctag", None),
+                            "quickXorHash": metadata.get("quickXorHash", None),
+                            "crc32Hash": metadata.get("crc32Hash", None),
+                            "md5Checksum": metadata.get("md5Checksum", None),
+                            "sha1Hash": metadata.get("sha1Checksum", None),
+                            "sha256Hash": metadata.get("sha256Checksum", None),
+                            "path": metadata.get("path", None),
                         }
 
                         record = {
-                            '_key': f'{file["_key"]}',
-                            'orgId': org_id,
-                            'recordName': f'{file["name"]}',
-                            'recordType': RecordTypes.FILE.value,
-                            'version': 0,
-                            'externalRecordId': str(file_id),
-                            'externalRevisionId': metadata.get('headRevisionId', None),
-                            'createdAtTimestamp':  get_epoch_timestamp_in_ms(),
-                            'updatedAtTimestamp':  get_epoch_timestamp_in_ms(),
-                            'sourceCreatedAtTimestamp': int(parse_timestamp(metadata.get('createdTime')).timestamp()),
-                            'sourceLastModifiedTimestamp': int(parse_timestamp(metadata.get('modifiedTime')).timestamp()),
+                            "_key": f'{file["_key"]}',
+                            "orgId": org_id,
+                            "recordName": f'{file["name"]}',
+                            "recordType": RecordTypes.FILE.value,
+                            "version": 0,
+                            "externalRecordId": str(file_id),
+                            "externalRevisionId": metadata.get("headRevisionId", None),
+                            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                            "sourceCreatedAtTimestamp": int(
+                                parse_timestamp(metadata.get("createdTime")).timestamp()
+                            ),
+                            "sourceLastModifiedTimestamp": int(
+                                parse_timestamp(
+                                    metadata.get("modifiedTime")
+                                ).timestamp()
+                            ),
                             "origin": OriginTypes.CONNECTOR.value,
-                            'connectorName': Connectors.GOOGLE_DRIVE.value,
-                            'isArchived': False,
-                            'isDeleted': False,
-                            'isLatestVersion': True,
-                            'isDirty': False,
-                            'lastSyncTimestamp':  get_epoch_timestamp_in_ms(),
-                            'indexingStatus': 'NOT_STARTED',
-                            'extractionStatus': 'NOT_STARTED',
-                            'lastIndexTimestamp': None,
-                            'lastExtractionTimestamp': None,
-                            'isDirty': False,
-                            'reason': None,
+                            "connectorName": Connectors.GOOGLE_DRIVE.value,
+                            "isArchived": False,
+                            "isDeleted": False,
+                            "isLatestVersion": True,
+                            "isDirty": False,
+                            "lastSyncTimestamp": get_epoch_timestamp_in_ms(),
+                            "indexingStatus": "NOT_STARTED",
+                            "extractionStatus": "NOT_STARTED",
+                            "lastIndexTimestamp": None,
+                            "lastExtractionTimestamp": None,
+                            "isDirty": False,
+                            "reason": None,
                         }
 
                         is_of_type_record = {
-                            '_from': f'records/{record["_key"]}',
-                            '_to': f'files/{file["_key"]}',
-                            "createdAtTimestamp" : get_epoch_timestamp_in_ms(),
-                            "updatedAtTimestamp" : get_epoch_timestamp_in_ms(),
+                            "_from": f'records/{record["_key"]}',
+                            "_to": f'files/{file["_key"]}',
+                            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                         }
 
                         files.append(file)
@@ -475,55 +490,77 @@ class BaseDriveSyncService(ABC):
                     try:
                         txn = None
                         txn = self.arango_service.db.begin_transaction(
-                            read=[CollectionNames.FILES.value, CollectionNames.RECORDS.value, CollectionNames.RECORD_RELATIONS.value, CollectionNames.IS_OF_TYPE.value,
-                                  CollectionNames.USERS.value, CollectionNames.GROUPS.value, CollectionNames.ORGS.value, CollectionNames.ANYONE.value, CollectionNames.PERMISSIONS.value, CollectionNames.BELONGS_TO.value],
-                            write=[CollectionNames.FILES.value, CollectionNames.RECORDS.value, CollectionNames.RECORD_RELATIONS.value, CollectionNames.IS_OF_TYPE.value,
-                                   CollectionNames.USERS.value, CollectionNames.GROUPS.value, CollectionNames.ORGS.value, CollectionNames.ANYONE.value, CollectionNames.PERMISSIONS.value, CollectionNames.BELONGS_TO.value]
+                            read=[
+                                CollectionNames.FILES.value,
+                                CollectionNames.RECORDS.value,
+                                CollectionNames.RECORD_RELATIONS.value,
+                                CollectionNames.IS_OF_TYPE.value,
+                                CollectionNames.USERS.value,
+                                CollectionNames.GROUPS.value,
+                                CollectionNames.ORGS.value,
+                                CollectionNames.ANYONE.value,
+                                CollectionNames.PERMISSIONS.value,
+                                CollectionNames.BELONGS_TO.value,
+                            ],
+                            write=[
+                                CollectionNames.FILES.value,
+                                CollectionNames.RECORDS.value,
+                                CollectionNames.RECORD_RELATIONS.value,
+                                CollectionNames.IS_OF_TYPE.value,
+                                CollectionNames.USERS.value,
+                                CollectionNames.GROUPS.value,
+                                CollectionNames.ORGS.value,
+                                CollectionNames.ANYONE.value,
+                                CollectionNames.PERMISSIONS.value,
+                                CollectionNames.BELONGS_TO.value,
+                            ],
                         )
                         # Process files with revision checking
                         if files:
                             if not await self.arango_service.batch_upsert_nodes(
                                 files,
                                 collection=CollectionNames.FILES.value,
-                                transaction=txn
+                                transaction=txn,
                             ):
                                 raise Exception(
-                                    "Failed to batch upsert files with existing revision")
+                                    "Failed to batch upsert files with existing revision"
+                                )
 
                         # Process records and relations
                         if records:
                             if not await self.arango_service.batch_upsert_nodes(
                                 records,
                                 collection=CollectionNames.RECORDS.value,
-                                transaction=txn
+                                transaction=txn,
                             ):
-                                raise Exception(
-                                    "Failed to batch upsert records")
+                                raise Exception("Failed to batch upsert records")
 
                         if is_of_type_records:
                             if not await self.arango_service.batch_create_edges(
                                 is_of_type_records,
                                 collection=CollectionNames.IS_OF_TYPE.value,
-                                transaction=txn
+                                transaction=txn,
                             ):
                                 raise Exception(
-                                    "Failed to batch create is_of_type relations")
+                                    "Failed to batch create is_of_type relations"
+                                )
 
                         db = txn if txn else self.arango_service.db
                         # Prepare edge data if parent exists
                         for metadata in metadata_list:
-                            if 'parents' in metadata:
-                                self.logger.info("parents in metadata: %s",
-                                            metadata['parents'])
-                                for parent_id in metadata['parents']:
+                            if "parents" in metadata:
+                                self.logger.info(
+                                    "parents in metadata: %s", metadata["parents"]
+                                )
+                                for parent_id in metadata["parents"]:
                                     self.logger.info("parent_id: %s", parent_id)
                                     parent_cursor = db.aql.execute(
-                                        f'FOR doc IN {CollectionNames.RECORDS.value} FILTER doc.externalRecordId == @parent_id RETURN doc._key',
-                                        bind_vars={'parent_id': parent_id}
+                                        f"FOR doc IN {CollectionNames.RECORDS.value} FILTER doc.externalRecordId == @parent_id RETURN doc._key",
+                                        bind_vars={"parent_id": parent_id},
                                     )
                                     file_cursor = db.aql.execute(
-                                        f'FOR doc IN {CollectionNames.RECORDS.value} FILTER doc.externalRecordId == @file_id RETURN doc._key',
-                                        bind_vars={'file_id': file_id}
+                                        f"FOR doc IN {CollectionNames.RECORDS.value} FILTER doc.externalRecordId == @file_id RETURN doc._key",
+                                        bind_vars={"file_id": file_id},
                                     )
                                     parent_key = next(parent_cursor, None)
                                     file_key = next(file_cursor, None)
@@ -531,27 +568,28 @@ class BaseDriveSyncService(ABC):
                                     self.logger.info("file_key: %s", file_key)
 
                                     if parent_key and file_key:
-                                        recordRelations.append({
-                                            '_from': f'{CollectionNames.RECORDS.value}/{parent_key}',
-                                            '_to': f'{CollectionNames.RECORDS.value}/{file_key}',
-                                            'relationType': RecordRelations.PARENT_CHILD.value
-                                        })
+                                        recordRelations.append(
+                                            {
+                                                "_from": f"{CollectionNames.RECORDS.value}/{parent_key}",
+                                                "_to": f"{CollectionNames.RECORDS.value}/{file_key}",
+                                                "relationType": RecordRelations.PARENT_CHILD.value,
+                                            }
+                                        )
 
                         if recordRelations:
                             if not await self.arango_service.batch_create_edges(
                                 recordRelations,
                                 collection=CollectionNames.RECORD_RELATIONS.value,
-                                transaction=txn
+                                transaction=txn,
                             ):
-                                raise Exception(
-                                    "Failed to batch create file relations")
+                                raise Exception("Failed to batch create file relations")
 
                         # Process permissions
                         for metadata in metadata_list:
-                            file_id = metadata.get('id')
+                            file_id = metadata.get("id")
                             if file_id in existing_files:
                                 continue
-                            permissions = metadata.pop('permissions', [])
+                            permissions = metadata.pop("permissions", [])
 
                             # Get file key from file_id
                             query = f"""
@@ -563,30 +601,40 @@ class BaseDriveSyncService(ABC):
                             db = txn if txn else self.arango_service.db
 
                             cursor = db.aql.execute(
-                                query, bind_vars={'file_id': file_id})
+                                query, bind_vars={"file_id": file_id}
+                            )
                             file_key = next(cursor, None)
 
                             if not file_key:
                                 self.logger.error(
-                                    "❌ File not found with ID: %s", file_id)
+                                    "❌ File not found with ID: %s", file_id
+                                )
                                 return False
                             if permissions:
-                                await self.arango_service.process_file_permissions(org_id, file_key, permissions, transaction=txn)
+                                await self.arango_service.process_file_permissions(
+                                    org_id, file_key, permissions, transaction=txn
+                                )
 
                         txn.commit_transaction()
                         txn = None
 
                         self.logger.info(
-                            "✅ Transaction for processing batch complete successfully.")
+                            "✅ Transaction for processing batch complete successfully."
+                        )
 
-                        self.logger.info("""
+                        self.logger.info(
+                            """
                         ✅ Batch processed successfully:
                         - Files: %d
                         - Records: %d
                         - Relations: %d
                         - Processing Time: %s
-                        """, len(files), len(records), len(recordRelations),
-                            datetime.now(timezone.utc) - batch_start_time)
+                        """,
+                            len(files),
+                            len(records),
+                            len(recordRelations),
+                            datetime.now(timezone.utc) - batch_start_time,
+                        )
 
                         return True
 
@@ -594,14 +642,14 @@ class BaseDriveSyncService(ABC):
                         if txn:
                             txn.abort_transaction()
                             txn = None
-                        self.logger.error(
-                            f"❌ Failed to process batch data: {str(e)}")
+                        self.logger.error(f"❌ Failed to process batch data: {str(e)}")
                         return False
                 return True
 
         except Exception as e:
             self.logger.error(f"❌ Batch processing failed: {str(e)}")
             return False
+
 
 class DriveSyncEnterpriseService(BaseDriveSyncService):
     """Sync service for enterprise setup using admin service"""
@@ -614,10 +662,11 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
         arango_service: ArangoService,
         change_handler,
         kafka_service: KafkaService,
-        celery_app
+        celery_app,
     ):
-        super().__init__(logger, config, arango_service,
-                         change_handler, kafka_service, celery_app)
+        super().__init__(
+            logger, config, arango_service, change_handler, kafka_service, celery_app
+        )
         self.drive_admin_service = drive_admin_service
         self._active_user_service = None
 
@@ -637,6 +686,68 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
             self.logger.error("❌ Enterprise service connection failed: %s", str(e))
             return False
 
+    async def setup_changes_watch(self, user_email: str) -> Optional[Dict]:
+        """Set up changes.watch after initial sync"""
+        try:
+            # Set up watch
+            user_service = await self.drive_admin_service.create_drive_user_service(
+                user_email
+            )
+            page_token = await self.arango_service.get_page_token_db(
+                user_email=user_email
+            )
+            if not page_token:
+                self.logger.warning("⚠️ No page token found for user %s", user_email)
+                watch = await user_service.create_changes_watch()
+                if not watch:
+                    page_token = await user_service.get_start_page_token_api()
+                    if not page_token:
+                        self.logger.error("❌ Failed to get start page token from API")
+                        return None
+                    await self.arango_service.store_page_token(
+                        None,
+                        None,
+                        user_email,
+                        page_token["token"],
+                        page_token["expiration"],
+                    )
+                return watch
+            # Check if the page token is expired
+            current_time = get_epoch_timestamp_in_ms()
+            expiration = page_token.get("expiration", 0)
+            self.logger.info("Current time: %s", current_time)
+            self.logger.info("Page token expiration: %s", expiration)
+            if expiration < current_time:
+                self.logger.warning("⚠️ Page token expired for user %s", user_email)
+
+                stopped = await user_service.stop_watch(
+                    page_token["channelId"], page_token["resourceId"]
+                )
+
+                watch = await user_service.create_changes_watch()
+                if not watch:
+                    page_token = await user_service.get_start_page_token_api()
+                    if not page_token:
+                        self.logger.error("❌ Failed to get start page token from API")
+                        return None
+                    await self.arango_service.store_page_token(
+                        None,
+                        None,
+                        user_email,
+                        page_token["token"],
+                        page_token["expiration"],
+                    )
+                return watch
+
+            self.logger.info(
+                "✅ Page token is not expired for user %s. Using existing webhooks",
+                user_email,
+            )
+            return page_token
+        except Exception as e:
+            self.logger.error("Failed to set up changes watch: %s", str(e))
+            return None
+
     async def initialize(self, org_id) -> bool:
         """Initialize enterprise sync service"""
         try:
@@ -651,50 +762,71 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
 
                 for user in users:
                     # Add sync state to user info
-                    user_id = await self.arango_service.get_entity_id_by_email(user['email'])
+                    user_id = await self.arango_service.get_entity_id_by_email(
+                        user["email"]
+                    )
                     if not user_id:
-                        await self.arango_service.batch_upsert_nodes([user], collection=CollectionNames.USERS.value)
+                        await self.arango_service.batch_upsert_nodes(
+                            [user], collection=CollectionNames.USERS.value
+                        )
 
             # List and store groups
             groups = await self.drive_admin_service.list_groups(org_id)
             if groups:
                 self.logger.info("🚀 Found %s groups", len(groups))
-                await self.arango_service.batch_upsert_nodes(groups, collection=CollectionNames.GROUPS.value)
+                await self.arango_service.batch_upsert_nodes(
+                    groups, collection=CollectionNames.GROUPS.value
+                )
 
             # Create relationships between users and groups in belongsTo collection
             belongs_to_group_relations = []
             for group in groups:
                 try:
-                    group_members = await self.drive_admin_service.list_group_members(group['email'])
+                    group_members = await self.drive_admin_service.list_group_members(
+                        group["email"]
+                    )
                     for member in group_members:
                         matching_user = next(
-                            (user for user in users if user['email'] == member['email']), None)
+                            (
+                                user
+                                for user in users
+                                if user["email"] == member["email"]
+                            ),
+                            None,
+                        )
                         if matching_user:
                             # Check if the relationship already exists
-                            existing_relation = await self.arango_service.check_edge_exists(
-                                f'users/{matching_user["_key"]}',
-                                f'groups/{group["_key"]}',
-                                CollectionNames.BELONGS_TO.value
+                            existing_relation = (
+                                await self.arango_service.check_edge_exists(
+                                    f'users/{matching_user["_key"]}',
+                                    f'groups/{group["_key"]}',
+                                    CollectionNames.BELONGS_TO.value,
+                                )
                             )
                             if not existing_relation:
                                 relation = {
-                                    '_from': f'users/{matching_user["_key"]}',
-                                    '_to': f'groups/{group["_key"]}',
-                                    'entityType': 'GROUP',
-                                    'role': member.get('role', 'member')
+                                    "_from": f'users/{matching_user["_key"]}',
+                                    "_to": f'groups/{group["_key"]}',
+                                    "entityType": "GROUP",
+                                    "role": member.get("role", "member"),
                                 }
                                 belongs_to_group_relations.append(relation)
                 except Exception as e:
                     self.logger.error(
-                        "❌ Error fetching group members for group %s: %s", group['_key'], str(e))
+                        "❌ Error fetching group members for group %s: %s",
+                        group["_key"],
+                        str(e),
+                    )
 
             if belongs_to_group_relations:
                 await self.arango_service.batch_create_edges(
                     belongs_to_group_relations,
-                    collection=CollectionNames.BELONGS_TO.value
+                    collection=CollectionNames.BELONGS_TO.value,
                 )
-                self.logger.info("✅ Created %s user-group relationships",
-                            len(belongs_to_group_relations))
+                self.logger.info(
+                    "✅ Created %s user-group relationships",
+                    len(belongs_to_group_relations),
+                )
 
             # Create relationships between users and orgs
             belongs_to_org_relations = []
@@ -702,74 +834,81 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                 # Check if the relationship already exists
                 existing_relation = await self.arango_service.check_edge_exists(
                     f'users/{user["_key"]}',
-                    f'organizations/{org_id}',
-                    CollectionNames.BELONGS_TO.value
+                    f"organizations/{org_id}",
+                    CollectionNames.BELONGS_TO.value,
                 )
                 if not existing_relation:
                     relation = {
-                        '_from': f'users/{user["_key"]}',
-                        '_to': f'organizations/{org_id}',
-                        'entityType': 'ORGANIZATION'
+                        "_from": f'users/{user["_key"]}',
+                        "_to": f"organizations/{org_id}",
+                        "entityType": "ORGANIZATION",
                     }
                     belongs_to_org_relations.append(relation)
 
             if belongs_to_org_relations:
                 await self.arango_service.batch_create_edges(
                     belongs_to_org_relations,
-                    collection=CollectionNames.BELONGS_TO.value
+                    collection=CollectionNames.BELONGS_TO.value,
                 )
-                self.logger.info("✅ Created %s user-organization relationships",
-                            len(belongs_to_org_relations))
+                self.logger.info(
+                    "✅ Created %s user-organization relationships",
+                    len(belongs_to_org_relations),
+                )
 
             # Initialize Celery
             await self.celery_app.setup_app()
 
             # Check sync states and update if needed
-            active_users = await self.arango_service.get_users(org_id, active = True)
+            active_users = await self.arango_service.get_users(org_id, active=True)
             for user in active_users:
-                sync_state = await self.arango_service.get_user_sync_state(user['email'], Connectors.GOOGLE_DRIVE.value)
-                current_state = sync_state.get('syncState') if sync_state else 'NOT_STARTED'
+                sync_state = await self.arango_service.get_user_sync_state(
+                    user["email"], Connectors.GOOGLE_DRIVE.value
+                )
+                current_state = (
+                    sync_state.get("syncState") if sync_state else "NOT_STARTED"
+                )
 
-                if current_state == 'IN_PROGRESS':
-                    self.logger.warning(f"Sync is currently RUNNING for user {user['email']}. Pausing it.")
-                    await self.arango_service.update_user_sync_state(
-                        user['email'],
-                        'PAUSED',
-                        service_type=Connectors.GOOGLE_DRIVE.value
+                if current_state == "IN_PROGRESS":
+                    self.logger.warning(
+                        f"Sync is currently RUNNING for user {user['email']}. Pausing it."
                     )
-
-            # Phase 1: Set up changes.watch for each user
-            self.logger.info("👀 Setting up changes watch for all users...")
+                    await self.arango_service.update_user_sync_state(
+                        user["email"],
+                        "PAUSED",
+                        service_type=Connectors.GOOGLE_DRIVE.value,
+                    )
 
             for user in active_users:
                 try:
-                    user_service = await self.drive_admin_service.create_drive_user_service(user['email'])
-                    if not user_service:
-                        self.logger.warning(
-                            "❌ Failed to create user service for user: %s", user['email'])
-                        continue
-
-                    channel_data = await self.setup_changes_watch(user_service, user['email'])
-                    self.logger.info(f"🚀 Channel data: {channel_data}")
+                    self.logger.info(
+                        "🚀 Setting up changes watch for user %s", user["email"]
+                    )
+                    channel_data = await self.setup_changes_watch(user["email"])
                     if not channel_data:
                         self.logger.warning(
-                            "Changes watch not created for user: %s", user['email'])
+                            "Changes watch not created for user: %s", user["email"]
+                        )
                         continue
+                    else:
+                        await self.arango_service.store_page_token(
+                            channel_data["channelId"],
+                            channel_data["resourceId"],
+                            user["email"],
+                            channel_data["token"],
+                            channel_data["expiration"],
+                        )
 
                     self.logger.info(
-                        "✅ Changes watch set up successfully for user: %s", user['email'])
-
-                    await self.arango_service.store_page_token(
-                        channel_data['channelId'],
-                        channel_data['resourceId'],
-                        user['email'],
-                        channel_data['token'],
-                        channel_data['expiration']
+                        "✅ Changes watch set up successfully for user: %s",
+                        user["email"],
                     )
 
                 except Exception as e:
                     self.logger.error(
-                        "❌ Error setting up changes watch for user %s: %s", user['email'], str(e))
+                        "❌ Error setting up changes watch for user %s: %s",
+                        user["email"],
+                        str(e),
+                    )
                     return False
 
             self.logger.info("✅ Drive Sync service initialized successfully")
@@ -789,80 +928,55 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
             users = await self.arango_service.get_users(org_id)
 
             for user in users:
-                sync_state = await self.arango_service.get_user_sync_state(user['email'], Connectors.GOOGLE_DRIVE.value)
-                current_state = sync_state.get('syncState')
-                if current_state == 'COMPLETED':
-                    self.logger.warning("💥 Drive sync is already completed for user %s", user['email'])
+                sync_state = await self.arango_service.get_user_sync_state(
+                    user["email"], Connectors.GOOGLE_DRIVE.value
+                )
+                current_state = sync_state.get("syncState")
+                if current_state == "COMPLETED":
+                    self.logger.warning(
+                        "💥 Drive sync is already completed for user %s", user["email"]
+                    )
 
                     try:
-                        page_token = await self.arango_service.get_page_token_db(
-                            user_email=user['email']
-                        )
-
-                        if not page_token:
-                            self.logger.warning(
-                                "No page token found for user %s", user['email'])
+                        if not await self.resync_drive(org_id, user):
+                            self.logger.error(
+                                f"Failed to resync drive for user {user['email']}"
+                            )
                             continue
-
-                        user_service = await self.drive_admin_service.create_drive_user_service(page_token['userEmail'])
-
-                        changes, new_token = await user_service.get_changes(
-                            page_token=page_token['token']
-                        )
-
-                        user_id = user['userId']
-
-                        if changes:
-                            self.logger.info("Processing %s changes for user %s",
-                                        len(changes), user['email'])
-                            for change in changes:
-                                try:
-                                    await self.change_handler.process_change(change, user_service, org_id, user_id)
-                                except Exception as e:
-                                    self.logger.error("Error processing change: %s", str(e))
-                                    continue
-
-                            if new_token and new_token != page_token['token']:
-                                await self.arango_service.store_page_token(
-                                    channel_id=page_token['channelId'],
-                                    resource_id=page_token['resourceId'],
-                                    user_email=user['email'],
-                                    token=new_token,
-                                    expiration=page_token['expiration']
-                                )
-                                self.logger.info(
-                                    "✅ Updated token for user %s", user['email'])
-
-                        else:
-                            self.logger.info(
-                                "ℹ️ No changes found for user %s", user['email'])
-                        continue
-
                     except Exception as e:
-                        self.logger.error(f"Error processing user {user['email']}: {str(e)}")
+                        self.logger.error(
+                            f"Error processing user {user['email']}: {str(e)}"
+                        )
                         continue
+
+                    continue
 
                 # Update user sync state to RUNNING
                 await self.arango_service.update_user_sync_state(
-                    user['email'],
-                    'IN_PROGRESS',
-                    service_type=Connectors.GOOGLE_DRIVE.value
+                    user["email"],
+                    "IN_PROGRESS",
+                    service_type=Connectors.GOOGLE_DRIVE.value,
                 )
 
                 if await self._should_stop(org_id):
-                    self.logger.info("Sync stopped during user %s processing", user['email'])
+                    self.logger.info(
+                        "Sync stopped during user %s processing", user["email"]
+                    )
                     await self.arango_service.update_user_sync_state(
-                        user['email'],
-                        'PAUSED',
-                        service_type=Connectors.GOOGLE_DRIVE.value
+                        user["email"],
+                        "PAUSED",
+                        service_type=Connectors.GOOGLE_DRIVE.value,
                     )
                     return False
 
                 # Validate user access and get fresh token
-                user_service = await self.drive_admin_service.create_drive_user_service(user['email'])
+                user_service = await self.drive_admin_service.create_drive_user_service(
+                    user["email"]
+                )
                 if not user_service:
                     self.logger.warning(
-                        "❌ Failed to create user service for user: %s", user['email'])
+                        "❌ Failed to create user service for user: %s", user["email"]
+                    )
                     continue
 
                 # Initialize workers and get drive list
@@ -874,35 +988,44 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                     # Get drive details with complete metadata
                     drive_info = await user_service.get_drive_info(drive_id, org_id)
                     if not drive_info:
-                        self.logger.warning("❌ Failed to get drive info for drive %s", drive_id)
+                        self.logger.warning(
+                            "❌ Failed to get drive info for drive %s", drive_id
+                        )
                         continue
 
-                    drive_key = drive_info.get('drive').get('_key')
+                    drive_key = drive_info.get("drive").get("_key")
 
                     # Check drive state first
-                    drive_state = await self.arango_service.get_drive_sync_state(drive_key)
-                    if drive_state == 'COMPLETED':
-                        self.logger.info("Drive %s is already completed, skipping", drive_key)
+                    drive_state = await self.arango_service.get_drive_sync_state(
+                        drive_key
+                    )
+                    if drive_state == "COMPLETED":
+                        self.logger.info(
+                            "Drive %s is already completed, skipping", drive_key
+                        )
                         continue
 
                     if await self._should_stop(org_id):
-                        self.logger.info("Sync stopped during drive %s processing", drive_key)
+                        self.logger.info(
+                            "Sync stopped during drive %s processing", drive_key
+                        )
                         await self.arango_service.update_drive_sync_state(
-                            drive_key,
-                            'PAUSED'
+                            drive_key, "PAUSED"
                         )
                         return False
 
                     try:
                         # Process drive data
                         if not await self.process_drive_data(drive_info, user):
-                            self.logger.error("❌ Failed to process drive data for drive %s", drive_key)
+                            self.logger.error(
+                                "❌ Failed to process drive data for drive %s",
+                                drive_key,
+                            )
                             continue
 
                         # Update drive state to RUNNING
                         await self.arango_service.update_drive_sync_state(
-                            drive_key,
-                            'IN_PROGRESS'
+                            drive_key, "IN_PROGRESS"
                         )
 
                         # Get file list
@@ -916,16 +1039,22 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
 
                         for i in range(0, len(files), batch_size):
                             if await self._should_stop(org_id):
-                                self.logger.info("Sync stopped during batch processing at index %s", i)
+                                self.logger.info(
+                                    "Sync stopped during batch processing at index %s",
+                                    i,
+                                )
                                 await self.arango_service.update_drive_sync_state(
-                                    drive_key,
-                                    'PAUSED'
+                                    drive_key, "PAUSED"
                                 )
                                 return False
 
-                            batch = files[i:i + batch_size]
-                            batch_file_ids = [f['id'] for f in batch]
-                            batch_metadata = await user_service.batch_fetch_metadata_and_permissions(batch_file_ids, files=files)
+                            batch = files[i : i + batch_size]
+                            batch_file_ids = [f["id"] for f in batch]
+                            batch_metadata = (
+                                await user_service.batch_fetch_metadata_and_permissions(
+                                    batch_file_ids, files=files
+                                )
+                            )
 
                             if not await self.process_batch(batch_metadata, org_id):
                                 continue
@@ -933,61 +1062,88 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                             # Process each file in the batch
                             for file_id in batch_file_ids:
                                 file_metadata = next(
-                                    (meta for meta in batch_metadata if meta['id'] == file_id),
-                                    None
+                                    (
+                                        meta
+                                        for meta in batch_metadata
+                                        if meta["id"] == file_id
+                                    ),
+                                    None,
                                 )
                                 if file_metadata:
-                                    file_id = file_metadata.get('id')
+                                    file_id = file_metadata.get("id")
 
-                                    file_key = await self.arango_service.get_key_by_external_file_id(file_id)
-                                    record = await self.arango_service.get_document(file_key, CollectionNames.RECORDS.value)
-                                    file = await self.arango_service.get_document(file_key, CollectionNames.FILES.value)
+                                    file_key = await self.arango_service.get_key_by_external_file_id(
+                                        file_id
+                                    )
+                                    record = await self.arango_service.get_document(
+                                        file_key, CollectionNames.RECORDS.value
+                                    )
+                                    file = await self.arango_service.get_document(
+                                        file_key, CollectionNames.FILES.value
+                                    )
 
-                                    user_id = user['userId']
+                                    user_id = user["userId"]
 
-                                    endpoints = await self.config_service.get_config(config_node_constants.ENDPOINTS.value)
-                                    connector_endpoint = endpoints.get('connectors').get('endpoint')
+                                    endpoints = await self.config_service.get_config(
+                                        config_node_constants.ENDPOINTS.value
+                                    )
+                                    connector_endpoint = endpoints.get(
+                                        "connectors"
+                                    ).get("endpoint")
 
                                     record_version = 0  # Initial version for new files
-                                    extension = file.get('extension')
-                                    mime_type = file.get('mimeType')
+                                    extension = file.get("extension")
+                                    mime_type = file.get("mimeType")
                                     index_event = {
                                         "orgId": org_id,
                                         "recordId": file_key,
-                                        "recordName": record.get('recordName'),
+                                        "recordName": record.get("recordName"),
                                         "recordVersion": record_version,
-                                        "recordType": record.get('recordType'),
-                                        'eventType': EventTypes.NEW_RECORD.value,
+                                        "recordType": record.get("recordType"),
+                                        "eventType": EventTypes.NEW_RECORD.value,
                                         "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user_id}/drive/record/{file_key}/signedUrl",
                                         "metadataRoute": f"/api/v1/drive/files/{file_key}/metadata",
                                         "connectorName": Connectors.GOOGLE_DRIVE.value,
                                         "origin": OriginTypes.CONNECTOR.value,
-                                        "createdAtSourceTimestamp": int(parse_timestamp(file_metadata.get('createdTime')).timestamp()),
-                                        "modifiedAtSourceTimestamp": int(parse_timestamp(file_metadata.get('modifiedTime')).timestamp()),
+                                        "createdAtSourceTimestamp": int(
+                                            parse_timestamp(
+                                                file_metadata.get("createdTime")
+                                            ).timestamp()
+                                        ),
+                                        "modifiedAtSourceTimestamp": int(
+                                            parse_timestamp(
+                                                file_metadata.get("modifiedTime")
+                                            ).timestamp()
+                                        ),
                                         "extension": extension,
-                                        "mimeType": mime_type
+                                        "mimeType": mime_type,
                                     }
 
                                     await self.kafka_service.send_event_to_kafka(
-                                        index_event)
+                                        index_event
+                                    )
                                     self.logger.info(
-                                        "📨 Sent Kafka Indexing event for file %s: %s", file_id, index_event)
+                                        "📨 Sent Kafka Indexing event for file %s: %s",
+                                        file_id,
+                                        index_event,
+                                    )
 
                         # Update drive status after completion
                         await self.arango_service.update_drive_sync_state(
-                            drive_key,
-                            'COMPLETED'
+                            drive_key, "COMPLETED"
                         )
 
                     except Exception as e:
-                        self.logger.error(f"❌ Failed to process drive {drive_key}: {str(e)}")
+                        self.logger.error(
+                            f"❌ Failed to process drive {drive_key}: {str(e)}"
+                        )
                         continue
 
                 # Update user state to COMPLETED
                 await self.arango_service.update_user_sync_state(
-                    user['email'],
-                    'COMPLETED',
-                    service_type=Connectors.GOOGLE_DRIVE.value
+                    user["email"],
+                    "COMPLETED",
+                    service_type=Connectors.GOOGLE_DRIVE.value,
                 )
 
             self.is_completed = True
@@ -995,11 +1151,9 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
 
         except Exception as e:
             # Update user state to FAILED if we have a current user
-            if 'user' in locals():
+            if "user" in locals():
                 await self.arango_service.update_user_sync_state(
-                    user['email'],
-                    'FAILED',
-                    service_type=Connectors.GOOGLE_DRIVE.value
+                    user["email"], "FAILED", service_type=Connectors.GOOGLE_DRIVE.value
                 )
             self.logger.error(f"❌ Initial sync failed: {str(e)}")
             return False
@@ -1010,14 +1164,20 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
             self.logger.info(f"🚀 Starting sync for specific user: {user_email}")
 
             # Verify user exists in the database
-            sync_state = await self.arango_service.get_user_sync_state(user_email, Connectors.GOOGLE_DRIVE.value)
-            current_state = sync_state.get('syncState') if sync_state else 'NOT_STARTED'
-            if current_state == 'IN_PROGRESS':
-                self.logger.warning("💥 Gmail sync is already running for user %s", user_email)
+            sync_state = await self.arango_service.get_user_sync_state(
+                user_email, Connectors.GOOGLE_DRIVE.value
+            )
+            current_state = sync_state.get("syncState") if sync_state else "NOT_STARTED"
+            if current_state == "IN_PROGRESS":
+                self.logger.warning(
+                    "💥 Gmail sync is already running for user %s", user_email
+                )
                 return False
 
             user_id = await self.arango_service.get_entity_id_by_email(user_email)
-            user = await self.arango_service.get_document(user_id, CollectionNames.USERS.value)
+            user = await self.arango_service.get_document(
+                user_id, CollectionNames.USERS.value
+            )
             # Get org_id from belongsTo relation for this user
             query = f"""
             FOR edge IN belongsTo
@@ -1038,30 +1198,34 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
 
             # Update user sync state to RUNNING
             await self.arango_service.update_user_sync_state(
-                user_email,
-                'IN_PROGRESS',
-                service_type=Connectors.GOOGLE_DRIVE.value
+                user_email, "IN_PROGRESS", service_type=Connectors.GOOGLE_DRIVE.value
             )
 
             # Validate user access and get fresh token
-            user_service = await self.drive_admin_service.create_drive_user_service(user_email)
+            user_service = await self.drive_admin_service.create_drive_user_service(
+                user_email
+            )
             if not user_service:
-                self.logger.error(f"❌ Failed to get drive service for user {user_email}")
-                await self.arango_service.update_user_sync_state(user_email, 'FAILED', service_type=Connectors.GOOGLE_DRIVE.value)
+                self.logger.error(
+                    f"❌ Failed to get drive service for user {user_email}"
+                )
+                await self.arango_service.update_user_sync_state(
+                    user_email, "FAILED", service_type=Connectors.GOOGLE_DRIVE.value
+                )
                 return False
 
             # Set up changes watch for the user
-            channel_data = await self.setup_changes_watch(user_service, user_email)
+            channel_data = await self.setup_changes_watch(user_email)
             if not channel_data:
                 self.logger.warning(f"Changes watch not created for user: {user_email}")
             else:
                 # Store the page token
                 await self.arango_service.store_page_token(
-                    channel_data['channelId'],
-                    channel_data['resourceId'],
+                    channel_data["channelId"],
+                    channel_data["resourceId"],
                     user_email,
-                    channel_data['token'],
-                    channel_data['expiration']
+                    channel_data["token"],
+                    channel_data["expiration"],
                 )
 
             # Initialize workers and get drive list
@@ -1073,38 +1237,44 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                 # Get drive details
                 drive_info = await user_service.get_drive_info(drive_id, org_id)
                 if not drive_info:
-                    self.logger.warning("❌ Failed to get drive info for drive %s", drive_id)
+                    self.logger.warning(
+                        "❌ Failed to get drive info for drive %s", drive_id
+                    )
                     continue
 
-                drive_key = drive_info.get('drive').get('_key')
+                drive_key = drive_info.get("drive").get("_key")
 
                 if await self._should_stop(org_id):
-                    self.logger.info("Sync stopped during drive %s processing", drive_id)
-                    await self.arango_service.update_drive_sync_state(
-                        drive_key,
-                        'PAUSED'
+                    self.logger.info(
+                        "Sync stopped during drive %s processing", drive_id
                     )
-                    await self.arango_service.update_user_sync_state(user_email, 'PAUSED', service_type=Connectors.GOOGLE_DRIVE.value)
+                    await self.arango_service.update_drive_sync_state(
+                        drive_key, "PAUSED"
+                    )
+                    await self.arango_service.update_user_sync_state(
+                        user_email, "PAUSED", service_type=Connectors.GOOGLE_DRIVE.value
+                    )
                     return False
 
                 # Check drive state first
                 drive_state = await self.arango_service.get_drive_sync_state(drive_key)
-                if drive_state == 'COMPLETED':
-                    self.logger.info("Drive %s is already completed, skipping", drive_key)
+                if drive_state == "COMPLETED":
+                    self.logger.info(
+                        "Drive %s is already completed, skipping", drive_key
+                    )
                     continue
-
-
 
                 try:
                     # Process drive data
                     if not await self.process_drive_data(drive_info, user):
-                        self.logger.error("❌ Failed to process drive data for drive %s", drive_key)
+                        self.logger.error(
+                            "❌ Failed to process drive data for drive %s", drive_key
+                        )
                         continue
 
                     # Update drive state to RUNNING
                     await self.arango_service.update_drive_sync_state(
-                        drive_key,
-                        'IN_PROGRESS'
+                        drive_key, "IN_PROGRESS"
                     )
 
                     # Get file list
@@ -1118,17 +1288,26 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
 
                     for i in range(0, len(files), batch_size):
                         if await self._should_stop(org_id):
-                            self.logger.info("Sync stopped during batch processing at index %s", i)
-                            await self.arango_service.update_drive_sync_state(
-                                drive_key,
-                                'PAUSED'
+                            self.logger.info(
+                                "Sync stopped during batch processing at index %s", i
                             )
-                            await self.arango_service.update_user_sync_state(user_email, 'PAUSED', service_type=Connectors.GOOGLE_DRIVE.value)
+                            await self.arango_service.update_drive_sync_state(
+                                drive_key, "PAUSED"
+                            )
+                            await self.arango_service.update_user_sync_state(
+                                user_email,
+                                "PAUSED",
+                                service_type=Connectors.GOOGLE_DRIVE.value,
+                            )
                             return False
 
-                        batch = files[i:i + batch_size]
-                        batch_file_ids = [f['id'] for f in batch]
-                        batch_metadata = await user_service.batch_fetch_metadata_and_permissions(batch_file_ids, files=files)
+                        batch = files[i : i + batch_size]
+                        batch_file_ids = [f["id"] for f in batch]
+                        batch_metadata = (
+                            await user_service.batch_fetch_metadata_and_permissions(
+                                batch_file_ids, files=files
+                            )
+                        )
 
                         if not await self.process_batch(batch_metadata, org_id):
                             continue
@@ -1136,61 +1315,136 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                         # Process each file in the batch
                         for file_id in batch_file_ids:
                             file_metadata = next(
-                                (meta for meta in batch_metadata if meta['id'] == file_id),
-                                None
+                                (
+                                    meta
+                                    for meta in batch_metadata
+                                    if meta["id"] == file_id
+                                ),
+                                None,
                             )
                             if file_metadata:
-                                file_key = await self.arango_service.get_key_by_external_file_id(file_id)
-                                record = await self.arango_service.get_document(file_key, CollectionNames.RECORDS.value)
-                                file = await self.arango_service.get_document(file_key, CollectionNames.FILES.value)
+                                file_key = await self.arango_service.get_key_by_external_file_id(
+                                    file_id
+                                )
+                                record = await self.arango_service.get_document(
+                                    file_key, CollectionNames.RECORDS.value
+                                )
+                                file = await self.arango_service.get_document(
+                                    file_key, CollectionNames.FILES.value
+                                )
 
-                                user_id = user['userId']
+                                user_id = user["userId"]
 
-                                endpoints = await self.config_service.get_config(config_node_constants.ENDPOINTS.value)
-                                connector_endpoint = endpoints.get('connectors').get('endpoint')
+                                endpoints = await self.config_service.get_config(
+                                    config_node_constants.ENDPOINTS.value
+                                )
+                                connector_endpoint = endpoints.get("connectors").get(
+                                    "endpoint"
+                                )
 
                                 # Send Kafka indexing event
                                 index_event = {
                                     "orgId": org_id,
                                     "recordId": file_key,
-                                    "recordName": record.get('recordName'),
+                                    "recordName": record.get("recordName"),
                                     "recordVersion": 0,
-                                    "recordType": record.get('recordType'),
-                                    'eventType': EventTypes.NEW_RECORD.value,
+                                    "recordType": record.get("recordType"),
+                                    "eventType": EventTypes.NEW_RECORD.value,
                                     "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user_id}/drive/record/{file_key}/signedUrl",
                                     "metadataRoute": f"/api/v1/drive/files/{file_key}/metadata",
                                     "connectorName": Connectors.GOOGLE_DRIVE.value,
                                     "origin": OriginTypes.CONNECTOR.value,
-                                    "createdAtSourceTimestamp": int(parse_timestamp(file_metadata.get('createdTime')).timestamp()),
-                                    "modifiedAtSourceTimestamp": int(parse_timestamp(file_metadata.get('modifiedTime')).timestamp()),
-                                    "extension": file.get('extension'),
-                                    "mimeType": file.get('mimeType')
+                                    "createdAtSourceTimestamp": int(
+                                        parse_timestamp(
+                                            file_metadata.get("createdTime")
+                                        ).timestamp()
+                                    ),
+                                    "modifiedAtSourceTimestamp": int(
+                                        parse_timestamp(
+                                            file_metadata.get("modifiedTime")
+                                        ).timestamp()
+                                    ),
+                                    "extension": file.get("extension"),
+                                    "mimeType": file.get("mimeType"),
                                 }
-                                await self.kafka_service.send_event_to_kafka(index_event)
+                                await self.kafka_service.send_event_to_kafka(
+                                    index_event
+                                )
                                 total_processed += 1
 
                     # Update drive status after completion
                     await self.arango_service.update_drive_sync_state(
-                        drive_key,
-                        'COMPLETED'
+                        drive_key, "COMPLETED"
                     )
 
                 except Exception as e:
-                    self.logger.error(f"❌ Failed to process drive {drive_key}: {str(e)}")
+                    self.logger.error(
+                        f"❌ Failed to process drive {drive_key}: {str(e)}"
+                    )
                     continue
 
             # Update user state to COMPLETED
             await self.arango_service.update_user_sync_state(
-                user_email,
-                'COMPLETED',
-                service_type=Connectors.GOOGLE_DRIVE.value
+                user_email, "COMPLETED", service_type=Connectors.GOOGLE_DRIVE.value
             )
             self.logger.info(f"✅ Successfully completed sync for user {user_email}")
             return True
 
         except Exception as e:
-            await self.arango_service.update_user_sync_state(user_email, 'FAILED', service_type=Connectors.GOOGLE_DRIVE.value)
+            await self.arango_service.update_user_sync_state(
+                user_email, "FAILED", service_type=Connectors.GOOGLE_DRIVE.value
+            )
             self.logger.error(f"❌ Failed to sync user {user_email}: {str(e)}")
+            return False
+
+    async def resync_drive(self, org_id, user):
+        try:
+            user_service = await self.drive_admin_service.create_drive_user_service(
+                user["email"]
+            )
+            self.logger.info(f"Resyncing drive for user {user['email']}")
+            page_token = await self.arango_service.get_page_token_db(
+                user_email=user["email"]
+            )
+
+            if not page_token:
+                self.logger.warning(f"No page token found for user {user['email']}")
+                return
+
+            changes, new_token = await user_service.get_changes(
+                page_token=page_token["token"]
+            )
+            user_id = user["userId"]
+
+            if changes:
+                self.logger.warning(f"Changes found for user {user['email']}")
+                for change in changes:
+                    try:
+                        await self.change_handler.process_change(
+                            change, user_service, org_id, user_id
+                        )
+                    except Exception as e:
+                        self.logger.error(f"Error processing change: {str(e)}")
+                        continue
+            else:
+                self.logger.info("ℹ️ No changes found for user %s", user["email"])
+
+            if new_token and new_token != page_token["token"]:
+                await self.arango_service.store_page_token(
+                    channel_id=page_token["channelId"],
+                    resource_id=page_token["resourceId"],
+                    user_email=user["email"],
+                    token=new_token,
+                    expiration=page_token["expiration"],
+                )
+                self.logger.info(f"🚀 Updated token for user {user['email']}")
+
+            return True
+
+        except Exception as e:
+            self.logger.error(
+                f"Error resyncing drive for user {user['email']}: {str(e)}"
+            )
             return False
 
 
@@ -1205,10 +1459,11 @@ class DriveSyncIndividualService(BaseDriveSyncService):
         arango_service: ArangoService,
         change_handler,
         kafka_service: KafkaService,
-        celery_app
+        celery_app,
     ):
-        super().__init__(logger, config, arango_service,
-                         change_handler, kafka_service, celery_app)
+        super().__init__(
+            logger, config, arango_service, change_handler, kafka_service, celery_app
+        )
         self.drive_user_service = drive_user_service
 
     async def connect_services(self, org_id: str) -> bool:
@@ -1219,10 +1474,12 @@ class DriveSyncIndividualService(BaseDriveSyncService):
             user_info = await self.arango_service.get_users(org_id, active=True)
             if user_info:
                 # Add sync state to user info
-                user_id = user_info[0]['userId']
+                user_id = user_info[0]["userId"]
 
             # Connect to Google Drive
-            if not await self.drive_user_service.connect_individual_user(org_id, user_id):
+            if not await self.drive_user_service.connect_individual_user(
+                org_id, user_id
+            ):
                 raise Exception("Failed to connect to Drive API")
 
             # Connect to ArangoDB and Redis
@@ -1235,6 +1492,67 @@ class DriveSyncIndividualService(BaseDriveSyncService):
             self.logger.error("❌ Individual service connection failed: %s", str(e))
             return False
 
+    async def setup_changes_watch(self, user_email: str) -> Optional[Dict]:
+        """Set up changes.watch after initial sync"""
+        try:
+            # Set up watch
+            user_service = self.drive_user_service
+            page_token = await self.arango_service.get_page_token_db(
+                user_email=user_email
+            )
+            if not page_token:
+                self.logger.warning("⚠️ No page token found for user %s", user_email)
+                watch = await user_service.create_changes_watch()
+                if not watch:
+                    page_token = await user_service.get_start_page_token_api()
+                    if not page_token:
+                        self.logger.error("❌ Failed to get start page token from API")
+                        return None
+                    await self.arango_service.store_page_token(
+                        None,
+                        None,
+                        user_email,
+                        page_token["token"],
+                        page_token["expiration"],
+                    )
+                return watch
+
+            # Check if the page token is expired
+            current_time = get_epoch_timestamp_in_ms()
+            expiration = page_token.get("expiration", 0)
+            self.logger.info("Current time: %s", current_time)
+            self.logger.info("Page token expiration: %s", expiration)
+            if expiration < current_time:
+                self.logger.warning("⚠️ Page token expired for user %s", user_email)
+
+                stopped = await user_service.stop_watch(
+                    page_token["channelId"], page_token["resourceId"]
+                )
+
+                watch = await user_service.create_changes_watch()
+                if not watch:
+                    page_token = await user_service.get_start_page_token_api()
+                    if not page_token:
+                        self.logger.error("❌ Failed to get start page token from API")
+                        return None
+                    await self.arango_service.store_page_token(
+                        None,
+                        None,
+                        user_email,
+                        page_token["token"],
+                        page_token["expiration"],
+                    )
+                return watch
+
+            self.logger.info(
+                "✅ Page token is not expired for user %s. Using existing webhooks",
+                user_email,
+            )
+            return page_token
+        except Exception as e:
+            self.logger.error("Failed to set up changes watch: %s", str(e))
+            return None
+
     async def initialize(self, org_id) -> bool:
         """Initialize individual user sync service"""
         try:
@@ -1245,52 +1563,64 @@ class DriveSyncIndividualService(BaseDriveSyncService):
             user_info = await self.drive_user_service.list_individual_user(org_id)
             if user_info:
                 # Add sync state to user info
-                user_id = await self.arango_service.get_entity_id_by_email(user_info[0]['email'])
+                user_id = await self.arango_service.get_entity_id_by_email(
+                    user_info[0]["email"]
+                )
                 if not user_id:
-                    await self.arango_service.batch_upsert_nodes(user_info, collection=CollectionNames.USERS.value)
+                    await self.arango_service.batch_upsert_nodes(
+                        user_info, collection=CollectionNames.USERS.value
+                    )
                 user_info = user_info[0]
 
-            # Initialize Celery
-            await self.celery_app.setup_app()
-
             # Check if sync is already running
-            sync_state = await self.arango_service.get_user_sync_state(user_info['email'], Connectors.GOOGLE_DRIVE.value)
-            current_state = sync_state.get('syncState') if sync_state else 'NOT_STARTED'
+            sync_state = await self.arango_service.get_user_sync_state(
+                user_info["email"], Connectors.GOOGLE_DRIVE.value
+            )
+            current_state = sync_state.get("syncState") if sync_state else "NOT_STARTED"
 
-            if current_state == 'IN_PROGRESS':
-                self.logger.warning(f"Sync is currently RUNNING for user {user_info['email']}. Pausing it.")
-                await self.arango_service.update_user_sync_state(
-                    user_info['email'],
-                    'PAUSED',
-                    service_type=Connectors.GOOGLE_DRIVE.value
+            if current_state == "IN_PROGRESS":
+                self.logger.warning(
+                    f"Sync is currently RUNNING for user {user_info['email']}. Pausing it."
                 )
-            # Phase 1: Set up changes.watch for each user
+                await self.arango_service.update_user_sync_state(
+                    user_info["email"],
+                    "PAUSED",
+                    service_type=Connectors.GOOGLE_DRIVE.value,
+                )
+
             self.logger.info("👀 Setting up changes watch for all users...")
 
             # Set up changes watch for each user
             if user_info:
                 try:
-                    user_service = self.drive_user_service
-                    channel_data = await self.setup_changes_watch(user_service, user_info['email'])
+                    channel_data = await self.setup_changes_watch(user_info["email"])
                     if not channel_data:
                         self.logger.warning(
-                            "Changes watch not created for user: %s", user_info['email'])
+                            "Changes watch not created for user: %s", user_info["email"]
+                        )
                     else:
                         await self.arango_service.store_page_token(
-                        channel_data['channelId'],
-                        channel_data['resourceId'],
-                        user_info['email'],
-                        channel_data['token'],
-                        channel_data['expiration']
-                    )
+                            channel_data["channelId"],
+                            channel_data["resourceId"],
+                            user_info["email"],
+                            channel_data["token"],
+                            channel_data["expiration"],
+                        )
 
                         self.logger.info(
-                            "✅ Changes watch set up successfully for user: %s", user_info['email'])
+                            "✅ Changes watch set up successfully for user: %s",
+                            user_info["email"],
+                        )
 
                 except Exception as e:
                     self.logger.error(
-                        "❌ Error setting up changes watch for user %s: %s", user_info['email'], str(e))
+                        "❌ Error setting up changes watch for user %s: %s",
+                        user_info["email"],
+                        str(e),
+                    )
                     return False
+
+            await self.celery_app.setup_app()
 
             self.logger.info("✅ Sync service initialized successfully")
             return True
@@ -1309,64 +1639,41 @@ class DriveSyncIndividualService(BaseDriveSyncService):
             user = await self.arango_service.get_users(org_id, active=True)
             user = user[0]
 
-            sync_state = await self.arango_service.get_user_sync_state(user['email'], Connectors.GOOGLE_DRIVE.value)
-            current_state = sync_state.get('syncState')
-            if current_state == 'COMPLETED':
-                self.logger.warning("💥 Drive sync is already completed for user %s", user['email'])
+            sync_state = await self.arango_service.get_user_sync_state(
+                user["email"], Connectors.GOOGLE_DRIVE.value
+            )
+            current_state = sync_state.get("syncState")
+            if current_state == "COMPLETED":
+                self.logger.warning(
+                    "💥 Drive sync is already completed for user %s", user["email"]
+                )
 
                 try:
-                    user_service = self.drive_user_service
-
-                    page_token = await self.arango_service.get_page_token_db(
-                        user_email=user['email']
-                    )
-
-                    if not page_token:
-                        self.logger.warning(f"No page token found for user {user['email']}")
-                        return
-
-                    changes, new_token = await user_service.get_changes(
-                        page_token=page_token['token']
-                    )
-                    user_id = user['userId']
-
-                    if changes:
-                        self.logger.warning(f"Changes found for user {user['email']}")
-                        for change in changes:
-                            try:
-                                await self.change_handler.process_change(change, user_service, org_id, user_id)
-                            except Exception as e:
-                                self.logger.error(f"Error processing change: {str(e)}")
-                                continue
-
-                    if new_token and new_token != page_token['token']:
-                        await self.arango_service.store_page_token(
-                            channel_id=page_token['channelId'],
-                            resource_id=page_token['resourceId'],
-                            user_email=user['email'],
-                            token=new_token,
-                            expiration=page_token['expiration']
+                    if not await self.resync_drive(org_id, user):
+                        self.logger.error(
+                            f"Failed to resync drive for user {user['email']}"
                         )
-                        self.logger.info(f"🚀 Updated token for user {user['email']}")
-                    return True
+                        return False
 
                 except Exception as e:
-                    self.logger.error(f"Error getting changes for user {user['email']}: {str(e)}")
+                    self.logger.error(
+                        f"Error getting changes for user {user['email']}: {str(e)}"
+                    )
                     return False
+
+                return True
 
             # Update user sync state to RUNNING
             await self.arango_service.update_user_sync_state(
-                user['email'],
-                'IN_PROGRESS',
-                service_type=Connectors.GOOGLE_DRIVE.value
+                user["email"], "IN_PROGRESS", service_type=Connectors.GOOGLE_DRIVE.value
             )
 
             if await self._should_stop(org_id):
-                self.logger.info("Sync stopped during user %s processing", user['email'])
+                self.logger.info(
+                    "Sync stopped during user %s processing", user["email"]
+                )
                 await self.arango_service.update_user_sync_state(
-                    user['email'],
-                    'PAUSED',
-                    service_type=Connectors.GOOGLE_DRIVE.value
+                    user["email"], "PAUSED", service_type=Connectors.GOOGLE_DRIVE.value
                 )
                 return False
 
@@ -1381,35 +1688,41 @@ class DriveSyncIndividualService(BaseDriveSyncService):
                 # Get drive details
                 drive_info = await user_service.get_drive_info(drive_id, org_id)
                 if not drive_info:
-                    self.logger.warning("❌ Failed to get drive info for drive %s", drive_id)
+                    self.logger.warning(
+                        "❌ Failed to get drive info for drive %s", drive_id
+                    )
                     continue
 
-                drive_key = drive_info.get('drive').get('_key')
+                drive_key = drive_info.get("drive").get("_key")
 
                 if await self._should_stop(org_id):
-                    self.logger.info("Sync stopped during drive %s processing", drive_key)
+                    self.logger.info(
+                        "Sync stopped during drive %s processing", drive_key
+                    )
                     await self.arango_service.update_drive_sync_state(
-                        drive_key,
-                        'PAUSED'
+                        drive_key, "PAUSED"
                     )
                     return False
 
                 # Check drive state first
                 drive_state = await self.arango_service.get_drive_sync_state(drive_key)
-                if drive_state == 'COMPLETED':
-                    self.logger.info("Drive %s is already completed, skipping", drive_key)
+                if drive_state == "COMPLETED":
+                    self.logger.info(
+                        "Drive %s is already completed, skipping", drive_key
+                    )
                     continue
 
                 try:
                     # Process drive data
                     if not await self.process_drive_data(drive_info, user):
-                        self.logger.error("❌ Failed to process drive data for drive %s", drive_key)
+                        self.logger.error(
+                            "❌ Failed to process drive data for drive %s", drive_key
+                        )
                         continue
 
                     # Update drive state to RUNNING
                     await self.arango_service.update_drive_sync_state(
-                        drive_key,
-                        'IN_PROGRESS'
+                        drive_key, "IN_PROGRESS"
                     )
 
                     # Get file list
@@ -1423,16 +1736,21 @@ class DriveSyncIndividualService(BaseDriveSyncService):
 
                     for i in range(0, len(files), batch_size):
                         if await self._should_stop(org_id):
-                            self.logger.info("Sync stopped during batch processing at index %s", i)
+                            self.logger.info(
+                                "Sync stopped during batch processing at index %s", i
+                            )
                             await self.arango_service.update_drive_sync_state(
-                                drive_key,
-                                'PAUSED'
+                                drive_key, "PAUSED"
                             )
                             return False
 
-                        batch = files[i:i + batch_size]
-                        batch_file_ids = [f['id'] for f in batch]
-                        batch_metadata = await user_service.batch_fetch_metadata_and_permissions(batch_file_ids, files=files)
+                        batch = files[i : i + batch_size]
+                        batch_file_ids = [f["id"] for f in batch]
+                        batch_metadata = (
+                            await user_service.batch_fetch_metadata_and_permissions(
+                                batch_file_ids, files=files
+                            )
+                        )
 
                         if not await self.process_batch(batch_metadata, org_id):
                             continue
@@ -1441,61 +1759,86 @@ class DriveSyncIndividualService(BaseDriveSyncService):
                         for file_id in batch_file_ids:
                             total_processed += 1
                             file_metadata = next(
-                                (meta for meta in batch_metadata if meta['id'] == file_id),
-                                None
+                                (
+                                    meta
+                                    for meta in batch_metadata
+                                    if meta["id"] == file_id
+                                ),
+                                None,
                             )
                             if file_metadata:
-                                file_id = file_metadata.get('id')
+                                file_id = file_metadata.get("id")
 
-                                file_key = await self.arango_service.get_key_by_external_file_id(file_id)
-                                record = await self.arango_service.get_document(file_key, CollectionNames.RECORDS.value)
-                                file = await self.arango_service.get_document(file_key, CollectionNames.FILES.value)
+                                file_key = await self.arango_service.get_key_by_external_file_id(
+                                    file_id
+                                )
+                                record = await self.arango_service.get_document(
+                                    file_key, CollectionNames.RECORDS.value
+                                )
+                                file = await self.arango_service.get_document(
+                                    file_key, CollectionNames.FILES.value
+                                )
 
                                 record_version = 0  # Initial version for new files
-                                extension = file.get('extension')
-                                mime_type = file.get('mimeType')
-                                user_id = user['userId']
+                                extension = file.get("extension")
+                                mime_type = file.get("mimeType")
+                                user_id = user["userId"]
 
-                                endpoints = await self.config_service.get_config(config_node_constants.ENDPOINTS.value)
-                                connector_endpoint = endpoints.get('connectors').get('endpoint')
+                                endpoints = await self.config_service.get_config(
+                                    config_node_constants.ENDPOINTS.value
+                                )
+                                connector_endpoint = endpoints.get("connectors").get(
+                                    "endpoint"
+                                )
 
                                 index_event = {
                                     "orgId": org_id,
                                     "recordId": file_key,
-                                    "recordName": record.get('recordName'),
+                                    "recordName": record.get("recordName"),
                                     "recordVersion": record_version,
-                                    "recordType": record.get('recordType'),
-                                    'eventType': EventTypes.NEW_RECORD.value,
+                                    "recordType": record.get("recordType"),
+                                    "eventType": EventTypes.NEW_RECORD.value,
                                     "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user_id}/drive/record/{file_key}/signedUrl",
                                     "metadataRoute": f"/api/v1/drive/files/{file_key}/metadata",
                                     "connectorName": Connectors.GOOGLE_DRIVE.value,
                                     "origin": OriginTypes.CONNECTOR.value,
-                                    "createdAtSourceTimestamp": int(parse_timestamp(file_metadata.get('createdTime')).timestamp()),
-                                    "modifiedAtSourceTimestamp": int(parse_timestamp(file_metadata.get('modifiedTime')).timestamp()),
+                                    "createdAtSourceTimestamp": int(
+                                        parse_timestamp(
+                                            file_metadata.get("createdTime")
+                                        ).timestamp()
+                                    ),
+                                    "modifiedAtSourceTimestamp": int(
+                                        parse_timestamp(
+                                            file_metadata.get("modifiedTime")
+                                        ).timestamp()
+                                    ),
                                     "extension": extension,
-                                    "mimeType": mime_type
+                                    "mimeType": mime_type,
                                 }
 
                                 await self.kafka_service.send_event_to_kafka(
-                                    index_event)
+                                    index_event
+                                )
                                 self.logger.info(
-                                    "📨 Sent Kafka Indexing event for file %s: %s", file_id, index_event)
+                                    "📨 Sent Kafka Indexing event for file %s: %s",
+                                    file_id,
+                                    index_event,
+                                )
 
                     # Update drive status after completion
                     await self.arango_service.update_drive_sync_state(
-                        drive_key,
-                        'COMPLETED'
+                        drive_key, "COMPLETED"
                     )
 
                 except Exception as e:
-                    self.logger.error(f"❌ Failed to process drive {drive_key}: {str(e)}")
+                    self.logger.error(
+                        f"❌ Failed to process drive {drive_key}: {str(e)}"
+                    )
                     continue
 
             # Update user state to COMPLETED
             await self.arango_service.update_user_sync_state(
-                user['email'],
-                'COMPLETED',
-                service_type=Connectors.GOOGLE_DRIVE.value
+                user["email"], "COMPLETED", service_type=Connectors.GOOGLE_DRIVE.value
             )
 
             self.is_completed = True
@@ -1505,9 +1848,55 @@ class DriveSyncIndividualService(BaseDriveSyncService):
             # Update user state to FAILED
             if user:
                 await self.arango_service.update_user_sync_state(
-                    user['email'],
-                    'FAILED',
-                    service_type=Connectors.GOOGLE_DRIVE.value
+                    user["email"], "FAILED", service_type=Connectors.GOOGLE_DRIVE.value
                 )
             self.logger.error(f"❌ Initial sync failed: {str(e)}")
+            return False
+
+    async def resync_drive(self, org_id, user):
+        try:
+            user_service = self.drive_user_service
+            self.logger.info(f"Resyncing drive for user {user['email']}")
+            page_token = await self.arango_service.get_page_token_db(
+                user_email=user["email"]
+            )
+
+            if not page_token:
+                self.logger.warning(f"No page token found for user {user['email']}")
+                return
+
+            changes, new_token = await user_service.get_changes(
+                page_token=page_token["token"]
+            )
+            user_id = user["userId"]
+
+            if changes:
+                self.logger.warning(f"Changes found for user {user['email']}")
+                for change in changes:
+                    try:
+                        await self.change_handler.process_change(
+                            change, user_service, org_id, user_id
+                        )
+                    except Exception as e:
+                        self.logger.error(f"Error processing change: {str(e)}")
+                        continue
+            else:
+                self.logger.info("ℹ️ No changes found for user %s", user["email"])
+
+            if new_token and new_token != page_token["token"]:
+                await self.arango_service.store_page_token(
+                    channel_id=page_token["channelId"],
+                    resource_id=page_token["resourceId"],
+                    user_email=user["email"],
+                    token=new_token,
+                    expiration=page_token["expiration"],
+                )
+                self.logger.info(f"🚀 Updated token for user {user['email']}")
+
+            return True
+
+        except Exception as e:
+            self.logger.error(
+                f"Error resyncing drive for user {user['email']}: {str(e)}"
+            )
             return False

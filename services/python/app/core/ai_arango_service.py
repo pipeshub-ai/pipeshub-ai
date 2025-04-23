@@ -10,10 +10,12 @@ from app.config.utils.named_constants.arangodb_constants import CollectionNames
 from app.config.configuration_service import ConfigurationService, config_node_constants
 
 
-class ArangoService():
+class ArangoService:
     """ArangoDB service for interacting with the database"""
 
-    def __init__(self, logger, arango_client: ArangoClient, config: ConfigurationService):
+    def __init__(
+        self, logger, arango_client: ArangoClient, config: ConfigurationService
+    ):
         self.logger = logger
         self.logger.info("🚀 Initializing ArangoService")
         self.config_service = config
@@ -24,11 +26,13 @@ class ArangoService():
         """Connect to ArangoDB and initialize collections"""
         try:
             self.logger.info("🚀 Connecting to ArangoDB...")
-            arangodb_config = await self.config_service.get_config(config_node_constants.ARANGODB.value)
-            arango_url = arangodb_config['url']
-            arango_user = arangodb_config['username']
-            arango_password = arangodb_config['password']
-            arango_db = arangodb_config['db']
+            arangodb_config = await self.config_service.get_config(
+                config_node_constants.ARANGODB.value
+            )
+            arango_url = arangodb_config["url"]
+            arango_user = arangodb_config["username"]
+            arango_password = arangodb_config["password"]
+            arango_db = arangodb_config["db"]
 
             if not isinstance(arango_url, str):
                 raise ValueError("ArangoDB URL must be a string")
@@ -39,10 +43,7 @@ class ArangoService():
             # Connect to system db to ensure our db exists
             self.logger.debug("Connecting to system db")
             sys_db = self.client.db(
-                '_system',
-                username=arango_user,
-                password=arango_password,
-                verify=True
+                "_system", username=arango_user, password=arango_password, verify=True
             )
             self.logger.debug("System DB: %s", sys_db)
 
@@ -59,10 +60,7 @@ class ArangoService():
             # Connect to our database
             self.logger.debug("Connecting to our database")
             self.db = self.client.db(
-                arango_db,
-                username=arango_user,
-                password=arango_password,
-                verify=True
+                arango_db, username=arango_user, password=arango_password, verify=True
             )
 
             return True
@@ -85,7 +83,9 @@ class ArangoService():
             self.logger.error("❌ Failed to disconnect from ArangoDB: %s", str(e))
             return False
 
-    async def get_key_by_external_file_id(self, external_file_id: str, transaction: Optional[TransactionDatabase] = None) -> Optional[str]:
+    async def get_key_by_external_file_id(
+        self, external_file_id: str, transaction: Optional[TransactionDatabase] = None
+    ) -> Optional[str]:
         """
         Get internal file key using the external file ID
 
@@ -98,7 +98,8 @@ class ArangoService():
         """
         try:
             self.logger.info(
-                "🚀 Retrieving internal key for external file ID %s", external_file_id)
+                "🚀 Retrieving internal key for external file ID %s", external_file_id
+            )
 
             query = f"""
             FOR record IN {CollectionNames.RECORDS.value}
@@ -107,27 +108,35 @@ class ArangoService():
             """
             db = transaction if transaction else self.db
             cursor = db.aql.execute(
-                query, bind_vars={'external_file_id': external_file_id})
+                query, bind_vars={"external_file_id": external_file_id}
+            )
             result = next(cursor, None)
 
             if result:
                 self.logger.info(
-                    "✅ Successfully retrieved internal key for external file ID %s", external_file_id)
+                    "✅ Successfully retrieved internal key for external file ID %s",
+                    external_file_id,
+                )
                 return result
             else:
                 self.logger.warning(
-                    "⚠️ No internal key found for external file ID %s", external_file_id)
+                    "⚠️ No internal key found for external file ID %s", external_file_id
+                )
                 return None
 
         except Exception as e:
             self.logger.error(
                 "❌ Failed to retrieve internal key for external file ID %s: %s",
                 external_file_id,
-                str(e)
+                str(e),
             )
             return None
 
-    async def get_key_by_external_message_id(self, external_message_id: str, transaction: Optional[TransactionDatabase] = None) -> Optional[str]:
+    async def get_key_by_external_message_id(
+        self,
+        external_message_id: str,
+        transaction: Optional[TransactionDatabase] = None,
+    ) -> Optional[str]:
         """
         Get internal message key using the external message ID
 
@@ -140,7 +149,9 @@ class ArangoService():
         """
         try:
             self.logger.info(
-                "🚀 Retrieving internal key for external message ID %s", external_message_id)
+                "🚀 Retrieving internal key for external message ID %s",
+                external_message_id,
+            )
 
             query = f"""
             FOR doc IN {CollectionNames.RECORDS.value}
@@ -149,27 +160,36 @@ class ArangoService():
             """
             db = transaction if transaction else self.db
             cursor = db.aql.execute(
-                query, bind_vars={'external_message_id': external_message_id})
+                query, bind_vars={"external_message_id": external_message_id}
+            )
             result = next(cursor, None)
 
             if result:
                 self.logger.info(
-                    "✅ Successfully retrieved internal key for external message ID %s", external_message_id)
+                    "✅ Successfully retrieved internal key for external message ID %s",
+                    external_message_id,
+                )
                 return result
             else:
                 self.logger.warning(
-                    "⚠️ No internal key found for external message ID %s", external_message_id)
+                    "⚠️ No internal key found for external message ID %s",
+                    external_message_id,
+                )
                 return None
 
         except Exception as e:
             self.logger.error(
                 "❌ Failed to retrieve internal key for external message ID %s: %s",
                 external_message_id,
-                str(e)
+                str(e),
             )
             return None
 
-    async def get_key_by_attachment_id(self, external_attachment_id: str, transaction: Optional[TransactionDatabase] = None) -> Optional[str]:
+    async def get_key_by_attachment_id(
+        self,
+        external_attachment_id: str,
+        transaction: Optional[TransactionDatabase] = None,
+    ) -> Optional[str]:
         """
         Get internal attachment key using the external attachment ID
 
@@ -182,7 +202,9 @@ class ArangoService():
         """
         try:
             self.logger.info(
-                "🚀 Retrieving internal key for external attachment ID %s", external_attachment_id)
+                "🚀 Retrieving internal key for external attachment ID %s",
+                external_attachment_id,
+            )
 
             query = """
             FOR attachment IN attachments
@@ -191,23 +213,28 @@ class ArangoService():
             """
             db = transaction if transaction else self.db
             cursor = db.aql.execute(
-                query, bind_vars={'external_attachment_id': external_attachment_id})
+                query, bind_vars={"external_attachment_id": external_attachment_id}
+            )
             result = next(cursor, None)
 
             if result:
                 self.logger.info(
-                    "✅ Successfully retrieved internal key for external attachment ID %s", external_attachment_id)
+                    "✅ Successfully retrieved internal key for external attachment ID %s",
+                    external_attachment_id,
+                )
                 return result
             else:
                 self.logger.warning(
-                    "⚠️ No internal key found for external attachment ID %s", external_attachment_id)
+                    "⚠️ No internal key found for external attachment ID %s",
+                    external_attachment_id,
+                )
                 return None
 
         except Exception as e:
             self.logger.error(
                 "❌ Failed to retrieve internal key for external attachment ID %s: %s",
                 external_attachment_id,
-                str(e)
+                str(e),
             )
             return None
 
@@ -220,14 +247,21 @@ class ArangoService():
                 RETURN doc
             """
             cursor = self.db.aql.execute(
-                query, bind_vars={'document_key': document_key, '@collection': collection})
+                query,
+                bind_vars={"document_key": document_key, "@collection": collection},
+            )
             result = list(cursor)
             return result[0] if result else None
         except Exception as e:
             self.logger.error("❌ Error getting document: %s", str(e))
             return None
 
-    async def batch_upsert_nodes(self, nodes: List[Dict], collection: str, transaction: Optional[TransactionDatabase] = None):
+    async def batch_upsert_nodes(
+        self,
+        nodes: List[Dict],
+        collection: str,
+        transaction: Optional[TransactionDatabase] = None,
+    ):
         """Batch upsert multiple nodes using Python-Arango SDK methods"""
         try:
             self.logger.info("🚀 Batch upserting nodes: %s", collection)
@@ -241,32 +275,31 @@ class ArangoService():
                 RETURN NEW
             """
 
-            bind_vars = {
-                'nodes': nodes,
-                "@collection": collection
-            }
+            bind_vars = {"nodes": nodes, "@collection": collection}
 
             db = transaction if transaction else self.db
 
-            cursor = db.aql.execute(
-                batch_query,
-                bind_vars=bind_vars
-            )
+            cursor = db.aql.execute(batch_query, bind_vars=bind_vars)
             results = list(cursor)
-            self.logger.info("✅ Successfully upserted %d nodes in collection '%s'.", len(
-                results), collection)
+            self.logger.info(
+                "✅ Successfully upserted %d nodes in collection '%s'.",
+                len(results),
+                collection,
+            )
             return True
 
         except Exception as e:
-            self.logger.error(
-                "❌ Batch upsert failed: %s",
-                str(e)
-            )
+            self.logger.error("❌ Batch upsert failed: %s", str(e))
             if transaction:
                 raise
             return False
 
-    async def batch_create_edges(self, edges: List[Dict], collection: str, transaction: Optional[TransactionDatabase] = None):
+    async def batch_create_edges(
+        self,
+        edges: List[Dict],
+        collection: str,
+        transaction: Optional[TransactionDatabase] = None,
+    ):
         """Batch create PARENT_CHILD relationships"""
         try:
             self.logger.info("🚀 Batch creating edges: %s", collection)
@@ -279,20 +312,20 @@ class ArangoService():
                 IN @@collection
                 RETURN NEW
             """
-            bind_vars = {'edges': edges, '@collection': collection}
+            bind_vars = {"edges": edges, "@collection": collection}
 
             db = transaction if transaction else self.db
 
             cursor = db.aql.execute(batch_query, bind_vars=bind_vars)
             results = list(cursor)
-            self.logger.info("✅ Successfully created %d edges in collection '%s'.", len(
-                results), collection)
+            self.logger.info(
+                "✅ Successfully created %d edges in collection '%s'.",
+                len(results),
+                collection,
+            )
             return True
         except Exception as e:
-            self.logger.error(
-                "❌ Batch edge creation failed: %s",
-                str(e)
-            )
+            self.logger.error("❌ Batch edge creation failed: %s", str(e))
             return False
 
     async def get_user_by_user_id(self, user_id: str) -> Optional[Dict]:
@@ -303,7 +336,7 @@ class ArangoService():
                     FILTER user.userId == @user_id
                     RETURN user
             """
-            cursor = self.db.aql.execute(query, bind_vars={'user_id': user_id})
+            cursor = self.db.aql.execute(query, bind_vars={"user_id": user_id})
             result = next(cursor, None)
             return result
         except Exception as e:

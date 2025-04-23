@@ -26,19 +26,21 @@ class DriveChangeHandler:
         txn = None
         try:
             self.logger.info(f"user_id: {user_id}")
-            file_id = change.get('fileId')
+            file_id = change.get("fileId")
             if not file_id:
                 self.logger.warning("⚠️ Change missing fileId")
                 return
 
-            new_file = await user_service.batch_fetch_metadata_and_permissions([file_id])
+            new_file = await user_service.batch_fetch_metadata_and_permissions(
+                [file_id]
+            )
             new_file = new_file[0]
             if not new_file:
                 self.logger.warning(f"File not found in database: {file_id}")
                 return
             cursor = self.arango_service.db.aql.execute(
-                f'FOR doc IN {CollectionNames.RECORDS.value} FILTER doc.externalRecordId == @file_id RETURN doc._key',
-                bind_vars={'file_id': file_id}
+                f"FOR doc IN {CollectionNames.RECORDS.value} FILTER doc.externalRecordId == @file_id RETURN doc._key",
+                bind_vars={"file_id": file_id},
             )
             file_key = next(cursor, None)
             self.logger.info(f"🚀 File key: {file_key}")
@@ -53,14 +55,12 @@ class DriveChangeHandler:
                 """
 
                 file_result = self.arango_service.db.aql.execute(
-                    file_query,
-                    bind_vars={'file_key': file_key}
+                    file_query, bind_vars={"file_key": file_key}
                 )
                 file_result = next(file_result, None)
 
                 record_result = self.arango_service.db.aql.execute(
-                    record_query,
-                    bind_vars={'file_key': file_key}
+                    record_query, bind_vars={"file_key": file_key}
                 )
                 record_result = next(record_result, None)
 
@@ -69,28 +69,60 @@ class DriveChangeHandler:
 
                 if not db_file or not db_record:
                     self.logger.warning(
-                        f"❌ Could not find file or record for key: {file_key}")
+                        f"❌ Could not find file or record for key: {file_key}"
+                    )
                     return
 
-            removed = change.get('removed', False)
+            removed = change.get("removed", False)
 
             self.logger.info(f"🚀 New file: {new_file}")
-            is_trashed = new_file.get('trashed', False)
+            is_trashed = new_file.get("trashed", False)
 
-            self.logger.info(f"""
+            self.logger.info(
+                f"""
             🔄 Processing change:
             - File ID: {file_id}
             - Name: {new_file.get('name', 'Unknown')}
-            """)
+            """
+            )
 
             txn = self.arango_service.db.begin_transaction(
-                read=[CollectionNames.FILES.value, CollectionNames.MAILS.value, CollectionNames.RECORDS.value, CollectionNames.RECORD_RELATIONS.value, CollectionNames.IS_OF_TYPE.value,
-                      CollectionNames.USERS.value, CollectionNames.GROUPS.value, CollectionNames.ORGS.value, CollectionNames.ANYONE.value, CollectionNames.PERMISSIONS.value,
-                      CollectionNames.BELONGS_TO.value, CollectionNames.BELONGS_TO_DEPARTMENT.value, CollectionNames.BELONGS_TO_CATEGORY.value, CollectionNames.BELONGS_TO_KNOWLEDGE_BASE.value, CollectionNames.BELONGS_TO_LANGUAGE.value, CollectionNames.BELONGS_TO_TOPIC.value],
-
-                write=[CollectionNames.FILES.value, CollectionNames.MAILS.value, CollectionNames.RECORDS.value, CollectionNames.RECORD_RELATIONS.value, CollectionNames.IS_OF_TYPE.value,
-                      CollectionNames.USERS.value, CollectionNames.GROUPS.value, CollectionNames.ORGS.value, CollectionNames.ANYONE.value, CollectionNames.PERMISSIONS.value,
-                      CollectionNames.BELONGS_TO.value, CollectionNames.BELONGS_TO_DEPARTMENT.value, CollectionNames.BELONGS_TO_CATEGORY.value, CollectionNames.BELONGS_TO_KNOWLEDGE_BASE.value, CollectionNames.BELONGS_TO_LANGUAGE.value, CollectionNames.BELONGS_TO_TOPIC.value],
+                read=[
+                    CollectionNames.FILES.value,
+                    CollectionNames.MAILS.value,
+                    CollectionNames.RECORDS.value,
+                    CollectionNames.RECORD_RELATIONS.value,
+                    CollectionNames.IS_OF_TYPE.value,
+                    CollectionNames.USERS.value,
+                    CollectionNames.GROUPS.value,
+                    CollectionNames.ORGS.value,
+                    CollectionNames.ANYONE.value,
+                    CollectionNames.PERMISSIONS.value,
+                    CollectionNames.BELONGS_TO.value,
+                    CollectionNames.BELONGS_TO_DEPARTMENT.value,
+                    CollectionNames.BELONGS_TO_CATEGORY.value,
+                    CollectionNames.BELONGS_TO_KNOWLEDGE_BASE.value,
+                    CollectionNames.BELONGS_TO_LANGUAGE.value,
+                    CollectionNames.BELONGS_TO_TOPIC.value,
+                ],
+                write=[
+                    CollectionNames.FILES.value,
+                    CollectionNames.MAILS.value,
+                    CollectionNames.RECORDS.value,
+                    CollectionNames.RECORD_RELATIONS.value,
+                    CollectionNames.IS_OF_TYPE.value,
+                    CollectionNames.USERS.value,
+                    CollectionNames.GROUPS.value,
+                    CollectionNames.ORGS.value,
+                    CollectionNames.ANYONE.value,
+                    CollectionNames.PERMISSIONS.value,
+                    CollectionNames.BELONGS_TO.value,
+                    CollectionNames.BELONGS_TO_DEPARTMENT.value,
+                    CollectionNames.BELONGS_TO_CATEGORY.value,
+                    CollectionNames.BELONGS_TO_KNOWLEDGE_BASE.value,
+                    CollectionNames.BELONGS_TO_LANGUAGE.value,
+                    CollectionNames.BELONGS_TO_TOPIC.value,
+                ],
             )
 
             if not file_key:
@@ -103,16 +135,21 @@ class DriveChangeHandler:
                 else:
                     if not new_file:
                         return
-                    needs_update_var, reindex_var = await self.needs_update(new_file, db_file, db_record, transaction=txn)
+                    needs_update_var, reindex_var = await self.needs_update(
+                        new_file, db_file, db_record, transaction=txn
+                    )
                     if needs_update_var:
-                        await self.handle_update(new_file, db_file, db_record, org_id, transaction=txn)
+                        await self.handle_update(
+                            new_file, db_file, db_record, org_id, transaction=txn
+                        )
                         if reindex_var:
                             change_type = EventTypes.UPDATE_RECORD.value
                         else:
                             change_type = ""
                     else:
                         self.logger.info(
-                            f"✅ File {file_id} is up to date, skipping update")
+                            f"✅ File {file_id} is up to date, skipping update"
+                        )
                         change_type = ""
 
             txn.commit_transaction()
@@ -121,15 +158,24 @@ class DriveChangeHandler:
 
             # SEND KAFKA EVENT FOR REINDEXING
             self.logger.info(f"🚀 Change: {change_type}")
-            if change_type == EventTypes.NEW_RECORD.value or change_type == EventTypes.UPDATE_RECORD.value:
-                file_key = await self.arango_service.get_key_by_external_file_id(file_id)
+            if (
+                change_type == EventTypes.NEW_RECORD.value
+                or change_type == EventTypes.UPDATE_RECORD.value
+            ):
+                file_key = await self.arango_service.get_key_by_external_file_id(
+                    file_id
+                )
                 self.logger.info(f"🚀 File key: {file_key}")
-                record = await self.arango_service.get_document(file_key, CollectionNames.RECORDS.value)
-                file = await self.arango_service.get_document(file_key, CollectionNames.FILES.value)
+                record = await self.arango_service.get_document(
+                    file_key, CollectionNames.RECORDS.value
+                )
+                file = await self.arango_service.get_document(
+                    file_key, CollectionNames.FILES.value
+                )
 
                 if file:
-                    extension = file.get('extension')
-                    mime_type = file.get('mimeType')
+                    extension = file.get("extension")
+                    mime_type = file.get("mimeType")
 
             else:
                 record = {}
@@ -137,8 +183,10 @@ class DriveChangeHandler:
                 extension = None
                 mime_type = None
 
-            endpoints = await self.config_service.get_config(config_node_constants.ENDPOINTS.value)
-            connector_endpoint = endpoints.get('connectors').get('endpoint')
+            endpoints = await self.config_service.get_config(
+                config_node_constants.ENDPOINTS.value
+            )
+            connector_endpoint = endpoints.get("connectors").get("endpoint")
 
             reindex_event = None
 
@@ -146,57 +194,69 @@ class DriveChangeHandler:
             if change_type == EventTypes.NEW_RECORD.value:
                 reindex_event = {
                     "orgId": org_id,
-                    'recordId': file_key,
-                    "recordName": record.get('recordName'),
+                    "recordId": file_key,
+                    "recordName": record.get("recordName"),
                     "recordVersion": 0,
-                    "recordType": record.get('recordType'),
-                    'eventType': change_type,
+                    "recordType": record.get("recordType"),
+                    "eventType": change_type,
                     "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user_id}/drive/record/{file_key}/signedUrl",
                     "metadataRoute": f"/api/v1/drive/files/{file_key}/metadata",
                     "connectorName": Connectors.GOOGLE_DRIVE.value,
                     "origin": OriginTypes.CONNECTOR.value,
                     "extension": extension,
                     "mimeType": mime_type,
-                    "createdAtSourceTimestamp": int(parse_timestamp(new_file.get('createdTime')).timestamp()),
-                    "modifiedAtSourceTimestamp": int(parse_timestamp(new_file.get('modifiedTime')).timestamp())
+                    "createdAtSourceTimestamp": int(
+                        parse_timestamp(new_file.get("createdTime")).timestamp()
+                    ),
+                    "modifiedAtSourceTimestamp": int(
+                        parse_timestamp(new_file.get("modifiedTime")).timestamp()
+                    ),
                 }
 
             # UPDATION
             elif change_type == EventTypes.UPDATE_RECORD.value:
                 reindex_event = {
                     "orgId": org_id,
-                    'recordId': file_key,
-                    "recordName": record.get('recordName'),
-                    'recordVersion': 0,
-                    'recordType': record.get('recordType'),
-                    'eventType': change_type,
+                    "recordId": file_key,
+                    "recordName": record.get("recordName"),
+                    "recordVersion": 0,
+                    "recordType": record.get("recordType"),
+                    "eventType": change_type,
                     "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user_id}/drive/record/{file_key}/signedUrl",
                     "metadataRoute": f"/api/v1/drive/files/{file_key}/metadata",
                     "connectorName": Connectors.GOOGLE_DRIVE.value,
                     "origin": OriginTypes.CONNECTOR.value,
-                    "extension": new_file.get('extension'),
-                    "mimeType": new_file.get('mimeType'),
-                    "createdAtSourceTimestamp": int(parse_timestamp(new_file.get('createdTime')).timestamp()),
-                    "modifiedAtSourceTimestamp": int(parse_timestamp(new_file.get('modifiedTime')).timestamp())
+                    "extension": new_file.get("extension"),
+                    "mimeType": new_file.get("mimeType"),
+                    "createdAtSourceTimestamp": int(
+                        parse_timestamp(new_file.get("createdTime")).timestamp()
+                    ),
+                    "modifiedAtSourceTimestamp": int(
+                        parse_timestamp(new_file.get("modifiedTime")).timestamp()
+                    ),
                 }
 
             # DELETION
             elif change_type == EventTypes.DELETE_RECORD.value:
                 reindex_event = {
                     "orgId": org_id,
-                    'recordId': file_key,
+                    "recordId": file_key,
                     "recordName": "",
-                    'recordVersion': 0,
-                    'recordType': "",
-                    'eventType': change_type,
+                    "recordVersion": 0,
+                    "recordType": "",
+                    "eventType": change_type,
                     "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user_id}/drive/record/{file_key}/signedUrl",
                     "metadataRoute": f"/api/v1/drive/files/{file_key}/metadata",
                     "connectorName": Connectors.GOOGLE_DRIVE.value,
                     "origin": OriginTypes.CONNECTOR.value,
                     "extension": extension,
                     "mimeType": mime_type,
-                    "createdAtSourceTimestamp": int(parse_timestamp(new_file.get('createdTime')).timestamp()),
-                    "modifiedAtSourceTimestamp": int(parse_timestamp(new_file.get('modifiedTime')).timestamp()),
+                    "createdAtSourceTimestamp": int(
+                        parse_timestamp(new_file.get("createdTime")).timestamp()
+                    ),
+                    "modifiedAtSourceTimestamp": int(
+                        parse_timestamp(new_file.get("modifiedTime")).timestamp()
+                    ),
                 }
 
             else:
@@ -204,7 +264,8 @@ class DriveChangeHandler:
 
             if reindex_event:
                 await self.arango_service.kafka_service.send_event_to_kafka(
-                    reindex_event)
+                    reindex_event
+                )
                 self.logger.info("📨 Sent Kafka reindexing event for file %s", file_id)
 
         except Exception as e:
@@ -214,40 +275,57 @@ class DriveChangeHandler:
             self.logger.error(f"❌ Error processing change: {str(e)}")
             traceback.print_exc()
 
-    async def needs_update(self, updated_file, existing_file, existing_record, transaction) -> bool:
+    async def needs_update(
+        self, updated_file, existing_file, existing_record, transaction
+    ) -> bool:
         """Check if file needs update based on revision"""
         try:
 
-            self.logger.info("🚀 Checking if file needs update %s, %s",
-                        updated_file.get('id'), updated_file.get('name'))
+            self.logger.info(
+                "🚀 Checking if file needs update %s, %s",
+                updated_file.get("id"),
+                updated_file.get("name"),
+            )
             if not existing_file:
                 self.logger.info("🟢 File doesn't exist in DB")
                 return True, True
 
             # Extract permissions from updated file
-            new_permissions = updated_file.get('permissions', [])
+            new_permissions = updated_file.get("permissions", [])
 
             # Get existing permissions from database
-            existing_permissions = await self.arango_service.get_file_permissions(existing_file['_key'], transaction)
+            existing_permissions = await self.arango_service.get_file_permissions(
+                existing_file["_key"], transaction
+            )
             existing_permissions = existing_permissions if existing_permissions else []
 
             self.logger.info("🚀 Existing permissions: %s", existing_permissions)
 
             # Compare basic metadata first
-            latest_revision_id = updated_file.get('headRevisionId')
-            latest_file_name = updated_file.get('name')
-            latest_parents = updated_file.get('parents', [])
-            latest_modified_at = int(parse_timestamp(updated_file.get('modifiedTime')).timestamp())
-            db_revision_id = existing_record.get('externalRevisionId')
-            db_file_name = existing_file.get('name')
-            db_parents = await self.arango_service.get_file_parents(existing_file['_key'], transaction)
-            db_modified_at = existing_record.get('sourceLastModifiedTimestamp')
+            latest_revision_id = updated_file.get("headRevisionId")
+            latest_file_name = updated_file.get("name")
+            latest_parents = updated_file.get("parents", [])
+            latest_modified_at = int(
+                parse_timestamp(updated_file.get("modifiedTime")).timestamp()
+            )
+            db_revision_id = existing_record.get("externalRevisionId")
+            db_file_name = existing_file.get("name")
+            db_parents = await self.arango_service.get_file_parents(
+                existing_file["_key"], transaction
+            )
+            db_modified_at = existing_record.get("sourceLastModifiedTimestamp")
 
             self.logger.info(
                 "Latest revision ID: %s, DB revision ID: %s, Latest parents: %s, "
                 "DB parents: %s, Latest file name: %s, DB file name: %s, Latest modified at: %s, DB modified at: %s",
-                latest_revision_id, db_revision_id, latest_parents, db_parents,
-                latest_file_name, db_file_name, latest_modified_at, db_modified_at
+                latest_revision_id,
+                db_revision_id,
+                latest_parents,
+                db_parents,
+                latest_file_name,
+                db_file_name,
+                latest_modified_at,
+                db_modified_at,
             )
 
             # Check permissions changes
@@ -259,16 +337,23 @@ class DriveChangeHandler:
                 # Compare each permission's key attributes
                 for new_perm in new_permissions:
                     matching_perm = next(
-                        (p for p in existing_permissions if p['externalPermissionId'] == new_perm['id']),
-                        None
+                        (
+                            p
+                            for p in existing_permissions
+                            if p["externalPermissionId"] == new_perm["id"]
+                        ),
+                        None,
                     )
                     if not matching_perm:
                         permissions_changed = True
                         break
                     # Compare relevant permission attributes
-                    if (new_perm.get('role') != matching_perm.get('role') or
-                        new_perm.get('Type') != matching_perm.get('type') or
-                            new_perm.get('emailAddress') != matching_perm.get('emailAddress')):
+                    if (
+                        new_perm.get("role") != matching_perm.get("role")
+                        or new_perm.get("Type") != matching_perm.get("type")
+                        or new_perm.get("emailAddress")
+                        != matching_perm.get("emailAddress")
+                    ):
                         permissions_changed = True
                         break
 
@@ -290,45 +375,44 @@ class DriveChangeHandler:
 
             if fallback:
                 needs_update_var = (
-                    db_modified_at != latest_modified_at or
-                    db_file_name != latest_file_name or
-                    db_parents != latest_parents or
-                    permissions_changed
+                    db_modified_at != latest_modified_at
+                    or db_file_name != latest_file_name
+                    or db_parents != latest_parents
+                    or permissions_changed
                 )
 
-                reindex_var = (
-                    db_modified_at != latest_modified_at
-                )
+                reindex_var = db_modified_at != latest_modified_at
             else:
                 needs_update_var = (
-                    db_revision_id != latest_revision_id or
-                    db_file_name != latest_file_name or
-                    db_parents != latest_parents or
-                    permissions_changed
+                    db_revision_id != latest_revision_id
+                    or db_file_name != latest_file_name
+                    or db_parents != latest_parents
+                    or permissions_changed
                 )
 
-                reindex_var = (
-                    db_revision_id != latest_revision_id
-                )
+                reindex_var = db_revision_id != latest_revision_id
 
             if permissions_changed:
                 self.logger.info("🟢 Permissions have changed")
-
 
             self.logger.info("🟢 Needs update: %s", needs_update_var)
             self.logger.info("🟢 Reindex: %s", reindex_var)
             return needs_update_var, reindex_var
 
         except Exception as e:
-            self.logger.error("❌ Error comparing updates for file %s: %s",
-                         db_file_name, str(e))
+            self.logger.error(
+                "❌ Error comparing updates for file %s: %s", db_file_name, str(e)
+            )
             return False, False
 
     async def handle_removal(self, existing_file, existing_record, transaction=None):
         """Handle file removal or access loss"""
         try:
-            self.logger.info("🚀 Handling removal of record: %s: %s",
-                        existing_record['_key'], existing_record['recordName'])
+            self.logger.info(
+                "🚀 Handling removal of record: %s: %s",
+                existing_record["_key"],
+                existing_record["recordName"],
+            )
 
             db = transaction if transaction else self.arango_service.db
 
@@ -342,18 +426,21 @@ class DriveChangeHandler:
                     FILTER a.file_key == @file_key
                     REMOVE a IN anyone
                 """
-            db.aql.execute(query, bind_vars={
-                           'file_key': existing_file['_key']})
-            self.logger.info("🗑️ Removed 'anyone' permission for file %s",
-                        existing_file['_key'])
+            db.aql.execute(query, bind_vars={"file_key": existing_file["_key"]})
+            self.logger.info(
+                "🗑️ Removed 'anyone' permission for file %s", existing_file["_key"]
+            )
 
-            existing_permissions = await self.arango_service.get_file_permissions(existing_file['_key'], transaction=transaction)
+            existing_permissions = await self.arango_service.get_file_permissions(
+                existing_file["_key"], transaction=transaction
+            )
             self.logger.info("🚀 Existing permissions: %s", existing_permissions)
 
             # Remove permissions that no longer exist
             if existing_permissions:
-                self.logger.info("🗑️ Removing %d obsolete permissions",
-                            len(existing_permissions))
+                self.logger.info(
+                    "🗑️ Removing %d obsolete permissions", len(existing_permissions)
+                )
                 for perm in existing_permissions:
                     query_permissions = """
                     FOR p IN permissions
@@ -361,33 +448,39 @@ class DriveChangeHandler:
                         REMOVE p IN permissions
                     """
                     db.aql.execute(
-                        query_permissions,
-                        bind_vars={'perm_key': perm['_key']}
+                        query_permissions, bind_vars={"perm_key": perm["_key"]}
                     )
 
-            await self.arango_service.delete_records_and_relations(existing_record['_key'], hard_delete=True, transaction=transaction)
+            await self.arango_service.delete_records_and_relations(
+                existing_record["_key"], hard_delete=True, transaction=transaction
+            )
             self.logger.info("✅ Successfully handled removal of file")
 
         except Exception as e:
             self.logger.error(
-                "❌ Error handling removal of record: %s: %s, %s", existing_record['_key'], existing_record['recordName'], str(e))
+                "❌ Error handling removal of record: %s: %s, %s",
+                existing_record["_key"],
+                existing_record["recordName"],
+                str(e),
+            )
             raise
 
     async def handle_insert(self, file_metadata, org_id, transaction):
         """Handle file insert"""
         try:
-            self.logger.info("🚀 Handling insert of file: %s",
-                        file_metadata.get('name'))
-            permissions = file_metadata.get('permissions', [])
-            file_id = file_metadata.get('id')
+            self.logger.info(
+                "🚀 Handling insert of file: %s", file_metadata.get("name")
+            )
+            permissions = file_metadata.get("permissions", [])
+            file_id = file_metadata.get("id")
             existing_files = []
 
             db = transaction if transaction else self.arango_service.db
 
             # Check if file already exists in ArangoDB
             existing_file = self.arango_service.db.aql.execute(
-                f'FOR doc IN {CollectionNames.RECORDS.value} FILTER doc.externalRecordId == @file_id RETURN doc',
-                bind_vars={'file_id': file_id}
+                f"FOR doc IN {CollectionNames.RECORDS.value} FILTER doc.externalRecordId == @file_id RETURN doc",
+                bind_vars={"file_id": file_id},
             )
             existing = next(existing_file, None)
 
@@ -397,190 +490,223 @@ class DriveChangeHandler:
 
             else:
                 file = {
-                    '_key': str(uuid.uuid4()),
-                    'orgId': org_id,
-                    'name': str(file_metadata.get('name')),
-                    'extension': file_metadata.get('fileExtension', None),
-                    'mimeType': file_metadata.get('mimeType', None),
-                    'sizeInBytes': int(file_metadata.get('size', 0)),
-                    'isFile': file_metadata.get('mimeType', '') != MimeTypes.GOOGLE_DRIVE_FOLDER.value,
-                    'webUrl': file_metadata.get('webViewLink', None),
-                    'etag': file_metadata.get('etag', None),
-                    'ctag': file_metadata.get('ctag', None),
-                    'quickXorHash': file_metadata.get('quickXorHash', None),
-                    'crc32Hash': file_metadata.get('crc32Hash', None),
-                    'md5Checksum': file_metadata.get('md5Checksum', None),
-                    'sha1Hash': file_metadata.get('sha1Checksum', None),
-                    'sha256Hash': file_metadata.get('sha256Checksum', None),
-                    'path': file_metadata.get('path', None)
+                    "_key": str(uuid.uuid4()),
+                    "orgId": org_id,
+                    "name": str(file_metadata.get("name")),
+                    "extension": file_metadata.get("fileExtension", None),
+                    "mimeType": file_metadata.get("mimeType", None),
+                    "sizeInBytes": int(file_metadata.get("size", 0)),
+                    "isFile": file_metadata.get("mimeType", "")
+                    != MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+                    "webUrl": file_metadata.get("webViewLink", None),
+                    "etag": file_metadata.get("etag", None),
+                    "ctag": file_metadata.get("ctag", None),
+                    "quickXorHash": file_metadata.get("quickXorHash", None),
+                    "crc32Hash": file_metadata.get("crc32Hash", None),
+                    "md5Checksum": file_metadata.get("md5Checksum", None),
+                    "sha1Hash": file_metadata.get("sha1Checksum", None),
+                    "sha256Hash": file_metadata.get("sha256Checksum", None),
+                    "path": file_metadata.get("path", None),
                 }
 
                 record = {
-                    '_key': f'{file["_key"]}',
-                    'orgId': org_id,
-                    'recordName': f'{file["name"]}',
-                    'recordType': RecordTypes.FILE.value,
-                    'version': 0,
-                    'externalRecordId': str(file_metadata.get('id')),
-                    "externalRevisionId": file_metadata.get('headRevisionId', None),
-                    'createdAtTimestamp':  get_epoch_timestamp_in_ms(),
-                    'updatedAtTimestamp':  get_epoch_timestamp_in_ms(),
-                    'sourceCreatedAtTimestamp': int(parse_timestamp(file_metadata.get('createdTime')).timestamp()),
-                    'sourceLastModifiedTimestamp': int(parse_timestamp(file_metadata.get('modifiedTime')).timestamp()),
+                    "_key": f'{file["_key"]}',
+                    "orgId": org_id,
+                    "recordName": f'{file["name"]}',
+                    "recordType": RecordTypes.FILE.value,
+                    "version": 0,
+                    "externalRecordId": str(file_metadata.get("id")),
+                    "externalRevisionId": file_metadata.get("headRevisionId", None),
+                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    "sourceCreatedAtTimestamp": int(
+                        parse_timestamp(file_metadata.get("createdTime")).timestamp()
+                    ),
+                    "sourceLastModifiedTimestamp": int(
+                        parse_timestamp(file_metadata.get("modifiedTime")).timestamp()
+                    ),
                     "origin": OriginTypes.CONNECTOR.value,
-                    'connectorName': Connectors.GOOGLE_DRIVE.value,
-                    'isArchived': False,
-                    'lastSyncTimestamp': get_epoch_timestamp_in_ms(),
-                    'indexingStatus': 'NOT_STARTED',
-                    'extractionStatus': 'NOT_STARTED',
-                    'isLatestVersion': True,
-
-                    'lastIndexTimestamp': None,
-                    'lastExtractionTimestamp': None,
-
-                    'isDeleted': False,
-                    'isDirty': False,
-                    'reason': None,
+                    "connectorName": Connectors.GOOGLE_DRIVE.value,
+                    "isArchived": False,
+                    "lastSyncTimestamp": get_epoch_timestamp_in_ms(),
+                    "indexingStatus": "NOT_STARTED",
+                    "extractionStatus": "NOT_STARTED",
+                    "isLatestVersion": True,
+                    "lastIndexTimestamp": None,
+                    "lastExtractionTimestamp": None,
+                    "isDeleted": False,
+                    "isDirty": False,
+                    "reason": None,
                 }
                 is_of_type_record = {
-                    '_from': f'records/{record["_key"]}',
-                    '_to': f'files/{file["_key"]}',
-                    "createdAtTimestamp" : get_epoch_timestamp_in_ms(),
-                    "updatedAtTimestamp" : get_epoch_timestamp_in_ms(),
+                    "_from": f'records/{record["_key"]}',
+                    "_to": f'files/{file["_key"]}',
+                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                 }
 
                 recordRelations = []
 
-                if 'parents' in file_metadata:
-                    for parent_id in file_metadata['parents']:
+                if "parents" in file_metadata:
+                    for parent_id in file_metadata["parents"]:
                         parent_cursor = db.aql.execute(
-                            f'FOR doc IN {CollectionNames.RECORDS.value} FILTER doc.externalRecordId == @parent_id RETURN doc._key',
-                            bind_vars={'parent_id': parent_id}
+                            f"FOR doc IN {CollectionNames.RECORDS.value} FILTER doc.externalRecordId == @parent_id RETURN doc._key",
+                            bind_vars={"parent_id": parent_id},
                         )
 
                         parent_key = next(parent_cursor, None)
-                        file_key = file['_key']
-                        self.logger.info("🚀 Parent key: %s, File key: %s",
-                                    parent_key, file_key)
+                        file_key = file["_key"]
+                        self.logger.info(
+                            "🚀 Parent key: %s, File key: %s", parent_key, file_key
+                        )
 
                         if parent_key and file_key:
-                            recordRelations.append({
-                                '_from': f'{CollectionNames.RECORDS.value}/{parent_key}',
-                                '_to': f'{CollectionNames.RECORDS.value}/{file_key}',
-                                'relationType': RecordRelations.PARENT_CHILD.value
-                            })
+                            recordRelations.append(
+                                {
+                                    "_from": f"{CollectionNames.RECORDS.value}/{parent_key}",
+                                    "_to": f"{CollectionNames.RECORDS.value}/{file_key}",
+                                    "relationType": RecordRelations.PARENT_CHILD.value,
+                                }
+                            )
 
                 if file:
-                    await self.arango_service.batch_upsert_nodes([file], CollectionNames.FILES.value, transaction=transaction)
+                    await self.arango_service.batch_upsert_nodes(
+                        [file], CollectionNames.FILES.value, transaction=transaction
+                    )
                 if record:
-                    await self.arango_service.batch_upsert_nodes([record], CollectionNames.RECORDS.value, transaction=transaction)
+                    await self.arango_service.batch_upsert_nodes(
+                        [record], CollectionNames.RECORDS.value, transaction=transaction
+                    )
 
                 if is_of_type_record:
                     await self.arango_service.batch_create_edges(
                         [is_of_type_record],
                         collection=CollectionNames.IS_OF_TYPE.value,
-                        transaction=transaction
+                        transaction=transaction,
                     )
 
                 if recordRelations:
                     await self.arango_service.batch_create_edges(
                         recordRelations,
                         collection=CollectionNames.RECORD_RELATIONS.value,
-                        transaction=transaction
+                        transaction=transaction,
                     )
 
                 if permissions:
-                    await self.arango_service.process_file_permissions(org_id, file['_key'], permissions, transaction=transaction)
+                    await self.arango_service.process_file_permissions(
+                        org_id, file["_key"], permissions, transaction=transaction
+                    )
 
                 self.logger.info(
-                    "✅ Successfully handled insert of file %s", file['_key'])
+                    "✅ Successfully handled insert of file %s", file["_key"]
+                )
 
         except Exception as e:
             self.logger.error("❌ Error handling insert for file: %s", str(e))
             raise
 
-    async def handle_update(self, updated_file, existing_file, existing_record, org_id, transaction):
+    async def handle_update(
+        self, updated_file, existing_file, existing_record, org_id, transaction
+    ):
         """Handle file update or creation"""
         try:
-            self.logger.info("🚀 Handling update of file: %s",
-                        updated_file.get('name'))
+            self.logger.info("🚀 Handling update of file: %s", updated_file.get("name"))
 
-            permissions = updated_file.pop('permissions', [])
+            permissions = updated_file.pop("permissions", [])
 
             file = {
-                '_key': existing_file['_key'],
-                'orgId': org_id,
-                'name': str(updated_file.get('name')),
-                'extension': updated_file.get('fileExtension', None),
-                'mimeType': updated_file.get('mimeType', None),
-                'sizeInBytes': int(updated_file.get('size', 0)),
-                'webUrl': updated_file.get('webViewLink', None),
-                'etag': updated_file.get('etag', None),
-                'ctag': updated_file.get('ctag', None),
-                'quickXorHash': updated_file.get('quickXorHash', None),
-                'crc32Hash': updated_file.get('crc32Hash', None),
-                'md5Checksum': updated_file.get('md5Checksum', None),
-                'sha1Hash': updated_file.get('sha1Checksum', None),
-                'sha256Hash': updated_file.get('sha256Checksum', None),
-                'path': updated_file.get('path', None)
+                "_key": existing_file["_key"],
+                "orgId": org_id,
+                "name": str(updated_file.get("name")),
+                "extension": updated_file.get("fileExtension", None),
+                "mimeType": updated_file.get("mimeType", None),
+                "sizeInBytes": int(updated_file.get("size", 0)),
+                "webUrl": updated_file.get("webViewLink", None),
+                "etag": updated_file.get("etag", None),
+                "ctag": updated_file.get("ctag", None),
+                "quickXorHash": updated_file.get("quickXorHash", None),
+                "crc32Hash": updated_file.get("crc32Hash", None),
+                "md5Checksum": updated_file.get("md5Checksum", None),
+                "sha1Hash": updated_file.get("sha1Checksum", None),
+                "sha256Hash": updated_file.get("sha256Checksum", None),
+                "path": updated_file.get("path", None),
             }
 
             record = {
-                '_key': existing_record['_key'],
-                'orgId': org_id,
-                'recordName': f'{file["name"]}',
-                'recordType': RecordTypes.FILE.value,
-                'version': 0,
-                'externalRecordId': str(updated_file.get('id')),
-                "externalRevisionId": updated_file.get('headRevisionId', None),
-                'createdAtTimestamp': existing_record.get('createdAtTimestamp',  get_epoch_timestamp_in_ms()),
-                'updatedAtTimestamp': get_epoch_timestamp_in_ms(),
-                'sourceCreatedAtTimestamp': existing_record.get('sourceCreatedAtTimestamp', int(parse_timestamp(updated_file.get('createdTime')).timestamp())),
-                'sourceLastModifiedTimestamp': existing_record.get('sourceLastModifiedTimestamp', int(parse_timestamp(updated_file.get('modifiedTime')).timestamp())),
+                "_key": existing_record["_key"],
+                "orgId": org_id,
+                "recordName": f'{file["name"]}',
+                "recordType": RecordTypes.FILE.value,
+                "version": 0,
+                "externalRecordId": str(updated_file.get("id")),
+                "externalRevisionId": updated_file.get("headRevisionId", None),
+                "createdAtTimestamp": existing_record.get(
+                    "createdAtTimestamp", get_epoch_timestamp_in_ms()
+                ),
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                "sourceCreatedAtTimestamp": existing_record.get(
+                    "sourceCreatedAtTimestamp",
+                    int(parse_timestamp(updated_file.get("createdTime")).timestamp()),
+                ),
+                "sourceLastModifiedTimestamp": existing_record.get(
+                    "sourceLastModifiedTimestamp",
+                    int(parse_timestamp(updated_file.get("modifiedTime")).timestamp()),
+                ),
                 "origin": OriginTypes.CONNECTOR.value,
-                'connectorName': Connectors.GOOGLE_DRIVE.value,
-                'isArchived': False,
-                'lastSyncTimestamp': get_epoch_timestamp_in_ms(),
+                "connectorName": Connectors.GOOGLE_DRIVE.value,
+                "isArchived": False,
+                "lastSyncTimestamp": get_epoch_timestamp_in_ms(),
                 "isDeleted": False,
-                'indexingStatus': 'NOT_STARTED',
-                'extractionStatus': 'NOT_STARTED',
-
-                'lastIndexTimestamp': None,
-                'lastExtractionTimestamp': None,
-                'isLatestVersion': True,
-                'isDirty': False,
-                'reason': None,
+                "indexingStatus": "NOT_STARTED",
+                "extractionStatus": "NOT_STARTED",
+                "lastIndexTimestamp": None,
+                "lastExtractionTimestamp": None,
+                "isLatestVersion": True,
+                "isDirty": False,
+                "reason": None,
             }
             is_of_type_record = {
-                '_from': f'records/{record["_key"]}',
-                '_to': f'files/{file["_key"]}',
-                "createdAtTimestamp" : get_epoch_timestamp_in_ms(),
-                "updatedAtTimestamp" : get_epoch_timestamp_in_ms(),
+                "_from": f'records/{record["_key"]}',
+                "_to": f'files/{file["_key"]}',
+                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
             }
 
-            await self.arango_service.batch_upsert_nodes([file], CollectionNames.FILES.value, transaction=transaction)
-            await self.arango_service.batch_upsert_nodes([record], CollectionNames.RECORDS.value, transaction=transaction)
+            await self.arango_service.batch_upsert_nodes(
+                [file], CollectionNames.FILES.value, transaction=transaction
+            )
+            await self.arango_service.batch_upsert_nodes(
+                [record], CollectionNames.RECORDS.value, transaction=transaction
+            )
             if is_of_type_record:
                 await self.arango_service.batch_create_edges(
                     [is_of_type_record],
                     collection=CollectionNames.IS_OF_TYPE.value,
-                    transaction=transaction
+                    transaction=transaction,
                 )
 
-            await self.update_relationships(existing_file['_key'], updated_file, transaction)
+            await self.update_relationships(
+                existing_file["_key"], updated_file, transaction
+            )
 
             if permissions:
-                await self.arango_service.process_file_permissions(org_id, existing_file['_key'], permissions, transaction=transaction)
+                await self.arango_service.process_file_permissions(
+                    org_id, existing_file["_key"], permissions, transaction=transaction
+                )
 
-            self.logger.info("✅ Successfully updated file %s",
-                        existing_file['_key'])
+            self.logger.info("✅ Successfully updated file %s", existing_file["_key"])
 
         except Exception as e:
             self.logger.error(
-                "❌ Error handling update for file %s: %s", existing_file['_key'], str(e))
+                "❌ Error handling update for file %s: %s",
+                existing_file["_key"],
+                str(e),
+            )
             raise
 
-    async def update_relationships(self, file_key: str, updated_file: Dict, transaction) -> bool:
+    async def update_relationships(
+        self, file_key: str, updated_file: Dict, transaction
+    ) -> bool:
         """Update PARENT_CHILD relationships for a file
 
         Args:
@@ -595,14 +721,17 @@ class DriveChangeHandler:
             self.logger.info("🚀 Updating relationships for file: %s", file_key)
 
             # Get current parents from database
-            current_parents = await self.arango_service.get_file_parents(file_key, transaction)
+            current_parents = await self.arango_service.get_file_parents(
+                file_key, transaction
+            )
             # Get new parents from updated file
-            new_parents = updated_file.get('parents', [])
+            new_parents = updated_file.get("parents", [])
 
             db = transaction if transaction else self.arango_service.db
 
-            self.logger.info("Current parents: %s, New parents: %s",
-                        current_parents, new_parents)
+            self.logger.info(
+                "Current parents: %s, New parents: %s", current_parents, new_parents
+            )
 
             # Find parents to remove and add
             parents_to_remove = set(current_parents) - set(new_parents)
@@ -615,7 +744,8 @@ class DriveChangeHandler:
             # Remove old relationships
             if parents_to_remove:
                 self.logger.info(
-                    "🗑️ Removing old parent relationships: %s", parents_to_remove)
+                    "🗑️ Removing old parent relationships: %s", parents_to_remove
+                )
                 for parent_id in parents_to_remove:
                     # Get parent key from external ID
                     # Remove parent relationship for file
@@ -627,46 +757,51 @@ class DriveChangeHandler:
                     db.aql.execute(
                         query,
                         bind_vars={
-                            'file_id': f'{CollectionNames.RECORDS.value}/{file_key}',
-                            '@recordRelations': CollectionNames.RECORD_RELATIONS.value
-                        }
+                            "file_id": f"{CollectionNames.RECORDS.value}/{file_key}",
+                            "@recordRelations": CollectionNames.RECORD_RELATIONS.value,
+                        },
                     )
 
             # Add new relationships
             if parents_to_add:
                 self.logger.info(
-                    "📝 Adding new parent relationships: %s", parents_to_add)
+                    "📝 Adding new parent relationships: %s", parents_to_add
+                )
                 new_edges = []
 
                 for parent_id in parents_to_add:
                     # Get parent key from external ID
                     parent_cursor = db.aql.execute(
-                        f'FOR doc IN {CollectionNames.RECORDS.value} FILTER doc.externalRecordId == @parent_id RETURN doc._key',
-                        bind_vars={'parent_id': parent_id}
+                        f"FOR doc IN {CollectionNames.RECORDS.value} FILTER doc.externalRecordId == @parent_id RETURN doc._key",
+                        bind_vars={"parent_id": parent_id},
                     )
                     parent_key = next(parent_cursor, None)
 
                     if parent_key:
-                        new_edges.append({
-                            '_from': f'records/{parent_key}',
-                            '_to': f'records/{file_key}',
-                            'relationType': RecordRelations.PARENT_CHILD.value
-                        })
+                        new_edges.append(
+                            {
+                                "_from": f"records/{parent_key}",
+                                "_to": f"records/{file_key}",
+                                "relationType": RecordRelations.PARENT_CHILD.value,
+                            }
+                        )
 
                 if new_edges:
                     await self.arango_service.batch_create_edges(
                         new_edges,
                         collection=CollectionNames.RECORD_RELATIONS.value,
-                        transaction=transaction
+                        transaction=transaction,
                     )
 
             self.logger.info(
-                "✅ Successfully updated relationships for file %s", file_key)
+                "✅ Successfully updated relationships for file %s", file_key
+            )
             return True
 
         except Exception as e:
             self.logger.error(
-                "❌ Failed to update relationships for file %s: %s", file_key, str(e))
+                "❌ Failed to update relationships for file %s: %s", file_key, str(e)
+            )
             if transaction:
                 raise
             return False

@@ -9,13 +9,16 @@ class EncryptionError(Exception):
     def __init__(self, message, detail=None):
         super().__init__(f"{message}: {detail}" if detail else message)
 
+
 class DecryptionError(Exception):
     def __init__(self, message, detail=None):
         super().__init__(f"{message}: {detail}" if detail else message)
 
+
 class InvalidKeyFormatError(Exception):
     def __init__(self, message):
         super().__init__(message)
+
 
 # Setup logger to mimic Logger service in Node.js
 logger = logging.getLogger("Encryption Service")
@@ -47,7 +50,7 @@ class EncryptionService:
             key = bytes.fromhex(self.secret_key)
             aesgcm = AESGCM(key)
             # Encrypt returns ciphertext with the tag appended (last 16 bytes)
-            encrypted = aesgcm.encrypt(iv, text.encode('utf-8'), None)
+            encrypted = aesgcm.encrypt(iv, text.encode("utf-8"), None)
             # Split ciphertext and auth tag
             ciphertext = encrypted[:-16]
             auth_tag = encrypted[-16:]
@@ -62,9 +65,11 @@ class EncryptionService:
             raise DecryptionError("Decryption failed, encrypted text is None")
         try:
             # For AES-256-GCM, expect format "iv:ciphertext:authTag"
-            parts = encrypted_text.split(':')
+            parts = encrypted_text.split(":")
             if len(parts) != 3:
-                raise InvalidKeyFormatError("Invalid encrypted text format; expected format iv:ciphertext:authTag")
+                raise InvalidKeyFormatError(
+                    "Invalid encrypted text format; expected format iv:ciphertext:authTag"
+                )
             iv_hex, ciphertext_hex, auth_tag_hex = parts
             iv = bytes.fromhex(iv_hex)
             ciphertext = bytes.fromhex(ciphertext_hex)
@@ -74,10 +79,13 @@ class EncryptionService:
             combined = ciphertext + auth_tag
             aesgcm = AESGCM(key)
             decrypted = aesgcm.decrypt(iv, combined, None)
-            return decrypted.decode('utf-8')
+            return decrypted.decode("utf-8")
         except Exception as e:
             logger.error("Decryption failed", exc_info=True)
-            raise DecryptionError("Decryption failed, could be due to different encryption algorithm or secret key", str(e))
+            raise DecryptionError(
+                "Decryption failed, could be due to different encryption algorithm or secret key",
+                str(e),
+            )
 
 
 # Example usage:

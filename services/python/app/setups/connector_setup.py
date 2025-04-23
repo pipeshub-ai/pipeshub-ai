@@ -1,6 +1,7 @@
 """
 src/api/setup.py
 """
+
 import os
 
 import aiohttp
@@ -67,7 +68,8 @@ async def initialize_individual_account_services_fn(org_id, container):
                 logger=logger,
                 config=container.config_service,
                 rate_limiter=container.rate_limiter,
-                google_token_handler = await container.google_token_handler())
+                google_token_handler=await container.google_token_handler(),
+            )
         )
         drive_service = container.drive_service()
         assert isinstance(drive_service, DriveUserService)
@@ -78,7 +80,8 @@ async def initialize_individual_account_services_fn(org_id, container):
                 logger=logger,
                 config=container.config_service,
                 rate_limiter=container.rate_limiter,
-                google_token_handler = await container.google_token_handler())
+                google_token_handler=await container.google_token_handler(),
+            )
         )
         gmail_service = container.gmail_service()
         assert isinstance(gmail_service, GmailUserService)
@@ -116,11 +119,11 @@ async def initialize_individual_account_services_fn(org_id, container):
                 DriveSyncIndividualService,
                 logger=logger,
                 config=container.config_service,
-                drive_user_service= container.drive_service(),
+                drive_user_service=container.drive_service(),
                 arango_service=await container.arango_service(),
                 change_handler=await container.drive_change_handler(),
                 kafka_service=container.kafka_service,
-                celery_app=container.celery_app
+                celery_app=container.celery_app,
             )
         )
         drive_sync_service = container.drive_sync_service()
@@ -131,11 +134,11 @@ async def initialize_individual_account_services_fn(org_id, container):
                 GmailSyncIndividualService,
                 logger=logger,
                 config=container.config_service,
-                gmail_user_service= container.gmail_service(),
+                gmail_user_service=container.gmail_service(),
                 arango_service=await container.arango_service(),
                 change_handler=await container.gmail_change_handler(),
                 kafka_service=container.kafka_service,
-                celery_app=container.celery_app
+                celery_app=container.celery_app,
             )
         )
         gmail_sync_service = container.gmail_sync_service()
@@ -146,8 +149,8 @@ async def initialize_individual_account_services_fn(org_id, container):
                 SyncTasks,
                 logger=logger,
                 celery_app=container.celery_app,
-                drive_sync_service= container.drive_sync_service(),
-                gmail_sync_service= container.gmail_sync_service(),
+                drive_sync_service=container.drive_sync_service(),
+                gmail_sync_service=container.gmail_sync_service(),
             )
         )
         sync_tasks = container.sync_tasks()
@@ -169,7 +172,7 @@ async def initialize_individual_account_services_fn(org_id, container):
             providers.Singleton(
                 GoogleDocsParser,
                 logger=logger,
-                user_service = container.parser_user_service(),
+                user_service=container.parser_user_service(),
             )
         )
         google_docs_parser = container.google_docs_parser()
@@ -194,7 +197,7 @@ async def initialize_individual_account_services_fn(org_id, container):
         )
         google_slides_parser = container.google_slides_parser()
         assert isinstance(google_slides_parser, GoogleSlidesParser)
-        
+
         container.sync_kafka_consumer.override(
             providers.Singleton(
                 SyncKafkaRouteConsumer,
@@ -206,24 +209,29 @@ async def initialize_individual_account_services_fn(org_id, container):
         )
         sync_kafka_consumer = container.sync_kafka_consumer()
         assert isinstance(sync_kafka_consumer, SyncKafkaRouteConsumer)
-        
+
         # Start the sync Kafka consumer
         await sync_kafka_consumer.start()
         logger.info("✅ Sync Kafka consumer initialized")
 
     except Exception as e:
-        logger.error(f"❌ Failed to initialize services for individual account: {str(e)}")
+        logger.error(
+            f"❌ Failed to initialize services for individual account: {str(e)}"
+        )
         raise
 
-    container.wire(modules=[
-        "app.core.celery_app",
-        "app.connectors.google.core.sync_tasks",
-        "app.connectors.api.router",
-        "app.connectors.api.middleware",
-        "app.core.signed_url"
-    ])
+    container.wire(
+        modules=[
+            "app.core.celery_app",
+            "app.connectors.google.core.sync_tasks",
+            "app.connectors.api.router",
+            "app.connectors.api.middleware",
+            "app.core.signed_url",
+        ]
+    )
 
     logger.info("✅ Successfully initialized services for individual account")
+
 
 async def initialize_enterprise_account_services_fn(org_id, container):
     """Initialize services for an enterprise account type."""
@@ -238,7 +246,7 @@ async def initialize_enterprise_account_services_fn(org_id, container):
                 config=container.config_service,
                 rate_limiter=container.rate_limiter,
                 google_token_handler=await container.google_token_handler(),
-                arango_service=await container.arango_service()
+                arango_service=await container.arango_service(),
             )
         )
         container.gmail_service.override(
@@ -248,7 +256,7 @@ async def initialize_enterprise_account_services_fn(org_id, container):
                 config=container.config_service,
                 rate_limiter=container.rate_limiter,
                 google_token_handler=await container.google_token_handler(),
-                arango_service=await container.arango_service()
+                arango_service=await container.arango_service(),
             )
         )
 
@@ -289,7 +297,7 @@ async def initialize_enterprise_account_services_fn(org_id, container):
                 arango_service=await container.arango_service(),
                 change_handler=await container.drive_change_handler(),
                 kafka_service=container.kafka_service,
-                celery_app=container.celery_app
+                celery_app=container.celery_app,
             )
         )
         drive_sync_service = container.drive_sync_service()
@@ -304,7 +312,7 @@ async def initialize_enterprise_account_services_fn(org_id, container):
                 arango_service=await container.arango_service(),
                 change_handler=await container.gmail_change_handler(),
                 kafka_service=container.kafka_service,
-                celery_app=container.celery_app
+                celery_app=container.celery_app,
             )
         )
         gmail_sync_service = container.gmail_sync_service()
@@ -329,7 +337,7 @@ async def initialize_enterprise_account_services_fn(org_id, container):
                 config=container.config_service,
                 rate_limiter=container.rate_limiter,
                 google_token_handler=await container.google_token_handler(),
-                arango_service=await container.arango_service()
+                arango_service=await container.arango_service(),
             )
         )
         google_admin_service = container.google_admin_service()
@@ -340,9 +348,7 @@ async def initialize_enterprise_account_services_fn(org_id, container):
 
         container.admin_webhook_handler.override(
             providers.Singleton(
-                AdminWebhookHandler,
-                logger=logger,
-                admin_service=google_admin_service
+                AdminWebhookHandler, logger=logger, admin_service=google_admin_service
             )
         )
         admin_webhook_handler = container.admin_webhook_handler()
@@ -377,7 +383,7 @@ async def initialize_enterprise_account_services_fn(org_id, container):
         )
         google_slides_parser = container.google_slides_parser()
         assert isinstance(google_slides_parser, GoogleSlidesParser)
-        
+
         container.sync_kafka_consumer.override(
             providers.Singleton(
                 SyncKafkaRouteConsumer,
@@ -389,24 +395,29 @@ async def initialize_enterprise_account_services_fn(org_id, container):
         )
         sync_kafka_consumer = container.sync_kafka_consumer()
         assert isinstance(sync_kafka_consumer, SyncKafkaRouteConsumer)
-        
+
         # Start the sync Kafka consumer
         await sync_kafka_consumer.start()
         logger.info("✅ Sync Kafka consumer initialized")
-        
+
     except Exception as e:
-        logger.error(f"❌ Failed to initialize services for enterprise account: {str(e)}")
+        logger.error(
+            f"❌ Failed to initialize services for enterprise account: {str(e)}"
+        )
         raise
 
-    container.wire(modules=[
-        "app.core.celery_app",
-        "app.connectors.api.router",
-        "app.connectors.google.core.sync_tasks",
-        "app.connectors.api.middleware",
-        "app.core.signed_url"
-    ])
+    container.wire(
+        modules=[
+            "app.core.celery_app",
+            "app.connectors.api.router",
+            "app.connectors.google.core.sync_tasks",
+            "app.connectors.api.middleware",
+            "app.core.signed_url",
+        ]
+    )
 
     logger.info("✅ Successfully initialized services for enterprise account")
+
 
 class AppContainer(containers.DeclarativeContainer):
     """Dependency injection container for the application."""
@@ -419,32 +430,37 @@ class AppContainer(containers.DeclarativeContainer):
     logger().info("🔧 Environment: dev")
 
     # Core services that don't depend on account type
-    config_service = providers.Singleton(
-        ConfigurationService,
-        logger=logger
-    )
+    config_service = providers.Singleton(ConfigurationService, logger=logger)
 
     async def _create_arango_client(config_service):
         """Async method to initialize ArangoClient."""
-        arangodb_config = await config_service.get_config(config_node_constants.ARANGODB.value)
-        hosts = arangodb_config['url']
+        arangodb_config = await config_service.get_config(
+            config_node_constants.ARANGODB.value
+        )
+        hosts = arangodb_config["url"]
         return ArangoClient(hosts=hosts)
 
     async def _create_redis_client(config_service):
         """Async method to initialize RedisClient."""
-        redis_config = await config_service.get_config(config_node_constants.REDIS.value)
+        redis_config = await config_service.get_config(
+            config_node_constants.REDIS.value
+        )
         url = f"redis://{redis_config['host']}:{redis_config['port']}/{RedisConfig.REDIS_DB.value}"
         return await aioredis.from_url(url, encoding="utf-8", decode_responses=True)
 
     # Core Resources
     arango_client = providers.Resource(
-        _create_arango_client, config_service=config_service)
+        _create_arango_client, config_service=config_service
+    )
     redis_client = providers.Resource(
-        _create_redis_client, config_service=config_service)
+        _create_redis_client, config_service=config_service
+    )
 
     # Core Services
     rate_limiter = providers.Singleton(GoogleAPIRateLimiter)
-    kafka_service = providers.Singleton(KafkaService, logger=logger, config=config_service)
+    kafka_service = providers.Singleton(
+        KafkaService, logger=logger, config=config_service
+    )
 
     arango_service = providers.Singleton(
         ArangoService,
@@ -478,23 +494,19 @@ class AppContainer(containers.DeclarativeContainer):
 
     # Celery and Tasks
     celery_app = providers.Singleton(
-        CeleryApp,
-        logger=logger,
-        config_service=config_service
+        CeleryApp, logger=logger, config_service=config_service
     )
 
     # Signed URL Handler
     signed_url_config = providers.Resource(
-        SignedUrlConfig.create,
-        configuration_service=config_service
+        SignedUrlConfig.create, configuration_service=config_service
     )
     signed_url_handler = providers.Singleton(
         SignedUrlHandler,
         logger=logger,
         config=signed_url_config,
-        configuration_service=config_service
+        configuration_service=config_service,
     )
-
 
     # Services that will be initialized based on account type
     # Define lazy dependencies for account-based services:
@@ -520,9 +532,10 @@ class AppContainer(containers.DeclarativeContainer):
             "app.connectors.api.router",
             "app.connectors.google.core.sync_tasks",
             "app.connectors.api.middleware",
-            "app.core.signed_url"
+            "app.core.signed_url",
         ]
     )
+
 
 async def health_check_etcd(container):
     """Check the health of etcd via HTTP request."""
@@ -544,7 +557,9 @@ async def health_check_etcd(container):
                     logger.info("✅ etcd health check passed")
                     logger.debug(f"etcd health response: {response_text}")
                 else:
-                    error_msg = f"etcd health check failed with status {response.status}"
+                    error_msg = (
+                        f"etcd health check failed with status {response.status}"
+                    )
                     logger.error(f"❌ {error_msg}")
                     raise Exception(error_msg)
     except aiohttp.ClientError as e:
@@ -564,9 +579,11 @@ async def health_check_arango(container):
     try:
         # Get the config_service instance first, then call get_config
         config_service = container.config_service()
-        arangodb_config = await config_service.get_config(config_node_constants.ARANGODB.value)
-        username = arangodb_config['username']
-        password = arangodb_config['password']
+        arangodb_config = await config_service.get_config(
+            config_node_constants.ARANGODB.value
+        )
+        username = arangodb_config["username"]
+        password = arangodb_config["password"]
 
         logger.debug("Checking ArangoDB connection using ArangoClient")
 
@@ -574,7 +591,7 @@ async def health_check_arango(container):
         client = await container.arango_client()
 
         # Connect to system database
-        sys_db = client.db('_system', username=username, password=password)
+        sys_db = client.db("_system", username=username, password=password)
 
         # Check server version to verify connection
         server_version = sys_db.version()
@@ -592,19 +609,21 @@ async def health_check_kafka(container):
     logger = container.logger()
     logger.info("🔍 Starting Kafka health check...")
     try:
-        kafka_config = await container.config_service().get_config(config_node_constants.KAFKA.value)
-        brokers = kafka_config['brokers']
+        kafka_config = await container.config_service().get_config(
+            config_node_constants.KAFKA.value
+        )
+        brokers = kafka_config["brokers"]
         logger.debug(f"Checking Kafka connection at: {brokers}")
 
         # Try to create a consumer with a short timeout
         try:
             config = {
-                'bootstrap.servers': ",".join(brokers),
-                'group.id': 'test',
-                'auto.offset.reset': 'earliest',
-                'enable.auto.commit': True,  # Disable auto-commit for exactly-once semantics
-                'isolation.level': 'read_committed',  # Ensure we only read committed messages
-                'enable.partition.eof': False,
+                "bootstrap.servers": ",".join(brokers),
+                "group.id": "test",
+                "auto.offset.reset": "earliest",
+                "enable.auto.commit": True,  # Disable auto-commit for exactly-once semantics
+                "isolation.level": "read_committed",  # Ensure we only read committed messages
+                "enable.partition.eof": False,
             }
             consumer = Consumer(config)
             # Try to list topics to verify connection
@@ -631,7 +650,9 @@ async def health_check_redis(container):
     logger.info("🔍 Starting Redis health check...")
     try:
         config_service = container.config_service()
-        redis_config = await config_service.get_config(config_node_constants.REDIS.value)
+        redis_config = await config_service.get_config(
+            config_node_constants.REDIS.value
+        )
         redis_url = f"redis://{redis_config['host']}:{redis_config['port']}/{RedisConfig.REDIS_DB.value}"
         logger.debug(f"Checking Redis connection at: {redis_url}")
         # Create Redis client and attempt to ping
@@ -657,10 +678,12 @@ async def health_check_qdrant(container):
     logger = container.logger()
     logger.info("🔍 Starting Qdrant health check...")
     try:
-        qdrant_config = await container.config_service().get_config(config_node_constants.QDRANT.value)
-        host = qdrant_config['host']
-        port = qdrant_config['port']
-        api_key = qdrant_config['apiKey']
+        qdrant_config = await container.config_service().get_config(
+            config_node_constants.QDRANT.value
+        )
+        host = qdrant_config["host"]
+        port = qdrant_config["port"]
+        api_key = qdrant_config["apiKey"]
 
         client = QdrantClient(host=host, port=port, api_key=api_key, https=False)
         logger.debug(f"Checking Qdrant health at endpoint: {host}:{port}")
@@ -676,6 +699,7 @@ async def health_check_qdrant(container):
         error_msg = f"Qdrant health check failed: {str(e)}"
         logger.error(f"❌ {error_msg}")
         raise
+
 
 async def health_check(container):
     """Run health checks sequentially using HTTP requests."""
@@ -702,6 +726,7 @@ async def health_check(container):
     except Exception as e:
         logger.error(f"❌ One or more health checks failed: {str(e)}")
         raise
+
 
 async def initialize_container(container) -> bool:
     """Initialize container resources with health checks."""

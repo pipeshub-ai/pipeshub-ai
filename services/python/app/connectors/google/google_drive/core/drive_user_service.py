@@ -10,7 +10,12 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import BatchHttpRequest
 
-from app.config.utils.named_constants.arangodb_constants import Connectors, OriginTypes, RecordTypes, MimeTypes
+from app.config.utils.named_constants.arangodb_constants import (
+    Connectors,
+    OriginTypes,
+    RecordTypes,
+    MimeTypes,
+)
 from app.config.configuration_service import (
     ConfigurationService,
     WebhookConfig,
@@ -32,7 +37,14 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 class DriveUserService:
     """DriveService class for interacting with Google Drive API"""
 
-    def __init__(self, logger, config: ConfigurationService, rate_limiter: GoogleAPIRateLimiter, google_token_handler, credentials=None):
+    def __init__(
+        self,
+        logger,
+        config: ConfigurationService,
+        rate_limiter: GoogleAPIRateLimiter,
+        google_token_handler,
+        credentials=None,
+    ):
         """Initialize DriveService with config and rate limiter
 
         Args:
@@ -65,53 +77,42 @@ class DriveUserService:
             SCOPES = GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES
 
             try:
-                creds_data = await self.google_token_handler.get_individual_token(org_id, user_id)
+                creds_data = await self.google_token_handler.get_individual_token(
+                    org_id, user_id
+                )
             except Exception as e:
                 raise GoogleAuthError(
                     "Failed to get individual token: " + str(e),
-                    details={
-                        "org_id": org_id,
-                        "user_id": user_id,
-                        "error": str(e)
-                    }
+                    details={"org_id": org_id, "user_id": user_id, "error": str(e)},
                 )
 
             # Create credentials object
             try:
                 creds = google.oauth2.credentials.Credentials(
-                    token=creds_data.get('access_token'),
-                    refresh_token=creds_data.get('refresh_token'),
+                    token=creds_data.get("access_token"),
+                    refresh_token=creds_data.get("refresh_token"),
                     token_uri="https://oauth2.googleapis.com/token",
-                    client_id=creds_data.get('client_id'),
-                    client_secret=creds_data.get('client_secret'),
-                    scopes=SCOPES
+                    client_id=creds_data.get("client_id"),
+                    client_secret=creds_data.get("client_secret"),
+                    scopes=SCOPES,
                 )
             except Exception as e:
                 raise GoogleAuthError(
                     "Failed to create credentials object: " + str(e),
-                    details={
-                        "org_id": org_id,
-                        "user_id": user_id,
-                        "error": str(e)
-                    }
+                    details={"org_id": org_id, "user_id": user_id, "error": str(e)},
                 )
 
             # Update token expiry time
             self.token_expiry = datetime.fromtimestamp(
-                creds_data.get('access_token_expiry_time', 0) / 1000,
-                tz=timezone.utc
+                creds_data.get("access_token_expiry_time", 0) / 1000, tz=timezone.utc
             )
 
             try:
-                self.service = build('drive', 'v3', credentials=creds)
+                self.service = build("drive", "v3", credentials=creds)
             except Exception as e:
                 raise DriveOperationError(
                     "Failed to build Drive service: " + str(e),
-                    details={
-                        "org_id": org_id,
-                        "user_id": user_id,
-                        "error": str(e)
-                    }
+                    details={"org_id": org_id, "user_id": user_id, "error": str(e)},
                 )
 
             self.logger.info("✅ DriveUserService connected successfully")
@@ -122,11 +123,7 @@ class DriveUserService:
         except Exception as e:
             raise GoogleDriveError(
                 "Failed to connect individual Drive service: " + str(e),
-                details={
-                    "org_id": org_id,
-                    "user_id": user_id,
-                    "error": str(e)
-                }
+                details={"org_id": org_id, "user_id": user_id, "error": str(e)},
             )
 
     async def _check_and_refresh_token(self):
@@ -142,47 +139,47 @@ class DriveUserService:
 
         now = datetime.now(timezone.utc)
         time_until_refresh = self.token_expiry - now - timedelta(minutes=20)
-        self.logger.info(f"Time until refresh: {time_until_refresh.total_seconds()} seconds")
+        self.logger.info(
+            f"Time until refresh: {time_until_refresh.total_seconds()} seconds"
+        )
 
         if time_until_refresh.total_seconds() <= 0:
             await self.google_token_handler.refresh_token(self.org_id, self.user_id)
 
-            creds_data = await self.google_token_handler.get_individual_token(self.org_id, self.user_id)
-
-            creds = google.oauth2.credentials.Credentials(
-                token=creds_data.get('access_token'),
-                refresh_token=creds_data.get('refresh_token'),
-                token_uri="https://oauth2.googleapis.com/token",
-                client_id=creds_data.get('client_id'),
-                client_secret=creds_data.get('client_secret'),
-                scopes=GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES
+            creds_data = await self.google_token_handler.get_individual_token(
+                self.org_id, self.user_id
             )
 
-            self.service = build('drive', 'v3', credentials=creds)
+            creds = google.oauth2.credentials.Credentials(
+                token=creds_data.get("access_token"),
+                refresh_token=creds_data.get("refresh_token"),
+                token_uri="https://oauth2.googleapis.com/token",
+                client_id=creds_data.get("client_id"),
+                client_secret=creds_data.get("client_secret"),
+                scopes=GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES,
+            )
+
+            self.service = build("drive", "v3", credentials=creds)
 
             # Update token expiry time
             self.token_expiry = datetime.fromtimestamp(
-                creds_data.get('access_token_expiry_time', 0) / 1000,
-                tz=timezone.utc
+                creds_data.get("access_token_expiry_time", 0) / 1000, tz=timezone.utc
             )
 
             self.logger.info("✅ Token refreshed, new expiry: %s", self.token_expiry)
-
 
     async def connect_enterprise_user(self) -> bool:
         """Connect using OAuth2 credentials for enterprise user"""
         try:
             self.service = build(
-                'drive',
-                'v3',
-                credentials=self.credentials,
-                cache_discovery=False
+                "drive", "v3", credentials=self.credentials, cache_discovery=False
             )
             return True
 
         except Exception as e:
             self.logger.error(
-                "❌ Failed to connect to Enterprise Drive Service: %s", str(e))
+                "❌ Failed to connect to Enterprise Drive Service: %s", str(e)
+            )
             return False
 
     async def disconnect(self):
@@ -211,27 +208,25 @@ class DriveUserService:
         try:
             self.logger.info("🚀 Getting individual user info")
             async with self.google_limiter:
-                about = self.service.about().get(
-                    fields="user"
-                ).execute()
+                about = self.service.about().get(fields="user").execute()
 
-                user = about.get('user', {})
+                user = about.get("user", {})
                 self.logger.info("🚀 User info: %s", user)
 
                 user = {
-                    '_key': str(uuid4()),
-                    'userId': str(uuid4()),
-                    'orgId': org_id,
-                    'email': user.get('emailAddress'),
-                    'fullName': user.get('displayName'),
-                    'firstName': user.get('givenName', ''),
-                    'middleName': user.get('middleName', ''),
-                    'lastName': user.get('familyName', ''),
-                    'designation': user.get('designation', ''),
-                    'businessPhones': user.get('businessPhones', []),
-                    'isActive': False,
-                    'createdAtTimestamp': get_epoch_timestamp_in_ms(),
-                    'updatedAtTimestamp': get_epoch_timestamp_in_ms()
+                    "_key": str(uuid4()),
+                    "userId": str(uuid4()),
+                    "orgId": org_id,
+                    "email": user.get("emailAddress"),
+                    "fullName": user.get("displayName"),
+                    "firstName": user.get("givenName", ""),
+                    "middleName": user.get("middleName", ""),
+                    "lastName": user.get("familyName", ""),
+                    "designation": user.get("designation", ""),
+                    "businessPhones": user.get("businessPhones", []),
+                    "isActive": False,
+                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                 }
                 return [user]
 
@@ -241,7 +236,9 @@ class DriveUserService:
 
     @exponential_backoff()
     @token_refresh
-    async def list_files_in_folder(self, folder_id: str, include_subfolders: bool = True) -> List[Dict]:
+    async def list_files_in_folder(
+        self, folder_id: str, include_subfolders: bool = True
+    ) -> List[Dict]:
         """List all files in a folder and optionally its subfolders using BFS"""
         try:
             self.logger.info("🚀 Listing files in folder %s", folder_id)
@@ -262,48 +259,48 @@ class DriveUserService:
                 while True:
                     try:
                         async with self.google_limiter:
-                            response = self.service.files().list(
-                                q=f"'{current_folder}' in parents and trashed=false",
-                                spaces='drive',
-                                fields="nextPageToken, files(id, name, mimeType, size, webViewLink, md5Checksum, sha1Checksum, sha256Checksum, headRevisionId, parents, createdTime, modifiedTime, trashed, trashedTime, fileExtension)",
-                                pageToken=page_token,
-                                pageSize=1000,
-                                supportsAllDrives=True,
-                                includeItemsFromAllDrives=True
-                            ).execute()
+                            response = (
+                                self.service.files()
+                                .list(
+                                    q=f"'{current_folder}' in parents and trashed=false",
+                                    spaces="drive",
+                                    fields="nextPageToken, files(id, name, mimeType, size, webViewLink, md5Checksum, sha1Checksum, sha256Checksum, headRevisionId, parents, createdTime, modifiedTime, trashed, trashedTime, fileExtension)",
+                                    pageToken=page_token,
+                                    pageSize=1000,
+                                    supportsAllDrives=True,
+                                    includeItemsFromAllDrives=True,
+                                )
+                                .execute()
+                            )
                     except HttpError as e:
                         if e.resp.status == 403:
                             raise DrivePermissionError(
                                 "Permission denied for folder: " + str(e),
-                                details={
-                                    "folder_id": current_folder,
-                                    "error": str(e)
-                                }
+                                details={"folder_id": current_folder, "error": str(e)},
                             )
                         raise DriveOperationError(
                             "Failed to list files: " + str(e),
-                            details={
-                                "folder_id": current_folder,
-                                "error": str(e)
-                            }
+                            details={"folder_id": current_folder, "error": str(e)},
                         )
 
-                    files = response.get('files', [])
+                    files = response.get("files", [])
                     for file in files:
                         file_path = f"{current_path}{file['name']}"
-                        if file['mimeType'] == MimeTypes.GOOGLE_DRIVE_FOLDER.value:
+                        if file["mimeType"] == MimeTypes.GOOGLE_DRIVE_FOLDER.value:
                             folder_path = f"{file_path}/"
-                            folder_paths[file['id']] = folder_path
+                            folder_paths[file["id"]] = folder_path
                             if include_subfolders:
-                                folders_to_process.append((file['id'], folder_path))
-                        file['path'] = file_path
+                                folders_to_process.append((file["id"], folder_path))
+                        file["path"] = file_path
 
                     all_files.extend(files)
-                    page_token = response.get('nextPageToken')
+                    page_token = response.get("nextPageToken")
                     if not page_token:
                         break
 
-            self.logger.info("✅ Found %s files in folder %s", len(all_files), folder_id)
+            self.logger.info(
+                "✅ Found %s files in folder %s", len(all_files), folder_id
+            )
             return all_files
 
         except (DrivePermissionError, DriveOperationError):
@@ -311,10 +308,7 @@ class DriveUserService:
         except Exception as e:
             raise GoogleDriveError(
                 "Unexpected error listing files: " + str(e),
-                details={
-                    "folder_id": folder_id,
-                    "error": str(e)
-                }
+                details={"folder_id": folder_id, "error": str(e)},
             )
 
     @exponential_backoff()
@@ -329,24 +323,28 @@ class DriveUserService:
 
                 while True:
                     try:
-                        response = self.service.drives().list(
-                            pageSize=100,
-                            fields="nextPageToken, drives(id, name, kind)",
-                            pageToken=page_token
-                        ).execute()
+                        response = (
+                            self.service.drives()
+                            .list(
+                                pageSize=100,
+                                fields="nextPageToken, drives(id, name, kind)",
+                                pageToken=page_token,
+                            )
+                            .execute()
+                        )
                     except HttpError as e:
                         if e.resp.status == 403:
                             raise DrivePermissionError(
                                 "Permission denied listing shared drives: " + str(e),
-                                details={"error": str(e)}
+                                details={"error": str(e)},
                             )
                         raise DriveOperationError(
                             "Failed to list shared drives: " + str(e),
-                            details={"error": str(e)}
+                            details={"error": str(e)},
                         )
 
-                    drives.extend(response.get('drives', []))
-                    page_token = response.get('nextPageToken')
+                    drives.extend(response.get("drives", []))
+                    page_token = response.get("nextPageToken")
 
                     if not page_token:
                         break
@@ -359,7 +357,7 @@ class DriveUserService:
         except Exception as e:
             raise GoogleDriveError(
                 "Unexpected error listing shared drives: " + str(e),
-                details={"error": str(e)}
+                details={"error": str(e)},
             )
 
     @exponential_backoff()
@@ -372,86 +370,92 @@ class DriveUserService:
             async with self.google_limiter:
                 channel_id = str(uuid.uuid4())
                 try:
-                    endpoints = await self.config_service.get_config(config_node_constants.ENDPOINTS.value)
-                    webhook_endpoint = endpoints.get('connectors', {}).get('publicEndpoint')
+                    endpoints = await self.config_service.get_config(
+                        config_node_constants.ENDPOINTS.value
+                    )
+                    webhook_endpoint = endpoints.get("connectors", {}).get(
+                        "publicEndpoint"
+                    )
                     if not webhook_endpoint:
                         raise DriveOperationError(
                             "Missing webhook endpoint configuration",
-                            details={"endpoints": endpoints}
+                            details={"endpoints": endpoints},
                         )
 
                     # Return None if webhook uses HTTP or localhost
-                    if webhook_endpoint.startswith('http://') or 'localhost' in webhook_endpoint:
-                        self.logger.warning("⚠️ Skipping changes watch - webhook endpoint uses HTTP or localhost")
+                    if (
+                        webhook_endpoint.startswith("http://")
+                        or "localhost" in webhook_endpoint
+                    ):
+                        self.logger.warning(
+                            "⚠️ Skipping changes watch - webhook endpoint uses HTTP or localhost"
+                        )
                         return None
 
                 except Exception as e:
                     raise DriveOperationError(
                         "Failed to get webhook configuration: " + str(e),
-                        details={"error": str(e)}
+                        details={"error": str(e)},
                     )
 
                 webhook_url = f"{webhook_endpoint.rstrip('/')}/drive/webhook"
                 expiration_time = datetime.now(timezone.utc) + timedelta(
                     days=WebhookConfig.EXPIRATION_DAYS.value,
                     hours=WebhookConfig.EXPIRATION_HOURS.value,
-                    minutes=WebhookConfig.EXPIRATION_MINUTES.value
+                    minutes=WebhookConfig.EXPIRATION_MINUTES.value,
                 )
 
                 body = {
-                    'id': channel_id,
-                    'type': 'web_hook',
-                    'address': webhook_url,
-                    'expiration': int(expiration_time.timestamp() * 1000)
+                    "id": channel_id,
+                    "type": "web_hook",
+                    "address": webhook_url,
+                    "expiration": int(expiration_time.timestamp() * 1000),
                 }
 
                 page_token = await self.get_start_page_token_api()
                 if not page_token:
                     raise DriveOperationError(
                         "Failed to get start page token: " + str(e),
-                        details={"channel_id": channel_id}
+                        details={"channel_id": channel_id},
                     )
 
                 try:
-                    response = self.service.changes().watch(
-                        pageToken=page_token,
-                        body=body,
-                        supportsAllDrives=True,
-                        includeItemsFromAllDrives=True,
-                        includeRemoved=True
-                    ).execute()
-                    self.logger.info("🚀 Changes watch created successfully: %s", response)
+                    response = (
+                        self.service.changes()
+                        .watch(
+                            pageToken=page_token,
+                            body=body,
+                            supportsAllDrives=True,
+                            includeItemsFromAllDrives=True,
+                            includeRemoved=True,
+                        )
+                        .execute()
+                    )
+                    self.logger.info(
+                        "🚀 Changes watch created successfully: %s", response
+                    )
                 except HttpError as e:
                     if e.resp.status == 403:
                         raise DrivePermissionError(
                             "Permission denied creating changes watch: " + str(e),
-                            details={
-                                "channel_id": channel_id,
-                                "error": str(e)
-                            }
+                            details={"channel_id": channel_id, "error": str(e)},
                         )
                     raise DriveOperationError(
                         "Failed to create changes watch: " + str(e),
-                        details={
-                            "channel_id": channel_id,
-                            "error": str(e)
-                        }
+                        details={"channel_id": channel_id, "error": str(e)},
                     )
 
-                if not response or not response.get('resourceId'):
+                if not response or not response.get("resourceId"):
                     raise DriveOperationError(
                         "Invalid response from changes.watch: " + str(e),
-                        details={
-                            "channel_id": channel_id,
-                            "response": response
-                        }
+                        details={"channel_id": channel_id, "response": response},
                     )
 
                 data = {
-                    'channelId': channel_id,
-                    'resourceId': response['resourceId'],
-                    'token': page_token,
-                    'expiration': int(response['expiration'])
+                    "channelId": channel_id,
+                    "resourceId": response["resourceId"],
+                    "token": page_token,
+                    "expiration": int(response["expiration"]),
                 }
 
                 self.logger.info("✅ Changes watch created successfully")
@@ -462,16 +466,15 @@ class DriveUserService:
         except Exception as e:
             raise GoogleDriveError(
                 "Unexpected error creating changes watch: " + str(e),
-                details={"error": str(e)}
+                details={"error": str(e)},
             )
 
     async def stop_watch(self, channel_id: str, resource_id: str) -> bool:
         """Stop a changes watch"""
         try:
-            self.service.channels().stop(body={
-                'id': channel_id,
-                'resourceId': resource_id
-            }).execute()
+            self.service.channels().stop(
+                body={"id": channel_id, "resourceId": resource_id}
+            ).execute()
             self.logger.info("✅ Changes watch stopped successfully")
             return True
         except Exception as e:
@@ -490,50 +493,50 @@ class DriveUserService:
             while next_token:
                 try:
                     async with self.google_limiter:
-                        response = self.service.changes().list(
-                            pageToken=next_token,
-                            spaces='drive',
-                            includeItemsFromAllDrives=True,
-                            supportsAllDrives=True,
-                            fields='changes/*, nextPageToken, newStartPageToken'
-                        ).execute()
+                        response = (
+                            self.service.changes()
+                            .list(
+                                pageToken=next_token,
+                                spaces="drive",
+                                includeItemsFromAllDrives=True,
+                                supportsAllDrives=True,
+                                fields="changes/*, nextPageToken, newStartPageToken",
+                            )
+                            .execute()
+                        )
                 except HttpError as e:
                     if e.resp.status == 404:  # Invalid page token
                         self.logger.error("❌ Invalid page token %s", page_token)
                         new_token = await self.get_start_page_token_api()
                         if not new_token:
                             raise DriveOperationError(
-                                "Failed to get new start token after invalid token: " + str(e),
-                                details={"page_token": page_token}
+                                "Failed to get new start token after invalid token: "
+                                + str(e),
+                                details={"page_token": page_token},
                             )
                         return [], new_token
                     elif e.resp.status == 403:
                         raise DrivePermissionError(
                             "Permission denied getting changes: " + str(e),
-                            details={
-                                "page_token": page_token,
-                                "error": str(e)
-                            }
+                            details={"page_token": page_token, "error": str(e)},
                         )
                     raise DriveOperationError(
                         "Failed to list changes: " + str(e),
-                        details={
-                            "page_token": page_token,
-                            "error": str(e)
-                        }
+                        details={"page_token": page_token, "error": str(e)},
                     )
 
-                changes.extend(response.get('changes', []))
-                next_token = response.get('nextPageToken')
+                changes.extend(response.get("changes", []))
+                next_token = response.get("nextPageToken")
 
-                if 'newStartPageToken' in response:
-                    return changes, response['newStartPageToken']
+                if "newStartPageToken" in response:
+                    return changes, response["newStartPageToken"]
 
                 if not next_token:
                     break
 
-            self.logger.info("✅ Found %s changes since page token: %s",
-                        len(changes), page_token)
+            self.logger.info(
+                "✅ Found %s changes since page token: %s", len(changes), page_token
+            )
             return changes, next_token
 
         except (DrivePermissionError, DriveOperationError):
@@ -541,10 +544,7 @@ class DriveUserService:
         except Exception as e:
             raise GoogleDriveError(
                 "Unexpected error getting changes: " + str(e),
-                details={
-                    "page_token": page_token,
-                    "error": str(e)
-                }
+                details={"page_token": page_token, "error": str(e)},
             )
 
     @exponential_backoff()
@@ -555,25 +555,27 @@ class DriveUserService:
             self.logger.info("🚀 Getting start page token")
             async with self.google_limiter:
                 try:
-                    response = self.service.changes().getStartPageToken(
-                        supportsAllDrives=True
-                    ).execute()
+                    response = (
+                        self.service.changes()
+                        .getStartPageToken(supportsAllDrives=True)
+                        .execute()
+                    )
                 except HttpError as e:
                     if e.resp.status == 403:
                         raise DrivePermissionError(
                             "Permission denied getting start page token: " + str(e),
-                            details={"error": str(e)}
+                            details={"error": str(e)},
                         )
                     raise DriveOperationError(
                         "Failed to get start page token: " + str(e),
-                        details={"error": str(e)}
+                        details={"error": str(e)},
                     )
 
-                token = response.get('startPageToken')
+                token = response.get("startPageToken")
                 if not token:
                     raise DriveOperationError(
                         "Invalid response: missing startPageToken",
-                        details={"response": response}
+                        details={"response": response},
                     )
 
                 self.logger.info("✅ Fetched start page token %s", token)
@@ -584,7 +586,7 @@ class DriveUserService:
         except Exception as e:
             raise GoogleDriveError(
                 "Unexpected error getting start page token: " + str(e),
-                details={"error": str(e)}
+                details={"error": str(e)},
             )
 
     def create_batch_request(self) -> BatchHttpRequest:
@@ -593,62 +595,74 @@ class DriveUserService:
 
     @exponential_backoff()
     @token_refresh
-    async def batch_fetch_metadata_and_permissions(self, file_ids: List[str], files: Optional[List[Dict]] = None) -> List[Dict]:
+    async def batch_fetch_metadata_and_permissions(
+        self, file_ids: List[str], files: Optional[List[Dict]] = None
+    ) -> List[Dict]:
         """Fetch comprehensive metadata using batch requests"""
         try:
-            self.logger.info("🚀 Batch fetching metadata and content for %s files", len(file_ids))
+            self.logger.info(
+                "🚀 Batch fetching metadata and content for %s files", len(file_ids)
+            )
             failed_items = []
             metadata_results = {}
 
             if files:
-                metadata_results = {f['id']: f.copy() for f in files if 'id' in f}
+                metadata_results = {f["id"]: f.copy() for f in files if "id" in f}
 
             basic_batch = self.create_batch_request()
 
             def metadata_callback(request_id, response, exception):
-                req_type, file_id = request_id.split('_', 1)
+                req_type, file_id = request_id.split("_", 1)
 
                 if exception is None:
                     if file_id not in metadata_results:
                         metadata_results[file_id] = {}
 
-                    if req_type == 'meta':
+                    if req_type == "meta":
                         metadata_results[file_id].update(response)
-                    elif req_type == 'perm':
-                        metadata_results[file_id]['permissions'] = response.get('permissions', [])
+                    elif req_type == "perm":
+                        metadata_results[file_id]["permissions"] = response.get(
+                            "permissions", []
+                        )
                 else:
                     error_details = {
-                        'file_id': file_id,
-                        'request_type': req_type,
-                        'error': str(exception)
+                        "file_id": file_id,
+                        "request_type": req_type,
+                        "error": str(exception),
                     }
 
                     if isinstance(exception, HttpError):
                         if exception.resp.status == 403:
                             self.logger.info(
                                 "⚠️ Permission denied for %s request on file %s: %s",
-                                req_type, file_id, str(exception)
+                                req_type,
+                                file_id,
+                                str(exception),
                             )
                             # For permission requests, just set empty permissions and continue
-                            if req_type == 'perm':
+                            if req_type == "perm":
                                 if file_id in metadata_results:
-                                    metadata_results[file_id]['permissions'] = []
+                                    metadata_results[file_id]["permissions"] = []
                                 return
                             failed_items.append(error_details)
                         else:
                             self.logger.error(
                                 "❌ HTTP error for %s request on file %s: %s",
-                                req_type, file_id, str(exception)
+                                req_type,
+                                file_id,
+                                str(exception),
                             )
                             failed_items.append(error_details)
                     else:
                         self.logger.error(
                             "❌ Unexpected error for %s request on file %s: %s",
-                            req_type, file_id, str(exception)
+                            req_type,
+                            file_id,
+                            str(exception),
                         )
                         failed_items.append(error_details)
 
-                    if req_type == 'meta':
+                    if req_type == "meta":
                         metadata_results[file_id] = None
 
             # Add requests to batch
@@ -661,17 +675,17 @@ class DriveUserService:
                             supportsAllDrives=True,
                         ),
                         callback=metadata_callback,
-                        request_id=f"meta_{file_id}"
+                        request_id=f"meta_{file_id}",
                     )
 
                 basic_batch.add(
                     self.service.permissions().list(
                         fileId=file_id,
                         fields="permissions(id, displayName, type, role, domain, emailAddress, deleted)",
-                        supportsAllDrives=True
+                        supportsAllDrives=True,
                     ),
                     callback=metadata_callback,
-                    request_id=f"perm_{file_id}"
+                    request_id=f"perm_{file_id}",
                 )
 
             try:
@@ -680,44 +694,56 @@ class DriveUserService:
             except Exception as e:
                 raise DriveOperationError(
                     "Failed to execute batch request: " + str(e),
-                    details={"error": str(e)}
+                    details={"error": str(e)},
                 )
 
             final_results = []
             for file_id in file_ids:
                 result = metadata_results.get(file_id)
-                if result and result.get('mimeType') and result.get('mimeType').startswith('application/vnd.google-apps') and result.get('mimeType') != MimeTypes.GOOGLE_DRIVE_FOLDER.value:
+                if (
+                    result
+                    and result.get("mimeType")
+                    and result.get("mimeType").startswith("application/vnd.google-apps")
+                    and result.get("mimeType") != MimeTypes.GOOGLE_DRIVE_FOLDER.value
+                ):
                     try:
-                        revisions = self.service.revisions().list(
-                            fileId=file_id,
-                            fields="revisions(id, modifiedTime)",
-                            pageSize=10
-                        ).execute()
+                        revisions = (
+                            self.service.revisions()
+                            .list(
+                                fileId=file_id,
+                                fields="revisions(id, modifiedTime)",
+                                pageSize=10,
+                            )
+                            .execute()
+                        )
 
-                        revisions_list = revisions.get('revisions', [])
+                        revisions_list = revisions.get("revisions", [])
                         if revisions_list:
-                            result['headRevisionId'] = revisions_list[-1].get('id', '')
+                            result["headRevisionId"] = revisions_list[-1].get("id", "")
                         else:
-                            result['headRevisionId'] = ''
+                            result["headRevisionId"] = ""
 
-                        self.logger.info("✅ Fetched head revision ID for file: %s", file_id)
+                        self.logger.info(
+                            "✅ Fetched head revision ID for file: %s", file_id
+                        )
                     except HttpError as e:
                         if e.resp.status == 403:
                             self.logger.warning(
-                                "⚠️ Insufficient permissions to read revisions for file %s", file_id)
-                            result['headRevisionId'] = ""
-                            failed_items.append({
-                                'file_id': file_id,
-                                'request_type': 'revision',
-                                'error': str(e)
-                            })
+                                "⚠️ Insufficient permissions to read revisions for file %s",
+                                file_id,
+                            )
+                            result["headRevisionId"] = ""
+                            failed_items.append(
+                                {
+                                    "file_id": file_id,
+                                    "request_type": "revision",
+                                    "error": str(e),
+                                }
+                            )
                         else:
                             raise DriveOperationError(
                                 "Failed to fetch revisions: " + str(e),
-                                details={
-                                    "file_id": file_id,
-                                    "error": str(e)
-                                }
+                                details={"file_id": file_id, "error": str(e)},
                             )
                 final_results.append(result)
 
@@ -725,7 +751,7 @@ class DriveUserService:
                 raise BatchOperationError(
                     f"Batch operation partially failed for {len(failed_items)} items",
                     failed_items=failed_items,
-                    details={"total_files": len(file_ids)}
+                    details={"total_files": len(file_ids)},
                 )
 
             self.logger.info("✅ Completed batch fetch for %s files", len(file_ids))
@@ -740,10 +766,7 @@ class DriveUserService:
         except Exception as e:
             raise GoogleDriveError(
                 "Unexpected error in batch fetch: " + str(e),
-                details={
-                    "total_files": len(file_ids),
-                    "error": str(e)
-                }
+                details={"total_files": len(file_ids), "error": str(e)},
             )
 
     @exponential_backoff()
@@ -751,115 +774,118 @@ class DriveUserService:
     async def get_drive_info(self, drive_id: str, org_id: str) -> dict:
         """Get drive information for root or shared drive"""
         try:
-            if drive_id == 'root':
+            if drive_id == "root":
                 try:
-                    response = self.service.files().get(
-                        fileId='root',
-                        supportsAllDrives=True
-                    ).execute()
+                    response = (
+                        self.service.files()
+                        .get(fileId="root", supportsAllDrives=True)
+                        .execute()
+                    )
                 except HttpError as e:
                     if e.resp.status == 403:
                         raise DrivePermissionError(
                             "Permission denied accessing root drive: " + str(e),
-                            details={"error": str(e)}
+                            details={"error": str(e)},
                         )
                     raise DriveOperationError(
                         "Failed to get root drive info: " + str(e),
-                        details={"error": str(e)}
+                        details={"error": str(e)},
                     )
 
                 drive_key = str(uuid.uuid4())
                 current_time = get_epoch_timestamp_in_ms()
 
                 return {
-                    'drive': {
-                        '_key': drive_key,
-                        'id': response.get('id', 'root'),
-                        'name': response.get('name', 'My Drive'),
-                        'access_level': 'WRITER',
-                        'isShared': False
+                    "drive": {
+                        "_key": drive_key,
+                        "id": response.get("id", "root"),
+                        "name": response.get("name", "My Drive"),
+                        "access_level": "WRITER",
+                        "isShared": False,
                     },
-                    'record': {
-                        '_key': drive_key,
-                        'orgId': org_id,
-                        'recordName': response.get('name', 'My Drive'),
-                        'externalRecordId': response.get('id', 'root'),
-                        'externalRevisionId': '0',
-                        'recordType': RecordTypes.DRIVE.value,
-                        'version': 0,
+                    "record": {
+                        "_key": drive_key,
+                        "orgId": org_id,
+                        "recordName": response.get("name", "My Drive"),
+                        "externalRecordId": response.get("id", "root"),
+                        "externalRevisionId": "0",
+                        "recordType": RecordTypes.DRIVE.value,
+                        "version": 0,
                         "origin": OriginTypes.CONNECTOR.value,
-                        'connectorName': Connectors.GOOGLE_DRIVE.value,
-                        'createdAtTimestamp': current_time,
-                        'updatedAtTimestamp': current_time,
-                        'lastSyncTimestamp': current_time,
-                        'sourceCreatedAtTimestamp': 0,
-                        'sourceLastModifiedTimestamp': 0,
-                        'isArchived': False,
-                        'isDeleted': False,
-                        'isDirty': True,
-                        'indexingStatus': 'NOT_STARTED',
-                        'extractionStatus': 'NOT_STARTED',
-                        'lastIndexTimestamp': 0,
-                        'lastExtractionTimestamp': 0,
-                        'isLatestVersion': False,
-                        'reason': None
-                    }
+                        "connectorName": Connectors.GOOGLE_DRIVE.value,
+                        "createdAtTimestamp": current_time,
+                        "updatedAtTimestamp": current_time,
+                        "lastSyncTimestamp": current_time,
+                        "sourceCreatedAtTimestamp": 0,
+                        "sourceLastModifiedTimestamp": 0,
+                        "isArchived": False,
+                        "isDeleted": False,
+                        "isDirty": True,
+                        "indexingStatus": "NOT_STARTED",
+                        "extractionStatus": "NOT_STARTED",
+                        "lastIndexTimestamp": 0,
+                        "lastExtractionTimestamp": 0,
+                        "isLatestVersion": False,
+                        "reason": None,
+                    },
                 }
             else:
                 try:
-                    response = self.service.drives().get(
-                        driveId=drive_id,
-                        fields='id,name,capabilities,createdTime'
-                    ).execute()
+                    response = (
+                        self.service.drives()
+                        .get(
+                            driveId=drive_id, fields="id,name,capabilities,createdTime"
+                        )
+                        .execute()
+                    )
                 except HttpError as e:
                     if e.resp.status == 403:
                         raise DrivePermissionError(
                             "Permission denied accessing shared drive: " + str(e),
-                            details={
-                                "drive_id": drive_id,
-                                "error": str(e)
-                            }
+                            details={"drive_id": drive_id, "error": str(e)},
                         )
                     raise DriveOperationError(
                         "Failed to get shared drive info: " + str(e),
-                        details={
-                            "drive_id": drive_id,
-                            "error": str(e)}
-                        )
+                        details={"drive_id": drive_id, "error": str(e)},
+                    )
 
                 drive_key = str(uuid.uuid4())
                 current_time = get_epoch_timestamp_in_ms()
 
                 return {
-                    'drive': {
-                        '_key': drive_key,
-                        'id': response.get('id'),
-                        'name': response.get('name'),
-                        'access_level': 'writer' if response.get('capabilities', {}).get('canEdit') else 'reader',
-                        'isShared': True
+                    "drive": {
+                        "_key": drive_key,
+                        "id": response.get("id"),
+                        "name": response.get("name"),
+                        "access_level": (
+                            "writer"
+                            if response.get("capabilities", {}).get("canEdit")
+                            else "reader"
+                        ),
+                        "isShared": True,
                     },
-                    'record': {
-                        '_key': drive_key,
-                        'orgId': org_id,
-                        'recordName': response.get('name'),
-                        'recordType': RecordTypes.DRIVE.value,
-                        'externalRecordId': response.get('id'),
-                        'externalRevisionId': response.get('id'),
+                    "record": {
+                        "_key": drive_key,
+                        "orgId": org_id,
+                        "recordName": response.get("name"),
+                        "recordType": RecordTypes.DRIVE.value,
+                        "externalRecordId": response.get("id"),
+                        "externalRevisionId": response.get("id"),
                         "origin": OriginTypes.CONNECTOR.value,
-                        'connectorName': Connectors.GOOGLE_DRIVE.value,
-                        'version': 0,
-                        'createdAtTimestamp': current_time,
-                        'updatedAtTimestamp': current_time,
-                        'lastSyncTimestamp': current_time,
-                        'sourceCreatedAtTimestamp': current_time,
-                        'sourceLastModifiedTimestamp': current_time,
-                        'isArchived': False,
-                        'isDeleted': False,
-                        'isDirty': True,
-                        'isLatestVersion': False,
-                        'indexingStatus': 'NOT_STARTED',
-                        'extractionStatus': 'NOT_STARTED'
-                    }
+                        "connectorName": Connectors.GOOGLE_DRIVE.value,
+                        "version": 0,
+                        "createdAtTimestamp": current_time,
+                        "updatedAtTimestamp": current_time,
+                        "lastSyncTimestamp": current_time,
+                        "sourceCreatedAtTimestamp": current_time,
+                        "sourceLastModifiedTimestamp": current_time,
+                        "isArchived": False,
+                        "isDeleted": False,
+                        "isDirty": True,
+                        "isLatestVersion": False,
+                        "indexingStatus": "NOT_STARTED",
+                        "extractionStatus": "NOT_STARTED",
+                    },
                 }
 
         except (DrivePermissionError, DriveOperationError):
@@ -867,8 +893,5 @@ class DriveUserService:
         except Exception as e:
             raise GoogleDriveError(
                 "Unexpected error getting drive info: " + str(e),
-                details={
-                    "drive_id": drive_id,
-                    "error": str(e)
-                }
+                details={"drive_id": drive_id, "error": str(e)},
             )

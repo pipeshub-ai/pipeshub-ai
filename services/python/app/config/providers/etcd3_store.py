@@ -11,9 +11,9 @@ from app.config.providers.etcd3_connection_manager import (
 )
 from app.utils.logger import create_logger
 
-logger = create_logger('etcd')
+logger = create_logger("etcd")
 
-T = TypeVar('T')
+T = TypeVar("T")
 
 
 class Etcd3DistributedKeyValueStore(DistributedKeyValueStore[T], Generic[T]):
@@ -38,7 +38,7 @@ class Etcd3DistributedKeyValueStore(DistributedKeyValueStore[T], Generic[T]):
         timeout: float = 5.0,
         ca_cert: Optional[str] = None,
         cert_key: Optional[str] = None,
-        cert_cert: Optional[str] = None
+        cert_cert: Optional[str] = None,
     ):
         """
         Initialize the ETCD3 store.
@@ -68,7 +68,7 @@ class Etcd3DistributedKeyValueStore(DistributedKeyValueStore[T], Generic[T]):
             timeout=timeout,
             ca_cert=ca_cert,
             cert_key=cert_key,
-            cert_cert=cert_cert
+            cert_cert=cert_cert,
         )
         self.client = None
         self.connection_manager = Etcd3ConnectionManager(config)
@@ -105,15 +105,21 @@ class Etcd3DistributedKeyValueStore(DistributedKeyValueStore[T], Generic[T]):
             if existing_value[0] is not None:
                 logger.debug("📋 Key exists, updating value")
                 logger.debug("   - Current value: %s", existing_value[0])
-                success = await asyncio.to_thread(lambda: client.put(key, value_str.encode()))
+                success = await asyncio.to_thread(
+                    lambda: client.put(key, value_str.encode())
+                )
             else:
                 logger.debug("📋 Key doesn't exist, creating new")
                 if ttl:
                     logger.debug("🔄 Creating lease with TTL: %s seconds", ttl)
                     lease = await asyncio.to_thread(lambda: client.lease(ttl))
-                    success = await asyncio.to_thread(lambda: client.put(key, value_str.encode(), lease=lease))
+                    success = await asyncio.to_thread(
+                        lambda: client.put(key, value_str.encode(), lease=lease)
+                    )
                 else:
-                    success = await asyncio.to_thread(lambda: client.put(key, value_str.encode()))
+                    success = await asyncio.to_thread(
+                        lambda: client.put(key, value_str.encode())
+                    )
 
             logger.debug("✅ Key operation successful: %s", success is not None)
             return success is not None
@@ -199,9 +205,8 @@ class Etcd3DistributedKeyValueStore(DistributedKeyValueStore[T], Generic[T]):
             client = await self._get_client()
             logger.debug("🔄 Executing get_all operation")
             keys = await asyncio.to_thread(lambda: list(client.get_all()))
-            decoded_keys = [key[1].key.decode('utf-8') for key in keys]
-            logger.debug("✅ Found %d keys: %s", len(
-                decoded_keys), decoded_keys)
+            decoded_keys = [key[1].key.decode("utf-8") for key in keys]
+            logger.debug("✅ Found %d keys: %s", len(decoded_keys), decoded_keys)
             return decoded_keys
         except Exception as e:
             logger.error("❌ Failed to get all keys: %s", str(e))
@@ -215,7 +220,7 @@ class Etcd3DistributedKeyValueStore(DistributedKeyValueStore[T], Generic[T]):
         self,
         key: str,
         callback: Callable[[Optional[T]], None],
-        error_callback: Optional[Callable[[Exception], None]] = None
+        error_callback: Optional[Callable[[Exception], None]] = None,
     ) -> Any:
         logger.debug("🔄 Setting up watch for key: %s", key)
         client = await self._get_client()
@@ -225,11 +230,11 @@ class Etcd3DistributedKeyValueStore(DistributedKeyValueStore[T], Generic[T]):
             logger.debug("   - Event type: %s", event.type)
             logger.debug("   - Event value: %s", event.value)
             try:
-                if event.type == 'PUT':
+                if event.type == "PUT":
                     value = self.deserializer(event.value)
                     logger.debug("🔄 Executing callback with value: %s", value)
                     callback(value)
-                elif event.type == 'DELETE':
+                elif event.type == "DELETE":
                     logger.debug("🔄 Executing callback for deletion")
                     callback(None)
                 logger.debug("✅ Watch callback completed successfully")
@@ -254,14 +259,10 @@ class Etcd3DistributedKeyValueStore(DistributedKeyValueStore[T], Generic[T]):
         client = await self._get_client()
         try:
             # Ensure directory ends with '/' for proper prefix matching
-            prefix = directory if directory.endswith('/') else f"{directory}/"
-            return [
-                key.decode('utf-8')
-                for key, _ in await client.get_prefix(prefix)
-            ]
+            prefix = directory if directory.endswith("/") else f"{directory}/"
+            return [key.decode("utf-8") for key, _ in await client.get_prefix(prefix)]
         except Exception as e:
-            raise ConnectionError(
-                f"Failed to list keys in directory: {str(e)}")
+            raise ConnectionError(f"Failed to list keys in directory: {str(e)}")
 
     async def close(self) -> None:
         """Clean up resources and close connection."""
@@ -275,8 +276,7 @@ class Etcd3DistributedKeyValueStore(DistributedKeyValueStore[T], Generic[T]):
                 await client.cancel_watch(watch_id)
                 logger.debug("✅ Watch canceled successfully")
             except Exception as e:
-                logger.warning(
-                    "⚠️ Failed to cancel watch %s: %s", watch_id, str(e))
+                logger.warning("⚠️ Failed to cancel watch %s: %s", watch_id, str(e))
 
         self._active_watchers.clear()
         logger.debug("🔄 Closing connection manager")
