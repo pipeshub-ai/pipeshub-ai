@@ -24,8 +24,8 @@ class MarkdownParser:
         """
         # Convert string to bytes
 
-        html = markdown.markdown(md_content, extensions=['md_in_html'])
-        md_bytes = html.encode('utf-8')
+        html = markdown.markdown(md_content, extensions=["md_in_html"])
+        md_bytes = html.encode("utf-8")
 
         # Create a BytesIO object from the bytes
         stream = BytesIO(md_bytes)
@@ -36,7 +36,7 @@ class MarkdownParser:
         # Convert the document
         result = self.converter.convert(source)
 
-        if result.status.value != 'success':
+        if result.status.value != "success":
             raise ValueError(f"Failed to parse Markdown: {result.status}")
 
         return result.document
@@ -56,7 +56,7 @@ class MarkdownParser:
         """
         result = self.converter.convert(file_path)
 
-        if result.status.value != 'success':
+        if result.status.value != "success":
             raise ValueError(f"Failed to parse Markdown: {result.status}")
 
         return result.document

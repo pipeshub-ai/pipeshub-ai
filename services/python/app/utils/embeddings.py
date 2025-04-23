@@ -9,8 +9,8 @@ async def get_default_embedding_model():
         encode_kwargs = {'normalize_embeddings': True}
         return HuggingFaceEmbeddings(
             model_name=model_name,
-            model_kwargs={'device': 'cpu'},
-            encode_kwargs=encode_kwargs
+            model_kwargs={"device": "cpu"},
+            encode_kwargs=encode_kwargs,
         )
     except Exception as e:
         raise e

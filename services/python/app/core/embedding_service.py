@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 class BaseEmbeddingConfig(BaseModel):
     """Base config for all embedding providers"""
+
     model: str
     api_key: Optional[str] = None
     dimensions: Optional[int] = None
@@ -18,6 +19,7 @@ class BaseEmbeddingConfig(BaseModel):
 class AzureEmbeddingConfig(BaseEmbeddingConfig):
     azure_endpoint: str
     azure_api_version: str
+
 
 class OpenAIEmbeddingConfig(BaseEmbeddingConfig):
     organization_id: Optional[str] = None
@@ -50,7 +52,7 @@ class EmbeddingFactory:
                 model=config.model,
                 api_key=config.api_key,
                 api_version=config.azure_api_version,
-                azure_endpoint=config.azure_endpoint
+                azure_endpoint=config.azure_endpoint,
             )
 
         elif isinstance(config, OpenAIEmbeddingConfig):

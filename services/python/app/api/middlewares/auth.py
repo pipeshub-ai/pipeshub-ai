@@ -12,20 +12,23 @@ async def get_config_service(request: Request) -> ConfigurationService:
     config_service = container.config_service()
     return config_service
 
+
 # Authentication logic
 @inject
 async def isJwtTokenValid(request: Request):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"}
+        headers={"WWW-Authenticate": "Bearer"},
     )
     try:
         logger = request.app.container.logger()
         logger.debug("🚀 Starting authentication")
         config_service = await get_config_service(request)
-        secret_keys = await config_service.get_config(config_node_constants.SECRET_KEYS.value)
-        jwt_secret = secret_keys.get('jwtSecret')
+        secret_keys = await config_service.get_config(
+            config_node_constants.SECRET_KEYS.value
+        )
+        jwt_secret = secret_keys.get("jwtSecret")
         algorithm = os.environ.get("JWT_ALGORITHM", "HS256")
         if not jwt_secret:
             raise ValueError("Missing SECRET_KEY in environment variables")
@@ -45,13 +48,14 @@ async def isJwtTokenValid(request: Request):
         logger.error(f"JWT Error: {e}")
         raise credentials_exception
 
+
 # Dependency for injecting authentication
 async def authMiddleware(request: Request):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Not authenticated",
     )
-    try:# Validate the token
+    try:  # Validate the token
         logger = request.app.container.logger()
         logger.debug("🚀 Starting authentication")
         payload = await isJwtTokenValid(request)

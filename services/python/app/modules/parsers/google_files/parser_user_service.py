@@ -19,22 +19,37 @@ from app.connectors.utils.rate_limiter import GoogleAPIRateLimiter
 class ParserUserService:
     """ParserUserService class for parsing Google Workspace files using user credentials"""
 
-    def __init__(self, logger, config: ConfigurationService, rate_limiter: GoogleAPIRateLimiter, google_token_handler, credentials=None):
-        self.logger = logger
-        self.config_service = config
-        self.rate_limiter = rate_limiter
-        self.google_token_handler = google_token_handler
-        self.google_limiter = self.rate_limiter.google_limiter
-        self.credentials = credentials
+    def __init__(
+        self,
+        logger,
+        config: ConfigurationService,
+        rate_limiter: GoogleAPIRateLimiter,
+        google_token_handler,
+        credentials=None,
+    ):
+        try:
+            self.logger = logger
+            self.config_service = config
+            self.rate_limiter = rate_limiter
+            self.google_token_handler = google_token_handler
+            self.google_limiter = self.rate_limiter.google_limiter
+            self.credentials = credentials
 
-        # Services for different Google Workspace apps
-        self.docs_service = None
-        self.sheets_service = None
-        self.slides_service = None
+            # Services for different Google Workspace apps
+            self.docs_service = None
+            self.sheets_service = None
+            self.slides_service = None
 
-        self.token_expiry = None
-        self.org_id = None
-        self.user_id = None
+            self.token_expiry = None
+            self.org_id = None
+            self.user_id = None
+            self.is_delegated = credentials is not None
+
+        except Exception as e:
+            raise GoogleMailError(
+                "Failed to initialize ParserUserService: " + str(e),
+                details={"error": str(e)},
+            )
 
     @token_refresh
     async def connect_individual_user(self, org_id: str, user_id: str) -> bool:
@@ -46,50 +61,41 @@ class ParserUserService:
             SCOPES = GOOGLE_PARSER_SCOPES
 
             try:
-                creds_data = await self.google_token_handler.get_individual_token(org_id, user_id)
+                creds_data = await self.google_token_handler.get_individual_token(
+                    org_id, user_id
+                )
                 if not creds_data:
                     raise GoogleAuthError(
                         "Failed to get individual token",
-                        details={
-                            "org_id": org_id,
-                            "user_id": user_id
-                        }
+                        details={"org_id": org_id, "user_id": user_id},
                     )
             except Exception as e:
                 raise GoogleAuthError(
                     "Error getting individual token: " + str(e),
-                    details={
-                        "org_id": org_id,
-                        "user_id": user_id,
-                        "error": str(e)
-                    }
+                    details={"org_id": org_id, "user_id": user_id, "error": str(e)},
                 )
 
             try:
                 # Create credentials object from the response
                 creds = google.oauth2.credentials.Credentials(
-                    token=creds_data.get('access_token'),
-                    refresh_token=creds_data.get('refresh_token'),
+                    token=creds_data.get("access_token"),
+                    refresh_token=creds_data.get("refresh_token"),
                     token_uri="https://oauth2.googleapis.com/token",
-                    client_id=creds_data.get('client_id'),
-                    client_secret=creds_data.get('client_secret'),
-                    scopes=SCOPES
+                    client_id=creds_data.get("client_id"),
+                    client_secret=creds_data.get("client_secret"),
+                    scopes=SCOPES,
                 )
             except Exception as e:
                 raise GoogleAuthError(
                     "Failed to create credentials object: " + str(e),
-                    details={
-                        "org_id": org_id,
-                        "user_id": user_id,
-                        "error": str(e)
-                    }
+                    details={"org_id": org_id, "user_id": user_id, "error": str(e)},
                 )
 
             # Update token expiry time
             try:
                 self.token_expiry = datetime.fromtimestamp(
-                    creds_data.get('access_token_expiry_time', 0) / 1000,
-                    tz=timezone.utc
+                    creds_data.get("access_token_expiry_time", 0) / 1000,
+                    tz=timezone.utc,
                 )
                 self.logger.info("✅ Token expiry time: %s", self.token_expiry)
             except Exception as e:
@@ -98,24 +104,20 @@ class ParserUserService:
                     details={
                         "org_id": org_id,
                         "user_id": user_id,
-                        "expiry_time": creds_data.get('access_token_expiry_time'),
-                        "error": str(e)
-                    }
+                        "expiry_time": creds_data.get("access_token_expiry_time"),
+                        "error": str(e),
+                    },
                 )
 
             try:
-                self.docs_service = build('docs', 'v1', credentials=creds)
-                self.sheets_service = build('sheets', 'v4', credentials=creds)
-                self.slides_service = build('slides', 'v1', credentials=creds)
+                self.docs_service = build("docs", "v1", credentials=creds)
+                self.sheets_service = build("sheets", "v4", credentials=creds)
+                self.slides_service = build("slides", "v1", credentials=creds)
 
             except Exception as e:
                 raise MailOperationError(
                     "Failed to build ParserUserService: " + str(e),
-                    details={
-                        "org_id": org_id,
-                        "user_id": user_id,
-                        "error": str(e)
-                    }
+                    details={"org_id": org_id, "user_id": user_id, "error": str(e)},
                 )
 
             self.logger.info("✅ ParserUserService connected successfully")
@@ -126,11 +128,7 @@ class ParserUserService:
         except Exception as e:
             raise GoogleMailError(
                 "Unexpected error connecting individual user: " + str(e),
-                details={
-                    "org_id": org_id,
-                    "user_id": user_id,
-                    "error": str(e)
-                }
+                details={"org_id": org_id, "user_id": user_id, "error": str(e)},
             )
 
     async def _check_and_refresh_token(self):
@@ -147,30 +145,33 @@ class ParserUserService:
 
         now = datetime.now(timezone.utc)
         time_until_refresh = self.token_expiry - now - timedelta(minutes=20)
-        self.logger.info(f"Time until refresh: {time_until_refresh.total_seconds()} seconds")
+        self.logger.info(
+            f"Time until refresh: {time_until_refresh.total_seconds()} seconds"
+        )
 
         if time_until_refresh.total_seconds() <= 0:
             await self.google_token_handler.refresh_token(self.org_id, self.user_id)
 
-            creds_data = await self.google_token_handler.get_individual_token(self.org_id, self.user_id)
-
-            creds = google.oauth2.credentials.Credentials(
-                token=creds_data.get('access_token'),
-                refresh_token=creds_data.get('refresh_token'),
-                token_uri="https://oauth2.googleapis.com/token",
-                client_id=creds_data.get('client_id'),
-                client_secret=creds_data.get('client_secret'),
-                scopes=GOOGLE_PARSER_SCOPES
+            creds_data = await self.google_token_handler.get_individual_token(
+                self.org_id, self.user_id
             )
 
-            self.docs_service = build('docs', 'v1', credentials=creds)
-            self.sheets_service = build('sheets', 'v4', credentials=creds)
-            self.slides_service = build('slides', 'v1', credentials=creds)
+            creds = google.oauth2.credentials.Credentials(
+                token=creds_data.get("access_token"),
+                refresh_token=creds_data.get("refresh_token"),
+                token_uri="https://oauth2.googleapis.com/token",
+                client_id=creds_data.get("client_id"),
+                client_secret=creds_data.get("client_secret"),
+                scopes=GOOGLE_PARSER_SCOPES,
+            )
+
+            self.docs_service = build("docs", "v1", credentials=creds)
+            self.sheets_service = build("sheets", "v4", credentials=creds)
+            self.slides_service = build("slides", "v1", credentials=creds)
 
             # Update token expiry time
             self.token_expiry = datetime.fromtimestamp(
-                creds_data.get('access_token_expiry_time', 0) / 1000,
-                tz=timezone.utc
+                creds_data.get("access_token_expiry_time", 0) / 1000, tz=timezone.utc
             )
 
             self.logger.info("✅ Token refreshed, new expiry: %s", self.token_expiry)
@@ -185,17 +186,18 @@ class ParserUserService:
 
             try:
                 # Initialize services
-                self.docs_service = build(
-                    'docs', 'v1', credentials=self.credentials)
+                self.docs_service = build("docs", "v1", credentials=self.credentials)
                 self.sheets_service = build(
-                    'sheets', 'v4', credentials=self.credentials)
+                    "sheets", "v4", credentials=self.credentials
+                )
                 self.slides_service = build(
-                    'slides', 'v1', credentials=self.credentials)
+                    "slides", "v1", credentials=self.credentials
+                )
 
             except Exception as e:
                 raise MailOperationError(
                     "Failed to build Parser Service: " + str(e),
-                    details={"error": str(e)}
+                    details={"error": str(e)},
                 )
 
             self.logger.info("✅ Parser Service connected successfully")
@@ -206,9 +208,8 @@ class ParserUserService:
         except Exception as e:
             raise GoogleMailError(
                 "Unexpected error connecting enterprise user: " + str(e),
-                details={"error": str(e)}
+                details={"error": str(e)},
             )
-
 
     async def disconnect(self):
         """Disconnect and cleanup services"""

@@ -5,11 +5,19 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TextIO
 
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+)
+
 from app.modules.parsers.excel.prompt_template import row_text_prompt
 
 
 class CSVParser:
-    def __init__(self, delimiter: str = ',', quotechar: str = '"', encoding: str = 'utf-8'):
+    def __init__(
+        self, delimiter: str = ",", quotechar: str = '"', encoding: str = "utf-8"
+    ):
         """
         Initialize the CSV parser with configurable parameters.
 
@@ -23,7 +31,14 @@ class CSVParser:
         self.quotechar = quotechar
         self.encoding = encoding
 
-    def read_file(self, file_path: str | Path, encoding: Optional[str] = None) -> List[Dict[str, Any]]:
+        # Configure retry parameters
+        self.max_retries = 3
+        self.min_wait = 1  # seconds
+        self.max_wait = 10  # seconds
+
+    def read_file(
+        self, file_path: str | Path, encoding: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """
         Read a CSV file and return its contents as a list of dictionaries.
 
@@ -46,7 +61,7 @@ class CSVParser:
         # Use provided encoding or fall back to default
         file_encoding = encoding or self.encoding
 
-        with open(file_path, 'r', encoding=file_encoding) as file:
+        with open(file_path, "r", encoding=file_encoding) as file:
             return self.read_stream(file)
 
     def read_stream(self, file_stream: TextIO) -> List[Dict[str, Any]]:
@@ -60,9 +75,7 @@ class CSVParser:
             List of dictionaries where keys are column headers and values are row values
         """
         reader = csv.DictReader(
-            file_stream,
-            delimiter=self.delimiter,
-            quotechar=self.quotechar
+            file_stream, delimiter=self.delimiter, quotechar=self.quotechar
         )
 
         # Convert all rows to dictionaries and store them
@@ -98,13 +111,13 @@ class CSVParser:
         file_path = Path(file_path)
         fieldnames = data[0].keys()
 
-        with open(file_path, 'w', encoding=self.encoding, newline='') as file:
+        with open(file_path, "w", encoding=self.encoding, newline="") as file:
             writer = csv.DictWriter(
                 file,
                 fieldnames=fieldnames,
                 delimiter=self.delimiter,
                 quotechar=self.quotechar,
-                quoting=csv.QUOTE_MINIMAL
+                quoting=csv.QUOTE_MINIMAL,
             )
 
             writer.writeheader()
@@ -120,15 +133,15 @@ class CSVParser:
         Returns:
             Parsed value as the appropriate type (int, float, bool, or string)
         """
-        if value is None or value.strip() == '':
+        if value is None or value.strip() == "":
             return None
 
         # Remove leading/trailing whitespace
         value = value.strip()
 
         # Try to convert to boolean
-        if value.lower() in ('true', 'false'):
-            return value.lower() == 'true'
+        if value.lower() in ("true", "false"):
+            return value.lower() == "true"
 
         # Try to convert to integer
         try:
@@ -145,27 +158,39 @@ class CSVParser:
         # Return as string if no other type matches
         return value
 
-    async def get_rows_text(self, llm, rows: List[Dict[str, Any]], batch_size: int = 10) -> List[str]:
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+    )
+    async def _call_llm(self, llm, messages):
+        """Wrapper for LLM calls with retry logic"""
+        return await llm.ainvoke(messages)
+
+    async def get_rows_text(
+        self, llm, rows: List[Dict[str, Any]], batch_size: int = 10
+    ) -> List[str]:
         """Convert multiple rows into natural language text in batches."""
         processed_texts = []
 
         for i in range(0, len(rows), batch_size):
-            batch = rows[i:i + batch_size]
+            batch = rows[i : i + batch_size]
             # Prepare rows data
             rows_data = [
-                {key: (value.isoformat() if isinstance(value, datetime) else value)
-                 for key, value in row.items()}
+                {
+                    key: (value.isoformat() if isinstance(value, datetime) else value)
+                    for key, value in row.items()
+                }
                 for row in batch
             ]
 
-            # Get natural language text from LLM for all rows
+            # Get natural language text from LLM with retry
             messages = self.row_text_prompt.format_messages(
                 sheet_summary=" ",
                 table_summary=" ",
-                rows_data=json.dumps(rows_data, indent=2)
+                rows_data=json.dumps(rows_data, indent=2),
             )
 
-            response = await llm.ainvoke(messages)
+            response = await self._call_llm(llm, messages)
 
             # Try to extract JSON array from response
             try:
@@ -173,11 +198,11 @@ class CSVParser:
             except json.JSONDecodeError:
                 # If that fails, try to find and parse a JSON array in the response
                 content = response.content
-                start = content.find('[')
-                end = content.rfind(']')
+                start = content.find("[")
+                end = content.rfind("]")
                 if start != -1 and end != -1:
                     try:
-                        processed_texts.extend(json.loads(content[start:end+1]))
+                        processed_texts.extend(json.loads(content[start : end + 1]))
                     except json.JSONDecodeError:
                         # If still can't parse, add response as single-item array
                         processed_texts.append(content)
@@ -197,15 +222,15 @@ def main():
             "age": "30",
             "active": "true",
             "salary": "50000.50",
-            "notes": "Senior Developer"
+            "notes": "Senior Developer",
         },
         {
             "name": "Jane Smith",
             "age": "25",
             "active": "false",
             "salary": "45000.75",
-            "notes": "Junior Developer"
-        }
+            "notes": "Junior Developer",
+        },
     ]
 
     parser = CSVParser()
@@ -230,10 +255,14 @@ def main():
         first_row = read_data[0]
         print(f"name (str): {first_row['name']} ({type(first_row['name'])})")
         print(f"age (int): {first_row['age']} ({type(first_row['age'])})")
-        print(f"""active (bool): {first_row['active']} ({
-              type(first_row['active'])})""")
-        print(f"""salary (float): {
-              first_row['salary']} ({type(first_row['salary'])})""")
+        print(
+            f"""active (bool): {first_row['active']} ({
+              type(first_row['active'])})"""
+        )
+        print(
+            f"""salary (float): {
+              first_row['salary']} ({type(first_row['salary'])})"""
+        )
 
     finally:
         # Clean up test file

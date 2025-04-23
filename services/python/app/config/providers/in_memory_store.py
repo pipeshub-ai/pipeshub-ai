@@ -6,9 +6,9 @@ from typing import Any, Callable, Dict, Generic, List, Optional, TypeVar
 from app.config.key_value_store import DistributedKeyValueStore
 from app.utils.logger import create_logger
 
-logger = create_logger('etcd')
+logger = create_logger("etcd")
 
-T = TypeVar('T')
+T = TypeVar("T")
 
 
 class KeyData(Generic[T]):
@@ -28,8 +28,10 @@ class KeyData(Generic[T]):
         self.value = value
         self.expiry = time.time() + ttl if ttl else None
         if self.expiry:
-            logger.debug("📋 Expiry set to: %s", time.strftime(
-                '%Y-%m-%d %H:%M:%S', time.localtime(self.expiry)))
+            logger.debug(
+                "📋 Expiry set to: %s",
+                time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.expiry)),
+            )
 
     def is_expired(self) -> bool:
         """Check if the value has expired."""
@@ -37,10 +39,11 @@ class KeyData(Generic[T]):
             logger.debug("📋 No expiry set, returning False")
             return False
         is_expired = time.time() > self.expiry
-        logger.debug("🔍 Checking expiry: %s (expired: %s)",
-                     time.strftime('%Y-%m-%d %H:%M:%S',
-                                   time.localtime(self.expiry)),
-                     is_expired)
+        logger.debug(
+            "🔍 Checking expiry: %s (expired: %s)",
+            time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.expiry)),
+            is_expired,
+        )
         return is_expired
 
 
@@ -62,8 +65,7 @@ class InMemoryKeyValueStore(DistributedKeyValueStore[T], Generic[T]):
         """Initialize an empty in-memory store."""
         logger.debug("🔧 Initializing InMemoryKeyValueStore")
         self.store: Dict[str, KeyData[T]] = {}
-        self.watchers: Dict[str,
-                            List[tuple[Callable[[Optional[T]], None], Any]]] = {}
+        self.watchers: Dict[str, List[tuple[Callable[[Optional[T]], None], Any]]] = {}
         self.lock = Lock()
         self._cleanup_task: Optional[asyncio.Task] = None
         self._running = True
@@ -80,8 +82,7 @@ class InMemoryKeyValueStore(DistributedKeyValueStore[T], Generic[T]):
             with self.lock:
                 logger.debug("🔍 Checking for expired keys")
                 expired_keys = [
-                    key for key, data in self.store.items()
-                    if data.is_expired()
+                    key for key, data in self.store.items() if data.is_expired()
                 ]
                 if expired_keys:
                     logger.debug("📋 Found expired keys: %s", expired_keys)
@@ -90,7 +91,8 @@ class InMemoryKeyValueStore(DistributedKeyValueStore[T], Generic[T]):
                         await self._notify_watchers(key, None)
                         del self.store[key]
                     logger.debug(
-                        "✅ Cleanup complete, removed %d keys", len(expired_keys))
+                        "✅ Cleanup complete, removed %d keys", len(expired_keys)
+                    )
 
     async def _notify_watchers(self, key: str, value: Optional[T]) -> None:
         """Notify all watchers of a key about value changes."""
@@ -100,8 +102,7 @@ class InMemoryKeyValueStore(DistributedKeyValueStore[T], Generic[T]):
             logger.debug("📋 Found %d watchers", len(self.watchers[key]))
             for callback, watch_id in self.watchers[key]:
                 try:
-                    logger.debug(
-                        "🔄 Executing callback for watch_id: %s", watch_id)
+                    logger.debug("🔄 Executing callback for watch_id: %s", watch_id)
                     callback(value)
                     logger.debug("✅ Callback executed successfully")
                 except Exception as e:
@@ -221,18 +222,16 @@ class InMemoryKeyValueStore(DistributedKeyValueStore[T], Generic[T]):
 
         with self.lock:
             valid_keys = [
-                key for key, data in self.store.items()
-                if not data.is_expired()
+                key for key, data in self.store.items() if not data.is_expired()
             ]
-            logger.debug("📋 Found %d valid keys: %s",
-                         len(valid_keys), valid_keys)
+            logger.debug("📋 Found %d valid keys: %s", len(valid_keys), valid_keys)
             return valid_keys
 
     async def watch_key(
         self,
         key: str,
         callback: Callable[[Optional[T]], None],
-        error_callback: Optional[Callable[[Exception], None]] = None
+        error_callback: Optional[Callable[[Exception], None]] = None,
     ) -> Any:
         """
         Watch a key for changes and execute callbacks when changes occur.
@@ -254,8 +253,10 @@ class InMemoryKeyValueStore(DistributedKeyValueStore[T], Generic[T]):
                 logger.debug("🔄 Creating new watcher list for key")
                 self.watchers[key] = []
             self.watchers[key].append((callback, watch_id))
-            logger.debug("✅ Watch setup complete. Total watchers for key: %d",
-                         len(self.watchers[key]))
+            logger.debug(
+                "✅ Watch setup complete. Total watchers for key: %d",
+                len(self.watchers[key]),
+            )
         return watch_id
 
     def cancel_watch(self, key: str, watch_id: Any) -> None:
@@ -266,23 +267,19 @@ class InMemoryKeyValueStore(DistributedKeyValueStore[T], Generic[T]):
             key: The key being watched
             watch_id: The watch identifier returned from watch_key
         """
-        logger.debug(
-            "🔄 Canceling watch for key: %s, watch_id: %s", key, watch_id)
+        logger.debug("🔄 Canceling watch for key: %s, watch_id: %s", key, watch_id)
 
         with self.lock:
             if key in self.watchers:
                 original_count = len(self.watchers[key])
                 self.watchers[key] = [
-                    (cb, wid) for cb, wid in self.watchers[key]
-                    if wid != watch_id
+                    (cb, wid) for cb, wid in self.watchers[key] if wid != watch_id
                 ]
                 new_count = len(self.watchers[key])
-                logger.debug("📋 Removed %d watchers",
-                             original_count - new_count)
+                logger.debug("📋 Removed %d watchers", original_count - new_count)
 
                 if not self.watchers[key]:
-                    logger.debug(
-                        "🔄 No more watchers for key, removing watcher list")
+                    logger.debug("🔄 No more watchers for key, removing watcher list")
                     del self.watchers[key]
                 logger.debug("✅ Watch canceled successfully")
             else:
@@ -302,11 +299,13 @@ class InMemoryKeyValueStore(DistributedKeyValueStore[T], Generic[T]):
 
         with self.lock:
             matching_keys = [
-                key for key, data in self.store.items()
+                key
+                for key, data in self.store.items()
                 if key.startswith(directory) and not data.is_expired()
             ]
-            logger.debug("📋 Found %d matching keys: %s",
-                         len(matching_keys), matching_keys)
+            logger.debug(
+                "📋 Found %d matching keys: %s", len(matching_keys), matching_keys
+            )
             return matching_keys
 
     async def close(self) -> None:
@@ -329,5 +328,6 @@ class InMemoryKeyValueStore(DistributedKeyValueStore[T], Generic[T]):
             watcher_count = len(self.watchers)
             self.store.clear()
             self.watchers.clear()
-            logger.debug("✅ Cleared %d stored items and %d watchers",
-                         store_count, watcher_count)
+            logger.debug(
+                "✅ Cleared %d stored items and %d watchers", store_count, watcher_count
+            )
