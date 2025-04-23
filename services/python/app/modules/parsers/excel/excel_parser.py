@@ -6,6 +6,11 @@ from typing import Any, Dict, List
 from openpyxl import load_workbook
 from openpyxl.cell.cell import MergedCell
 from openpyxl.utils import get_column_letter
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from app.modules.parsers.excel.prompt_template import (
     prompt,
@@ -25,6 +30,11 @@ class ExcelParser:
         self.sheet_summary_prompt = sheet_summary_prompt
         self.table_summary_prompt = table_summary_prompt
         self.row_text_prompt = row_text_prompt
+
+        # Configure retry parameters
+        self.max_retries = 3
+        self.min_wait = 1  # seconds
+        self.max_wait = 10  # seconds
 
     def parse(self, file_binary: bytes) -> Dict[str, Any]:
         """
@@ -46,7 +56,8 @@ class ExcelParser:
             # Load workbook from binary or file path
             if self.file_binary:
                 self.workbook = load_workbook(
-                    io.BytesIO(self.file_binary), data_only=True)
+                    io.BytesIO(self.file_binary), data_only=True
+                )
             else:
                 self.workbook = load_workbook(self.file_path, data_only=True)
             sheets_data = []
@@ -59,40 +70,58 @@ class ExcelParser:
                 sheet = self.workbook[sheet_name]
                 sheet_data = self._process_sheet(sheet)
 
-                sheets_data.append({
-                    'name': sheet_name,
-                    'data': sheet_data['data'],
-                    'headers': sheet_data['headers'],
-                    'row_count': sheet.max_row,
-                    'column_count': sheet.max_column,
-                    'merged_cells': [str(merged_range) for merged_range in sheet.merged_cells.ranges]
-                })
+                sheets_data.append(
+                    {
+                        "name": sheet_name,
+                        "data": sheet_data["data"],
+                        "headers": sheet_data["headers"],
+                        "row_count": sheet.max_row,
+                        "column_count": sheet.max_column,
+                        "merged_cells": [
+                            str(merged_range)
+                            for merged_range in sheet.merged_cells.ranges
+                        ],
+                    }
+                )
 
                 total_rows += sheet.max_row
-                total_cells += sum(1 for row in sheet_data['data']
-                                   for cell in row if cell['value'])
+                total_cells += sum(
+                    1 for row in sheet_data["data"] for cell in row if cell["value"]
+                )
 
-                all_text.extend([
-                    str(cell['value']) for row in sheet_data['data']
-                    for cell in row if cell['value'] is not None
-                ])
+                all_text.extend(
+                    [
+                        str(cell["value"])
+                        for row in sheet_data["data"]
+                        for cell in row
+                        if cell["value"] is not None
+                    ]
+                )
 
             # Prepare metadata
             metadata = {
-                'creator': self.workbook.properties.creator,
-                'created': self.workbook.properties.created.isoformat() if self.workbook.properties.created else None,
-                'modified': self.workbook.properties.modified.isoformat() if self.workbook.properties.modified else None,
-                'last_modified_by': self.workbook.properties.lastModifiedBy,
-                'sheet_count': len(self.workbook.sheetnames)
+                "creator": self.workbook.properties.creator,
+                "created": (
+                    self.workbook.properties.created.isoformat()
+                    if self.workbook.properties.created
+                    else None
+                ),
+                "modified": (
+                    self.workbook.properties.modified.isoformat()
+                    if self.workbook.properties.modified
+                    else None
+                ),
+                "last_modified_by": self.workbook.properties.lastModifiedBy,
+                "sheet_count": len(self.workbook.sheetnames),
             }
 
             return {
-                'sheets': sheets_data,
-                'metadata': metadata,
-                'text_content': '\n'.join(all_text),
-                'sheet_names': self.workbook.sheetnames,
-                'total_rows': total_rows,
-                'total_cells': total_cells
+                "sheets": sheets_data,
+                "metadata": metadata,
+                "text_content": "\n".join(all_text),
+                "sheet_names": self.workbook.sheetnames,
+                "total_rows": total_rows,
+                "total_cells": total_cells,
             }
 
         except Exception:
@@ -104,11 +133,11 @@ class ExcelParser:
     def _process_sheet(self, sheet) -> Dict[str, List[List[Dict[str, Any]]]]:
         """Process individual sheet and extract cell data"""
         try:
-            sheet_data = {'headers': [], 'data': []}
+            sheet_data = {"headers": [], "data": []}
 
             # Extract headers from first row
             first_row = next(sheet.iter_rows(min_row=1, max_row=1))
-            sheet_data['headers'] = [cell.value for cell in first_row]
+            sheet_data["headers"] = [cell.value for cell in first_row]
 
             # Start from second row
             for row_idx, row in enumerate(sheet.iter_rows(min_row=2), 2):
@@ -118,53 +147,63 @@ class ExcelParser:
                     # Handle merged cells
                     if isinstance(cell, MergedCell):
                         cell_data = {
-                            'value': None,  # Merged cells don't contain values
-                            'header': sheet_data['headers'][col_idx-1] if col_idx-1 < len(sheet_data['headers']) else None,
-                            'row': row_idx,
-                            'column': col_idx,
+                            "value": None,  # Merged cells don't contain values
+                            "header": (
+                                sheet_data["headers"][col_idx - 1]
+                                if col_idx - 1 < len(sheet_data["headers"])
+                                else None
+                            ),
+                            "row": row_idx,
+                            "column": col_idx,
                             # Use utility function instead
-                            'column_letter': get_column_letter(col_idx),
-                            'coordinate': f"{get_column_letter(col_idx)}{row_idx}",
-                            'data_type': 'merged',
-                            'style': {
-                                'font': {},
-                                'fill': {},
-                                'alignment': {}
-                            }
+                            "column_letter": get_column_letter(col_idx),
+                            "coordinate": f"{get_column_letter(col_idx)}{row_idx}",
+                            "data_type": "merged",
+                            "style": {"font": {}, "fill": {}, "alignment": {}},
                         }
                     else:
                         cell_data = {
-                            'value': cell.value,
-                            'header': sheet_data['headers'][col_idx-1] if col_idx-1 < len(sheet_data['headers']) else None,
-                            'row': row_idx,
-                            'column': col_idx,
-                            'column_letter': cell.column_letter,
-                            'coordinate': cell.coordinate,
-                            'data_type': cell.data_type,
-                            'style': {
-                                'font': {
-                                    'bold': cell.font.bold,
-                                    'italic': cell.font.italic,
-                                    'size': cell.font.size,
-                                    'color': cell.font.color.rgb if cell.font.color else None
+                            "value": cell.value,
+                            "header": (
+                                sheet_data["headers"][col_idx - 1]
+                                if col_idx - 1 < len(sheet_data["headers"])
+                                else None
+                            ),
+                            "row": row_idx,
+                            "column": col_idx,
+                            "column_letter": cell.column_letter,
+                            "coordinate": cell.coordinate,
+                            "data_type": cell.data_type,
+                            "style": {
+                                "font": {
+                                    "bold": cell.font.bold,
+                                    "italic": cell.font.italic,
+                                    "size": cell.font.size,
+                                    "color": (
+                                        cell.font.color.rgb if cell.font.color else None
+                                    ),
                                 },
-                                'fill': {
-                                    'background_color': cell.fill.start_color.rgb if cell.fill.start_color else None
+                                "fill": {
+                                    "background_color": (
+                                        cell.fill.start_color.rgb
+                                        if cell.fill.start_color
+                                        else None
+                                    )
                                 },
-                                'alignment': {
-                                    'horizontal': cell.alignment.horizontal,
-                                    'vertical': cell.alignment.vertical
-                                }
-                            }
+                                "alignment": {
+                                    "horizontal": cell.alignment.horizontal,
+                                    "vertical": cell.alignment.vertical,
+                                },
+                            },
                         }
 
                         # Add formula if present
-                        if cell.data_type == 'f':
-                            cell_data['formula'] = cell.value
+                        if cell.data_type == "f":
+                            cell_data["formula"] = cell.value
 
                     row_data.append(cell_data)
 
-                sheet_data['data'].append(row_data)
+                sheet_data["data"].append(row_data)
 
             return sheet_data
 
@@ -219,17 +258,17 @@ class ExcelParser:
                         visited_cells.add((start_row, col))
 
                 # Only consider it a header row if at least one cell has data
-                if any(cell['value'] is not None for cell in header_cells):
-                    headers = [cell['value'] for cell in header_cells]
+                if any(cell["value"] is not None for cell in header_cells):
+                    headers = [cell["value"] for cell in header_cells]
                     table_data.append(header_cells)
                 else:
                     return {
-                        'headers': [],
-                        'data': [],
-                        'start_row': start_row,
-                        'start_col': start_col,
-                        'end_row': start_row,
-                        'end_col': start_col
+                        "headers": [],
+                        "data": [],
+                        "start_row": start_row,
+                        "start_col": start_col,
+                        "end_row": start_row,
+                        "end_col": start_col,
                     }
 
                 # Process data rows within the determined boundaries
@@ -237,7 +276,11 @@ class ExcelParser:
                     row_data = []
                     for col in range(start_col, max_col + 1):
                         cell = sheet.cell(row=row, column=col)
-                        header = headers[col - start_col] if col - start_col < len(headers) else None
+                        header = (
+                            headers[col - start_col]
+                            if col - start_col < len(headers)
+                            else None
+                        )
                         cell_data = self._process_cell(cell, header, row, col)
                         if cell.value is not None:
                             visited_cells.add((row, col))
@@ -245,12 +288,12 @@ class ExcelParser:
                     table_data.append(row_data)
 
                 return {
-                    'headers': headers,
-                    'data': table_data[1:] if table_data else [],
-                    'start_row': start_row,
-                    'start_col': start_col,
-                    'end_row': max_row,
-                    'end_col': max_col
+                    "headers": headers,
+                    "data": table_data[1:] if table_data else [],
+                    "start_row": start_row,
+                    "start_col": start_col,
+                    "end_row": max_row,
+                    "end_col": max_col,
                 }
 
             # Find all tables in the sheet
@@ -259,9 +302,13 @@ class ExcelParser:
                     cell = sheet.cell(row=row, column=col)
 
                     # Possible table header detection (assumes headers are text-based)
-                    if cell.value and isinstance(cell.value, str) and (row, col) not in visited_cells:
+                    if (
+                        cell.value
+                        and isinstance(cell.value, str)
+                        and (row, col) not in visited_cells
+                    ):
                         table = get_table(row, col)
-                        if table['data']:  # Only add if table has data
+                        if table["data"]:  # Only add if table has data
                             tables.append(table)
 
             return tables
@@ -279,52 +326,63 @@ class ExcelParser:
                 for merged_range in cell.parent.merged_cells.ranges:
                     if cell.coordinate in merged_range:
                         # Get the top-left cell of the merged range
-                        top_left_cell = cell.parent.cell(row=merged_range.min_row, column=merged_range.min_col)
+                        top_left_cell = cell.parent.cell(
+                            row=merged_range.min_row, column=merged_range.min_col
+                        )
                         merged_value = top_left_cell.value
                         break
 
                 return {
-                    'value': merged_value,  # Use the top-left cell's value
-                    'header': header,
-                    'row': row,
-                    'column': col,
-                    'column_letter': get_column_letter(col),
-                    'coordinate': f"{get_column_letter(col)}{row}",
-                    'data_type': 'merged',
-                    'style': {
-                        'font': {},
-                        'fill': {},
-                        'alignment': {}
-                    }
+                    "value": merged_value,  # Use the top-left cell's value
+                    "header": header,
+                    "row": row,
+                    "column": col,
+                    "column_letter": get_column_letter(col),
+                    "coordinate": f"{get_column_letter(col)}{row}",
+                    "data_type": "merged",
+                    "style": {"font": {}, "fill": {}, "alignment": {}},
                 }
 
             # If not a merged cell, process normally.
             return {
-                'value': cell.value,
-                'header': header,
-                'row': row,
-                'column': col,
-                'column_letter': cell.column_letter,
-                'coordinate': cell.coordinate,
-                'data_type': cell.data_type,
-                'style': {
-                    'font': {
-                        'bold': cell.font.bold,
-                        'italic': cell.font.italic,
-                        'size': cell.font.size,
-                        'color': cell.font.color.rgb if cell.font.color else None
+                "value": cell.value,
+                "header": header,
+                "row": row,
+                "column": col,
+                "column_letter": cell.column_letter,
+                "coordinate": cell.coordinate,
+                "data_type": cell.data_type,
+                "style": {
+                    "font": {
+                        "bold": cell.font.bold,
+                        "italic": cell.font.italic,
+                        "size": cell.font.size,
+                        "color": cell.font.color.rgb if cell.font.color else None,
                     },
-                    'fill': {
-                        'background_color': cell.fill.start_color.rgb if cell.fill.start_color else None
+                    "fill": {
+                        "background_color": (
+                            cell.fill.start_color.rgb if cell.fill.start_color else None
+                        )
                     },
-                    'alignment': {
-                        'horizontal': cell.alignment.horizontal,
-                        'vertical': cell.alignment.vertical
-                    }
-                }
+                    "alignment": {
+                        "horizontal": cell.alignment.horizontal,
+                        "vertical": cell.alignment.vertical,
+                    },
+                },
             }
         except Exception:
             raise
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        before_sleep=lambda retry_state: retry_state.args[0].logger.warning(
+            f"Retrying LLM call after error. Attempt {retry_state.attempt_number}"
+        ),
+    )
+    async def _call_llm(self, messages):
+        """Wrapper for LLM calls with retry logic"""
+        return await self.llm.ainvoke(messages)
 
     async def get_tables_in_sheet(self, sheet_name: str) -> List[Dict[str, Any]]:
         """Get all tables in a specific sheet"""
@@ -342,62 +400,61 @@ class ExcelParser:
             # Prepare context for LLM with all tables
             tables_context = []
             for idx, table in enumerate(tables, 1):
-                table_data = [
-                    [cell['value'] for cell in row]
-                    for row in table['data']
-                ]
+                table_data = [[cell["value"] for cell in row] for row in table["data"]]
                 tables_context.append(f"Table {idx}:\n{table_data}")
 
             # Process each table with LLM
             processed_tables = []
             for idx, table in enumerate(tables, 1):
-                table_data = [
-                    [cell['value'] for cell in row]
-                    for row in table['data']
-                ]
+                table_data = [[cell["value"] for cell in row] for row in table["data"]]
 
                 # Use prompt from prompt_template.py
                 formatted_prompt = prompt.format(
                     table_data=table_data,
                     tables_context=tables_context,
-                    start_row=table['start_row'],
-                    start_col=table['start_col'],
-                    end_row=table['end_row'],
-                    end_col=table['end_col'],
-                    num_columns=len(table['data'][0]) if table['data'] else 0
+                    start_row=table["start_row"],
+                    start_col=table["start_col"],
+                    end_row=table["end_row"],
+                    end_col=table["end_col"],
+                    num_columns=len(table["data"][0]) if table["data"] else 0,
                 )
 
-                # Get LLM response
+                # Get LLM response with retry
                 messages = [
-                    {"role": "system", "content": "You are a data analysis expert. Respond with only the list of headers."},
-                    {"role": "user", "content": formatted_prompt}
+                    {
+                        "role": "system",
+                        "content": "You are a data analysis expert. Respond with only the list of headers.",
+                    },
+                    {"role": "user", "content": formatted_prompt},
                 ]
-                response = await self.llm.ainvoke(messages)
+                response = await self._call_llm(messages)
 
                 try:
                     # Parse LLM response to get headers
-                    new_headers = [h.strip()
-                                   for h in response.content.strip().split(',')]
+                    new_headers = [
+                        h.strip() for h in response.content.strip().split(",")
+                    ]
 
                     # Ensure we have the right number of headers
-                    if len(new_headers) != len(table['data'][0]):
-                        new_headers = table['headers']
+                    if len(new_headers) != len(table["data"][0]):
+                        new_headers = table["headers"]
 
                     # Reconstruct table with new headers
                     new_table = {
-                        'headers': new_headers,
-                        'data': table['data'],
-                        'start_row': table['start_row'],
-                        'start_col': table['start_col'],
-                        'end_row': table['end_row'],
-                        'end_col': table['end_col']
+                        "headers": new_headers,
+                        "data": table["data"],
+                        "start_row": table["start_row"],
+                        "start_col": table["start_col"],
+                        "end_row": table["end_row"],
+                        "end_col": table["end_col"],
                     }
 
                     # Update cell header references in the data
-                    for row in new_table['data']:
+                    for row in new_table["data"]:
                         for i, cell in enumerate(row):
-                            cell['header'] = new_headers[i] if i < len(
-                                new_headers) else None
+                            cell["header"] = (
+                                new_headers[i] if i < len(new_headers) else None
+                            )
 
                     processed_tables.append(new_table)
 
@@ -415,39 +472,51 @@ class ExcelParser:
         try:
             # Prepare sample data
             sample_data = [
-                {cell['header']: (cell['value'].isoformat() if isinstance(cell['value'], datetime) else cell['value'])
-                 for cell in row}
-                for row in table['data'][:3]  # Use first 3 rows as sample
+                {
+                    cell["header"]: (
+                        cell["value"].isoformat()
+                        if isinstance(cell["value"], datetime)
+                        else cell["value"]
+                    )
+                    for cell in row
+                }
+                for row in table["data"][:3]  # Use first 3 rows as sample
             ]
 
-            # Get summary from LLM
+            # Get summary from LLM with retry
             messages = self.table_summary_prompt.format_messages(
-                headers=table['headers'],
-                sample_data=json.dumps(sample_data, indent=2)
+                headers=table["headers"], sample_data=json.dumps(sample_data, indent=2)
             )
-            response = await self.llm.ainvoke(messages)
+            response = await self._call_llm(messages)
             return response.content
 
         except Exception:
             raise
 
-    async def get_rows_text(self, rows: List[List[Dict[str, Any]]], table_summary: str) -> List[str]:
+    async def get_rows_text(
+        self, rows: List[List[Dict[str, Any]]], table_summary: str
+    ) -> List[str]:
         """Convert multiple rows into natural language text using context from summaries in a single prompt"""
         try:
             # Prepare rows data
             rows_data = [
-                {cell['header']: (cell['value'].isoformat() if isinstance(cell['value'], datetime) else cell['value'])
-                 for cell in row}
+                {
+                    cell["header"]: (
+                        cell["value"].isoformat()
+                        if isinstance(cell["value"], datetime)
+                        else cell["value"]
+                    )
+                    for cell in row
+                }
                 for row in rows
             ]
 
-            # Get natural language text from LLM for all rows
+            # Get natural language text from LLM with retry
             messages = self.row_text_prompt.format_messages(
-                table_summary=table_summary,
-                rows_data=json.dumps(rows_data, indent=2)
+                table_summary=table_summary, rows_data=json.dumps(rows_data, indent=2)
             )
 
-            response = await self.llm.ainvoke(messages)
+            response = await self._call_llm(messages)
 
             # Try to extract JSON array from response
             try:
@@ -457,11 +526,11 @@ class ExcelParser:
                 # If that fails, try to find and parse a JSON array in the response
                 content = response.content
                 # Look for array between [ and ]
-                start = content.find('[')
-                end = content.rfind(']')
+                start = content.find("[")
+                end = content.rfind("]")
                 if start != -1 and end != -1:
                     try:
-                        return json.loads(content[start:end+1])
+                        return json.loads(content[start : end + 1])
                     except json.JSONDecodeError:
                         # If still can't parse, return response as single-item array
                         return [content]
@@ -472,7 +541,9 @@ class ExcelParser:
         except Exception:
             raise
 
-    async def process_sheet_with_summaries(self, llm, sheet_name: str) -> Dict[str, Any]:
+    async def process_sheet_with_summaries(
+        self, llm, sheet_name: str
+    ) -> Dict[str, Any]:
         """Process a sheet and generate all summaries and row texts"""
         self.llm = llm
         if not self.workbook:
@@ -495,32 +566,32 @@ class ExcelParser:
             processed_rows = []
             batch_size = 20
 
-            for i in range(0, len(table['data']), batch_size):
-                batch = table['data'][i:i + batch_size]
+            for i in range(0, len(table["data"]), batch_size):
+                batch = table["data"][i : i + batch_size]
                 row_texts = await self.get_rows_text(batch, table_summary)
-
 
                 # Add processed rows to results
                 for row, row_text in zip(batch, row_texts):
-                    processed_rows.append({
-                        'raw_data': {cell['header']: cell['value'] for cell in row},
-                        'natural_language_text': row_text,
-                        'row_num': row[0]['row']  # Include row number
-                    })
+                    processed_rows.append(
+                        {
+                            "raw_data": {cell["header"]: cell["value"] for cell in row},
+                            "natural_language_text": row_text,
+                            "row_num": row[0]["row"],  # Include row number
+                        }
+                    )
 
-            processed_tables.append({
-                'headers': table['headers'],
-                'summary': table_summary,
-                'rows': processed_rows,
-                'location': {
-                    'start_row': table['start_row'],
-                    'start_col': table['start_col'],
-                    'end_row': table['end_row'],
-                    'end_col': table['end_col']
+            processed_tables.append(
+                {
+                    "headers": table["headers"],
+                    "summary": table_summary,
+                    "rows": processed_rows,
+                    "location": {
+                        "start_row": table["start_row"],
+                        "start_col": table["start_col"],
+                        "end_row": table["end_row"],
+                        "end_col": table["end_col"],
+                    },
                 }
-            })
+            )
 
-        return {
-            'sheet_name': sheet_name,
-            'tables': processed_tables
-        }
+        return {"sheet_name": sheet_name, "tables": processed_tables}

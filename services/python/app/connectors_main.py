@@ -1,41 +1,45 @@
 import asyncio
-from app.connectors.api.router import router
-from app.connectors.core.entity_kafka_consumer import EntityKafkaRouteConsumer
-from typing import AsyncGenerator
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
+from typing import AsyncGenerator
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.api.middlewares.auth import authMiddleware
+from app.config.utils.named_constants.arangodb_constants import Connectors
+from app.connectors.api.router import router
+from app.connectors.core.entity_kafka_consumer import EntityKafkaRouteConsumer
 from app.setups.connector_setup import (
     AppContainer,
     initialize_container,
     initialize_enterprise_account_services_fn,
     initialize_individual_account_services_fn,
 )
-from app.config.utils.named_constants.arangodb_constants import Connectors
-from datetime import datetime, timezone, timedelta
-from app.api.middlewares.auth import authMiddleware
 
 container = AppContainer()
+
 
 async def get_initialized_container() -> AppContainer:
     """Dependency provider for initialized container"""
     # Create container instance
-    if not hasattr(get_initialized_container, 'initialized'):
+    if not hasattr(get_initialized_container, "initialized"):
         await initialize_container(container)
         # Wire the container after initialization
-        container.wire(modules=[
-            "app.core.celery_app",
-            "app.connectors.google.core.sync_tasks",
-            "app.connectors.api.router",
-            "app.connectors.api.middleware",
-            "app.core.signed_url"
-        ])
+        container.wire(
+            modules=[
+                "app.core.celery_app",
+                "app.connectors.google.core.sync_tasks",
+                "app.connectors.api.router",
+                "app.connectors.api.middleware",
+                "app.core.signed_url",
+            ]
+        )
         get_initialized_container.initialized = True
     return container
+
 
 async def resume_sync_services(app_container: AppContainer) -> None:
     """Resume sync services for users with active sync states"""
@@ -55,21 +59,27 @@ async def resume_sync_services(app_container: AppContainer) -> None:
 
         # Process each organization
         for org in orgs:
-            org_id = org['_key']
-            accountType = org.get('accountType', 'individual')
+            org_id = org["_key"]
+            accountType = org.get("accountType", "individual")
 
             # Ensure the method is called on the correct object
-            if accountType == 'enterprise' or accountType == 'business':
+            if accountType == "enterprise" or accountType == "business":
                 await initialize_enterprise_account_services_fn(org_id, app_container)
-            elif accountType == 'individual':
+            elif accountType == "individual":
                 await initialize_individual_account_services_fn(org_id, app_container)
             else:
                 logger.error("Account Type not valid")
                 return False
 
-            user_type = 'enterprise' if accountType in ['enterprise', 'business'] else 'individual'
+            user_type = (
+                "enterprise"
+                if accountType in ["enterprise", "business"]
+                else "individual"
+            )
 
-            logger.info("Processing organization %s with account type %s", org_id, accountType)
+            logger.info(
+                "Processing organization %s with account type %s", org_id, accountType
+            )
 
             # Get users for this organization
             users = await arango_service.get_users(org_id, active=True)
@@ -86,16 +96,16 @@ async def resume_sync_services(app_container: AppContainer) -> None:
             gmail_sync_service = None
 
             for app in enabled_apps:
-                if app['name'] == Connectors.GOOGLE_CALENDAR.value:
+                if app["name"] == Connectors.GOOGLE_CALENDAR.value:
                     logger.info("Skipping calendar sync for org %s", org_id)
                     continue
 
-                if app['name'] == Connectors.GOOGLE_DRIVE.value:
+                if app["name"] == Connectors.GOOGLE_DRIVE.value:
                     drive_sync_service = app_container.drive_sync_service()
                     await drive_sync_service.initialize(org_id)
                     logger.info("Drive Service initialized for org %s", org_id)
 
-                if app['name'] == Connectors.GOOGLE_MAIL.value:
+                if app["name"] == Connectors.GOOGLE_MAIL.value:
                     gmail_sync_service = app_container.gmail_sync_service()
                     await gmail_sync_service.initialize(org_id)
                     logger.info("Gmail Service initialized for org %s", org_id)
@@ -103,10 +113,19 @@ async def resume_sync_services(app_container: AppContainer) -> None:
             # Check if Drive sync needs to be initialized
             drive_service_needed = False
             for user in users:
-                drive_state = (await arango_service.get_user_sync_state(user['email'], Connectors.GOOGLE_DRIVE.value) or {}).get('syncState', 'NOT_STARTED')
-                if drive_state in ['COMPLETED', 'IN_PROGRESS', 'PAUSED', 'FAILED']:
+                drive_state = (
+                    await arango_service.get_user_sync_state(
+                        user["email"], Connectors.GOOGLE_DRIVE.value
+                    )
+                    or {}
+                ).get("syncState", "NOT_STARTED")
+                if drive_state in ["COMPLETED", "IN_PROGRESS", "PAUSED", "FAILED"]:
                     drive_service_needed = True
-                    logger.info("Drive Service needed for org %s: %s", org_id, drive_service_needed)
+                    logger.info(
+                        "Drive Service needed for org %s: %s",
+                        org_id,
+                        drive_service_needed,
+                    )
                     break
 
             # Initialize Drive sync if needed and collect users
@@ -114,23 +133,46 @@ async def resume_sync_services(app_container: AppContainer) -> None:
             if drive_service_needed:
                 # Re-iterate to collect users needing sync
                 for user in users:
-                    drive_state = (await arango_service.get_user_sync_state(user['email'], Connectors.GOOGLE_DRIVE.value) or {}).get('syncState', 'NOT_STARTED')
-                    if drive_state in ['IN_PROGRESS', 'PAUSED', 'FAILED']:
-                        logger.info("User %s in org %s needs Drive sync (state: %s)",
-                                  user['email'], org_id, drive_state)
+                    drive_state = (
+                        await arango_service.get_user_sync_state(
+                            user["email"], Connectors.GOOGLE_DRIVE.value
+                        )
+                        or {}
+                    ).get("syncState", "NOT_STARTED")
+                    if drive_state in ["IN_PROGRESS", "PAUSED", "FAILED"]:
+                        logger.info(
+                            "User %s in org %s needs Drive sync (state: %s)",
+                            user["email"],
+                            org_id,
+                            drive_state,
+                        )
                         drive_sync_needed.append(user)
-                    elif drive_state == 'COMPLETED':
+                    elif drive_state == "COMPLETED":
                         if drive_sync_service:
-                            logger.info("Drive sync is already completed for user %s", user['email'])
-                            await drive_sync_service.perform_initial_sync(org_id, action="resume")
+                            logger.info(
+                                "Drive sync is already completed for user %s",
+                                user["email"],
+                            )
+                            await drive_sync_service.perform_initial_sync(
+                                org_id, action="resume"
+                            )
 
             # Check if Gmail sync needs to be initialized
             gmail_service_needed = False
             for user in users:
-                gmail_state = (await arango_service.get_user_sync_state(user['email'], Connectors.GOOGLE_MAIL.value) or {}).get('syncState', 'NOT_STARTED')
-                if gmail_state in ['COMPLETED', 'IN_PROGRESS', 'PAUSED', 'FAILED']:
+                gmail_state = (
+                    await arango_service.get_user_sync_state(
+                        user["email"], Connectors.GOOGLE_MAIL.value
+                    )
+                    or {}
+                ).get("syncState", "NOT_STARTED")
+                if gmail_state in ["COMPLETED", "IN_PROGRESS", "PAUSED", "FAILED"]:
                     gmail_service_needed = True
-                    logger.info("Gmail Service needed for org %s: %s", org_id, gmail_service_needed)
+                    logger.info(
+                        "Gmail Service needed for org %s: %s",
+                        org_id,
+                        gmail_service_needed,
+                    )
                     break
 
             # Initialize Gmail sync if needed and collect users
@@ -138,54 +180,105 @@ async def resume_sync_services(app_container: AppContainer) -> None:
             if gmail_service_needed:
                 # Re-iterate to collect users needing sync
                 for user in users:
-                    gmail_state = (await arango_service.get_user_sync_state(user['email'], Connectors.GOOGLE_MAIL.value) or {}).get('syncState', 'NOT_STARTED')
-                    if gmail_state in ['IN_PROGRESS', 'PAUSED', 'FAILED']:
-                        logger.info("User %s in org %s needs Gmail sync (state: %s)",
-                                  user['email'], org_id, gmail_state)
+                    gmail_state = (
+                        await arango_service.get_user_sync_state(
+                            user["email"], Connectors.GOOGLE_MAIL.value
+                        )
+                        or {}
+                    ).get("syncState", "NOT_STARTED")
+                    if gmail_state in ["IN_PROGRESS", "PAUSED", "FAILED"]:
+                        logger.info(
+                            "User %s in org %s needs Gmail sync (state: %s)",
+                            user["email"],
+                            org_id,
+                            gmail_state,
+                        )
                         gmail_sync_needed.append(user)
-                    elif gmail_state == 'COMPLETED':
+                    elif gmail_state == "COMPLETED":
                         if gmail_sync_service:
-                            logger.info("Gmail sync is already completed for user %s", user['email'])
-                            await gmail_sync_service.perform_initial_sync(org_id, action="resume")
+                            logger.info(
+                                "Gmail sync is already completed for user %s",
+                                user["email"],
+                            )
+                            await gmail_sync_service.perform_initial_sync(
+                                org_id, action="resume"
+                            )
 
             # Resume Drive syncs if needed
             if drive_sync_needed:
-                logger.info("Resuming Drive sync for %d users in org %s", len(drive_sync_needed), org_id)
+                logger.info(
+                    "Resuming Drive sync for %d users in org %s",
+                    len(drive_sync_needed),
+                    org_id,
+                )
 
                 for user in drive_sync_needed:
                     if drive_sync_service:
                         try:
-                            if user_type == 'enterprise' or user_type == 'business':
-                                await drive_sync_service.sync_specific_user(user['email'])
-                                logger.info("✅ Resumed Drive sync for user %s in org %s", user['email'], org_id)
+                            if user_type == "enterprise" or user_type == "business":
+                                await drive_sync_service.sync_specific_user(
+                                    user["email"]
+                                )
+                                logger.info(
+                                    "✅ Resumed Drive sync for user %s in org %s",
+                                    user["email"],
+                                    org_id,
+                                )
                             else:  # individual
                                 # Start sync
                                 await drive_sync_service.perform_initial_sync(org_id)
-                                logger.info("✅ Resumed Drive sync for user %s in org %s", user['email'], org_id)
+                                logger.info(
+                                    "✅ Resumed Drive sync for user %s in org %s",
+                                    user["email"],
+                                    org_id,
+                                )
                         except Exception as e:
-                            logger.error("❌ Error resuming Drive sync for user %s in org %s: %s",
-                                    user['email'], org_id, str(e))
+                            logger.error(
+                                "❌ Error resuming Drive sync for user %s in org %s: %s",
+                                user["email"],
+                                org_id,
+                                str(e),
+                            )
 
             # Resume Gmail syncs if needed
             if gmail_sync_needed:
-                logger.info("Resuming Gmail sync for %d users in org %s", len(gmail_sync_needed), org_id)
+                logger.info(
+                    "Resuming Gmail sync for %d users in org %s",
+                    len(gmail_sync_needed),
+                    org_id,
+                )
 
                 for user in gmail_sync_needed:
                     if gmail_sync_service:
                         try:
-                            if user_type == 'enterprise' or user_type == 'business':
-                                await gmail_sync_service.sync_specific_user(user['email'])
-                                logger.info("✅ Resumed Gmail sync for user %s in org %s", user['email'], org_id)
+                            if user_type == "enterprise" or user_type == "business":
+                                await gmail_sync_service.sync_specific_user(
+                                    user["email"]
+                                )
+                                logger.info(
+                                    "✅ Resumed Gmail sync for user %s in org %s",
+                                    user["email"],
+                                    org_id,
+                                )
                             else:  # individual
                                 # Start sync
                                 await gmail_sync_service.perform_initial_sync(org_id)
-                                logger.info("✅ Resumed Gmail sync for user %s in org %s", user['email'], org_id)
+                                logger.info(
+                                    "✅ Resumed Gmail sync for user %s in org %s",
+                                    user["email"],
+                                    org_id,
+                                )
                         except Exception as e:
-                            logger.error("❌ Error resuming Gmail sync for user %s in org %s: %s",
-                                    user['email'], org_id, str(e))
+                            logger.error(
+                                "❌ Error resuming Gmail sync for user %s in org %s: %s",
+                                user["email"],
+                                org_id,
+                                str(e),
+                            )
 
     except Exception as e:
         logger.error("❌ Error during sync service resumption: %s", str(e))
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -208,16 +301,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         "/gmail/{org_id}/sync/pause",
         "/gmail/{org_id}/sync/resume",
         "/drive/sync/user/{user_email}",
-        "/gmail/sync/user/{user_email}"
+        "/gmail/sync/user/{user_email}",
     ]
 
     # Kafka Consumer - pass the app_container
     kafka_consumer = EntityKafkaRouteConsumer(
         logger=logger,
-        config_service= app.container.config_service(),
+        config_service=app.container.config_service(),
         arango_service=await app.container.arango_service(),
         routes=kafka_routes,  # Pass the list of route patterns
-        app_container=app.container
+        app_container=app.container,
     )
 
     # Initialize Kafka consumer
@@ -234,7 +327,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Shutdown
     logger.info("🔄 Shutting down application")
-    
+
     # Stop main consumer
     consumer.stop()
     # Cancel the consume task
@@ -244,14 +337,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except asyncio.CancelledError:
         logger.info("Kafka consumer task cancelled")
 
-    
     # Stop sync kafka consumer if it exists
-    if hasattr(app.container, 'sync_kafka_consumer'):
+    if hasattr(app.container, "sync_kafka_consumer"):
         sync_consumer = app.container.sync_kafka_consumer()
         if sync_consumer:
             sync_consumer.stop()
             logger.info("Sync Kafka consumer stopped")
-    
+
     logger.debug("🔄 Shutting down application")
 
 
@@ -261,11 +353,12 @@ app = FastAPI(
     description="Service for syncing Google Drive content to ArangoDB",
     version="1.0.0",
     lifespan=lifespan,
-    dependencies=[Depends(get_initialized_container)]
+    dependencies=[Depends(get_initialized_container)],
 )
 
 # List of paths to apply authentication to
 INCLUDE_PATHS = ["/api/v1/stream/record/", "/api/v1/delete/"]
+
 
 @app.middleware("http")
 async def authenticate_requests(request: Request, call_next):
@@ -285,16 +378,14 @@ async def authenticate_requests(request: Request, call_next):
 
     except HTTPException as exc:
         # Handle authentication errors
-        return JSONResponse(
-            status_code=exc.status_code,
-            content={"detail": exc.detail}
-        )
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
     except Exception:
         # Handle unexpected errors
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"detail": "Internal server error"}
+            content={"detail": "Internal server error"},
         )
+
 
 # Add CORS middleware
 app.add_middleware(
@@ -305,6 +396,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 @router.get("/health")
 async def health_check():
     """Basic health check endpoint"""
@@ -313,8 +405,10 @@ async def health_check():
             status_code=200,
             content={
                 "status": "healthy",
-                "timestamp": datetime.now(timezone(timedelta(hours=5, minutes=30))).isoformat()
-            }
+                "timestamp": datetime.now(
+                    timezone(timedelta(hours=5, minutes=30))
+                ).isoformat(),
+            },
         )
     except Exception as e:
         return JSONResponse(
@@ -322,12 +416,16 @@ async def health_check():
             content={
                 "status": "fail",
                 "error": str(e),
-                "timestamp": datetime.now(timezone(timedelta(hours=5, minutes=30))).isoformat()
-            }
+                "timestamp": datetime.now(
+                    timezone(timedelta(hours=5, minutes=30))
+                ).isoformat(),
+            },
         )
+
 
 # Include routes
 app.include_router(router)
+
 
 # Global error handler
 @app.exception_handler(Exception)
@@ -336,12 +434,9 @@ async def global_exception_handler(request: Request, exc: Exception):
     logger.error("Global error: %s", str(exc), exc_info=True)
     return JSONResponse(
         status_code=500,
-        content={
-            "status": "error",
-            "message": str(exc),
-            "path": request.url.path
-        }
+        content={"status": "error", "message": str(exc), "path": request.url.path},
     )
+
 
 def run(host: str = "0.0.0.0", port: int = 8080, workers: int = 1, reload: bool = True):
     """Run the application"""
@@ -351,8 +446,9 @@ def run(host: str = "0.0.0.0", port: int = 8080, workers: int = 1, reload: bool 
         port=port,
         log_level="info",
         reload=reload,
-        workers=workers
+        workers=workers,
     )
+
 
 if __name__ == "__main__":
     run(reload=False)

@@ -11,7 +11,7 @@ from app.config.configuration_service import ConfigurationService, config_node_c
 
 class SignedUrlConfig(BaseModel):
     private_key: str | None = None
-    expiration_minutes: int = 30
+    expiration_minutes: int = 60
     algorithm: str = "HS256"
     url_prefix: str = "/api/v1/index"
 
@@ -20,10 +20,14 @@ class SignedUrlConfig(BaseModel):
         """Async factory method to create config using configuration service"""
         try:
             # Assuming there's a config node for JWT settings
-            secret_keys = await configuration_service.get_config(config_node_constants.SECRET_KEYS.value)
-            private_key = secret_keys.get('scopedJwtSecret')
+            secret_keys = await configuration_service.get_config(
+                config_node_constants.SECRET_KEYS.value
+            )
+            private_key = secret_keys.get("scopedJwtSecret")
             if not private_key:
-                raise ValueError("Private key must be provided through configuration or environment")
+                raise ValueError(
+                    "Private key must be provided through configuration or environment"
+                )
             return cls(private_key=private_key)
         except Exception:
             raise
@@ -31,7 +35,10 @@ class SignedUrlConfig(BaseModel):
     def __init__(self, **data):
         super().__init__(**data)
         if not self.private_key:
-            raise ValueError("Private key must be provided through configuration or environment")
+            raise ValueError(
+                "Private key must be provided through configuration or environment"
+            )
+
 
 class TokenPayload(BaseModel):
     record_id: str
@@ -45,8 +52,14 @@ class TokenPayload(BaseModel):
             datetime: lambda v: v.timestamp()  # Convert datetime to timestamp
         }
 
+
 class SignedUrlHandler:
-    def __init__(self, logger, config: SignedUrlConfig, configuration_service: ConfigurationService):
+    def __init__(
+        self,
+        logger,
+        config: SignedUrlConfig,
+        configuration_service: ConfigurationService,
+    ):
         self.logger = logger
         self.signed_url_config = config
         self.config_service = configuration_service
@@ -59,14 +72,24 @@ class SignedUrlHandler:
         if self.signed_url_config.expiration_minutes <= 0:
             raise ValueError("Expiration minutes must be positive")
 
-    async def create_signed_url(self, record_id: str, org_id: str, user_id: str, additional_claims: Dict[str, Any] = None, connector: str = None) -> str:
+    async def create_signed_url(
+        self,
+        record_id: str,
+        org_id: str,
+        user_id: str,
+        additional_claims: Dict[str, Any] = None,
+        connector: str = None,
+    ) -> str:
         """Create a signed URL with optional additional claims"""
         try:
-            expiration = datetime.now(timezone(timedelta(
-                hours=5, minutes=30))) + timedelta(minutes=self.signed_url_config.expiration_minutes)
+            expiration = datetime.now(
+                timezone(timedelta(hours=5, minutes=30))
+            ) + timedelta(minutes=self.signed_url_config.expiration_minutes)
 
-            endpoints = await self.config_service.get_config(config_node_constants.ENDPOINTS.value)
-            connector_endpoint = endpoints.get('connectors').get('endpoint')
+            endpoints = await self.config_service.get_config(
+                config_node_constants.ENDPOINTS.value
+            )
+            connector_endpoint = endpoints.get("connectors").get("endpoint")
 
             self.logger.info(f"user_id: {user_id}")
 
@@ -75,7 +98,7 @@ class SignedUrlHandler:
                 user_id=user_id,
                 exp=expiration,
                 iat=datetime.utcnow(),
-                additional_claims=additional_claims or {}
+                additional_claims=additional_claims or {},
             )
 
             # Convert to dict before encoding
@@ -84,17 +107,20 @@ class SignedUrlHandler:
                 "user_id": user_id,
                 "exp": payload.exp.timestamp(),  # Convert datetime to timestamp
                 "iat": payload.iat.timestamp(),
-                "additional_claims": additional_claims or {}
+                "additional_claims": additional_claims or {},
             }
 
             token = jwt.encode(
                 payload_dict,
                 self.signed_url_config.private_key,
-                algorithm=self.signed_url_config.algorithm
+                algorithm=self.signed_url_config.algorithm,
             )
 
             self.logger.info(
-                "Created signed URL for record %s with connector %s", record_id, connector)
+                "Created signed URL for record %s with connector %s",
+                record_id,
+                connector,
+            )
 
             return f"{connector_endpoint}{self.signed_url_config.url_prefix}/{org_id}/{connector}/record/{record_id}?token={token}"
 
@@ -103,25 +129,26 @@ class SignedUrlHandler:
             raise HTTPException(status_code=400, detail="Invalid payload data")
         except Exception as e:
             self.logger.error("Error creating signed URL: %s", str(e))
-            raise HTTPException(
-                status_code=500, detail="Error creating signed URL")
+            raise HTTPException(status_code=500, detail="Error creating signed URL")
 
-    def validate_token(self, token: str, required_claims: Dict[str, Any] = None) -> TokenPayload:
+    def validate_token(
+        self, token: str, required_claims: Dict[str, Any] = None
+    ) -> TokenPayload:
         """Validate the JWT token and optional required claims"""
         try:
             self.logger.info(f"Validating token: {token}")
             payload = jwt.decode(
                 token,
                 self.signed_url_config.private_key,
-                algorithms=[self.signed_url_config.algorithm]
+                algorithms=[self.signed_url_config.algorithm],
             )
             self.logger.info(f"Payload: {payload}")
 
             # Convert timestamps back to datetime for validation
-            if 'exp' in payload:
-                payload['exp'] = datetime.fromtimestamp(payload['exp'])
-            if 'iat' in payload:
-                payload['iat'] = datetime.fromtimestamp(payload['iat'])
+            if "exp" in payload:
+                payload["exp"] = datetime.fromtimestamp(payload["exp"])
+            if "iat" in payload:
+                payload["iat"] = datetime.fromtimestamp(payload["iat"])
 
             token_data = TokenPayload(**payload)
             self.logger.info(f"Token data: {token_data}")
@@ -130,22 +157,17 @@ class SignedUrlHandler:
                 for key, value in required_claims.items():
                     if token_data.additional_claims.get(key) != value:
                         raise HTTPException(
-                            status_code=401,
-                            detail=f"Required claim '{key}' is invalid"
+                            status_code=401, detail=f"Required claim '{key}' is invalid"
                         )
 
             return token_data
 
         except JWTError as e:
             self.logger.error("JWT validation error: %s", str(e))
-            raise HTTPException(
-                status_code=401, detail="Invalid or expired token")
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
         except ValidationError as e:
             self.logger.error("Payload validation error: %s", str(e))
-            raise HTTPException(
-                status_code=400, detail="Invalid token payload")
+            raise HTTPException(status_code=400, detail="Invalid token payload")
         except Exception as e:
-            self.logger.error(
-                "Unexpected error during token validation: %s", str(e))
-            raise HTTPException(
-                status_code=500, detail="Error validating token")
+            self.logger.error("Unexpected error during token validation: %s", str(e))
+            raise HTTPException(status_code=500, detail="Error validating token")

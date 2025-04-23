@@ -8,13 +8,21 @@ from pydantic import BaseModel, Field
 
 class DecomposedQuery(BaseModel):
     """Schema for a single decomposed query with confidence"""
+
     query: str = Field(description="The decomposed sub-query")
-    confidence: str = Field(description="Confidence level: Very High, High, Medium, or Low")
+    confidence: str = Field(
+        description="Confidence level: Very High, High, Medium, or Low"
+    )
+
 
 class DecomposedQueries(BaseModel):
     """Schema for decomposed queries"""
-    queries: List[DecomposedQuery] = Field(description="List of decomposed sub-queries with confidence scores")
+
+    queries: List[DecomposedQuery] = Field(
+        description="List of decomposed sub-queries with confidence scores"
+    )
     reason: str = Field(description="Reasoning for how the query was decomposed")
+
 
 class QueryDecompositionService:
     """Service for decomposing complex queries into simpler sub-queries"""
@@ -61,18 +69,20 @@ class QueryDecompositionService:
         # Extract JSON from the response
         try:
             # If response is an AIMessage object, access the content attribute directly
-            if hasattr(response, 'content'):
+            if hasattr(response, "content"):
                 json_str = response.content
             elif isinstance(response, dict):
-                json_str = response.get('content')
+                json_str = response.get("content")
             else:
                 json_str = response  # Assume it's already a string
-                            # Parse the JSON
+                # Parse the JSON
             parsed_json = json.loads(json_str)
 
             # Handle legacy format without confidence (convert to new format)
             if parsed_json.get("queries") and isinstance(parsed_json["queries"], list):
-                if parsed_json["queries"] and isinstance(parsed_json["queries"][0], str):
+                if parsed_json["queries"] and isinstance(
+                    parsed_json["queries"][0], str
+                ):
                     # Convert old format ["query1", "query2"] to new format with confidence
                     parsed_json["queries"] = [
                         {"query": q, "confidence": "High"}
@@ -125,7 +135,7 @@ class QueryDecompositionService:
             self.logger.error("exception", {str(e)})
             return {
                 "queries": [{"query": query, "confidence": "Very High"}],
-                "reason": f"Error during decomposition: {str(e)}"
+                "reason": f"Error during decomposition: {str(e)}",
             }
 
     def _map_to_valid_confidence(self, confidence: str) -> str:
@@ -138,7 +148,11 @@ class QueryDecompositionService:
             return "Very High"
         elif "high" in confidence_lower:
             return "High"
-        elif "medium" in confidence_lower or "moderate" in confidence_lower or "mid" in confidence_lower:
+        elif (
+            "medium" in confidence_lower
+            or "moderate" in confidence_lower
+            or "mid" in confidence_lower
+        ):
             return "Medium"
         elif "low" in confidence_lower:
             return "Low"
