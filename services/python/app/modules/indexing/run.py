@@ -399,6 +399,7 @@ class IndexingPipeline:
             self.logger.info("Getting embedding model")
             ai_models = await self.config_service.get_config(config_node_constants.AI_MODELS.value)
             embedding_configs = ai_models['embedding']
+            self.logger.info(f"Embedding configs: {embedding_configs}")
             embedding_model = None
 
             for config in embedding_configs:
@@ -419,6 +420,7 @@ class IndexingPipeline:
 
             if not embedding_model:
                 self.logger.info("No embedding model found in configuration, using default embedding model")
+                
                 self.dense_embeddings = await get_default_embedding_model()
             else:
                 self.dense_embeddings = EmbeddingFactory.create_embedding_model(embedding_model)
@@ -427,8 +429,8 @@ class IndexingPipeline:
             sample_embedding = self.dense_embeddings.embed_query("test")
             embedding_size = len(sample_embedding)
 
-            self.logger.info(f"Using embedding size: {embedding_size}")
-
+            self.logger.info(f"Using embedding model: {embedding_model}, embedding_size: {embedding_size}")
+                
             # Initialize collection with correct embedding size
             self._initialize_collection(embedding_size=embedding_size)
 

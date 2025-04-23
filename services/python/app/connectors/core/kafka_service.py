@@ -55,8 +55,8 @@ class KafkaService:
                 }
             }
 
-            self.logger.info(f"Formatted event: {formatted_event}")
-            self.logger.info(f"kafka config: {kafka_config}")
+            # self.logger.info(f"Formatted event: {formatted_event}")
+            # self.logger.info(f"kafka config: {kafka_config}")
             brokers = kafka_config.get('brokers', 'localhost:9092')
             if isinstance(brokers, list):
                 brokers = ",".join(brokers)

@@ -433,6 +433,7 @@ async def download_file(
 
                     # Convert result to JSON and return as StreamingResponse
                     json_data = json.dumps(result).encode('utf-8')
+                    logger.info(f"Streaming Google Sheets result")
                     return StreamingResponse(
                         iter([json_data]),
                         media_type='application/json'
@@ -475,7 +476,8 @@ async def download_file(
                 try:
                     file_metadata = drive_service.files().get(
                         fileId=file_id,
-                        fields='mimeType'
+                        fields='mimeType',
+                        supportsAllDrives=True
                     ).execute()
                     mime_type = file_metadata.get('mimeType', 'application/octet-stream')
                 except Exception as e:
@@ -806,7 +808,8 @@ async def stream_record(
                 try:
                     file_metadata = drive_service.files().get(
                         fileId=file_id,
-                        fields='mimeType'
+                        fields='mimeType',
+                        supportsAllDrives=True
                     ).execute()
                     mime_type = file_metadata.get('mimeType', 'application/octet-stream')
                 except Exception as e:
@@ -983,7 +986,8 @@ async def stream_record(
                         try:
                             file_metadata = drive_service.files().get(
                                 fileId=file_id,
-                                fields='mimeType'
+                                fields='mimeType',
+                                supportsAllDrives=True
                             ).execute()
                             mime_type = file_metadata.get('mimeType', 'application/octet-stream')
                         except Exception as e:

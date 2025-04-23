@@ -26,7 +26,12 @@ class SyncKafkaRouteConsumer:
                 'gmail.start': self.gmail_start_sync,
                 'gmail.pause': self.gmail_pause_sync,
                 'gmail.resume': self.gmail_resume_sync,
-                'gmail.user': self.gmail_sync_user
+                'gmail.user': self.gmail_sync_user,
+                'drive.resync': self.resync_drive,
+                'gmail.resync': self.resync_gmail,
+                'connectorPublicUrlChanged': self.connector_public_url_changed,
+                'gmailUpdatesEnabledEvent': self.gmail_updates_enabled_event,
+                'gmailUpdatesDisabledEvent': self.gmail_updates_disabled_event
             }
         }
         self.consume_task = None
@@ -293,6 +298,72 @@ class SyncKafkaRouteConsumer:
         except Exception as e:
             self.logger.error("Error syncing user: %s", str(e))
             return False
+
+    async def resync_drive(self, payload):
+        """Resync a user's Google Drive"""
+        try:
+            org_id = payload.get('orgId')
+            if not org_id:
+                raise ValueError("orgId is required")
+            
+            user_id = payload.get('userId')
+            if user_id:
+                self.logger.info(f"Resyncing user: {user_id}")
+                user = await self.arango_service.get_user_by_user_id(user_id)
+                return await self.sync_tasks.drive_sync_service.resync_drive(org_id, user)
+            else:
+                self.logger.info(f"Resyncing all users for org: {org_id}")
+                users = await self.arango_service.get_users(org_id, active = True)
+                for user in users:
+                    if not await self.sync_tasks.drive_sync_service.resync_drive(org_id, user):
+                        self.logger.error(f"Error resyncing user {user['email']}")
+                        continue
+                return True
+        except Exception as e:
+            self.logger.error("Error resyncing user: %s", str(e))
+            return False
+
+    async def resync_gmail(self, payload):
+        """Resync a user's Google Gmail"""
+        try:
+            org_id = payload.get('orgId')
+            if not org_id:
+                raise ValueError("orgId is required")
+            
+            user_id = payload.get('userId')
+            if user_id:
+                self.logger.info(f"Resyncing user: {user_id}")
+                user = await self.arango_service.get_user_by_user_id(user_id)
+                return await self.sync_tasks.gmail_sync_service.resync_gmail(org_id, user)
+            else:
+                self.logger.info(f"Resyncing all users for org: {org_id}")
+                users = await self.arango_service.get_users(org_id, active = True)
+                for user in users:
+                    if not await self.sync_tasks.gmail_sync_service.resync_gmail(org_id, user):
+                        self.logger.error(f"Error resyncing user {user['email']}")
+                        continue
+                return True
+        except Exception as e:
+            self.logger.error("Error resyncing user: %s", str(e))
+            return False
+        
+    async def connector_public_url_changed(self, payload):
+        """Handle connector public URL changed event"""
+        org_id = payload.get('orgId')
+        if not org_id:
+            raise ValueError("orgId is required")
+        users = await self.arango_service.get_users(org_id, active = True)
+        for user in users:
+            await self.sync_tasks.drive_sync_service.setup_changes_watch(user['email'])
+        await self.resync_drive(payload)
+    
+    async def gmail_updates_enabled_event(self, payload):
+        """Handle Gmail updates enabled event"""
+        pass
+    
+    async def gmail_updates_disabled_event(self, payload):
+        """Handle Gmail updates disabled event"""
+        pass
 
     async def consume_messages(self):
         """Main consumption loop."""
