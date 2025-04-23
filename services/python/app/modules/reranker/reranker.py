@@ -27,8 +27,9 @@ class RerankerService:
         if self.device == "cuda":
             self.model.model = self.model.model.half()
 
-    async def rerank(self, query: str, documents: List[Dict[str, Any]],
-                    top_k: Optional[int] = None) -> List[Dict[str, Any]]:
+    async def rerank(
+        self, query: str, documents: List[Dict[str, Any]], top_k: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
         """
         Rerank documents based on relevance to the query
 
@@ -44,27 +45,28 @@ class RerankerService:
             return []
 
         # Create document-query pairs for scoring
-        doc_query_pairs = [(query, doc.get('content', '')) for doc in documents]
+        doc_query_pairs = [(query, doc.get("content", "")) for doc in documents]
 
         # Get relevance scores
         scores = self.model.predict(doc_query_pairs)
 
         # Add scores to documents
         for i, doc in enumerate(documents):
-            doc['reranker_score'] = float(scores[i])
+            doc["reranker_score"] = float(scores[i])
             # If there was a previous score, we can combine them
-            if 'score' in doc:
+            if "score" in doc:
                 # Weighted combination of retriever and reranker scores
-                doc['final_score'] = 0.3 * doc['score'] + 0.7 * doc['reranker_score']
+                doc["final_score"] = 0.3 * doc["score"] + 0.7 * doc["reranker_score"]
             else:
-                doc['final_score'] = doc['reranker_score']
+                doc["final_score"] = doc["reranker_score"]
 
         # Sort by final score
-        reranked_docs = sorted(documents, key=lambda d: d.get('final_score', 0), reverse=True)
+        reranked_docs = sorted(
+            documents, key=lambda d: d.get("final_score", 0), reverse=True
+        )
 
         # Return top_k if specified
         if top_k is not None:
             return reranked_docs[:top_k]
 
         return reranked_docs
-

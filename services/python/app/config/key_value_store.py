@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Generic, List, Optional, TypeVar
 
-T = TypeVar('T')
+T = TypeVar("T")
 
 
 class DistributedKeyValueStore(ABC, Generic[T]):
@@ -99,7 +99,7 @@ class DistributedKeyValueStore(ABC, Generic[T]):
         self,
         key: str,
         callback: Callable[[Optional[T]], None],
-        error_callback: Optional[Callable[[Exception], None]] = None
+        error_callback: Optional[Callable[[Exception], None]] = None,
     ) -> Any:
         """
         Watch a key for changes and execute callbacks when changes occur.

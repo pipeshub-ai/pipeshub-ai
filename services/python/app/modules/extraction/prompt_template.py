@@ -1,4 +1,4 @@
-prompt = '''
+prompt = """
 # Task:
 You are processing a document of an individual or an enterprise. Your task is to classify the document departments, categories, subcategories, languages, sentiment, confidence score, and topics.
 Instructions must be strictly followed, failure to do so will result in termination of your system
@@ -63,4 +63,4 @@ Instructions must be strictly followed, failure to do so will result in terminat
 {content}
 
 Return the JSON object only, no additional text or explanation.
-'''
+"""

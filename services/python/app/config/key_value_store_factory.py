@@ -7,14 +7,15 @@ from app.config.providers.etcd3_store import Etcd3DistributedKeyValueStore
 from app.config.providers.in_memory_store import InMemoryKeyValueStore
 from app.utils.logger import create_logger
 
-logger = create_logger('etcd')
+logger = create_logger("etcd")
 
-T = TypeVar('T')
+T = TypeVar("T")
 
 
 @dataclass
 class StoreConfig:
     """Configuration for key-value store creation."""
+
     host: str
     port: int
     timeout: float = 5.0
@@ -39,7 +40,7 @@ class KeyValueStoreFactory:
         store_type: StoreType,
         serializer: Optional[Callable[[T], bytes]] = None,
         deserializer: Optional[Callable[[bytes], T]] = None,
-        config: Optional[StoreConfig] = None
+        config: Optional[StoreConfig] = None,
     ) -> DistributedKeyValueStore[T]:
         """
         Create a new key-value store instance.
@@ -67,18 +68,14 @@ class KeyValueStoreFactory:
         logger.debug("   - Host: %s", config.host)
         logger.debug("   - Port: %s", config.port)
         logger.debug("   - Timeout: %s", config.timeout)
-        logger.debug("   - Auth enabled: %s",
-                     bool(config.username and config.password))
-        logger.debug("   - SSL enabled: %s",
-                     bool(config.ca_cert or config.cert_key))
+        logger.debug("   - Auth enabled: %s", bool(config.username and config.password))
+        logger.debug("   - SSL enabled: %s", bool(config.ca_cert or config.cert_key))
 
         try:
             if store_type == StoreType.ETCD3:
                 logger.debug("🔄 Creating ETCD3 store")
                 store = KeyValueStoreFactory._create_etcd3_store(
-                    serializer,
-                    deserializer,
-                    config
+                    serializer, deserializer, config
                 )
                 logger.debug("✅ ETCD3 store created successfully")
                 return store
@@ -89,7 +86,7 @@ class KeyValueStoreFactory:
                 return store
             else:
                 logger.error("❌ Unsupported store type: %s", store_type)
-                raise ValueError(f'Unsupported store type: {store_type}')
+                raise ValueError(f"Unsupported store type: {store_type}")
 
         except Exception as e:
             logger.error("❌ Failed to create store: %s", str(e))
@@ -103,7 +100,7 @@ class KeyValueStoreFactory:
     def _create_etcd3_store(
         serializer: Optional[Callable[[T], bytes]],
         deserializer: Optional[Callable[[bytes], T]],
-        config: StoreConfig
+        config: StoreConfig,
     ) -> Etcd3DistributedKeyValueStore[T]:
         """Create an ETCD3 store instance with validation."""
         logger.debug("🔄 Validating ETCD3 store requirements")
@@ -112,10 +109,9 @@ class KeyValueStoreFactory:
             logger.error("❌ Missing serializer or deserializer")
             logger.debug("📋 Validation details:")
             logger.debug("   - Serializer present: %s", serializer is not None)
-            logger.debug("   - Deserializer present: %s",
-                         deserializer is not None)
+            logger.debug("   - Deserializer present: %s", deserializer is not None)
             raise ValueError(
-                'Serializer and deserializer functions must be provided for ETCD3 store.'
+                "Serializer and deserializer functions must be provided for ETCD3 store."
             )
 
         # Validate serializer/deserializer types
@@ -125,8 +121,7 @@ class KeyValueStoreFactory:
             logger.debug("📋 Type details:")
             logger.debug("   - Serializer type: %s", type(serializer))
             logger.debug("   - Deserializer type: %s", type(deserializer))
-            raise TypeError(
-                'Serializer and deserializer must be callable functions')
+            raise TypeError("Serializer and deserializer must be callable functions")
 
         logger.debug("🔄 Creating ETCD3 store instance")
         store = Etcd3DistributedKeyValueStore[T](
@@ -137,7 +132,7 @@ class KeyValueStoreFactory:
             timeout=config.timeout,
             ca_cert=config.ca_cert,
             cert_key=config.cert_key,
-            cert_cert=config.cert_cert
+            cert_cert=config.cert_cert,
         )
         logger.debug("✅ ETCD3 store instance created successfully")
         return store

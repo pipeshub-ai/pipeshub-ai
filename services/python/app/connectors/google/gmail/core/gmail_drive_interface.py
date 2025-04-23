@@ -17,7 +17,7 @@ class GmailDriveInterface:
         google_token_handler,
         drive_service=None,
         credentials=None,
-        admin_service=None
+        admin_service=None,
     ):
         self.logger = logger
         self.config_service = config
@@ -28,7 +28,14 @@ class GmailDriveInterface:
         self.admin_service = admin_service
 
     @exponential_backoff()
-    async def get_drive_file(self, file_id: str, user_email: Optional[str] = None, org_id: Optional[str] = None, user_id: Optional[str] = None, account_type: Optional[str] = None) -> Optional[Dict]:
+    async def get_drive_file(
+        self,
+        file_id: str,
+        user_email: Optional[str] = None,
+        org_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        account_type: Optional[str] = None,
+    ) -> Optional[Dict]:
         """Get Drive file metadata using file ID
 
         Args:
@@ -40,7 +47,7 @@ class GmailDriveInterface:
         """
         try:
             # For enterprise setup
-            if account_type == 'enterprise' or account_type == 'business':
+            if account_type == "enterprise" or account_type == "business":
                 if not user_email:
                     self.logger.error("❌ User email required for enterprise setup")
                     return None
@@ -49,18 +56,22 @@ class GmailDriveInterface:
 
                 self.drive_service = self.admin_service
                 if not await self.drive_service.connect_admin(org_id):
-                    self.logger.error(
-                        "❌ Failed to connect to Drive Admin service")
+                    self.logger.error("❌ Failed to connect to Drive Admin service")
                     return None
 
                 # Get user-specific service
-                user_service = await self.drive_service.create_drive_user_service(user_email)
+                user_service = await self.drive_service.create_drive_user_service(
+                    user_email
+                )
                 if not user_service:
                     self.logger.error(
-                        f"❌ Failed to create user service for {user_email}")
+                        f"❌ Failed to create user service for {user_email}"
+                    )
                     return None
 
-                metadata = await user_service.batch_fetch_metadata_and_permissions([file_id])
+                metadata = await user_service.batch_fetch_metadata_and_permissions(
+                    [file_id]
+                )
                 return metadata[0]
 
             # For individual setup
@@ -72,15 +83,20 @@ class GmailDriveInterface:
                         config=self.config_service,
                         rate_limiter=self.rate_limiter,
                         google_token_handler=self.google_token_handler,
-                        credentials=self.credentials
+                        credentials=self.credentials,
                     )
 
-                    if not await self.drive_service.connect_individual_user(org_id, user_id):
-                        self.logger.error(
-                            "❌ Failed to connect to Drive User service")
+                    if not await self.drive_service.connect_individual_user(
+                        org_id, user_id
+                    ):
+                        self.logger.error("❌ Failed to connect to Drive User service")
                         return None
 
-                metadata = await self.drive_service.batch_fetch_metadata_and_permissions([file_id])
+                metadata = (
+                    await self.drive_service.batch_fetch_metadata_and_permissions(
+                        [file_id]
+                    )
+                )
                 return metadata[0]
 
         except Exception as e:

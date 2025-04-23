@@ -12,21 +12,21 @@ from app.utils.logger import create_logger
 
 class AppContainer(containers.DeclarativeContainer):
     """Dependency injection container for the application."""
+
     # Log when container is initialized
     logger = providers.Singleton(create_logger, "Python Query Service")
 
     logger().info("🚀 Initializing AppContainer")
 
     # Initialize ConfigurationService first
-    config_service = providers.Singleton(
-        ConfigurationService,
-        logger=logger
-    )
+    config_service = providers.Singleton(ConfigurationService, logger=logger)
 
     async def _fetch_arango_host(config_service):
         """Fetch ArangoDB host URL from etcd asynchronously."""
-        arango_config = await config_service.get_config(config_node_constants.ARANGODB.value)
-        return arango_config['url']
+        arango_config = await config_service.get_config(
+            config_node_constants.ARANGODB.value
+        )
+        return arango_config["url"]
 
     async def _create_arango_client(config_service):
         """Async factory method to initialize ArangoClient."""
@@ -34,7 +34,8 @@ class AppContainer(containers.DeclarativeContainer):
         return ArangoClient(hosts=hosts)
 
     arango_client = providers.Resource(
-        _create_arango_client, config_service=config_service)
+        _create_arango_client, config_service=config_service
+    )
 
     # First create an async factory for the connected ArangoService
     async def _create_arango_service(logger, arango_client, config):
@@ -47,23 +48,24 @@ class AppContainer(containers.DeclarativeContainer):
         _create_arango_service,
         logger=logger,
         arango_client=arango_client,
-        config=config_service
+        config=config_service,
     )
 
     # Vector search service
     async def _get_qdrant_config(config_service: ConfigurationService):
         """Async factory method to get Qdrant configuration."""
-        qdrant_config = await config_service.get_config(config_node_constants.QDRANT.value)
+        qdrant_config = await config_service.get_config(
+            config_node_constants.QDRANT.value
+        )
         return {
-            'collectionName': QdrantCollectionNames.RECORDS.value,
-            'apiKey': qdrant_config['apiKey'],
-            'host': qdrant_config['host'],
-            'grpcPort': qdrant_config['grpcPort']
+            "collectionName": QdrantCollectionNames.RECORDS.value,
+            "apiKey": qdrant_config["apiKey"],
+            "host": qdrant_config["host"],
+            "grpcPort": qdrant_config["grpcPort"],
         }
 
     qdrant_config = providers.Resource(
-        _get_qdrant_config,
-        config_service=config_service
+        _get_qdrant_config, config_service=config_service
     )
 
     # Vector search service
@@ -72,10 +74,10 @@ class AppContainer(containers.DeclarativeContainer):
         service = RetrievalService(
             logger=logger,
             config_service=config_service,
-            collection_name=config['collectionName'],
-            qdrant_api_key=config['apiKey'],
-            qdrant_host=config['host'],
-            grpc_port=config['grpcPort']
+            collection_name=config["collectionName"],
+            qdrant_api_key=config["apiKey"],
+            qdrant_host=config["host"],
+            grpc_port=config["grpcPort"],
         )
         return service
 
@@ -83,17 +85,17 @@ class AppContainer(containers.DeclarativeContainer):
         _create_retrieval_service,
         config_service=config_service,
         config=qdrant_config,
-        logger=logger
+        logger=logger,
     )
 
     llm_config_handler = providers.Singleton(
         RetrievalAiConfigHandler,
         logger=logger,
         config_service=config_service,
-        retrieval_service=retrieval_service
+        retrieval_service=retrieval_service,
     )
 
     reranker_service = providers.Singleton(
         RerankerService,
-        model_name="BAAI/bge-reranker-base"  # Choose model based on speed/accuracy needs
+        model_name="BAAI/bge-reranker-base",  # Choose model based on speed/accuracy needs
     )

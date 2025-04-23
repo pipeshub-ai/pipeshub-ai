@@ -15,8 +15,7 @@ class GoogleAPIRateLimiter:
         """
         # Single limiter for all Drive API operations
         # Converting max_rate to per-second rate
-        self.google_limiter = AsyncLimiter(
-            max_rate/100, 1)  # requests per second
+        self.google_limiter = AsyncLimiter(max_rate / 100, 1)  # requests per second
 
     async def __aenter__(self):
         await self.google_limiter.acquire()

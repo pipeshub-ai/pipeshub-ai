@@ -1,5 +1,6 @@
 from enum import Enum
 
+
 class DepartmentNames(Enum):
     LEGAL = "Legal"
     COMPLIANCE_RISK = "Compliance/Risk Management"
@@ -22,14 +23,16 @@ class DepartmentNames(Enum):
     ESG = "Environmental, Social, and Governance"
     TRAINING = "Training and Enablement"
     MARKETING = "Marketing"
-    INVESTOR_RELATIONS = "Investor Relationss"
+    INVESTOR_RELATIONS = "Investor Relations"
     CUSTOMER_SUCCESS = "Customer Success"
     OTHERS = "Others"
-    
+
+
 class Connectors(Enum):
     GOOGLE_DRIVE = "DRIVE"
     GOOGLE_MAIL = "GMAIL"
     GOOGLE_CALENDAR = "CALENDAR"
+
 
 class RecordTypes(Enum):
     FILE = "FILE"
@@ -37,82 +40,88 @@ class RecordTypes(Enum):
     LINK = "LINK"
     MAIL = "MAIL"
     DRIVE = "DRIVE"
-    
+
+
 class RecordRelations(Enum):
     PARENT_CHILD = "PARENT_CHILD"
     SIBLING = "SIBLING"
     ATTACHMENT = "ATTACHMENT"
-    
+
+
 class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"
     UPLOAD = "UPLOAD"
-    
+
+
 class EventTypes(Enum):
     NEW_RECORD = "newRecord"
     UPDATE_RECORD = "updateRecord"
     DELETE_RECORD = "deleteRecord"
-    
+
+
 class CollectionNames(Enum):
     # Records and Record relations
-    RECORDS = 'records'
-    RECORD_RELATIONS = 'recordRelations'
+    RECORDS = "records"
+    RECORD_RELATIONS = "recordRelations"
 
     # Knowledge base
-    KNOWLEDGE_BASE = 'knowledgeBase'
-    IS_OF_TYPE = 'isOfType'
-    BELONGS_TO_KNOWLEDGE_BASE = 'belongsToKnowledgeBase'
-    PERMISSIONS_TO_KNOWLEDGE_BASE = 'permissionsToKnowledgeBase'
+    KNOWLEDGE_BASE = "knowledgeBase"
+    IS_OF_TYPE = "isOfType"
+    BELONGS_TO_KNOWLEDGE_BASE = "belongsToKnowledgeBase"
+    PERMISSIONS_TO_KNOWLEDGE_BASE = "permissionsToKnowledgeBase"
 
     # Drive related
-    DRIVES = 'drives'
-    USER_DRIVE_RELATION = 'userDriveRelation'
+    DRIVES = "drives"
+    USER_DRIVE_RELATION = "userDriveRelation"
 
     # Record types
-    FILES = 'files'
-    ATTACHMENTS = 'attachments'
-    LINKS = 'links'
-    MAILS = 'mails'
+    FILES = "files"
+    ATTACHMENTS = "attachments"
+    LINKS = "links"
+    MAILS = "mails"
 
     # Users and groups
-    PEOPLE = 'people'
-    USERS = 'users'
-    GROUPS = 'groups'
-    ORGS = 'organizations'
-    ANYONE = 'anyone'
-    BELONGS_TO = 'belongsTo'
+    PEOPLE = "people"
+    USERS = "users"
+    GROUPS = "groups"
+    ORGS = "organizations"
+    ANYONE = "anyone"
+    BELONGS_TO = "belongsTo"
 
     # Departments
-    DEPARTMENTS = 'departments'
-    BELONGS_TO_DEPARTMENT = 'belongsToDepartment'
+    DEPARTMENTS = "departments"
+    BELONGS_TO_DEPARTMENT = "belongsToDepartment"
     CATEGORIES = "categories"
-    BELONGS_TO_CATEGORY = 'belongsToCategory'
+    BELONGS_TO_CATEGORY = "belongsToCategory"
     LANGUAGES = "languages"
-    BELONGS_TO_LANGUAGE = 'belongsToLanguage'
+    BELONGS_TO_LANGUAGE = "belongsToLanguage"
     TOPICS = "topics"
-    BELONGS_TO_TOPIC = 'belongsToTopic'
+    BELONGS_TO_TOPIC = "belongsToTopic"
     SUBCATEGORIES1 = "subcategories1"
     SUBCATEGORIES2 = "subcategories2"
     SUBCATEGORIES3 = "subcategories3"
-    INTER_CATEGORY_RELATIONS = 'interCategoryRelations'
+    INTER_CATEGORY_RELATIONS = "interCategoryRelations"
 
     # Permissions
-    PERMISSIONS = 'permissions'
+    PERMISSIONS = "permissions"
 
     # Other
-    CHANNEL_HISTORY = 'channelHistory'
-    PAGE_TOKENS = 'pageTokens' 
-    
+    CHANNEL_HISTORY = "channelHistory"
+    PAGE_TOKENS = "pageTokens"
+
     # Graphs
     FILE_ACCESS_GRAPH = "fileAccessGraph"
 
-    APPS = 'apps'
-    ORG_APP_RELATION = 'orgAppRelation'
-    USER_APP_RELATION = 'userAppRelation'
-    ORG_DEPARTMENT_RELATION = 'orgDepartmentRelation'
-    
+    APPS = "apps"
+    ORG_APP_RELATION = "orgAppRelation"
+    USER_APP_RELATION = "userAppRelation"
+    ORG_DEPARTMENT_RELATION = "orgDepartmentRelation"
+
+
 class QdrantCollectionNames(Enum):
     RECORDS = "records"
-    
+
+
 class ExtensionTypes(Enum):
     PDF = "pdf"
     DOCX = "docx"
@@ -125,6 +134,7 @@ class ExtensionTypes(Enum):
     TXT = "txt"
     MD = "md"
     HTML = "html"
+
 
 class MimeTypes(Enum):
     PDF = "application/pdf"
@@ -140,6 +150,7 @@ class MimeTypes(Enum):
     XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     XLS = "application/vnd.ms-excel"
     CSV = "text/csv"
+
 
 class ProgressStatus(Enum):
     NOT_STARTED = "NOT_STARTED"

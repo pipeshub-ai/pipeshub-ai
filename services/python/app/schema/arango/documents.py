@@ -3,7 +3,7 @@ orgs_schema = {
     "rule": {
         "type": "object",
         "properties": {
-            "_key": {"type": "string"}, # orgId
+            "_key": {"type": "string"},  # orgId
             "accountType": {"type": "string", "enum": ["individual", "enterprise"]},
             "name": {"type": "string"},
             "isActive": {"type": "boolean", "default": False},
@@ -14,32 +14,28 @@ orgs_schema = {
         "additionalProperties": False,
     },
     "level": "strict",
-    "message": "Document does not match the organization schema."
+    "message": "Document does not match the organization schema.",
 }
 
 user_schema = {
     "rule": {
         "type": "object",
         "properties": {
-            "_key": {"type": "string"}, #uuid
-            "userId" :{"type" : "string"},
+            "_key": {"type": "string"},  # uuid
+            "userId": {"type": "string"},
             "orgId": {"type": "string"},
             "firstName": {"type": "string"},
             "middleName": {"type": "string"},
             "lastName": {"type": "string"},
             "fullName": {"type": "string"},
-
             "email": {"type": "string", "format": "email"},
             "designation": {"type": "string"},
             "businessPhones": {
                 "type": "array",
-                "items": {
-                    "type": "string"
-                },
-                "minItems": 0
+                "items": {"type": "string"},
+                "minItems": 0,
             },
-            "isActive":  {"type": "boolean", "default": False},
-
+            "isActive": {"type": "boolean", "default": False},
             # Arango collection entry
             "createdAtTimestamp": {"type": "number"},
             # Arango collection entry
@@ -61,23 +57,34 @@ user_group_schema = {
             "description": {"type": "string"},
             # should be a uuid
             "externalGroupId": {"type": "string", "minLength": 1},
-            "groupType": {"type": "string", "enum": ["MS_USER_GROUPS", "GOOGLE_USER_GROUPS"]},
-            "connectorName": {"type": "string", "enum": ["ONEDRIVE", "DRIVE", "GMAIL", "CONFLUENCE", "SLACK"]},
+            "groupType": {
+                "type": "string",
+                "enum": ["MS_USER_GROUPS", "GOOGLE_USER_GROUPS"],
+            },
+            "connectorName": {
+                "type": "string",
+                "enum": ["ONEDRIVE", "DRIVE", "GMAIL", "CONFLUENCE", "SLACK"],
+            },
             "mail": {"type": "string"},
             "mailEnabled": {"type": "boolean", "default": False},
-
             # Arango collection entry
             "createdAtTimestamp": {"type": "number"},
             # Arango collection entry
             "updatedAtTimestamp": {"type": "number"},
             "lastSyncTimestampstamp": {"type": "number"},  # Arango collection entry
-
             "isDeletedAtSource": {"type": "boolean", "default": False},
             "deletedAtSourceTimestamp": {"type": "number"},
             "sourceCreatedAtTimestamp": {"type": "number"},
             "sourceLastModifiedTimestamp": {"type": "number"},
         },
-        "required": ["groupName", "externalGroupId", "recordType", "groupType", "connectorName", "createdAtTimestamp"],
+        "required": [
+            "groupName",
+            "externalGroupId",
+            "recordType",
+            "groupType",
+            "connectorName",
+            "createdAtTimestamp",
+        ],
         "additionalProperties": False,
     },
     "level": "strict",
@@ -97,7 +104,15 @@ app_schema = {
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
         },
-        "required": ["name", "type", "appGroup", "appGroupId", "isActive", "createdAtTimestamp", "updatedAtTimestamp"],
+        "required": [
+            "name",
+            "type",
+            "appGroup",
+            "appGroupId",
+            "isActive",
+            "createdAtTimestamp",
+            "updatedAtTimestamp",
+        ],
         "additionalProperties": False,
     },
     "level": "strict",
@@ -114,33 +129,59 @@ record_schema = {
             # should be a uuid
             "externalRecordId": {"type": "string", "minLength": 1},
             "externalRevisionId": {"type": ["string", "null"]},
-            "recordType": {"type": "string", "enum": ["FILE", "DRIVE", "WEBPAGE", "MESSAGE", "MAIL", "OTHERS"]},
+            "recordType": {
+                "type": "string",
+                "enum": ["FILE", "DRIVE", "WEBPAGE", "MESSAGE", "MAIL", "OTHERS"],
+            },
             "version": {"type": "number", "default": 0},
             "origin": {"type": "string", "enum": ["UPLOAD", "CONNECTOR"]},
-            "connectorName": {"type": "string", "enum": ["ONEDRIVE", "DRIVE", "CONFLUENCE", "GMAIL", "SLACK"]},
-
+            "connectorName": {
+                "type": "string",
+                "enum": ["ONEDRIVE", "DRIVE", "CONFLUENCE", "GMAIL", "SLACK"],
+            },
             # Arango collection entry
             "createdAtTimestamp": {"type": "number"},
             # Arango collection entry
             "updatedAtTimestamp": {"type": "number"},
             "lastSyncTimestamp": {"type": "number"},
-
             "sourceCreatedAtTimestamp": {"type": ["number", "null"]},
             "sourceLastModifiedTimestamp": {"type": ["number", "null"]},
-
             "isDeleted": {"type": "boolean", "default": False},
             "isArchived": {"type": "boolean", "default": False},
-            "deletedByUserId" :{"type":"string"},
-
+            "deletedByUserId": {"type": "string"},
             "lastIndexTimestamp": {"type": ["number", "null"]},
             "lastExtractionTimestamp": {"type": ["number", "null"]},
-            "indexingStatus": {"type": "string", "enum": ["NOT_STARTED", "IN_PROGRESS", "FAILED", "COMPLETED", "FILE_TYPE_NOT_SUPPORTED"]},
-            "extractionStatus": {"type": "string", "enum": ["NOT_STARTED", "IN_PROGRESS", "FAILED", "COMPLETED", "FILE_TYPE_NOT_SUPPORTED"]},
+            "indexingStatus": {
+                "type": "string",
+                "enum": [
+                    "NOT_STARTED",
+                    "IN_PROGRESS",
+                    "FAILED",
+                    "COMPLETED",
+                    "FILE_TYPE_NOT_SUPPORTED",
+                ],
+            },
+            "extractionStatus": {
+                "type": "string",
+                "enum": [
+                    "NOT_STARTED",
+                    "IN_PROGRESS",
+                    "FAILED",
+                    "COMPLETED",
+                    "FILE_TYPE_NOT_SUPPORTED",
+                ],
+            },
             "isLatestVersion": {"type": "boolean", "default": True},
-            "isDirty": {"type": "boolean", "default": False}, # needs re indexing
-            "reason": {"type": ["string", "null"]}  # fail reason, didn't index reason
+            "isDirty": {"type": "boolean", "default": False},  # needs re indexing
+            "reason": {"type": ["string", "null"]},  # fail reason, didn't index reason
         },
-        "required": ["recordName", "externalRecordId", "recordType", "origin", "createdAtTimestamp"],
+        "required": [
+            "recordName",
+            "externalRecordId",
+            "recordType",
+            "origin",
+            "createdAtTimestamp",
+        ],
         "additionalProperties": False,
     },
     "level": "strict",
@@ -166,7 +207,7 @@ file_record_schema = {
             "crc32Hash": {"type": ["string", "null"]},
             "sha1Hash": {"type": ["string", "null"]},
             "sha256Hash": {"type": ["string", "null"]},
-            "path": {"type": ["string", "null"]}
+            "path": {"type": ["string", "null"]},
         },
         "required": ["name"],
         "additionalProperties": False,
@@ -198,17 +239,17 @@ mail_record_schema = {
             "to": {
                 "type": "array",
                 "items": {"type": "string", "minLength": 0},
-                "default": []
+                "default": [],
             },
             "cc": {
                 "type": "array",
                 "items": {"type": "string", "minLength": 0},
-                "default": []
+                "default": [],
             },
             "bcc": {
                 "type": "array",
                 "items": {"type": "string", "minLength": 0},
-                "default": []
+                "default": [],
             },
             "messageIdHeader": {"type": ["string", "null"]},
             "historyId": {"type": "string"},
@@ -230,19 +271,29 @@ record_group_schema = {
             "groupName": {"type": "string", "minLength": 1},
             # should be a uuid
             "externalGroupId": {"type": "string", "minLength": 1},
-            "groupType": {"type": "string", "enum": ["SLACK_CHANNEL", "CONFLUENCE_SPACES"]},
-            "connectorName": {"type": "string", "enum": ["ONEDRIVE", "DRIVE", "CONFLUENCE", "SLACK"]},
-
+            "groupType": {
+                "type": "string",
+                "enum": ["SLACK_CHANNEL", "CONFLUENCE_SPACES"],
+            },
+            "connectorName": {
+                "type": "string",
+                "enum": ["ONEDRIVE", "DRIVE", "CONFLUENCE", "SLACK"],
+            },
             "createdAtTimestamp": {"type": "number"},  # Arango record entry
             "updatedAtTimestamp": {"type": "number"},  # Arango record entry
             "lastSyncTimestampstamp": {"type": "number"},  # Arango record entry
-
             "isDeletedAtSource": {"type": "boolean", "default": False},
             "deletedAtSourceTimestamp": {"type": "number"},
             "sourceCreatedAtTimestamp": {"type": "number"},
             "sourceLastModifiedTimestamp": {"type": "number"},
         },
-        "required": ["groupName", "externalGroupId", "groupType", "connectorName", "createdAtTimestamp"],
+        "required": [
+            "groupName",
+            "externalGroupId",
+            "groupType",
+            "connectorName",
+            "createdAtTimestamp",
+        ],
         "additionalProperties": False,
     },
     "level": "strict",
@@ -260,7 +311,7 @@ department_schema = {
         "additionalProperties": False,
     },
     "level": "strict",
-    "message": "Document does not match the department schema."
+    "message": "Document does not match the department schema.",
 }
 
 kb_schema = {
@@ -268,16 +319,16 @@ kb_schema = {
         "type": "object",
         "properties": {
             "orgId": {"type": "string"},
-            "name": { "type": "string", "default": "Default" },
-            "createdAtTimestamp": { "type": "number" },
-            "updatedAtTimestamp": { "type": "number" },
-            "deletedAtTimestamp": { "type": "number" },
-            "isDeleted": { "type": "boolean", "default": False },
-            "isArchived": { "type": "boolean", "default": False },
+            "name": {"type": "string", "default": "Default"},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+            "deletedAtTimestamp": {"type": "number"},
+            "isDeleted": {"type": "boolean", "default": False},
+            "isArchived": {"type": "boolean", "default": False},
         },
         "required": ["orgId"],
         "additionalProperties": False,
     },
     "level": "strict",
-    "message": "Document does not match the department schema."
+    "message": "Document does not match the department schema.",
 }

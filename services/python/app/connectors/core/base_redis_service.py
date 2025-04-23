@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional
 from app.config.configuration_service import ConfigurationService
 
 
-class BaseRedisService():
+class BaseRedisService:
     """Service for handling Redis operations"""
 
     def __init__(self, logger, redis_client, config: ConfigurationService):
@@ -48,7 +48,7 @@ class BaseRedisService():
         try:
             full_key = f"{self.prefix}{key}"
             value = await self.redis_client.get(full_key)
-            if value and value.startswith('{') or value.startswith('['):
+            if value and value.startswith("{") or value.startswith("["):
                 return json.loads(value)
             return value
         except Exception as e:
@@ -67,8 +67,8 @@ class BaseRedisService():
 
     async def store_progress(self, progress: Dict) -> bool:
         """Store sync progress"""
-        return await self.set('sync_progress', progress)
+        return await self.set("sync_progress", progress)
 
     async def get_progress(self) -> Optional[Dict]:
         """Get sync progress"""
-        return await self.get('sync_progress')
+        return await self.get("sync_progress")

@@ -9,6 +9,7 @@ class ChatDocCitation:
     metadata: Dict[str, Any]
     chunkindex: int
 
+
 def fix_json_string(json_str):
     """Fix control characters in JSON string values without parsing."""
     result = ""
@@ -22,7 +23,7 @@ def fix_json_string(json_str):
             escaped = False
             continue
 
-        if c == '\\':
+        if c == "\\":
             # This is a backslash, next character will be escaped
             result += c
             escaped = True
@@ -36,15 +37,15 @@ def fix_json_string(json_str):
 
         if in_string:
             # We're inside a string, escape control characters properly
-            if c == '\n':
-                result += '\\n'
-            elif c == '\r':
-                result += '\\r'
-            elif c == '\t':
-                result += '\\t'
+            if c == "\n":
+                result += "\\n"
+            elif c == "\r":
+                result += "\\r"
+            elif c == "\t":
+                result += "\\t"
             elif ord(c) < 32 or (ord(c) >= 127 and ord(c) <= 159):
                 # Other control characters as unicode escapes
-                result += f'\\u{ord(c):04x}'
+                result += f"\\u{ord(c):04x}"
             else:
                 result += c
         else:
@@ -52,6 +53,7 @@ def fix_json_string(json_str):
             result += c
 
     return result
+
 
 def process_citations(llm_response, documents: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
@@ -66,10 +68,10 @@ def process_citations(llm_response, documents: List[Dict[str, Any]]) -> Dict[str
     """
     try:
         # Handle the case where llm_response might be an object with a content field
-        if hasattr(llm_response, 'content'):
+        if hasattr(llm_response, "content"):
             response_content = llm_response.content
-        elif isinstance(llm_response, dict) and 'content' in llm_response:
-            response_content = llm_response['content']
+        elif isinstance(llm_response, dict) and "content" in llm_response:
+            response_content = llm_response["content"]
         else:
             response_content = llm_response
 
@@ -84,7 +86,9 @@ def process_citations(llm_response, documents: List[Dict[str, Any]]) -> Dict[str
                     cleaned_content = cleaned_content[1:-1].replace('\\"', '"')
 
                 # Handle escaped newlines and other special characters
-                cleaned_content = cleaned_content.replace('\\n', '\n').replace('\\t', '\t')
+                cleaned_content = cleaned_content.replace("\\n", "\n").replace(
+                    "\\t", "\t"
+                )
 
                 # Apply our fix for control characters in JSON string values
                 cleaned_content = fix_json_string(cleaned_content)
@@ -96,23 +100,23 @@ def process_citations(llm_response, documents: List[Dict[str, Any]]) -> Dict[str
                 try:
                     # Sometimes response might be malformed with extra characters
                     # Find the first { and last } to extract potential JSON
-                    start_idx = cleaned_content.find('{')
-                    end_idx = cleaned_content.rfind('}')
+                    start_idx = cleaned_content.find("{")
+                    end_idx = cleaned_content.rfind("}")
 
                     if start_idx >= 0 and end_idx > start_idx:
-                        potential_json = cleaned_content[start_idx:end_idx+1]
+                        potential_json = cleaned_content[start_idx : end_idx + 1]
                         # Apply our fix again on the extracted JSON
                         potential_json = fix_json_string(potential_json)
                         response_data = json.loads(potential_json)
                     else:
                         return {
                             "error": f"Failed to parse LLM response: {str(e)}",
-                            "raw_response": response_content
+                            "raw_response": response_content,
                         }
                 except Exception as nested_e:
                     return {
                         "error": f"Failed to parse LLM response: {str(e)}, Nested error: {str(nested_e)}",
-                        "raw_response": response_content
+                        "raw_response": response_content,
                     }
         else:
             response_data = response_content
@@ -140,7 +144,12 @@ def process_citations(llm_response, documents: List[Dict[str, Any]]) -> Dict[str
 
             if isinstance(data, dict):
                 # Check for various possible key names
-                for key in ["chunkIndexes", "chunkindex", "chunk_indexes", "chunkIndexes"]:
+                for key in [
+                    "chunkIndexes",
+                    "chunkindex",
+                    "chunk_indexes",
+                    "chunkIndexes",
+                ]:
                     if key in data:
                         return data[key]
 
@@ -164,11 +173,16 @@ def process_citations(llm_response, documents: List[Dict[str, Any]]) -> Dict[str
 
         # Fallback: If we still haven't found any indexes and have "answer" field,
         # try parsing the answer text to find numeric references
-        if chunk_indexes is None and isinstance(response_data, dict) and "answer" in response_data:
+        if (
+            chunk_indexes is None
+            and isinstance(response_data, dict)
+            and "answer" in response_data
+        ):
             answer_text = response_data["answer"]
             # Look for citation patterns like [1] or [1, 2] in the answer
             import re
-            citation_matches = re.findall(r'\[([0-9,\s]+)\]', answer_text)
+
+            citation_matches = re.findall(r"\[([0-9,\s]+)\]", answer_text)
             if citation_matches:
                 # Use the first match as our chunk indexes
                 chunk_indexes = citation_matches[0]
@@ -179,12 +193,19 @@ def process_citations(llm_response, documents: List[Dict[str, Any]]) -> Dict[str
             if not isinstance(chunk_indexes, list):
                 if isinstance(chunk_indexes, str):
                     # Try to handle comma-separated strings or space-separated
-                    chunk_indexes = chunk_indexes.replace('[', '').replace(']', '').replace('"', '').replace("'", "")
+                    chunk_indexes = (
+                        chunk_indexes.replace("[", "")
+                        .replace("]", "")
+                        .replace('"', "")
+                        .replace("'", "")
+                    )
                     # Split by comma or space
-                    if ',' in chunk_indexes:
-                        chunk_indexes = [r.strip() for r in chunk_indexes.split(',')]
+                    if "," in chunk_indexes:
+                        chunk_indexes = [r.strip() for r in chunk_indexes.split(",")]
                     else:
-                        chunk_indexes = [r.strip() for r in chunk_indexes.split() if r.strip()]
+                        chunk_indexes = [
+                            r.strip() for r in chunk_indexes.split() if r.strip()
+                        ]
                 else:
                     chunk_indexes = [chunk_indexes]
 
@@ -196,7 +217,7 @@ def process_citations(llm_response, documents: List[Dict[str, Any]]) -> Dict[str
                 try:
                     # Strip any quotes or spaces
                     if isinstance(idx, str):
-                        idx = idx.strip().strip('"\'')
+                        idx = idx.strip().strip("\"'")
 
                     # Convert to int and adjust for 0-based indexing
                     idx_value = int(idx) - 1
@@ -212,13 +233,11 @@ def process_citations(llm_response, documents: List[Dict[str, Any]]) -> Dict[str
                 doc = documents[idx]
 
                 # Safely access content and metadata
-                content = doc.get('content', '')
-                metadata = doc.get('metadata', {})
+                content = doc.get("content", "")
+                metadata = doc.get("metadata", {})
 
                 citation = ChatDocCitation(
-                    content=content,
-                    metadata=metadata,
-                    chunkindex=idx+1
+                    content=content, metadata=metadata, chunkindex=idx + 1
                 )
                 citations.append(citation)
             except (IndexError, KeyError):
@@ -236,7 +255,7 @@ def process_citations(llm_response, documents: List[Dict[str, Any]]) -> Dict[str
                 "content": cit.content,
                 "chunkIndex": cit.chunkindex,
                 "metadata": cit.metadata,
-                "citationType": "vectordb|document"
+                "citationType": "vectordb|document",
             }
             for cit in citations
         ]
@@ -245,8 +264,9 @@ def process_citations(llm_response, documents: List[Dict[str, Any]]) -> Dict[str
 
     except Exception as e:
         import traceback
+
         return {
             "error": f"Citation processing failed: {str(e)}",
             "traceback": traceback.format_exc(),
-            "raw_response": llm_response
+            "raw_response": llm_response,
         }

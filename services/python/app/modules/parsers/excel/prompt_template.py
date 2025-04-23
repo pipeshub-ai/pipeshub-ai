@@ -1,23 +1,42 @@
 from langchain.prompts import ChatPromptTemplate
 
 # Prompt for summarizing an entire sheet with multiple tables
-sheet_summary_prompt = ChatPromptTemplate.from_messages([
-    ("system", "You are an expert data analyst. Provide a concise summary of all tables in this Excel sheet, "
-     "focusing on their relationships and overall purpose."),
-    ("user", "Sheet name: {sheet_name}\n\nTables:\n{tables_data}\n\n"
-     "Provide a comprehensive summary of all tables in this sheet.")
-])
+sheet_summary_prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            "You are an expert data analyst. Provide a concise summary of all tables in this Excel sheet, "
+            "focusing on their relationships and overall purpose.",
+        ),
+        (
+            "user",
+            "Sheet name: {sheet_name}\n\nTables:\n{tables_data}\n\n"
+            "Provide a comprehensive summary of all tables in this sheet.",
+        ),
+    ]
+)
 
 # Prompt for summarizing a single table
-table_summary_prompt = ChatPromptTemplate.from_messages([
-    ("system", "You are an expert data analyst. Provide a concise summary of this table's purpose and content."),
-    ("user", "Table headers: {headers}\n\nSample data:\n{sample_data}\n\n"
-     "Provide a clear summary of this table's purpose and content.")
-])
+table_summary_prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            "You are an expert data analyst. Provide a concise summary of this table's purpose and content.",
+        ),
+        (
+            "user",
+            "Table headers: {headers}\n\nSample data:\n{sample_data}\n\n"
+            "Provide a clear summary of this table's purpose and content.",
+        ),
+    ]
+)
 
 # Prompt for converting row data into natural language
-row_text_prompt = ChatPromptTemplate.from_messages([
-    ("system", """You are a data analysis expert who converts structured data into natural language descriptions.
+row_text_prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            """You are a data analysis expert who converts structured data into natural language descriptions.
 Your task is to convert each row of data into a clear, concise and detailed natural language description.
 Use the provided sheet and table context to make the descriptions more meaningful.
 
@@ -28,9 +47,11 @@ IMPORTANT: Your response must be a valid JSON array of strings. For example:
     "Description of third row"
 ]
 
-Do not include any other text or explanation in your response - only the JSON array."""),
-
-    ("user", """Please convert these rows of data into natural language descriptions.
+Do not include any other text or explanation in your response - only the JSON array.""",
+        ),
+        (
+            "user",
+            """Please convert these rows of data into natural language descriptions.
 
 Table Context:
 {table_summary}
@@ -38,10 +59,12 @@ Table Context:
 Rows Data:
 {rows_data}
 
-Remember: Respond with ONLY a JSON array of strings containing one description per row.""")
-])
+Remember: Respond with ONLY a JSON array of strings containing one description per row.""",
+        ),
+    ]
+)
 
-prompt = '''
+prompt = """
 # Task:
 You are a data analysis expert tasked with identifying and validating table headers in an Excel document. Your goal is to ensure each table has appropriate, descriptive headers that accurately represent the data columns.
 
@@ -90,4 +113,4 @@ Return ONLY a comma-separated list of headers, one for each column. Example:
 ID,First Name,Last Name,Email,Department
 
 Do not include any additional explanation or text.
-'''
+"""
