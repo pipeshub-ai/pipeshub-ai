@@ -10,7 +10,7 @@ from app.modules.retrieval.retrieval_arango import ArangoService
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.setups.query_setup import AppContainer
 from app.utils.query_transform import setup_query_transformation
-
+from fastapi.responses import JSONResponse
 router = APIRouter()
 
 # Pydantic models
@@ -87,8 +87,11 @@ async def search(request: Request, body: SearchQuery,
             filter_groups=body.filters,
             arango_service=arango_service
         )
-        return results
+        # Decide HTTP status code based on custom status_code
+        custom_status_code = results.get("status_code", 500)
 
+        return JSONResponse(status_code=custom_status_code, content=results)
+    
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

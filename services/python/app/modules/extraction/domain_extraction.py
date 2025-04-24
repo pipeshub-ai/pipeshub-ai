@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from typing import List, Literal
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 import numpy as np
 from langchain.output_parsers import PydanticOutputParser
@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from sklearn.decomposition import LatentDirichletAllocation
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-
+from typing import Literal, List
 from app.config.utils.named_constants.arangodb_constants import CollectionNames, DepartmentNames
 from app.modules.extraction.prompt_template import prompt
 from app.utils.llm import get_llm
@@ -80,6 +80,22 @@ class DomainExtractor:
             n_components=10,  # Adjust based on your needs
             random_state=42
         )
+
+        # Configure retry parameters
+        self.max_retries = 3
+        self.min_wait = 1  # seconds
+        self.max_wait = 10  # seconds
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        before_sleep=lambda retry_state: retry_state.args[0].logger.warning(
+            f"Retrying LLM call after error. Attempt {retry_state.attempt_number}"
+        )
+    )
+    async def _call_llm(self, messages):
+        """Wrapper for LLM calls with retry logic"""
+        return await self.llm.ainvoke(messages)
 
     async def find_similar_topics(self, new_topic: str) -> str:
         """
@@ -191,7 +207,8 @@ class DomainExtractor:
             self.logger.info(f"🎯 Prompt formatted successfully {formatted_prompt}")
 
             messages = [HumanMessage(content=formatted_prompt)]
-            response = await self.llm.ainvoke(messages)
+            # Use retry wrapper for LLM call
+            response = await self._call_llm(messages)
 
             # Clean the response content
             response_text = response.content.strip()
@@ -237,8 +254,9 @@ class DomainExtractor:
                         AIMessage(content=response_text),
                         HumanMessage(content=reflection_prompt)
                     ]
-
-                    reflection_response = await self.llm.ainvoke(reflection_messages)
+                    
+                    # Use retry wrapper for reflection LLM call
+                    reflection_response = await self._call_llm(reflection_messages)
                     reflection_text = reflection_response.content.strip()
 
                     # Clean the reflection response
@@ -262,7 +280,6 @@ class DomainExtractor:
 
                 except Exception as reflection_error:
                     self.logger.error(f"❌ Reflection attempt failed: {str(reflection_error)}")
-                    # Re-raise the original error after reflection attempt failed
                     raise ValueError(f"Failed to parse LLM response and reflection attempt failed: {str(parse_error)}")
 
         except Exception as e:

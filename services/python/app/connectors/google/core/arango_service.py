@@ -1470,17 +1470,3 @@ class ArangoService(BaseArangoService):
         except Exception as e:
             self.logger.error("❌ Error checking edge existence: %s", str(e))
             return False
-
-    async def delete_page_token_db(self, user_email: str) -> None:
-        """Delete page token for a user from the database"""
-        try:
-            query = """
-            FOR doc IN pageTokens
-                FILTER doc.userEmail == @user_email
-                REMOVE doc IN pageTokens
-            """
-            self.db.aql.execute(query, bind_vars={'user_email': user_email})
-            return True
-        except Exception as e:
-            self.logger.error("❌ Failed to delete page token for user %s: %s", user_email, str(e))
-            return False

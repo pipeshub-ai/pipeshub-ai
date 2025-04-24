@@ -714,8 +714,7 @@ class GoogleAdminService:
                         applicationName="admin",
                         body=channel_body
                     ).execute()
-                    self.logger.info(f"🔍 Admin watch created successfully for {org_id}")
-                    self.logger.info(f"🔍 Admin watch response: {response}")
+                    self.logger.debug(f"🔍 Admin watch created successfully for {org_id}")
             except HttpError as http_err:
                 # Decode the error content if needed
                 error_details = http_err.content.decode('utf-8')
@@ -732,85 +731,84 @@ class GoogleAdminService:
             self.logger.error(f"❌ Failed to create admin watch: {str(e)}")
             raise
 
-    async def create_gmail_user_watch(self, org_id: str, user_email: str) -> Dict:
-        """Create user watch by impersonating the user"""
-        try:
-            self.logger.info("🚀 Creating user watch for user %s", user_email)
+    # async def create_gmail_user_watch(self, org_id: str, user_email: str) -> Dict:
+    #     """Create user watch by impersonating the user"""
+    #     try:
+    #         self.logger.info("🚀 Creating user watch for user %s", user_email)
+            
+    #         creds_data = await self.google_token_handler.get_enterprise_token(org_id)
+    #         enable_real_time_updates = creds_data.get('enableRealTimeUpdates', False)
+    #         self.logger.debug(f"🚀 Enable real time updates: {enable_real_time_updates}")
+    #         if not enable_real_time_updates:
+    #             return {}
+            
+    #         topic = creds_data.get('topicName', '')
+    #         self.logger.debug(f"🚀 Topic: {topic}")
 
-            creds_data = await self.google_token_handler.get_enterprise_token(org_id)
-            self.logger.info(f"🚀 Google workspace config: {creds_data}")
-            enable_real_time_updates = creds_data.get('enableRealTimeUpdates', False)
-            self.logger.info(f"🚀 Enable real time updates: {enable_real_time_updates}")
-            if not enable_real_time_updates:
-                return {}
+    #         try:
+    #             gmail_service = build(
+    #                 'gmail', 'v1', 
+    #                 credentials=self.credentials, 
+    #                 cache_discovery=False
+    #             )
+    #         except Exception as e:
+    #             raise MailOperationError(
+    #                 "Failed to build Gmail service: " + str(e),
+    #                 details={
+    #                     "user_email": user_email,
+    #                     "error": str(e)
+    #                 }
+    #             )
 
-            topic = creds_data.get('topicName', '')
-            self.logger.info(f"🚀 Topic: {topic}")
+    #         try:
+    #             async with self.google_limiter:
+    #                 request_body = {
+    #                     'labelIds': ['INBOX'],
+    #                     'topicName': topic
+    #                 }
+    #                 response = gmail_service.users().watch(
+    #                     userId='me', 
+    #                     body=request_body
+    #                 ).execute()
+    #                 response['expiration'] = int(response['expiration'])
+    #         except HttpError as e:
+    #             if e.resp.status == 403:
+    #                 raise DrivePermissionError(
+    #                     "Permission denied creating user watch",
+    #                     details={
+    #                         "user_email": user_email,
+    #                         "error": str(e)
+    #                     }
+    #                 )
+    #             elif e.resp.status == 429:
+    #                 raise AdminQuotaError(
+    #                     "Rate limit exceeded creating user watch",
+    #                     details={
+    #                         "user_email": user_email,
+    #                         "error": str(e)
+    #                     }
+    #                 )
+    #             raise MailOperationError(
+    #                 "Failed to create user watch",
+    #                 details={
+    #                     "user_email": user_email,
+    #                     "error": str(e)
+    #                 }
+    #             )
 
-            try:
-                gmail_service = build(
-                    'gmail', 'v1',
-                    credentials=self.credentials,
-                    cache_discovery=False
-                )
-            except Exception as e:
-                raise MailOperationError(
-                    "Failed to build Gmail service: " + str(e),
-                    details={
-                        "user_email": user_email,
-                        "error": str(e)
-                    }
-                )
+    #         self.logger.info("✅ User watch created successfully for %s", user_email)
+    #         return response
 
-            try:
-                async with self.google_limiter:
-                    request_body = {
-                        'labelIds': ['INBOX'],
-                        'topicName': topic
-                    }
-                    response = gmail_service.users().watch(
-                        userId='me',
-                        body=request_body
-                    ).execute()
-                    response['expiration'] = int(response['expiration'])
-            except HttpError as e:
-                if e.resp.status == 403:
-                    raise DrivePermissionError(
-                        "Permission denied creating user watch",
-                        details={
-                            "user_email": user_email,
-                            "error": str(e)
-                        }
-                    )
-                elif e.resp.status == 429:
-                    raise AdminQuotaError(
-                        "Rate limit exceeded creating user watch",
-                        details={
-                            "user_email": user_email,
-                            "error": str(e)
-                        }
-                    )
-                raise MailOperationError(
-                    "Failed to create user watch",
-                    details={
-                        "user_email": user_email,
-                        "error": str(e)
-                    }
-                )
-
-            self.logger.info("✅ User watch created successfully for %s", user_email)
-            return response
-
-        except (DrivePermissionError, AdminQuotaError, MailOperationError):
-            raise
-        except Exception as e:
-            raise GoogleMailError(
-                "Unexpected error creating user watch: " + str(e),
-                details={
-                    "user_email": user_email,
-                    "error": str(e)
-                }
-            )
+    #     except (DrivePermissionError, AdminQuotaError, MailOperationError):
+    #         raise
+    #     except Exception as e:
+    #         raise GoogleMailError(
+    #             "Unexpected error creating user watch: " + str(e),
+    #             details={
+    #                 "user_email": user_email,
+    #                 "error": str(e)
+    #             }
+    #         )
 
     async def create_drive_user_service(self, user_email: str) -> Optional[DriveUserService]:
         """Get or create a DriveUserService for a specific user"""

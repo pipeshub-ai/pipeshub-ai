@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, TextIO
 
 from app.modules.parsers.excel.prompt_template import row_text_prompt
-
+from app.core.llm_service import LLMFactory
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 class CSVParser:
     def __init__(self, delimiter: str = ',', quotechar: str = '"', encoding: str = 'utf-8'):
@@ -22,6 +23,11 @@ class CSVParser:
         self.delimiter = delimiter
         self.quotechar = quotechar
         self.encoding = encoding
+        
+        # Configure retry parameters
+        self.max_retries = 3
+        self.min_wait = 1  # seconds
+        self.max_wait = 10  # seconds
 
     def read_file(self, file_path: str | Path, encoding: Optional[str] = None) -> List[Dict[str, Any]]:
         """
@@ -145,6 +151,14 @@ class CSVParser:
         # Return as string if no other type matches
         return value
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+    )
+    async def _call_llm(self, llm, messages):
+        """Wrapper for LLM calls with retry logic"""
+        return await llm.ainvoke(messages)
+
     async def get_rows_text(self, llm, rows: List[Dict[str, Any]], batch_size: int = 10) -> List[str]:
         """Convert multiple rows into natural language text in batches."""
         processed_texts = []
@@ -158,14 +172,14 @@ class CSVParser:
                 for row in batch
             ]
 
-            # Get natural language text from LLM for all rows
+            # Get natural language text from LLM with retry
             messages = self.row_text_prompt.format_messages(
                 sheet_summary=" ",
                 table_summary=" ",
                 rows_data=json.dumps(rows_data, indent=2)
             )
 
-            response = await llm.ainvoke(messages)
+            response = await self._call_llm(llm, messages)
 
             # Try to extract JSON array from response
             try:

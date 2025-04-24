@@ -14,6 +14,7 @@ from app.modules.parsers.excel.prompt_template import (
     table_summary_prompt,
 )
 
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 class ExcelParser:
     def __init__(self, logger):
@@ -25,6 +26,11 @@ class ExcelParser:
         self.sheet_summary_prompt = sheet_summary_prompt
         self.table_summary_prompt = table_summary_prompt
         self.row_text_prompt = row_text_prompt
+
+        # Configure retry parameters
+        self.max_retries = 3
+        self.min_wait = 1  # seconds
+        self.max_wait = 10  # seconds
 
     def parse(self, file_binary: bytes) -> Dict[str, Any]:
         """
@@ -326,6 +332,17 @@ class ExcelParser:
         except Exception:
             raise
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        before_sleep=lambda retry_state: retry_state.args[0].logger.warning(
+            f"Retrying LLM call after error. Attempt {retry_state.attempt_number}"
+        )
+    )
+    async def _call_llm(self, messages):
+        """Wrapper for LLM calls with retry logic"""
+        return await self.llm.ainvoke(messages)
+
     async def get_tables_in_sheet(self, sheet_name: str) -> List[Dict[str, Any]]:
         """Get all tables in a specific sheet"""
         try:
@@ -367,12 +384,12 @@ class ExcelParser:
                     num_columns=len(table['data'][0]) if table['data'] else 0
                 )
 
-                # Get LLM response
+                # Get LLM response with retry
                 messages = [
                     {"role": "system", "content": "You are a data analysis expert. Respond with only the list of headers."},
                     {"role": "user", "content": formatted_prompt}
                 ]
-                response = await self.llm.ainvoke(messages)
+                response = await self._call_llm(messages)
 
                 try:
                     # Parse LLM response to get headers
@@ -420,12 +437,12 @@ class ExcelParser:
                 for row in table['data'][:3]  # Use first 3 rows as sample
             ]
 
-            # Get summary from LLM
+            # Get summary from LLM with retry
             messages = self.table_summary_prompt.format_messages(
                 headers=table['headers'],
                 sample_data=json.dumps(sample_data, indent=2)
             )
-            response = await self.llm.ainvoke(messages)
+            response = await self._call_llm(messages)
             return response.content
 
         except Exception:
@@ -441,13 +458,13 @@ class ExcelParser:
                 for row in rows
             ]
 
-            # Get natural language text from LLM for all rows
+            # Get natural language text from LLM with retry
             messages = self.row_text_prompt.format_messages(
                 table_summary=table_summary,
                 rows_data=json.dumps(rows_data, indent=2)
             )
 
-            response = await self.llm.ainvoke(messages)
+            response = await self._call_llm(messages)
 
             # Try to extract JSON array from response
             try:

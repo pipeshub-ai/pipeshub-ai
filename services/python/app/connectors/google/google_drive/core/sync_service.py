@@ -639,7 +639,6 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                 self.logger.warning("⚠️ Page token expired for user %s", user_email)
                 
                 stopped = await user_service.stop_watch(page_token['channelId'], page_token['resourceId'])
-                deleted = await self.arango_service.delete_page_token_db(user_email=user_email)
                 
                 watch = await user_service.create_changes_watch()
                 if not watch:
@@ -757,26 +756,23 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                         'PAUSED',
                         service_type=Connectors.GOOGLE_DRIVE.value
                     )
-
-            # Phase 1: Set up changes.watch for each user
-            self.logger.info("👀 Setting up changes watch for all users...")
-
+            
             for user in active_users:
                 try:
+                    self.logger.info("🚀 Setting up changes watch for user %s", user['email'])
                     channel_data = await self.setup_changes_watch(user['email'])
-                    self.logger.info(f"🚀 Channel data: {channel_data}")
                     if not channel_data:
                         self.logger.warning(
                             "Changes watch not created for user: %s", user['email'])
                         continue
                     else:
                         await self.arango_service.store_page_token(
-                        channel_data['channelId'], 
-                        channel_data['resourceId'], 
-                        user['email'], 
-                        channel_data['token'], 
-                        channel_data['expiration']
-                    )
+                            channel_data['channelId'], 
+                            channel_data['resourceId'], 
+                            user['email'], 
+                            channel_data['token'], 
+                            channel_data['expiration']
+                        )
 
                     self.logger.info(
                         "✅ Changes watch set up successfully for user: %s", user['email'])                    
@@ -1283,7 +1279,6 @@ class DriveSyncIndividualService(BaseDriveSyncService):
                 self.logger.warning("⚠️ Page token expired for user %s", user_email)
                 
                 stopped = await user_service.stop_watch(page_token['channelId'], page_token['resourceId'])
-                deleted = await self.arango_service.delete_page_token_db(user_email=user_email)
                 
                 watch = await user_service.create_changes_watch()
                 if not watch:
@@ -1316,9 +1311,6 @@ class DriveSyncIndividualService(BaseDriveSyncService):
                     await self.arango_service.batch_upsert_nodes(user_info, collection=CollectionNames.USERS.value)
                 user_info = user_info[0]
 
-            # Initialize Celery
-            await self.celery_app.setup_app()
-
             # Check if sync is already running
             sync_state = await self.arango_service.get_user_sync_state(user_info['email'], Connectors.GOOGLE_DRIVE.value)
             current_state = sync_state.get('syncState') if sync_state else 'NOT_STARTED'
@@ -1330,7 +1322,7 @@ class DriveSyncIndividualService(BaseDriveSyncService):
                     'PAUSED',
                     service_type=Connectors.GOOGLE_DRIVE.value
                 )
-            # Phase 1: Set up changes.watch for each user
+                
             self.logger.info("👀 Setting up changes watch for all users...")
 
             # Set up changes watch for each user
@@ -1356,6 +1348,8 @@ class DriveSyncIndividualService(BaseDriveSyncService):
                     self.logger.error(
                         "❌ Error setting up changes watch for user %s: %s", user_info['email'], str(e))
                     return False
+                
+            await self.celery_app.setup_app()
 
             self.logger.info("✅ Sync service initialized successfully")
             return True

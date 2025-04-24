@@ -417,20 +417,33 @@ class IndexingPipeline:
                         model=config['configuration']['model'],
                         api_key=config['configuration']['apiKey'],
                     )
-
-            if not embedding_model:
-                self.logger.info("No embedding model found in configuration, using default embedding model")
-                
-                self.dense_embeddings = await get_default_embedding_model()
-            else:
-                self.dense_embeddings = EmbeddingFactory.create_embedding_model(embedding_model)
+            try:     
+                if not embedding_model:
+                    self.logger.info("No embedding model found in configuration, using default embedding model")
+                    embedding_model = EmbeddingModel.DEFAULT_EMBEDDING_MODEL.value
+                    self.dense_embeddings = await get_default_embedding_model()
+                else:
+                    self.dense_embeddings = EmbeddingFactory.create_embedding_model(embedding_model)
+            except Exception as e:
+                self.logger.error("Error creating embedding model: %s", str(e))
+                raise IndexingError(
+                    "Failed to create embedding model: " + str(e),
+                    details={"error": str(e)}
+                )
 
             # Get the embedding dimensions from the model
-            sample_embedding = self.dense_embeddings.embed_query("test")
-            embedding_size = len(sample_embedding)
+            try:
+                sample_embedding = self.dense_embeddings.embed_query("test")
+                embedding_size = len(sample_embedding)
+            except Exception as e:
+                self.logger.warning(f"Error with configured embedding model, falling back to default: {str(e)}")
+                embedding_model = EmbeddingModel.DEFAULT_EMBEDDING_MODEL.value
+                self.dense_embeddings = await get_default_embedding_model()
+                sample_embedding = self.dense_embeddings.embed_query("test")
+                embedding_size = len(sample_embedding)
 
             self.logger.info(f"Using embedding model: {embedding_model}, embedding_size: {embedding_size}")
-                
+
             # Initialize collection with correct embedding size
             self._initialize_collection(embedding_size=embedding_size)
 
@@ -623,6 +636,9 @@ class IndexingPipeline:
         try:
             if not sentences:
                 raise DocumentProcessingError("No sentences provided for indexing")
+            self.logger.info(f"🔍 Dense embeddings: {self.dense_embeddings}")
+            self.logger.info(f"🔍 Vector store: {self.vector_store}")
+            
             if not self.dense_embeddings or not self.vector_store:
                 try:
                     await self.get_embedding_model_instance()
@@ -694,13 +710,20 @@ class IndexingPipeline:
         """
         try:
             block_type = meta.get('blockType', 'text')
+            record_id = meta.get('recordId', '')
+            record_name = meta.get('recordName', '')
             if isinstance(block_type, list):
                 block_type = block_type[0]
+            
+            # if record_id:
+            #     record_id = [record_id]
+            # if record_name:
+            #     record_name = [record_name]
 
             enhanced_metadata = {
                 'orgId': meta.get('orgId', ''),
-                'recordId': meta.get('recordId', ''),
-                'recordName': meta.get('recordName', ''),
+                'recordId': record_id,
+                'recordName': record_name,
                 'recordType': meta.get('recordType', ''),
                 'recordVersion': meta.get('version', ''),
                 'origin': meta.get('origin', ''),

@@ -155,16 +155,34 @@ class RetrievalService:
                         model=config['configuration']['model'],
                         api_key=config['configuration']['apiKey'],
                     )
+            try:
+                if not embedding_model:
+                    self.logger.info("No embedding model found in configuration, using default embedding model")
+                    embedding_model = EmbeddingModel.DEFAULT_EMBEDDING_MODEL.value
+                    self.dense_embeddings = await get_default_embedding_model()
+                else:
+                    self.logger.info(f"Using embedding model: {embedding_model}")
+                    self.dense_embeddings = EmbeddingFactory.create_embedding_model(embedding_model)
+            except Exception as e:
+                self.logger.error(f"Error creating embedding model: {str(e)}")
+                raise Exception(
+                    "Failed to create embedding model: " + str(e),
+                    details={"error": str(e)}
+                )
 
-            if not embedding_model:
-                self.logger.info("No embedding model found in configuration, using default embedding model")
+            # Get the embedding dimensions from the model
+            try:
+                sample_embedding = self.dense_embeddings.embed_query("test")
+                embedding_size = len(sample_embedding)
+            except Exception as e:
+                self.logger.warning(f"Error with configured embedding model, falling back to default: {str(e)}")
                 embedding_model = EmbeddingModel.DEFAULT_EMBEDDING_MODEL.value
                 self.dense_embeddings = await get_default_embedding_model()
-            else:
-                self.logger.info(f"Using embedding model: {embedding_model}")
-                self.dense_embeddings = EmbeddingFactory.create_embedding_model(embedding_model)
+                sample_embedding = self.dense_embeddings.embed_query("test")
+                embedding_size = len(sample_embedding)
 
-            self.logger.info(f"Embedding model: {embedding_model}")
+            
+            self.logger.info(f"Using embedding model: {embedding_model}, embedding_size: {embedding_size}")
             return self.dense_embeddings
         except Exception as e:
             self.logger.error(f"Error getting embedding model: {str(e)}")
@@ -259,8 +277,15 @@ class RetrievalService:
             )
 
             if not accessible_records:
-                return []
-
+                self.logger.info("No accessible records found for this user with provided filters.")
+                return {
+                    "searchResults": [],
+                    "records": [],
+                    "status": "no_accessible_records",
+                    "status_code": 204,
+                    "message": "No accessible records found for this user with provided filters."
+                }
+            
             # Extract record IDs from accessible records
             record_ids = [record['_key'] for record in accessible_records if record is not None]
             # Build Qdrant filter
@@ -275,7 +300,13 @@ class RetrievalService:
                 collection_info = self.qdrant_client.get_collection(self.collection_name) if any(col.name == self.collection_name for col in collections.collections) else None
                 if not collection_info or collection_info.points_count == 0:
                     self.logger.info(f"Collection {self.collection_name} not found in Qdrant or is empty. Indexing may not be complete.")
-                    return {"searchResults": [], "records": []}
+                    return {
+                        "searchResults": [],
+                        "records": [],
+                        "status": "qdrant_empty",
+                        "status_code": 204,
+                        "message": "Vector DB is empty. No records available for retrieval."
+                    }
 
                 if not self.dense_embeddings:
                     self.logger.info("No dense embeddings found, using default embedding model")
@@ -330,11 +361,30 @@ class RetrievalService:
                         mail['webUrl'] = f"https://mail.google.com/mail?authuser={user['email']}#all/{message_id}"
                         record = {**record, **mail}
                     records.append(record)
-
-            return {
-                "searchResults": search_results,
-                "records": records
-            }
-
+            
+            if search_results or records:
+                return {
+                    "searchResults": search_results,
+                    "records": records,
+                    "status": "success",
+                    "status_code": 200,
+                    "message": "Query processed successfully. Relevant records retrieved."
+                }
+            else:
+                return {
+                    "searchResults": [],
+                    "records": [],
+                    "status": "no_results",
+                    "status_code": 200,
+                    "message": "Query processed, but no relevant results were found."
+                }
+                
         except Exception as e:
-            raise ValueError(f"Filtered search failed: {str(e)}")
+            self.logger.error(f"Filtered search failed: {str(e)}")
+            return {
+                "searchResults": [],
+                "records": [],
+                "status": "error",
+                "status_code": 500,
+                "message": f"An error occurred during search: {str(e)}"
+            }

@@ -497,7 +497,7 @@ class GmailUserService:
 
     @exponential_backoff()
     @token_refresh
-    async def list_threads(self, query: str = 'newer_than:180d') -> List[Dict]:
+    async def list_threads(self, query: str = 'newer_than:30d') -> List[Dict]:
         """Get list of unique threads"""
         try:
             self.logger.info("🚀 Getting list of threads")
@@ -802,6 +802,17 @@ class GmailUserService:
                     "error": str(e)
                 }
             )
+            
+    async def stop_gmail_user_watch(self, user_id="me") -> bool:
+        """Stop user watch"""
+        try:
+            self.logger.info("🚀 Stopping user watch for user %s", user_id)
+            self.service.users().stop(userId=user_id).execute()
+            self.logger.info("✅ User watch stopped successfully for %s", user_id)
+            return True
+        except Exception as e:
+            self.logger.error("❌ Failed to delete user watch for user %s: %s", user_id, str(e))
+            return False
 
     @exponential_backoff()
     @token_refresh

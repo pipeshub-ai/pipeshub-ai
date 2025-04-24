@@ -93,6 +93,8 @@ class SyncKafkaRouteConsumer:
 
             topic = message.topic()
             message_value = message.value()
+            event_type = None  # Initialize event_type
+            
             if isinstance(message_value, bytes):
                 message_value = message_value.decode('utf-8')
             
@@ -349,21 +351,49 @@ class SyncKafkaRouteConsumer:
         
     async def connector_public_url_changed(self, payload):
         """Handle connector public URL changed event"""
-        org_id = payload.get('orgId')
-        if not org_id:
-            raise ValueError("orgId is required")
-        users = await self.arango_service.get_users(org_id, active = True)
-        for user in users:
-            await self.sync_tasks.drive_sync_service.setup_changes_watch(user['email'])
-        await self.resync_drive(payload)
-    
+        try:
+            org_id = payload.get('orgId')
+            if not org_id:
+                raise ValueError("orgId is required")
+            users = await self.arango_service.get_users(org_id, active = True)
+            for user in users:
+                await self.sync_tasks.drive_sync_service.setup_changes_watch(user['email'])
+            await self.resync_drive(payload)
+            return True
+        except Exception as e:
+            self.logger.error("Error handling connector public URL changed event: %s", str(e))
+            return False
+        
     async def gmail_updates_enabled_event(self, payload):
         """Handle Gmail updates enabled event"""
-        pass
+        try:
+            self.logger.info(f"Gmail updates enabled event: {payload}")
+            org_id = payload.get('orgId')
+            if not org_id:
+                raise ValueError("orgId is required")
+            users = await self.arango_service.get_users(org_id, active = True)
+            for user in users:
+                await self.sync_tasks.gmail_sync_service.setup_changes_watch(org_id, user['email'])
+            await self.resync_gmail(payload)
+            return True
+        except Exception as e:
+            self.logger.error("Error handling Gmail updates enabled event: %s", str(e))
+            return False
     
     async def gmail_updates_disabled_event(self, payload):
         """Handle Gmail updates disabled event"""
-        pass
+        try:
+            self.logger.info(f"Gmail updates disabled event: {payload}")
+            org_id = payload.get('orgId')
+            if not org_id:
+                raise ValueError("orgId is required")
+            users = await self.arango_service.get_users(org_id, active = True)
+            for user in users:
+                await self.sync_tasks.gmail_sync_service.stop_changes_watch(user['email'])
+            return True
+        except Exception as e:
+            self.logger.error("Error handling Gmail updates disabled event: %s", str(e))
+            return False
 
     async def consume_messages(self):
         """Main consumption loop."""
