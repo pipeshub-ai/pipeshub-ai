@@ -87,8 +87,8 @@ async def search(request: Request, body: SearchQuery,
             filter_groups=body.filters,
             arango_service=arango_service
         )
-        # Decide HTTP status code based on custom status_code
         custom_status_code = results.get("status_code", 500)
+        logger.info(f"Custom status code: {custom_status_code}")
 
         return JSONResponse(status_code=custom_status_code, content=results)
     
