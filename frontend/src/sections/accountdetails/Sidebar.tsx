@@ -74,7 +74,7 @@ export default function Sidebar() {
       path: `${baseUrl}/settings/services`,
     },
     {
-      name: 'Ai-Models',
+      name: 'AI Models',
       icon: robotIcon,
       path: `${baseUrl}/settings/ai-models`,
     },

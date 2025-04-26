@@ -18,6 +18,8 @@ from app.core.embedding_service import (
     AzureEmbeddingConfig,
     EmbeddingFactory,
     OpenAIEmbeddingConfig,
+    HuggingFaceEmbeddingConfig,
+    SentenceTransformersEmbeddingConfig
 )
 from app.exceptions.indexing_exceptions import *
 from app.utils.embeddings import get_default_embedding_model
@@ -452,6 +454,16 @@ class IndexingPipeline:
                         model=config["configuration"]["model"],
                         api_key=config["configuration"]["apiKey"],
                     )
+                elif provider == EmbeddingProvider.HUGGING_FACE_PROVIDER.value:
+                    embedding_model =   HuggingFaceEmbeddingConfig(
+                      model=config['configuration']['model'],
+                      api_key=config['configuration']['apiKey'],
+                    )
+                elif provider == EmbeddingProvider.SENTENCE_TRANSFOMERS.value:
+                    embedding_model =   SentenceTransformersEmbeddingConfig(
+                      model=config['configuration']['model'],
+                    )
+                
             try:
                 if not embedding_model:
                     self.logger.info(
