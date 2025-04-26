@@ -2,6 +2,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import List, Literal
 
+import aiohttp
+import jwt
 import numpy as np
 from langchain.output_parsers import PydanticOutputParser
 from langchain.prompts import PromptTemplate
@@ -16,6 +18,7 @@ from tenacity import (
     wait_exponential,
 )
 
+from app.config.configuration_service import Routes, TokenScopes, config_node_constants
 from app.config.utils.named_constants.arangodb_constants import (
     CollectionNames,
     DepartmentNames,
@@ -184,7 +187,6 @@ class DomainExtractor:
         try:
             self.logger.info(f"🎯 Extracting departments for org_id: {org_id}")
             departments = await self.arango_service.get_departments(org_id)
-            self.logger.info(f"🎯 Departments: {departments}")
             if not departments:
                 departments = [dept.value for dept in DepartmentNames]
 
@@ -201,10 +203,8 @@ class DomainExtractor:
             ).replace("{sentiment_list}", sentiment_list)
             self.prompt_template = PromptTemplate.from_template(filled_prompt)
 
-            self.logger.info(f"🎯 Prompt template: {self.prompt_template}")
-
             formatted_prompt = self.prompt_template.format(content=content)
-            self.logger.info(f"🎯 Prompt formatted successfully {formatted_prompt}")
+            self.logger.info("🎯 Prompt formatted successfully")
 
             messages = [HumanMessage(content=formatted_prompt)]
             # Use retry wrapper for LLM call
@@ -296,8 +296,8 @@ class DomainExtractor:
             self.logger.error(f"❌ Error during metadata extraction: {str(e)}")
             raise
 
-    async def save_metadata_to_arango(
-        self, document_id: str, metadata: DocumentClassification
+    async def save_metadata_to_db(
+        self, org_id: str, record_id: str, metadata: DocumentClassification
     ):
         """
         Extract metadata from a document in ArangoDB and create department relationships
@@ -307,30 +307,9 @@ class DomainExtractor:
         try:
             # Retrieve the document content from ArangoDB
             record = await self.arango_service.get_document(
-                document_id, CollectionNames.RECORDS.value
+                record_id, CollectionNames.RECORDS.value
             )
-            self.logger.info(f"🚀 Record: {record}")
-
-            # Create domain metadata document for batch upsert
             doc = dict(record)
-            doc.update(
-                {
-                    "_key": document_id,
-                    "extractionStatus": "COMPLETED",
-                    "lastExtractionTimestamp": int(
-                        datetime.now(timezone.utc).timestamp()
-                    ),
-                }
-            )
-            docs = [doc]
-
-            self.logger.info(
-                f"🎯 Upserting domain metadata for document: {document_id}"
-            )
-            await self.arango_service.batch_upsert_nodes(
-                docs, CollectionNames.RECORDS.value
-            )
-
             # Create relationships with departments
             for department in metadata.departments:
                 try:
@@ -343,7 +322,7 @@ class DomainExtractor:
 
                     if dept_doc:
                         edge = {
-                            "_from": f"{CollectionNames.RECORDS.value}/{document_id}",
+                            "_from": f"{CollectionNames.RECORDS.value}/{record_id}",
                             "_to": f"{CollectionNames.DEPARTMENTS.value}/{dept_doc['_key']}",
                             "createdAtTimestamp": int(
                                 datetime.now(timezone.utc).timestamp()
@@ -353,7 +332,7 @@ class DomainExtractor:
                             [edge], CollectionNames.BELONGS_TO_DEPARTMENT.value
                         )
                         self.logger.info(
-                            f"🔗 Created relationship between document {document_id} and department {department}"
+                            f"🔗 Created relationship between document {record_id} and department {department}"
                         )
 
                 except StopIteration:
@@ -395,7 +374,7 @@ class DomainExtractor:
             cursor = self.arango_service.db.aql.execute(
                 edge_query,
                 bind_vars={
-                    "from": f"records/{document_id}",
+                    "from": f"records/{record_id}",
                     "to": f"categories/{category_key}",
                 },
             )
@@ -404,7 +383,7 @@ class DomainExtractor:
                     CollectionNames.BELONGS_TO_CATEGORY.value
                 ).insert(
                     {
-                        "_from": f"records/{document_id}",
+                        "_from": f"records/{record_id}",
                         "_to": f"categories/{category_key}",
                         "createdAtTimestamp": int(
                             datetime.now(timezone.utc).timestamp()
@@ -444,7 +423,7 @@ class DomainExtractor:
                 cursor = self.arango_service.db.aql.execute(
                     edge_query,
                     bind_vars={
-                        "from": f"records/{document_id}",
+                        "from": f"records/{record_id}",
                         "to": f"{collection_name}/{key}",
                     },
                 )
@@ -453,7 +432,7 @@ class DomainExtractor:
                         CollectionNames.BELONGS_TO_CATEGORY.value
                     ).insert(
                         {
-                            "_from": f"records/{document_id}",
+                            "_from": f"records/{record_id}",
                             "_to": f"{collection_name}/{key}",
                             "createdAtTimestamp": int(
                                 datetime.now(timezone.utc).timestamp()
@@ -531,7 +510,7 @@ class DomainExtractor:
                 cursor = self.arango_service.db.aql.execute(
                     edge_query,
                     bind_vars={
-                        "from": f"records/{document_id}",
+                        "from": f"records/{record_id}",
                         "to": f"languages/{lang_key}",
                     },
                 )
@@ -540,7 +519,7 @@ class DomainExtractor:
                         CollectionNames.BELONGS_TO_LANGUAGE.value
                     ).insert(
                         {
-                            "_from": f"records/{document_id}",
+                            "_from": f"records/{record_id}",
                             "_to": f"languages/{lang_key}",
                             "createdAtTimestamp": int(
                                 datetime.now(timezone.utc).timestamp()
@@ -579,7 +558,7 @@ class DomainExtractor:
                 cursor = self.arango_service.db.aql.execute(
                     edge_query,
                     bind_vars={
-                        "from": f"records/{document_id}",
+                        "from": f"records/{record_id}",
                         "to": f"topics/{topic_key}",
                     },
                 )
@@ -588,7 +567,7 @@ class DomainExtractor:
                         CollectionNames.BELONGS_TO_TOPIC.value
                     ).insert(
                         {
-                            "_from": f"records/{document_id}",
+                            "_from": f"records/{record_id}",
                             "_to": f"topics/{topic_key}",
                             "createdAtTimestamp": int(
                                 datetime.now(timezone.utc).timestamp()
@@ -596,11 +575,35 @@ class DomainExtractor:
                         }
                     )
 
+            # Handle summary document
+            if metadata.summary:
+                document_id = await self.save_summary_to_storage(org_id, record_id, metadata.summary)
+                if document_id is None:
+                    self.logger.error("❌ Failed to save summary to storage")
+
+
             self.logger.info(
                 f"🚀 Metadata saved successfully for document: {document_id}"
             )
 
-            # Add metadata fields to doc
+            doc.update(
+                {
+                    "summaryDocumentId": document_id,
+                    "extractionStatus": "COMPLETED",
+                    "lastExtractionTimestamp": int(
+                        datetime.now(timezone.utc).timestamp()
+                    ),
+                }
+            )
+            docs = [doc]
+
+            self.logger.info(
+                f"🎯 Upserting domain metadata for document: {document_id}"
+            )
+            await self.arango_service.batch_upsert_nodes(
+                docs, CollectionNames.RECORDS.value
+            )
+
             doc.update(
                 {
                     "departments": [dept for dept in metadata.departments],
@@ -610,6 +613,7 @@ class DomainExtractor:
                     "subcategoryLevel3": metadata.subcategories.level3,
                     "topics": metadata.topics,
                     "languages": metadata.languages,
+                    "summary": metadata.summary,
                 }
             )
 
@@ -618,3 +622,202 @@ class DomainExtractor:
         except Exception as e:
             self.logger.error(f"❌ Error saving metadata to ArangoDB: {str(e)}")
             raise
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        before_sleep=lambda retry_state: retry_state.args[0].logger.warning(
+            f"Retrying API call after error. Attempt {retry_state.attempt_number}"
+        ),
+    )
+    async def _create_placeholder(self, session, url, data, headers):
+        """Helper method to create placeholder with retry logic"""
+        try:
+            async with session.post(url, json=data, headers=headers) as response:
+                if response.status != 200:
+                    try:
+                        error_response = await response.json()
+                        self.logger.error("❌ Failed to create placeholder. Status: %d, Error: %s",
+                                        response.status, error_response)
+                    except aiohttp.ContentTypeError:
+                        error_text = await response.text()
+                        self.logger.error("❌ Failed to create placeholder. Status: %d, Response: %s",
+                                        response.status, error_text[:200])
+                    raise aiohttp.ClientError(f"Failed with status {response.status}")
+
+                response_data = await response.json()
+                self.logger.debug("✅ Successfully created placeholder")
+                return response_data
+        except aiohttp.ClientError as e:
+            self.logger.error("❌ Network error creating placeholder: %s", str(e))
+            raise
+        except Exception as e:
+            self.logger.error("❌ Unexpected error creating placeholder: %s", str(e))
+            raise aiohttp.ClientError(f"Unexpected error: {str(e)}")
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        before_sleep=lambda retry_state: retry_state.args[0].logger.warning(
+            f"Retrying API call after error. Attempt {retry_state.attempt_number}"
+        ),
+    )
+    async def _get_signed_url(self, session, url, data, headers):
+        """Helper method to get signed URL with retry logic"""
+        try:
+            async with session.post(url, json=data, headers=headers) as response:
+                if response.status != 200:
+                    try:
+                        error_response = await response.json()
+                        self.logger.error("❌ Failed to get signed URL. Status: %d, Error: %s",
+                                        response.status, error_response)
+                    except aiohttp.ContentTypeError:
+                        error_text = await response.text()
+                        self.logger.error("❌ Failed to get signed URL. Status: %d, Response: %s",
+                                        response.status, error_text[:200])
+                    raise aiohttp.ClientError(f"Failed with status {response.status}")
+
+                response_data = await response.json()
+                self.logger.debug("✅ Successfully retrieved signed URL")
+                return response_data
+        except aiohttp.ClientError as e:
+            self.logger.error("❌ Network error getting signed URL: %s", str(e))
+            raise
+        except Exception as e:
+            self.logger.error("❌ Unexpected error getting signed URL: %s", str(e))
+            raise aiohttp.ClientError(f"Unexpected error: {str(e)}")
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        before_sleep=lambda retry_state: retry_state.args[0].logger.warning(
+            f"Retrying API call after error. Attempt {retry_state.attempt_number}"
+        ),
+    )
+    async def _upload_to_signed_url(self, session, signed_url, data):
+        """Helper method to upload to signed URL with retry logic"""
+        try:
+            async with session.put(
+                signed_url,
+                json=data,
+                headers={"Content-Type": "application/json"}
+            ) as response:
+                if response.status != 200:
+                    try:
+                        error_response = await response.json()
+                        self.logger.error("❌ Failed to upload to signed URL. Status: %d, Error: %s",
+                                        response.status, error_response)
+                    except aiohttp.ContentTypeError:
+                        error_text = await response.text()
+                        self.logger.error("❌ Failed to upload to signed URL. Status: %d, Response: %s",
+                                        response.status, error_text[:200])
+                    raise aiohttp.ClientError(f"Failed to upload with status {response.status}")
+
+                self.logger.debug("✅ Successfully uploaded to signed URL")
+                return response.status
+        except aiohttp.ClientError as e:
+            self.logger.error("❌ Network error uploading to signed URL: %s", str(e))
+            raise
+        except Exception as e:
+            self.logger.error("❌ Unexpected error uploading to signed URL: %s", str(e))
+            raise aiohttp.ClientError(f"Unexpected error: {str(e)}")
+
+    async def save_summary_to_storage(
+        self, org_id: str, record_id: str, summary_doc: dict
+    ) -> str | None:
+        """
+        Save summary document to storage
+        Returns:
+            str | None: document_id if successful, None if failed
+        """
+        try:
+            self.logger.info("🚀 Starting summary storage process for record: %s", record_id)
+
+            # Generate JWT token
+            try:
+                payload = {
+                    "orgId": org_id,
+                    "scopes": [TokenScopes.STORAGE_TOKEN.value],
+                }
+                secret_keys = await self.config_service.get_config(
+                    config_node_constants.SECRET_KEYS.value
+                )
+                scoped_jwt_secret = secret_keys.get("scopedJwtSecret")
+                if not scoped_jwt_secret:
+                    raise ValueError("Missing scoped JWT secret")
+
+                jwt_token = jwt.encode(payload, scoped_jwt_secret, algorithm="HS256")
+                headers = {
+                    "Authorization": f"Bearer {jwt_token}",
+                    "Content-Type": "application/json"
+                }
+            except Exception as e:
+                self.logger.error("❌ Failed to generate JWT token: %s", str(e))
+                return None
+
+            # Get endpoint configuration
+            try:
+                endpoints = await self.config_service.get_config(
+                    config_node_constants.ENDPOINTS.value
+                )
+                nodejs_endpoint = endpoints.get("cm", {}).get("endpoint")
+                if not nodejs_endpoint:
+                    raise ValueError("Missing CM endpoint configuration")
+            except Exception as e:
+                self.logger.error("❌ Failed to get endpoint configuration: %s", str(e))
+                return None
+
+            placeholder_data = {
+                "documentName": f"summary_{record_id}",
+                "documentPath": "summaries",
+                "extension": "json"
+            }
+
+            try:
+                async with aiohttp.ClientSession() as session:
+                    # Step 1: Create placeholder
+                    self.logger.info("📝 Creating placeholder for record: %s", record_id)
+                    placeholder_url = f"{nodejs_endpoint}{Routes.STORAGE_PLACEHOLDER.value}"
+                    document = await self._create_placeholder(session, placeholder_url, placeholder_data, headers)
+
+                    document_id = document.get("_id")
+                    if not document_id:
+                        self.logger.error("❌ No document ID in placeholder response")
+                        return None
+
+                    self.logger.info("📄 Created placeholder with ID: %s", document_id)
+
+                    # Step 2: Get signed URL
+                    self.logger.info("🔑 Getting signed URL for document: %s", document_id)
+                    upload_data = {
+                        "summary": summary_doc,
+                        "recordId": record_id
+                    }
+
+                    upload_url = f"{nodejs_endpoint}{Routes.STORAGE_DIRECT_UPLOAD.value.format(documentId=document_id)}"
+                    upload_result = await self._get_signed_url(session, upload_url, upload_data, headers)
+
+                    signed_url = upload_result.get('signedUrl')
+                    if not signed_url:
+                        self.logger.error("❌ No signed URL in response for document: %s", document_id)
+                        return None
+
+                    # Step 3: Upload to signed URL
+                    self.logger.info("📤 Uploading summary to storage for document: %s", document_id)
+                    await self._upload_to_signed_url(session, signed_url, upload_data)
+
+                    self.logger.info("✅ Successfully completed summary storage process for document: %s", document_id)
+                    return document_id
+
+            except aiohttp.ClientError as e:
+                self.logger.error("❌ Network error during storage process: %s", str(e))
+                return None
+            except Exception as e:
+                self.logger.error("❌ Unexpected error during storage process: %s", str(e))
+                self.logger.exception("Detailed error trace:")
+                return None
+
+        except Exception as e:
+            self.logger.error("❌ Critical error in save_summary_to_storage: %s", str(e))
+            self.logger.exception("Detailed error trace:")
+            return None

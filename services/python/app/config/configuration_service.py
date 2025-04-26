@@ -44,6 +44,7 @@ class TokenScopes(Enum):
     PASSWORD_RESET = "password:reset"
     USER_LOOKUP = "user:lookup"
     TOKEN_REFRESH = "token:refresh"
+    STORAGE_TOKEN = "storage:token"
 
 
 class Routes(Enum):
@@ -55,7 +56,8 @@ class Routes(Enum):
     )
     BUSINESS_CREDENTIALS = "/api/v1/configurationManager/internal/connectors/business/googleWorkspaceCredentials"
     LLM_CONFIG = "/api/v1/configurationManager/internal/aiModelsConfig"
-
+    STORAGE_PLACEHOLDER = "/api/v1/document/internal/placeholder"
+    STORAGE_DIRECT_UPLOAD = "/api/v1/document/internal/{documentId}/directUpload"
 
 class WebhookConfig(Enum):
     """Constants for webhook configuration"""

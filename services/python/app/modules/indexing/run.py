@@ -565,6 +565,8 @@ class IndexingPipeline:
                         details={"error": str(e), "metadata": meta},
                     )
 
+            self.logger.debug("Enhanced metadata processed")
+
             # Store in vector store
             try:
                 await self.vector_store.aadd_documents(chunks)
@@ -824,7 +826,6 @@ class IndexingPipeline:
             if meta.get("pageNum"):
                 enhanced_metadata["pageNum"] = meta.get("pageNum")
 
-            self.logger.debug("Enhanced metadata processed")
             return enhanced_metadata
 
         except MetadataProcessingError:

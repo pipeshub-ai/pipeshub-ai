@@ -331,7 +331,7 @@ class GmailChangeHandler:
                             record["_key"],
                         )
 
-                        if attachment_records:
+                        if attachments:
                             for attachment in attachment_records:
                                 attachment_key = attachment["_key"]
                                 extension = (

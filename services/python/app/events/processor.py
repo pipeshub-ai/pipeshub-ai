@@ -100,8 +100,8 @@ class Processor:
                 metadata = await self.domain_extractor.extract_metadata(
                     full_text_content, orgId
                 )
-                record = await self.domain_extractor.save_metadata_to_arango(
-                    record_id, metadata
+                record = await self.domain_extractor.save_metadata_to_db(
+                    orgId, record_id, metadata
                 )
                 file = await self.arango_service.get_document(
                     record_id, CollectionNames.FILES.value
@@ -253,8 +253,8 @@ class Processor:
                 metadata = await self.domain_extractor.extract_metadata(
                     full_text_content, orgId
                 )
-                record = await self.domain_extractor.save_metadata_to_arango(
-                    record_id, metadata
+                record = await self.domain_extractor.save_metadata_to_db(
+                    orgId, record_id, metadata
                 )
                 file = await self.arango_service.get_document(
                     record_id, CollectionNames.FILES.value
@@ -448,8 +448,8 @@ class Processor:
                     metadata = await self.domain_extractor.extract_metadata(
                         combined_text, orgId
                     )
-                    record = await self.domain_extractor.save_metadata_to_arango(
-                        record_id, metadata
+                    record = await self.domain_extractor.save_metadata_to_db(
+                        orgId, record_id, metadata
                     )
                     file = await self.arango_service.get_document(
                         record_id, CollectionNames.FILES.value
@@ -543,8 +543,8 @@ class Processor:
                     metadata = await self.domain_extractor.extract_metadata(
                         text_content, orgId
                     )
-                    record = await self.domain_extractor.save_metadata_to_arango(
-                        recordId, metadata
+                    record = await self.domain_extractor.save_metadata_to_db(
+                        orgId, recordId, metadata
                     )
                     mail = await self.arango_service.get_document(
                         recordId, CollectionNames.MAILS.value
@@ -606,7 +606,7 @@ class Processor:
                 pipeline = self.indexing_pipeline
                 await pipeline.index_documents(sentence_data)
             else:
-                self.logger.info("❌ No sentences to index")
+                self.logger.info(" NO SENTENCES TO INDEX")
                 record = await self.arango_service.get_document(
                     recordId, CollectionNames.RECORDS.value
                 )
@@ -740,15 +740,11 @@ class Processor:
 
                 # Extract metadata using domain extractor
                 try:
-                    self.logger.info(
-                        f"""🎯 Extracting metadata from paragraphs: {
-                                paragraphs_text}"""
-                    )
                     metadata = await self.domain_extractor.extract_metadata(
                         paragraphs_text, orgId
                     )
-                    record = await self.domain_extractor.save_metadata_to_arango(
-                        recordId, metadata
+                    record = await self.domain_extractor.save_metadata_to_db(
+                        orgId, recordId, metadata
                     )
                     file = await self.arango_service.get_document(
                         recordId, CollectionNames.FILES.value
@@ -774,7 +770,6 @@ class Processor:
                 paragraph["blockText"] = json.dumps(paragraph["content"])
 
             # Create sentence data for indexing
-            self.logger.debug("📑 Creating semantic sentences")
             sentence_data = []
             sentences = ocr_result.get("sentences", [])
             if sentences:
@@ -909,8 +904,8 @@ class Processor:
                     metadata = await self.domain_extractor.extract_metadata(
                         text_content, orgId
                     )
-                    record = await self.domain_extractor.save_metadata_to_arango(
-                        recordId, metadata
+                    record = await self.domain_extractor.save_metadata_to_db(
+                        orgId, recordId, metadata
                     )
                     file = await self.arango_service.get_document(
                         recordId, CollectionNames.FILES.value
@@ -1041,8 +1036,8 @@ class Processor:
                     metadata = await self.domain_extractor.extract_metadata(
                         excel_result["text_content"], orgId
                     )
-                    record = await self.domain_extractor.save_metadata_to_arango(
-                        recordId, metadata
+                    record = await self.domain_extractor.save_metadata_to_db(
+                        orgId, recordId, metadata
                     )
                     file = await self.arango_service.get_document(
                         recordId, CollectionNames.FILES.value
@@ -1249,8 +1244,8 @@ class Processor:
                         metadata = await self.domain_extractor.extract_metadata(
                             csv_text, orgId
                         )
-                        record = await self.domain_extractor.save_metadata_to_arango(
-                            recordId, metadata
+                        record = await self.domain_extractor.save_metadata_to_db(
+                            orgId, recordId, metadata
                         )
                         file = await self.arango_service.get_document(
                             recordId, CollectionNames.FILES.value
@@ -1457,8 +1452,8 @@ class Processor:
                     metadata = await self.domain_extractor.extract_metadata(
                         text_content, orgId
                     )
-                    record = await self.domain_extractor.save_metadata_to_arango(
-                        recordId, metadata
+                    record = await self.domain_extractor.save_metadata_to_db(
+                        orgId, recordId, metadata
                     )
                     file = await self.arango_service.get_document(
                         recordId, CollectionNames.FILES.value
@@ -1602,8 +1597,8 @@ class Processor:
                     metadata = await self.domain_extractor.extract_metadata(
                         text_content, orgId
                     )
-                    record = await self.domain_extractor.save_metadata_to_arango(
-                        recordId, metadata
+                    record = await self.domain_extractor.save_metadata_to_db(
+                        orgId, recordId, metadata
                     )
                     file = await self.arango_service.get_document(
                         recordId, CollectionNames.FILES.value
@@ -1778,8 +1773,8 @@ class Processor:
                 metadata = await self.domain_extractor.extract_metadata(
                     text_content, orgId
                 )
-                record = await self.domain_extractor.save_metadata_to_arango(
-                    recordId, metadata
+                record = await self.domain_extractor.save_metadata_to_db(
+                    orgId, recordId, metadata
                 )
                 file = await self.arango_service.get_document(
                     recordId, CollectionNames.FILES.value
@@ -1986,8 +1981,8 @@ class Processor:
                     metadata = await self.domain_extractor.extract_metadata(
                         text_content, orgId
                     )
-                    record = await self.domain_extractor.save_metadata_to_arango(
-                        recordId, metadata
+                    record = await self.domain_extractor.save_metadata_to_db(
+                        orgId, recordId, metadata
                     )
                     file = await self.arango_service.get_document(
                         recordId, CollectionNames.FILES.value
