@@ -455,7 +455,7 @@ class IndexingPipeline:
                         api_key=config["configuration"]["apiKey"],
                     )
                 elif provider == EmbeddingProvider.HUGGING_FACE_PROVIDER.value:
-                    embedding_model =   HuggingFaceEmbeddingConfig(
+                    embedding_model = HuggingFaceEmbeddingConfig(
                       model=config['configuration']['model'],
                       api_key=config['configuration']['apiKey'],
                     )
