@@ -8,6 +8,7 @@ from langchain_aws import ChatBedrock
 from langchain_community.chat_models import AzureChatOpenAI, ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
 from pydantic import BaseModel, Field
+from langchain_ollama.llms import OllamaLLM
 
 from app.config.ai_models_named_constants import AzureOpenAILLM
 
@@ -25,6 +26,9 @@ class AzureLLMConfig(BaseLLMConfig):
     azure_api_version: str
 
 class GeminiLLMConfig(BaseLLMConfig):
+    """Gemini-specific configuration"""
+
+class OllamaConfig(BaseLLMConfig):
     """Gemini-specific configuration"""
 
 class AnthropicLLMConfig(BaseLLMConfig):
@@ -94,7 +98,7 @@ class LLMFactory:
                 model=config.model,
                 azure_endpoint=config.azure_endpoint,
                 api_version=AzureOpenAILLM.AZURE_OPENAI_VERSION.value,
-                temperature=0.3,
+                temperature=0.2,
                 azure_deployment=config.azure_deployment,
                 callbacks=[cost_callback]
             )
@@ -102,7 +106,7 @@ class LLMFactory:
         elif isinstance(config, OpenAILLMConfig):
             return ChatOpenAI(
                 model=config.model,
-                temperature=0.3,
+                temperature=0.2,
                 api_key=config.api_key,
                 organization=config.organization_id,
                 callbacks=[cost_callback]
@@ -111,7 +115,7 @@ class LLMFactory:
         elif isinstance(config, GeminiLLMConfig):
             return ChatGoogleGenerativeAI(
                 model=config.model,
-                temperature=0.3,
+                temperature=0.2,
                 max_tokens=None,
                 timeout=None,
                 max_retries=2,
@@ -122,7 +126,7 @@ class LLMFactory:
         elif isinstance(config, AnthropicLLMConfig):
             return ChatAnthropic(
                 model=config.model,
-                temperature=0.3,
+                temperature=0.2,
                 timeout=None,
                 max_retries=2,
                 api_key=config.api_key,
@@ -131,12 +135,18 @@ class LLMFactory:
         elif isinstance(config, AwsBedrockLLMConfig):
             return ChatBedrock(
                 model=config.model,
-                temperature=0.3,
+                temperature=0.2,
                 aws_access_key_id=config.access_key,
                 aws_secret_access_key=config.access_secret,
                 region_name=config.region,
                 callbacks=[cost_callback]
             )
+        elif isinstance(config, OllamaConfig):
+           return OllamaLLM(
+                model=config.model,
+                temperature=0.2,
+                callbacks=[cost_callback]
+            ) 
 
         raise ValueError(f"Unsupported config type: {type(config)}")
 

@@ -314,7 +314,7 @@ const WelcomeMessage = () => {
           }}
         >
           <Icon icon={githubIcon} style={{ fontSize: '1rem' }} />
-          Open source enterprise search solution
+          Open Source Workplace AI
         </Typography>
       </Box>
     </Fade>

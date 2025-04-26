@@ -128,7 +128,7 @@ async def askAI(request: Request, query_info: ChatQuery,
         # Execute all query processing in parallel
         org_id = request.state.user.get('orgId')
         user_id = request.state.user.get('userId')
-        send_user_info = request.query_params.get('sendUserInfo', False)
+        send_user_info = request.query_params.get('sendUserInfo', True)
 
         tasks = [process_decomposed_query(query_dict.get('query'), org_id, user_id) for query_dict in all_queries]
         all_search_results = await asyncio.gather(*tasks)

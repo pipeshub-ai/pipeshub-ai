@@ -1,5 +1,7 @@
 from enum import Enum
 
+AZURE_EMBEDDING_API_VERSION = "2024-02-01"
+DEFAULT_EMBEDDING_MODEL = "BAAI/bge-large-en-v1.5"
 
 class LLMProvider(Enum):
     AZURE_OPENAI_PROVIDER = "azureOpenAI"
@@ -8,6 +10,7 @@ class LLMProvider(Enum):
     VERTEX_AI_PROVIDER = "vertexAI"
     ANTHROPIC_PROVIDER = "anthropic"
     AWS_BEDROCK_PROVIDER = "bedrock"
+    OLLAMA_PROVIDER = "ollama"
 
 class OCRProvider(Enum):
     AZURE_PROVIDER = "azureDI"
@@ -16,13 +19,8 @@ class OCRProvider(Enum):
 class EmbeddingProvider(Enum):
     AZURE_OPENAI_PROVIDER = "azureOpenAI"
     OPENAI_PROVIDER = "openAI"
-
-class EmbeddingModel(Enum):
-    DEFAULT_EMBEDDING_MODEL = "BAAI/bge-large-en-v1.5"
-    DEFAULT_EMBEDDING_SIZE = 1024
-    TE3_SMALL = "text-embedding-3-small"
-    TE3_LARGE = "text-embedding-3-large"
-    AZURE_EMBEDDING_VERSION = "2024-02-01"
+    HUGGING_FACE_PROVIDER = "huggingFace"
+    SENTENCE_TRANSFOMERS = "sentenceTransformers"
 
 class AzureOpenAILLM(Enum):
     AZURE_OPENAI_VERSION = "2023-07-01-preview"

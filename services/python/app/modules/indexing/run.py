@@ -8,7 +8,7 @@ from qdrant_client.http import models
 from qdrant_client.http.models import FieldCondition, Filter, MatchValue
 
 from app.config.ai_models_named_constants import (
-    EmbeddingModel,
+    AZURE_EMBEDDING_API_VERSION,
     EmbeddingProvider,
 )
 from app.config.arangodb_constants import CollectionNames
@@ -408,7 +408,7 @@ class IndexingPipeline:
                         model=config['configuration']['model'],
                         api_key=config['configuration']['apiKey'],
                         azure_endpoint=config['configuration']['endpoint'],
-                        azure_api_version=EmbeddingModel.AZURE_EMBEDDING_VERSION.value,
+                        azure_api_version=AZURE_EMBEDDING_API_VERSION,
                     )
 
                 elif provider == EmbeddingProvider.OPENAI_PROVIDER.value:

@@ -5,10 +5,10 @@ from app.core.llm_service import (
     AwsBedrockLLMConfig,
     AzureLLMConfig,
     GeminiLLMConfig,
-    LLMFactory,
     OpenAILLMConfig,
+    OllamaConfig,
+    LLMFactory,
 )
-
 
 async def get_llm(logger, config_service: ConfigurationService):
     ai_models = await config_service.get_config(config_node_constants.AI_MODELS.value)
@@ -56,6 +56,12 @@ async def get_llm(logger, config_service: ConfigurationService):
                 access_key=config['configuration']['aws_access_key_id'],
                 access_secret=config['configuration']['aws_access_secret_key'],
                 api_key=config['configuration']['aws_access_secret_key'],
+            )
+        elif provider == LLMProvider.OLLAMA_PROVIDER.value:
+            llm_config = OllamaConfig(
+                model=config['configuration']['model'],
+                temperature=0.2,
+                api_key=config['configuration']['apiKey'],
             )
     if not llm_config:
         raise ValueError("No supported LLM provider found in configuration")
