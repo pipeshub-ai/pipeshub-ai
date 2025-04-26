@@ -36,7 +36,8 @@ qna_prompt = """
         - Provide a structured response that includes the answer, reasoning, confidence level, and documents used for reference.
         - ** ALWAYS PROVIDE CITATION NUMBERS AS PART OF THE ANSWER WHENEVER QUERY ANSWERED FROM CHUNKS **
         2. Citation Format:
-        - Use square brackets for reference IDs: like [3], [5], using "Verbatim Document Indexes starting from 1, 2" etc.
+        - Use square brackets for reference IDs: like [3], [5], using "Verbatim Document Indexes starting from [1], [2]" etc.
+        - There must be exactly one citation number within []. DO NOT CLUB MULTIPLE CITATIONS TOGETHER LIKE [1, 2]
 
         3. Improvements Focus:
         - When suggesting improvements, focus only on those that directly address the question

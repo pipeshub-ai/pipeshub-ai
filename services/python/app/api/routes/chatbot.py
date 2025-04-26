@@ -24,7 +24,7 @@ router = APIRouter()
 # Pydantic models
 class ChatQuery(BaseModel):
     query: str
-    limit: Optional[int] = 20
+    limit: Optional[int] = 50
     previousConversations: List[Dict] = []
     useDecomposition: bool = True
     filters: Optional[Dict[str, Any]] = None
