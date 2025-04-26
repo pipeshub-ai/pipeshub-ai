@@ -9,9 +9,9 @@ from qdrant_client.http.models import FieldCondition, Filter, MatchValue
 
 from app.config.configuration_service import config_node_constants
 from app.config.utils.named_constants.ai_models_named_constants import (
-    EmbeddingProvider,
     AZURE_EMBEDDING_API_VERSION,
-    DEFAULT_EMBEDDING_MODEL
+    DEFAULT_EMBEDDING_MODEL,
+    EmbeddingProvider,
 )
 from app.config.utils.named_constants.arangodb_constants import CollectionNames
 from app.core.embedding_service import (
