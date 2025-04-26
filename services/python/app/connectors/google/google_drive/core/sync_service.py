@@ -709,7 +709,7 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                         None,
                         user_email,
                         page_token["token"],
-                        page_token["expiration"],
+                        None,
                     )
                 return watch
             # Check if the page token is expired
@@ -717,12 +717,13 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
             expiration = page_token.get("expiration", 0)
             self.logger.info("Current time: %s", current_time)
             self.logger.info("Page token expiration: %s", expiration)
-            if expiration < current_time:
+            if expiration is None or expiration < current_time:
                 self.logger.warning("⚠️ Page token expired for user %s", user_email)
 
-                await user_service.stop_watch(
-                    page_token["channelId"], page_token["resourceId"]
-                )
+                if page_token["channelId"] and page_token["resourceId"]:
+                    await user_service.stop_watch(
+                        page_token["channelId"], page_token["resourceId"]
+                    )
 
                 watch = await user_service.create_changes_watch()
                 if not watch:
@@ -1513,7 +1514,7 @@ class DriveSyncIndividualService(BaseDriveSyncService):
                         None,
                         user_email,
                         page_token["token"],
-                        page_token["expiration"],
+                        None,
                     )
                 return watch
 
@@ -1522,12 +1523,13 @@ class DriveSyncIndividualService(BaseDriveSyncService):
             expiration = page_token.get("expiration", 0)
             self.logger.info("Current time: %s", current_time)
             self.logger.info("Page token expiration: %s", expiration)
-            if expiration < current_time:
+            if expiration is None or expiration < current_time:
                 self.logger.warning("⚠️ Page token expired for user %s", user_email)
 
-                await user_service.stop_watch(
-                    page_token["channelId"], page_token["resourceId"]
-                )
+                if page_token["channelId"] and page_token["resourceId"]:
+                    await user_service.stop_watch(
+                        page_token["channelId"], page_token["resourceId"]
+                    )
 
                 watch = await user_service.create_changes_watch()
                 if not watch:

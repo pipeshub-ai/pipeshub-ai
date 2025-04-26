@@ -907,7 +907,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
             expiration_timestamp = channel_history.get("expiration", 0)
             self.logger.info("Current time: %s", current_timestamp)
             self.logger.info("Page token expiration: %s", expiration_timestamp)
-            if expiration_timestamp < current_timestamp:
+            if expiration_timestamp is None or expiration_timestamp < current_timestamp:
                 self.logger.info("⚠️ Page token expired for user %s", user_email)
                 await user_service.stop_gmail_user_watch()
 
@@ -1853,7 +1853,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
             expiration_timestamp = channel_history.get("expiration", 0)
             self.logger.info("Current time: %s", current_timestamp)
             self.logger.info("Page token expiration: %s", expiration_timestamp)
-            if expiration_timestamp < current_timestamp:
+            if expiration_timestamp is None or expiration_timestamp < current_timestamp:
                 self.logger.info("⚠️ Page token expired for user %s", user_email)
                 await user_service.stop_gmail_user_watch()
                 watch = await user_service.create_gmail_user_watch()
