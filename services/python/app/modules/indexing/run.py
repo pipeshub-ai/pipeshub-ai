@@ -17,9 +17,9 @@ from app.config.utils.named_constants.arangodb_constants import CollectionNames
 from app.core.embedding_service import (
     AzureEmbeddingConfig,
     EmbeddingFactory,
-    OpenAIEmbeddingConfig,
     HuggingFaceEmbeddingConfig,
-    SentenceTransformersEmbeddingConfig
+    OpenAIEmbeddingConfig,
+    SentenceTransformersEmbeddingConfig,
 )
 from app.exceptions.indexing_exceptions import *
 from app.utils.embeddings import get_default_embedding_model
@@ -463,7 +463,7 @@ class IndexingPipeline:
                     embedding_model = SentenceTransformersEmbeddingConfig(
                       model=config['configuration']['model'],
                     )
-                
+
             try:
                 if not embedding_model:
                     self.logger.info(
