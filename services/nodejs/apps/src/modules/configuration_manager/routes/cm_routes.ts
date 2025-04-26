@@ -71,7 +71,7 @@ import {
   checkQdrantHealth,
   checkRedisHealth,
 } from '../middlewares/health.middleware';
-import { EntitiesEventProducer } from '../../user_management/services/entity_events.service';
+
 import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import { AppConfig } from '../../tokens_manager/config/config';
@@ -80,6 +80,11 @@ import {
   AuthenticatedServiceRequest,
 } from '../../../libs/middlewares/types';
 import { NotFoundError } from '../../../libs/errors/http.errors';
+import { ConfigService } from '../services/updateConfig.service';
+import {
+  EntitiesEventProducer,
+  SyncEventProducer,
+} from '../services/kafka_events.service';
 
 export function createConfigurationManagerRouter(container: Container): Router {
   const router = Router();
@@ -87,9 +92,12 @@ export function createConfigurationManagerRouter(container: Container): Router {
     'KeyValueStoreService',
   );
   const appConfig = container.get<AppConfig>('AppConfig');
-  const eventService = container.get<EntitiesEventProducer>(
+  const entityEventService = container.get<EntitiesEventProducer>(
     'EntitiesEventProducer',
   );
+  const syncEventService =
+    container.get<SyncEventProducer>('SyncEventProducer');
+  const configService = container.get<ConfigService>('ConfigService');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   // storage config routes
 
@@ -399,7 +407,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
         keyValueStoreService,
         req.user.userId,
         req.user.orgId,
-        eventService,
+        syncEventService,
       )(req, res, next);
     },
   );
@@ -425,7 +433,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
         keyValueStoreService,
         req.tokenPayload.userId,
         req.tokenPayload.orgId,
-        eventService,
+        syncEventService,
       )(req, res, next);
     },
   );
@@ -517,7 +525,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
       }
       return setGoogleWorkspaceOauthConfig(
         keyValueStoreService,
-        eventService,
+        syncEventService,
         req.user.orgId,
       )(req, res, next);
     },
@@ -541,7 +549,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
       }
       return setGoogleWorkspaceOauthConfig(
         keyValueStoreService,
-        eventService,
+        syncEventService,
         req.tokenPayload?.orgId,
       )(req, res, next);
     },
@@ -561,7 +569,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
     userAdminCheck,
     metricsMiddleware(container),
     ValidationMiddleware.validate(aiModelsConfigSchema),
-    createAIModelsConfig(keyValueStoreService, eventService, appConfig),
+    createAIModelsConfig(keyValueStoreService, entityEventService, appConfig),
   );
 
   /**
@@ -599,7 +607,11 @@ export function createConfigurationManagerRouter(container: Container): Router {
     userAdminCheck,
     ValidationMiddleware.validate(urlSchema),
     metricsMiddleware(container),
-    setFrontendUrl(keyValueStoreService),
+    setFrontendUrl(
+      keyValueStoreService,
+      appConfig.scopedJwtSecret,
+      configService,
+    ),
   );
 
   router.get(
@@ -616,7 +628,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
     userAdminCheck,
     ValidationMiddleware.validate(urlSchema),
     metricsMiddleware(container),
-    setConnectorPublicUrl(keyValueStoreService, eventService),
+    setConnectorPublicUrl(keyValueStoreService, syncEventService),
   );
 
   // metrics collection routes

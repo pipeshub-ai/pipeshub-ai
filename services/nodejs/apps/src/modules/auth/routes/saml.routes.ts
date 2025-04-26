@@ -20,7 +20,13 @@ import { SessionService } from '../services/session.service';
 import { SamlController } from '../controller/saml.controller';
 import { Logger } from '../../../libs/services/logger.service';
 import { generateAuthToken } from '../utils/generateAuthToken';
-import { AppConfig } from '../../tokens_manager/config/config';
+import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
+import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
+import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
+import { AuthenticatedServiceRequest } from '../../../libs/middlewares/types';
+import { UserAccountController } from '../controller/userAccount.controller';
+import { MailService } from '../services/mail.service';
+import { ConfigurationManagerService } from '../services/cm.service';
 
 const isValidEmail = (email: string) => {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email); // Basic email regex
@@ -28,7 +34,8 @@ const isValidEmail = (email: string) => {
 export function createSamlRouter(container: Container) {
   const router = Router();
 
-  const config = container.get<AppConfig>('AppConfig');
+  let config = container.get<AppConfig>('AppConfig');
+  const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   const sessionService = container.get<SessionService>('SessionService');
   const iamService = container.get<IamService>('IamService');
   const samlController = container.get<SamlController>('SamlController');
@@ -192,6 +199,53 @@ export function createSamlRouter(container: Container) {
       }
 
       // Todo: check if User Account exists and validate if user is not blocked
+    },
+  );
+
+  router.post(
+    '/updateAppConfig',
+    authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
+    async (
+      _req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ) => {
+      try {
+        config = await loadAppConfig();
+
+        container.rebind<AppConfig>('AppConfig').toDynamicValue(() => config);
+
+        container
+          .rebind<UserAccountController>('UserAccountController')
+          .toDynamicValue(() => {
+            return new UserAccountController(
+              config,
+              container.get<IamService>('IamService'),
+              container.get<MailService>('MailService'),
+              container.get<SessionService>('SessionService'),
+              container.get<ConfigurationManagerService>(
+                'ConfigurationManagerService',
+              ),
+              logger,
+            );
+          });
+        container
+          .rebind<SamlController>('SamlController')
+          .toDynamicValue(() => {
+            return new SamlController(
+              container.get<IamService>('IamService'),
+              config,
+              logger,
+            );
+          });
+        res.status(200).json({
+          message: 'Auth configuration updated successfully',
+          config,
+        });
+        return;
+      } catch (error) {
+        next(error);
+      }
     },
   );
   return router;

@@ -6,7 +6,7 @@ import { UserDisplayPicture } from '../schema/userDp.schema';
 import sharp from 'sharp';
 import {
   fetchConfigJwtGenerator,
-  jwtGeneratorForForgotPasswordLink,
+  jwtGeneratorForNewAccountPassword,
   mailJwtGenerator,
 } from '../../../libs/utils/createJwt';
 import {
@@ -660,7 +660,7 @@ export class UserController {
       }
       if (result.data?.isPasswordAuthEnabled) {
         const { passwordResetToken, mailAuthToken } =
-          jwtGeneratorForForgotPasswordLink(
+          jwtGeneratorForNewAccountPassword(
             email,
             id,
             orgId,
@@ -718,6 +718,8 @@ export class UserController {
       if (!emails) {
         throw new BadRequestError('emails are required');
       }
+      console.log(this.config);
+
       const orgId = req.user?.orgId;
       // Check if emails array is provided
       if (!emails || !Array.isArray(emails)) {
@@ -813,7 +815,7 @@ export class UserController {
         const userId = newUsers[i]?._id;
         if (!userId) {
           throw new InternalServerError(
-            'User ID missing while inviting new user. Please ensure user creation was successful.',
+            'User ID missing while inviting restored user. Please ensure user restoration was successful.',
           );
         }
         await UserGroups.updateMany(
@@ -840,7 +842,7 @@ export class UserController {
 
         if (result.data?.isPasswordAuthEnabled) {
           const { passwordResetToken, mailAuthToken } =
-            jwtGeneratorForForgotPasswordLink(
+            jwtGeneratorForNewAccountPassword(
               email,
               userId.toString(),
               orgId,
@@ -924,7 +926,7 @@ export class UserController {
 
         if (result.data?.isPasswordAuthEnabled) {
           const { passwordResetToken, mailAuthToken } =
-            jwtGeneratorForForgotPasswordLink(
+            jwtGeneratorForNewAccountPassword(
               email,
               userId.toString(),
               orgId,

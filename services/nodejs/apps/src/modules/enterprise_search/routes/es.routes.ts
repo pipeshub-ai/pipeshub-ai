@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { NextFunction, Router, Response } from 'express';
 import { Container } from 'inversify';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import {
@@ -40,12 +40,14 @@ import {
   searchShareParamsSchema,
 } from '../validators/es_validators';
 import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
-import { AppConfig } from '../../tokens_manager/config/config';
+import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
+import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
+import { AuthenticatedServiceRequest } from '../../../libs/middlewares/types';
 
 export function createConversationalRouter(container: Container): Router {
   const router = Router();
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
-  const appConfig = container.get<AppConfig>('AppConfig');
+  let appConfig = container.get<AppConfig>('AppConfig');
   /**
    * @route POST /api/v1/conversations
    * @desc Create a new conversation with initial query
@@ -242,7 +244,7 @@ export function createConversationalRouter(container: Container): Router {
 export function createSemanticSearchRouter(container: Container): Router {
   const router = Router();
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
-  const appConfig = container.get<AppConfig>('AppConfig');
+  let appConfig = container.get<AppConfig>('AppConfig');
 
   router.post(
     '/',
@@ -299,7 +301,6 @@ export function createSemanticSearchRouter(container: Container): Router {
     unshareSearch(appConfig),
   );
 
-
   router.patch(
     '/:searchId/archive',
     authMiddleware.authenticate,
@@ -314,6 +315,32 @@ export function createSemanticSearchRouter(container: Container): Router {
     metricsMiddleware(container),
     ValidationMiddleware.validate(searchIdParamsSchema),
     unarchiveSearch,
+  );
+
+  router.post(
+    '/updateAppConfig',
+    authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
+    async (
+      _req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ) => {
+      try {
+        appConfig = await loadAppConfig();
+
+        container
+          .rebind<AppConfig>('AppConfig')
+          .toDynamicValue(() => appConfig);
+
+        res.status(200).json({
+          message: 'User configuration updated successfully',
+          config: appConfig,
+        });
+        return;
+      } catch (error) {
+        next(error);
+      }
+    },
   );
 
   return router;

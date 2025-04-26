@@ -26,7 +26,10 @@ export class EnterpriseSearchAgentContainer {
     container
       .bind<ConfigurationManagerConfig>('ConfigurationManagerConfig')
       .toConstantValue(configurationManagerConfig);
-    container.bind<AppConfig>('AppConfig').toConstantValue(appConfig);
+    container
+      .bind<AppConfig>('AppConfig')
+      .toDynamicValue(() => appConfig) // Always fetch latest reference
+      .inTransientScope();
     // Initialize and bind services
     await this.initializeServices(container, appConfig);
 

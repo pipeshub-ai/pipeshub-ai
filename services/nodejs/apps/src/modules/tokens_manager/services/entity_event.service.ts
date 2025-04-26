@@ -3,11 +3,6 @@ import { Logger } from '../../../libs/services/logger.service';
 import { BaseKafkaProducerConnection } from '../../../libs/services/kafka.service';
 import { KafkaConfig, KafkaMessage } from '../../../libs/types/kafka.types';
 
-export enum AccountType {
-  Individual = 'individual',
-  Business = 'business',
-}
-
 export enum SyncAction {
   None = 'none',
   Immediate = 'immediate',
@@ -15,67 +10,30 @@ export enum SyncAction {
 }
 
 export enum EventType {
-  OrgCreatedEvent = 'orgCreated',
-  OrgUpdatedEvent = 'orgUpdated',
-  OrgDeletedEvent = 'orgDeleted',
-  NewUserEvent = 'userAdded',
-  UpdateUserEvent = 'userUpdated',
-  DeleteUserEvent = 'userDeleted',
+  AppEnabledEvent = 'appEnabled',
+  AppDisabledEvent = 'appDisabled',
 }
 
 export interface Event {
   eventType: EventType;
   timestamp: number;
-  payload:
-    | OrgAddedEvent
-    | OrgDeletedEvent
-    | OrgUpdatedEvent
-    | UserAddedEvent
-    | UserDeletedEvent
-    | UserUpdatedEvent;
+  payload: AppEnabledEvent | AppDisabledEvent;
 }
 
-export interface OrgAddedEvent {
+export interface AppEnabledEvent {
   orgId: string;
-  accountType: AccountType;
-  registeredName: string;
-}
-export interface OrgUpdatedEvent {
-  orgId: string;
-  registeredName: string;
-}
-
-export interface OrgDeletedEvent {
-  orgId: string;
-}
-
-export interface UserAddedEvent {
-  orgId: string;
-  userId: string;
-  fullName?: string;
-  firstName?: string;
-  middleName?: string;
-  lastName?: string;
-  email: string;
-  designation?: string;
+  appGroup: string;
+  appGroupId: string;
+  credentialsRoute?: string;
+  refreshTokenRoute?: string;
+  apps: string[];
   syncAction: SyncAction;
 }
-
-export interface UserDeletedEvent {
+export interface AppDisabledEvent {
   orgId: string;
-  userId: string;
-  email: string;
-}
-
-export interface UserUpdatedEvent {
-  orgId: string;
-  userId: string;
-  firstName?: string;
-  middleName?: string;
-  lastName?: string;
-  fullName?: string;
-  designation?: string;
-  email: string;
+  appGroup: string;
+  appGroupId: string;
+  apps: string[];
 }
 
 @injectable()

@@ -5,9 +5,9 @@ import { RedisService } from '../../../libs/services/redis.service';
 import { Logger } from '../../../libs/services/logger.service';
 import { TokenEventProducer } from '../services/token-event.producer';
 import { ConfigurationManagerConfig } from '../../configuration_manager/config/config';
-import { EntitiesEventProducer } from '../../user_management/services/entity_events.service';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
+import { EntitiesEventProducer } from '../services/entity_event.service';
 
 const loggerConfig = {
   service: 'Token Manager',
@@ -23,7 +23,10 @@ export class TokenManagerContainer {
     const container = new Container();
     const config: AppConfig = await loadAppConfig();
     // Bind configuration
-    container.bind<AppConfig>('AppConfig').toConstantValue(config);
+    container
+      .bind<AppConfig>('AppConfig')
+      .toDynamicValue(() => config) // Always fetch latest reference
+      .inTransientScope();
 
     // Bind logger
     container.bind<Logger>('Logger').toConstantValue(this.logger);

@@ -338,6 +338,31 @@ export class ConfigService {
 
     return parsedUrl.cm.endpoint;
   }
+
+  public async getTokenBackendUrl(): Promise<string> {
+    const url =
+      (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
+      '{}';
+
+    let parsedUrl = JSON.parse(url);
+
+    // Preserve existing `auth` object if it exists, otherwise create a new one
+    parsedUrl.tokenBackend = {
+      ...parsedUrl.tokenBackend,
+      endpoint:
+        parsedUrl.tokenBackend?.endpoint ||
+        `http://localhost:${process.env.PORT ?? 3000}`,
+    };
+
+    // Save the updated object back to configPaths.endpoint
+    await this.keyValueStoreService.set<string>(
+      configPaths.endpoint,
+      JSON.stringify(parsedUrl),
+    );
+
+    return parsedUrl.tokenBackend.endpoint;
+  }
+
   public async getConnectorUrl(): Promise<string> {
     const url =
       (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||

@@ -30,8 +30,10 @@ export class UserManagerContainer {
     container
       .bind<ConfigurationManagerConfig>('ConfigurationManagerConfig')
       .toConstantValue(configurationManagerConfig);
-    container.bind<AppConfig>('AppConfig').toConstantValue(appConfig);
-
+    container
+      .bind<AppConfig>('AppConfig')
+      .toDynamicValue(() => appConfig) // Always fetch latest reference
+      .inTransientScope();
     await this.initializeServices(container, appConfig);
     this.instance = container;
     return container;
@@ -64,26 +66,25 @@ export class UserManagerContainer {
         .bind<EntitiesEventProducer>('EntitiesEventProducer')
         .toConstantValue(entityEventsService);
 
-      const orgController = new OrgController(
-        appConfig,
-        mailService,
-        container.get('Logger'),
-        entityEventsService,
-      );
-      container
-        .bind<OrgController>('OrgController')
-        .toConstantValue(orgController);
+      // Rebind controllers
+      container.bind<OrgController>('OrgController').toDynamicValue(() => {
+        return new OrgController(
+          appConfig,
+          container.get<MailService>('MailService'),
+          container.get('Logger'),
+          container.get<EntitiesEventProducer>('EntitiesEventProducer'),
+        );
+      });
 
-      const userController = new UserController(
-        appConfig,
-        mailService,
-        authService,
-        container.get('Logger'),
-        entityEventsService,
-      );
-      container
-        .bind<UserController>('UserController')
-        .toConstantValue(userController);
+      container.bind<UserController>('UserController').toDynamicValue(() => {
+        return new UserController(
+          appConfig,
+          container.get<MailService>('MailService'),
+          container.get<AuthService>('AuthService'),
+          container.get('Logger'),
+          container.get<EntitiesEventProducer>('EntitiesEventProducer'),
+        );
+      });
 
       const userGroupController = new UserGroupController();
       container

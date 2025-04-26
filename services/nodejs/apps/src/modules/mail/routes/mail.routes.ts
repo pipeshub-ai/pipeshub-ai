@@ -50,7 +50,7 @@ export function createMailServiceRouter(container: Container) {
     ) => {
       try {
         const updatedConfig: AppConfig = await loadAppConfig();
-
+        console.log(updatedConfig);
         container
           .rebind<AppConfig>('AppConfig')
           .toDynamicValue(() => updatedConfig);

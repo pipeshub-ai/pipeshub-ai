@@ -5,6 +5,7 @@ import { Logger } from '../../../libs/services/logger.service';
 import { configPaths } from '../paths/paths';
 import {
   BadRequestError,
+  NotFoundError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
 import {
@@ -20,6 +21,13 @@ import {
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
 import { loadConfigurationManagerConfig } from '../config/config';
 import { Org } from '../../user_management/schema/org.schema';
+
+import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
+import { AppConfig } from '../../tokens_manager/config/config';
+import { generateFetchConfigAuthToken } from '../../auth/utils/generateAuthToken';
+import axios from 'axios';
+import { ARANGO_DB_NAME, MONGO_DB_NAME } from '../../../libs/enums/db.enum';
+import { ConfigService } from '../services/updateConfig.service';
 import {
   ConnectorPublicUrlChangedEvent,
   EntitiesEventProducer,
@@ -28,12 +36,8 @@ import {
   GmailUpdatesDisabledEvent,
   GmailUpdatesEnabledEvent,
   LLMConfiguredEvent,
-} from '../../user_management/services/entity_events.service';
-import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
-import { AppConfig } from '../../tokens_manager/config/config';
-import { generateFetchConfigAuthToken } from '../../auth/utils/generateAuthToken';
-import axios from 'axios';
-import { ARANGO_DB_NAME, MONGO_DB_NAME } from '../../../libs/enums/db.enum';
+  SyncEventProducer,
+} from '../services/kafka_events.service';
 
 const logger = Logger.getInstance({
   service: 'ConfigurationManagerController',
@@ -690,7 +694,7 @@ export const createGoogleWorkspaceCredentials =
     keyValueStoreService: KeyValueStoreService,
     userId: string,
     orgId: string,
-    eventService: EntitiesEventProducer,
+    eventService: SyncEventProducer,
   ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
@@ -843,7 +847,7 @@ export const createGoogleWorkspaceCredentials =
                   eventType: EventType.GmailUpdatesDisabledEvent,
                   timestamp: Date.now(),
                   payload: {
-                    orgId: req.user?.orgId,
+                    orgId,
                   } as GmailUpdatesDisabledEvent,
                 };
                 await eventService.publishEvent(event);
@@ -1084,7 +1088,7 @@ export const deleteGoogleWorkspaceCredentials =
 export const setGoogleWorkspaceOauthConfig =
   (
     keyValueStoreService: KeyValueStoreService,
-    eventService: EntitiesEventProducer,
+    eventService: SyncEventProducer,
     orgId: string,
   ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
@@ -1140,7 +1144,7 @@ export const setGoogleWorkspaceOauthConfig =
               eventType: EventType.GmailUpdatesDisabledEvent,
               timestamp: Date.now(),
               payload: {
-                orgId: req.user?.orgId,
+                orgId,
               } as GmailUpdatesDisabledEvent,
             };
             await eventService.publishEvent(event);
@@ -1416,9 +1420,16 @@ export const getFrontendUrl =
   };
 
 export const setFrontendUrl =
-  (keyValueStoreService: KeyValueStoreService) =>
+  (
+    keyValueStoreService: KeyValueStoreService,
+    scopedJwtSecret: string,
+    configService: ConfigService,
+  ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
+      if (!req.user) {
+        throw new NotFoundError('User not found');
+      }
       const { url } = req.body;
       const urls =
         (await keyValueStoreService.get<string>(configPaths.endpoint)) || '{}';
@@ -1436,6 +1447,16 @@ export const setFrontendUrl =
         configPaths.endpoint,
         JSON.stringify(parsedUrls),
       );
+
+      const scopedToken = await generateFetchConfigAuthToken(
+        req.user,
+        scopedJwtSecret,
+      );
+      const response = await configService.updateConfig(scopedToken);
+      if (response.statusCode != 200) {
+        throw new BadRequestError('Error updating configs');
+      }
+
       res.status(200).json({
         message: 'Frontend Url saved successfully',
       });
@@ -1470,10 +1491,13 @@ export const getConnectorPublicUrl =
 export const setConnectorPublicUrl =
   (
     keyValueStoreService: KeyValueStoreService,
-    eventService: EntitiesEventProducer,
+    eventService: SyncEventProducer,
   ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
+      if (!req.user) {
+        throw new NotFoundError('User not found');
+      }
       const { url } = req.body;
       const urls =
         (await keyValueStoreService.get<string>(configPaths.endpoint)) || '{}';
@@ -1498,6 +1522,7 @@ export const setConnectorPublicUrl =
         timestamp: Date.now(),
         payload: {
           url,
+          orgId: req.user.orgId,
         } as ConnectorPublicUrlChangedEvent,
       };
       await eventService.publishEvent(event);

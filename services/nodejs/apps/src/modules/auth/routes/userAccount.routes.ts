@@ -30,13 +30,14 @@ export function createUserAccountRouter(container: Container) {
 
   router.use(attachContainerMiddleware(container));
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
-  const userAccountController = container.get<UserAccountController>(
-    'UserAccountController',
-  );
+
   router.post(
     '/initAuth',
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
+        const userAccountController = container.get<UserAccountController>(
+          'UserAccountController',
+        );
         await userAccountController.initAuth(req, res, next);
       } catch (error) {
         next(error);
@@ -48,6 +49,9 @@ export function createUserAccountRouter(container: Container) {
     authSessionMiddleware,
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
+        const userAccountController = container.get<UserAccountController>(
+          'UserAccountController',
+        );
         await userAccountController.authenticate(req, res, next);
       } catch (error) {
         next(error);
@@ -60,6 +64,9 @@ export function createUserAccountRouter(container: Container) {
     ValidationMiddleware.validate(otpGenerationValidationSchema),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
+        const userAccountController = container.get<UserAccountController>(
+          'UserAccountController',
+        );
         await userAccountController.getLoginOtp(req, res);
       } catch (error) {
         next(error);
@@ -72,6 +79,9 @@ export function createUserAccountRouter(container: Container) {
     userValidator,
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
+        const userAccountController = container.get<UserAccountController>(
+          'UserAccountController',
+        );
         await userAccountController.resetPassword(req, res, next);
       } catch (error) {
         next(error);
@@ -84,6 +94,9 @@ export function createUserAccountRouter(container: Container) {
     authMiddleware.scopedTokenValidator(TokenScopes.TOKEN_REFRESH),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
+        const userAccountController = container.get<UserAccountController>(
+          'UserAccountController',
+        );
         await userAccountController.getAccessTokenFromRefreshToken(
           req,
           res,
@@ -100,6 +113,9 @@ export function createUserAccountRouter(container: Container) {
     userValidator,
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
+        const userAccountController = container.get<UserAccountController>(
+          'UserAccountController',
+        );
         await userAccountController.logoutSession(req, res, next);
       } catch (error) {
         next(error);
@@ -115,6 +131,9 @@ export function createUserAccountRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
+        const userAccountController = container.get<UserAccountController>(
+          'UserAccountController',
+        );
         await userAccountController.resetPasswordViaEmailLink(req, res, next);
       } catch (error) {
         next(error);
@@ -126,6 +145,9 @@ export function createUserAccountRouter(container: Container) {
     '/password/forgot',
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
+        const userAccountController = container.get<UserAccountController>(
+          'UserAccountController',
+        );
         await userAccountController.forgotPasswordEmail(req, res, next);
       } catch (error) {
         next(error);
@@ -143,6 +165,9 @@ export function createUserAccountRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
+        const userAccountController = container.get<UserAccountController>(
+          'UserAccountController',
+        );
         await userAccountController.hasPasswordMethod(req, res, next);
       } catch (error) {
         next(error);

@@ -20,13 +20,7 @@ import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.
 import { ConnectorsConfig } from '../../configuration_manager/schema/connectors.schema';
 import { Logger } from '../../../libs/services/logger.service';
 import { Container } from 'inversify';
-import {
-  EntitiesEventProducer,
-  EventType,
-  Event,
-  AppDisabledEvent,
-  AppEnabledEvent,
-} from '../../user_management/services/entity_events.service';
+
 import { GoogleWorkspaceApp, scopeToAppMap } from '../types/connector.types';
 import { AppConfig, loadAppConfig } from '../config/config';
 import {
@@ -50,6 +44,13 @@ import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import { verifyGoogleWorkspaceToken } from '../utils/verifyToken';
 import { Org } from '../../user_management/schema/org.schema';
 import { googleWorkspaceTypes } from '../../configuration_manager/constants/constants';
+import {
+  AppDisabledEvent,
+  AppEnabledEvent,
+  EntitiesEventProducer,
+  EventType,
+  Event,
+} from '../services/entity_event.service';
 
 const CONNECTORS = [{ key: 'googleWorkspace', name: 'Google Workspace' }];
 const logger = Logger.getInstance({
@@ -104,7 +105,7 @@ export function createConnectorRouter(container: Container) {
   const eventService = container.get<EntitiesEventProducer>(
     'EntitiesEventProducer',
   );
-  const config = container.get<AppConfig>('AppConfig');
+  let config = container.get<AppConfig>('AppConfig');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
 
   router.get(
@@ -826,6 +827,30 @@ export function createConnectorRouter(container: Container) {
       } catch (err) {
         logger.error('Error refreshing individual connector token', err);
         next(err);
+      }
+    },
+  );
+
+  router.post(
+    '/updateAppConfig',
+    authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
+    async (
+      _req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ) => {
+      try {
+        config = await loadAppConfig();
+
+        container.rebind<AppConfig>('AppConfig').toDynamicValue(() => config);
+
+        res.status(200).json({
+          message: 'Connectors configuration updated successfully',
+          config,
+        });
+        return;
+      } catch (error) {
+        next(error);
       }
     },
   );

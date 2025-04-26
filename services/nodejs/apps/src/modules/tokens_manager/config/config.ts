@@ -17,6 +17,7 @@ export interface AppConfig {
   kbBackend: string;
   esBackend: string;
   storageBackend: string;
+  tokenBackend: string;
   aiBackend: string;
   connectorBackend: string;
   indexingBackend: string;
@@ -94,6 +95,7 @@ export const loadAppConfig = async (): Promise<AppConfig> => {
     indexingBackend: await configService.getIndexingUrl(),
     aiBackend: await configService.getAiBackendUrl(),
     storageBackend: await configService.getStorageBackendUrl(),
+    tokenBackend: await configService.getTokenBackendUrl(),
     kafka: await configService.getKafkaConfig(),
     redis: await configService.getRedisConfig(),
     arango: await configService.getArangoConfig(),

@@ -30,7 +30,10 @@ export class AuthServiceContainer {
     container
       .bind<ConfigurationManagerConfig>('ConfigurationManagerConfig')
       .toConstantValue(configurationManagerConfig);
-    container.bind<AppConfig>('AppConfig').toConstantValue(appConfig);
+    container
+      .bind<AppConfig>('AppConfig')
+      .toDynamicValue(() => appConfig) // Always fetch latest reference
+      .inTransientScope();
     await this.initializeServices(container, appConfig);
     this.instance = container;
     return container;
@@ -78,22 +81,22 @@ export class AuthServiceContainer {
         .bind<ConfigurationManagerService>('ConfigurationManagerService')
         .toConstantValue(configurationService);
 
-      const samlController = new SamlController(iamService, appConfig, logger);
-      container
-        .bind<SamlController>('SamlController')
-        .toConstantValue(samlController);
+      container.bind<SamlController>('SamlController').toDynamicValue(() => {
+        return new SamlController(iamService, appConfig, logger);
+      });
 
-      const userAccountController = new UserAccountController(
-        appConfig,
-        iamService,
-        mailService,
-        sessionService,
-        configurationService,
-        logger,
-      );
       container
         .bind<UserAccountController>('UserAccountController')
-        .toConstantValue(userAccountController);
+        .toDynamicValue(() => {
+          return new UserAccountController(
+            appConfig,
+            iamService,
+            mailService,
+            sessionService,
+            configurationService,
+            logger,
+          );
+        });
     } catch (error) {
       const logger = container.get<Logger>('Logger');
       logger.error('Failed to initialize services', {

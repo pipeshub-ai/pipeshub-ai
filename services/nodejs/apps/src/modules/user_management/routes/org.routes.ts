@@ -62,13 +62,14 @@ const OrgCreationValidationSchema = z.object({
 export function createOrgRouter(container: Container) {
   const router = Router();
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
-  const orgController = container.get<OrgController>('OrgController');
+
   router.use(attachContainerMiddleware(container));
 
   router.get(
     '/exists',
     async (_req: Request, res: Response, next: NextFunction) => {
       try {
+        const orgController = container.get<OrgController>('OrgController');
         await orgController.checkOrgExistence(res);
       } catch (error) {
         next(error);
@@ -81,6 +82,7 @@ export function createOrgRouter(container: Container) {
     ValidationMiddleware.validate(OrgCreationValidationSchema),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
+        const orgController = container.get<OrgController>('OrgController');
         await orgController.createOrg(req, res);
       } catch (error) {
         next(error);
@@ -94,6 +96,7 @@ export function createOrgRouter(container: Container) {
     metricsMiddleware(container),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
+        const orgController = container.get<OrgController>('OrgController');
         await orgController.getOrganizationById(req, res, next);
       } catch (error) {
         next(error);
@@ -112,11 +115,8 @@ export function createOrgRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
-        await orgController.updateOrganizationDetails(
-          req,
-          res,
-          next,
-        );
+        const orgController = container.get<OrgController>('OrgController');
+        await orgController.updateOrganizationDetails(req, res, next);
       } catch (error) {
         next(error);
       }
@@ -134,11 +134,8 @@ export function createOrgRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
-        await orgController.deleteOrganization(
-          req,
-          res,
-          next,
-        );
+        const orgController = container.get<OrgController>('OrgController');
+        await orgController.deleteOrganization(req, res, next);
       } catch (error) {
         next(error);
       }
@@ -171,6 +168,7 @@ export function createOrgRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
+        const orgController = container.get<OrgController>('OrgController');
         await orgController.updateOrgLogo(req, res, next);
       } catch (error) {
         next(error);
@@ -188,6 +186,7 @@ export function createOrgRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
+        const orgController = container.get<OrgController>('OrgController');
         await orgController.removeOrgLogo(req, res, next);
       } catch (error) {
         next(error);
@@ -204,6 +203,7 @@ export function createOrgRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
+        const orgController = container.get<OrgController>('OrgController');
         await orgController.getOrgLogo(req, res, next);
       } catch (error) {
         next(error);
@@ -220,6 +220,7 @@ export function createOrgRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
+        const orgController = container.get<OrgController>('OrgController');
         await orgController.getOnboardingStatus(req, res, next);
       } catch (error) {
         next(error);
@@ -238,6 +239,7 @@ export function createOrgRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
+        const orgController = container.get<OrgController>('OrgController');
         await orgController.updateOnboardingStatus(req, res, next);
       } catch (error) {
         next(error);

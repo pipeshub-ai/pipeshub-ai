@@ -69,16 +69,18 @@ export class StorageContainer {
       const storageConfig = appConfig.storage;
       container
         .bind<DefaultStorageConfig>('StorageConfig')
-        .toConstantValue(storageConfig);
+        .toDynamicValue(() => storageConfig) // Always fetch latest reference
+        .inTransientScope();
 
-      const storageController = new StorageController(
-        storageConfig,
-        Logger.getInstance(loggerConfig),
-        keyValueStoreService,
-      );
       container
         .bind<StorageController>('StorageController')
-        .toConstantValue(storageController);
+        .toDynamicValue(() => {
+          return new StorageController(
+            storageConfig,
+            Logger.getInstance(loggerConfig),
+            keyValueStoreService,
+          );
+        });
     } catch (error) {
       this.logger.error('Failed to initialize storage services', {
         error: error instanceof Error ? error.message : 'Unknown error',

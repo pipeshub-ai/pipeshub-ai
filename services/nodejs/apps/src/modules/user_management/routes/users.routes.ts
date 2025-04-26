@@ -8,6 +8,7 @@ import { userAdminCheck } from '../middlewares/userAdminCheck';
 import { userAdminOrSelfCheck } from '../middlewares/userAdminOrSelfCheck';
 // import { attachContainerMiddleware } from '../../auth/middlewares/attachContainer.middleware';
 import { accountTypeCheck } from '../middlewares/accountTypeCheck';
+import { Logger } from '../../../libs/services/logger.service';
 import { smtpConfigCheck } from '../middlewares/smtpConfigCheck';
 import {
   AuthenticatedServiceRequest,
@@ -18,9 +19,13 @@ import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middlewa
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import { FileProcessorFactory } from '../../../libs/middlewares/file_processor/fp.factory';
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
-import { AppConfig } from '../../tokens_manager/config/config';
+import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
 import { Users } from '../schema/users.schema';
 import { NotFoundError } from '../../../libs/errors/http.errors';
+import { MailService } from '../services/mail.service';
+import { AuthService } from '../services/auth.service';
+import { EntitiesEventProducer } from '../services/entity_events.service';
+import { OrgController } from '../controller/org.controller';
 
 const UserIdUrlParams = z.object({
   id: z.string().regex(/^[a-fA-F0-9]{24}$/, 'Invalid UserId'),
@@ -153,8 +158,8 @@ const emailIdValidationSchema = z.object({
 
 export function createUserRouter(container: Container) {
   const router = Router();
-  const userController = container.get<UserController>('UserController');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
+  const logger = container.get<Logger>('Logger');
   const config = container.get<AppConfig>('AppConfig');
   // Todo: Apply Rate Limiter Middleware
   // Todo: Apply Validation Middleware
@@ -166,6 +171,7 @@ export function createUserRouter(container: Container) {
     metricsMiddleware(container),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
+        const userController = container.get<UserController>('UserController');
         await userController.getAllUsers(req, res);
       } catch (error) {
         next(error);
@@ -178,6 +184,7 @@ export function createUserRouter(container: Container) {
     authMiddleware.authenticate,
     async (req: Request, res: Response, next: NextFunction) => {
       try {
+        const userController = container.get<UserController>('UserController');
         await userController.getAllUsersWithGroups(req, res);
       } catch (error) {
         next(error);
@@ -197,6 +204,7 @@ export function createUserRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
+        const userController = container.get<UserController>('UserController');
         await userController.getUserById(req, res, next);
       } catch (error) {
         next(error);
@@ -214,6 +222,7 @@ export function createUserRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
+        const userController = container.get<UserController>('UserController');
         await userController.getUsersByIds(req, res, next);
       } catch (error) {
         next(error);
@@ -232,6 +241,7 @@ export function createUserRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
+        const userController = container.get<UserController>('UserController');
         await userController.checkUserExistsByEmail(req, res, next);
       } catch (error) {
         next(error);
@@ -286,6 +296,7 @@ export function createUserRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
+        const userController = container.get<UserController>('UserController');
         await userController.createUser(req, res, next);
       } catch (error) {
         next(error);
@@ -306,6 +317,7 @@ export function createUserRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
+        const userController = container.get<UserController>('UserController');
         await userController.updateFullName(req, res, next);
       } catch (error) {
         next(error);
@@ -326,6 +338,7 @@ export function createUserRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
+        const userController = container.get<UserController>('UserController');
         await userController.updateFirstName(req, res, next);
       } catch (error) {
         next(error);
@@ -346,6 +359,7 @@ export function createUserRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
+        const userController = container.get<UserController>('UserController');
         await userController.updateLastName(req, res, next);
       } catch (error) {
         next(error);
@@ -378,6 +392,7 @@ export function createUserRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
+        const userController = container.get<UserController>('UserController');
         await userController.updateUserDisplayPicture(req, res, next);
       } catch (error) {
         next(error);
@@ -395,6 +410,7 @@ export function createUserRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
+        const userController = container.get<UserController>('UserController');
         await userController.removeUserDisplayPicture(req, res, next);
       } catch (error) {
         next(error);
@@ -412,6 +428,7 @@ export function createUserRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
+        const userController = container.get<UserController>('UserController');
         await userController.getUserDisplayPicture(req, res, next);
       } catch (error) {
         next(error);
@@ -432,6 +449,7 @@ export function createUserRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
+        const userController = container.get<UserController>('UserController');
         await userController.updateDesignation(req, res, next);
       } catch (error) {
         next(error);
@@ -452,6 +470,7 @@ export function createUserRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
+        const userController = container.get<UserController>('UserController');
         await userController.updateEmail(req, res, next);
       } catch (error) {
         next(error);
@@ -472,6 +491,7 @@ export function createUserRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
+        const userController = container.get<UserController>('UserController');
         await userController.updateUser(req, res, next);
       } catch (error) {
         next(error);
@@ -492,6 +512,7 @@ export function createUserRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
+        const userController = container.get<UserController>('UserController');
         await userController.deleteUser(req, res, next);
       } catch (error) {
         next(error);
@@ -533,6 +554,7 @@ export function createUserRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
+        const userController = container.get<UserController>('UserController');
         await userController.addManyUsers(req, res, next);
       } catch (error) {
         next(error);
@@ -554,6 +576,7 @@ export function createUserRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
+        const userController = container.get<UserController>('UserController');
         await userController.resendInvite(req, res, next);
       } catch (error) {
         next(error);
@@ -568,6 +591,62 @@ export function createUserRouter(container: Container) {
       timestamp: new Date().toISOString(),
     });
   });
+
+  router.post(
+    '/updateAppConfig',
+    authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
+    async (
+      _req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ) => {
+      try {
+        const updatedConfig: AppConfig = await loadAppConfig();
+
+        container
+          .rebind<AppConfig>('AppConfig')
+          .toDynamicValue(() => updatedConfig);
+
+        // Rebind services depending on AppConfig
+        container.rebind<MailService>('MailService').toDynamicValue(() => {
+          return new MailService(updatedConfig, logger);
+        });
+
+        container.rebind<AuthService>('AuthService').toDynamicValue(() => {
+          return new AuthService(updatedConfig, logger);
+        });
+
+        // Rebind controllers
+        container.rebind<OrgController>('OrgController').toDynamicValue(() => {
+          return new OrgController(
+            updatedConfig,
+            container.get<MailService>('MailService'),
+            logger,
+            container.get<EntitiesEventProducer>('EntitiesEventProducer'),
+          );
+        });
+
+        container
+          .rebind<UserController>('UserController')
+          .toDynamicValue(() => {
+            return new UserController(
+              updatedConfig,
+              container.get<MailService>('MailService'),
+              container.get<AuthService>('AuthService'),
+              logger,
+              container.get<EntitiesEventProducer>('EntitiesEventProducer'),
+            );
+          });
+        res.status(200).json({
+          message: 'User configuration updated successfully',
+          config: updatedConfig,
+        });
+        return;
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
 
   return router;
 }

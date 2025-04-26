@@ -17,7 +17,7 @@ export class MailServiceContainer {
     container
       .bind<AppConfig>('AppConfig')
       .toDynamicValue(() => appConfig) // Always fetch latest reference
-      .inSingletonScope();
+      .inTransientScope();
     // Initialize and bind services
     await this.initializeServices(container, appConfig);
 

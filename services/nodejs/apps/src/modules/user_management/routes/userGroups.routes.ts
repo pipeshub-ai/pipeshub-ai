@@ -30,9 +30,7 @@ const groupValidationSchema = z.object({
 
 export function createUserGroupRouter(container: Container) {
   const router = Router();
-  const userGroupController = container.get<UserGroupController>(
-    'UserGroupController',
-  );
+
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
 
   router.post(
@@ -42,6 +40,9 @@ export function createUserGroupRouter(container: Container) {
     userAdminCheck,
     async (req: Request, res: Response, next: NextFunction) => {
       try {
+        const userGroupController = container.get<UserGroupController>(
+          'UserGroupController',
+        );
         await userGroupController.createUserGroup(req, res);
       } catch (error) {
         next(error);
@@ -55,6 +56,9 @@ export function createUserGroupRouter(container: Container) {
     userAdminCheck,
     async (req: Request, res: Response, next: NextFunction) => {
       try {
+        const userGroupController = container.get<UserGroupController>(
+          'UserGroupController',
+        );
         await userGroupController.getAllUserGroups(req, res);
       } catch (error) {
         next(error);
@@ -72,6 +76,9 @@ export function createUserGroupRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
+        const userGroupController = container.get<UserGroupController>(
+          'UserGroupController',
+        );
         await userGroupController.getUserGroupById(req, res);
       } catch (error) {
         next(error);
@@ -90,6 +97,9 @@ export function createUserGroupRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
+        const userGroupController = container.get<UserGroupController>(
+          'UserGroupController',
+        );
         await userGroupController.updateGroup(req, res);
       } catch (error) {
         next(error);
@@ -108,6 +118,9 @@ export function createUserGroupRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
+        const userGroupController = container.get<UserGroupController>(
+          'UserGroupController',
+        );
         await userGroupController.deleteGroup(req, res);
       } catch (error) {
         next(error);
@@ -125,6 +138,9 @@ export function createUserGroupRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
+        const userGroupController = container.get<UserGroupController>(
+          'UserGroupController',
+        );
         await userGroupController.addUsersToGroups(req, res);
       } catch (error) {
         next(error);
@@ -142,6 +158,9 @@ export function createUserGroupRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
+        const userGroupController = container.get<UserGroupController>(
+          'UserGroupController',
+        );
         await userGroupController.removeUsersFromGroups(req, res);
       } catch (error) {
         next(error);
@@ -159,6 +178,9 @@ export function createUserGroupRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
+        const userGroupController = container.get<UserGroupController>(
+          'UserGroupController',
+        );
         await userGroupController.getUsersInGroup(req, res);
       } catch (error) {
         next(error);
@@ -175,6 +197,9 @@ export function createUserGroupRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
+        const userGroupController = container.get<UserGroupController>(
+          'UserGroupController',
+        );
         await userGroupController.getGroupsForUser(req, res);
       } catch (error) {
         next(error);
@@ -191,6 +216,9 @@ export function createUserGroupRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
+        const userGroupController = container.get<UserGroupController>(
+          'UserGroupController',
+        );
         await userGroupController.getGroupStatistics(req, res);
       } catch (error) {
         next(error);

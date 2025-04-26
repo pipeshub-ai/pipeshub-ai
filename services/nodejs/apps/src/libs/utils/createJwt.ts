@@ -42,6 +42,37 @@ export const jwtGeneratorForForgotPasswordLink = (
   return { passwordResetToken, mailAuthToken };
 };
 
+export const jwtGeneratorForNewAccountPassword = (
+  userEmail: string,
+  userId: string,
+  orgId: string,
+  scopedJwtSecret: string,
+) => {
+  // Token for password reset
+  const passwordResetToken = jwt.sign(
+    {
+      userEmail,
+      userId,
+      orgId,
+      scopes: [TokenScopes.PASSWORD_RESET],
+    },
+    scopedJwtSecret,
+    { expiresIn: '48h' },
+  );
+  const mailAuthToken = jwt.sign(
+    {
+      userEmail,
+      userId,
+      orgId,
+      scopes: [TokenScopes.SEND_MAIL],
+    },
+    scopedJwtSecret,
+    { expiresIn: '1h' },
+  );
+
+  return { passwordResetToken, mailAuthToken };
+};
+
 export const refreshTokenJwtGenerator = (
   userId: string,
   orgId: string,

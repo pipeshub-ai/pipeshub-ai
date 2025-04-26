@@ -24,6 +24,8 @@ import { FileProcessorFactory } from '../../../libs/middlewares/file_processor/f
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import { StorageController } from '../controllers/storage.controller';
+import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
+import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
 
 const logger = Logger.getInstance({ service: 'StorageRoutes' });
 
@@ -32,8 +34,7 @@ export function createStorageRouter(container: Container): Router {
   const keyValueStoreService = container.get<KeyValueStoreService>(
     'KeyValueStoreService',
   );
-  const storageController =
-    container.get<StorageController>('StorageController');
+  let storageController = container.get<StorageController>('StorageController');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   storageController.watchStorageType(keyValueStoreService);
 
@@ -507,6 +508,41 @@ export function createStorageRouter(container: Container): Router {
     ): Promise<void> => {
       try {
         return await storageController.documentDiffChecker(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+  router.post(
+    '/updateAppConfig',
+    authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
+    async (
+      _req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ) => {
+      try {
+        const updatedConfig: AppConfig = await loadAppConfig();
+        const storageConfig = updatedConfig.storage;
+
+        container
+          .rebind<DefaultStorageConfig>('StorageConfig')
+          .toDynamicValue(() => storageConfig);
+
+        container
+          .rebind<StorageController>('StorageController')
+          .toDynamicValue(() => {
+            return new StorageController(
+              storageConfig,
+              logger,
+              keyValueStoreService,
+            );
+          });
+        res.status(200).json({
+          message: 'Storage configuration updated successfully',
+          config: updatedConfig,
+        });
+        return;
       } catch (error) {
         next(error);
       }
