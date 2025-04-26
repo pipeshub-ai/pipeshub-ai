@@ -139,6 +139,7 @@ record_schema = {
                 "type": "string",
                 "enum": ["ONEDRIVE", "DRIVE", "CONFLUENCE", "GMAIL", "SLACK"],
             },
+            "summaryDocumentId": {"type": ["string", "null"]},
             # Arango collection entry
             "createdAtTimestamp": {"type": "number"},
             # Arango collection entry

@@ -143,8 +143,6 @@ class EventProcessor:
                 - metadata_route: Route to get metadata
         """
         try:
-            self.logger.info(f"📥 Processing event: {event_data}")
-
             # Extract event type and record ID
             event_type = event_data.get(
                 "eventType", EventTypes.NEW_RECORD.value
@@ -152,6 +150,8 @@ class EventProcessor:
             event_data = event_data.get("payload")
             record_id = event_data.get("recordId")
             org_id = event_data.get("orgId")
+
+            self.logger.info(f"📥 Processing event: {event_type}: {record_id}")
 
             if not record_id:
                 self.logger.error("❌ No record ID provided in event data")
@@ -263,7 +263,7 @@ class EventProcessor:
                 return result
 
             if signed_url:
-                self.logger.debug(f"Signed URL: {signed_url}")
+                self.logger.debug("Signed URL received")
                 file_content = await self._download_from_signed_url(
                     signed_url, record_id, doc
                 )

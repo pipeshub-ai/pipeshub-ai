@@ -44,7 +44,7 @@ Instructions must be strictly followed, failure to do so will result in terminat
    - A float between 0.0 and 1.0 reflecting your certainty in the classification.
 
 7. **Summary**:
-   - A concise summary of the document.
+   - A concise summary of the document. Cover all the key information and topics.
 
 
    # Output Format:

@@ -1142,7 +1142,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                     try:
                         if not await self.resync_gmail(org_id, user):
                             self.logger.error(
-                                f"Failed to resync drive for user {user['email']}"
+                                f"Failed to resync gmail for user {user['email']}"
                             )
                             continue
                     except Exception as e:
@@ -1748,6 +1748,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
 
     async def resync_gmail(self, org_id, user):
         try:
+            self.logger.info(f"Resyncing Gmail for user {user['email']}")
             user_service = await self.gmail_admin_service.create_gmail_user_service(
                 user["email"]
             )
@@ -1979,7 +1980,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
 
                 try:
                     if not await self.resync_gmail(org_id, user):
-                        self.logger.error(f"Error resyncing user {user['email']}")
+                        self.logger.error(f"Failed to resync gmail for user {user['email']}")
                         return False
                 except Exception as e:
                     self.logger.error(
@@ -2242,6 +2243,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
 
     async def resync_gmail(self, org_id, user):
         try:
+            self.logger.info(f"Resyncing Gmail for user {user['email']}")
             user_service = self.gmail_user_service
 
             channel_history = await self.arango_service.get_channel_history_id(
