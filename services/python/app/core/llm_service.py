@@ -7,8 +7,8 @@ from langchain_anthropic import ChatAnthropic
 from langchain_aws import ChatBedrock
 from langchain_community.chat_models import AzureChatOpenAI, ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
-from pydantic import BaseModel, Field
 from langchain_ollama.llms import OllamaLLM
+from pydantic import BaseModel, Field
 
 from app.config.ai_models_named_constants import AzureOpenAILLM
 
@@ -146,7 +146,7 @@ class LLMFactory:
                 model=config.model,
                 temperature=0.2,
                 callbacks=[cost_callback]
-            ) 
+            )
 
         raise ValueError(f"Unsupported config type: {type(config)}")
 

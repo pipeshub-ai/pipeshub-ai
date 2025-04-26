@@ -1,8 +1,11 @@
-from typing import Optional, Dict, Any, Union
+from typing import Any, Dict, Optional, Union
 
-from langchain_openai.embeddings import AzureOpenAIEmbeddings, OpenAIEmbeddings
-from langchain_community.embeddings import HuggingFaceEmbeddings, SentenceTransformerEmbeddings
+from langchain_community.embeddings import (
+    HuggingFaceEmbeddings,
+    SentenceTransformerEmbeddings,
+)
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_openai.embeddings import AzureOpenAIEmbeddings, OpenAIEmbeddings
 from pydantic import BaseModel, Field
 
 
@@ -39,7 +42,7 @@ class EmbeddingFactory:
     """Factory for creating LangChain-compatible embedding models"""
 
     @staticmethod
-    def create_embedding_model(config: Union[AzureEmbeddingConfig, OpenAIEmbeddingConfig, 
+    def create_embedding_model(config: Union[AzureEmbeddingConfig, OpenAIEmbeddingConfig,
                                             HuggingFaceEmbeddingConfig, SentenceTransformersEmbeddingConfig,
                                             GeminiEmbeddingConfig]):
         if isinstance(config, AzureEmbeddingConfig):
@@ -63,46 +66,46 @@ class EmbeddingFactory:
             # but we include it in case it's needed for private models
             if config.api_key:
                 model_kwargs["api_key"] = config.api_key
-                
+
             # Set default encoding parameters
             encode_kwargs = config.encode_kwargs.copy()
             if "normalize_embeddings" not in encode_kwargs:
                 encode_kwargs["normalize_embeddings"] = True
-                
+
             return HuggingFaceEmbeddings(
                 model_name=config.model,
                 model_kwargs=model_kwargs,
                 encode_kwargs=encode_kwargs
             )
-            
+
         elif isinstance(config, SentenceTransformersEmbeddingConfig):
             encode_kwargs = config.encode_kwargs.copy()
-            
+
             return SentenceTransformerEmbeddings(
                 model_name=config.model,
                 cache_folder=config.cache_folder,
                 encode_kwargs=encode_kwargs
             )
-            
+
         elif isinstance(config, GeminiEmbeddingConfig):
             kwargs = {}
-            
+
             if config.task_type:
                 kwargs["task_type"] = config.task_type
-                
+
             if config.title:
                 kwargs["title"] = config.title
-                
+
             if config.google_api_endpoint:
                 kwargs["google_api_endpoint"] = config.google_api_endpoint
-                
+
             if config.dimensions:
                 kwargs["dimensions"] = config.dimensions
-                
+
             return GoogleGenerativeAIEmbeddings(
                 model=config.model,
                 google_api_key=config.api_key,
                 **kwargs
             )
-            
+
         raise ValueError(f"Unsupported embedding config type: {type(config)}")

@@ -5,9 +5,9 @@ from qdrant_client import QdrantClient
 from qdrant_client.http.models import FieldCondition, Filter, MatchValue
 
 from app.config.ai_models_named_constants import (
-    AzureOpenAILLM,
-    DEFAULT_EMBEDDING_MODEL,
     AZURE_EMBEDDING_API_VERSION,
+    DEFAULT_EMBEDDING_MODEL,
+    AzureOpenAILLM,
     EmbeddingProvider,
     LLMProvider,
 )
@@ -16,18 +16,18 @@ from app.config.configuration_service import config_node_constants
 from app.core.embedding_service import (
     AzureEmbeddingConfig,
     EmbeddingFactory,
-    OpenAIEmbeddingConfig,
     HuggingFaceEmbeddingConfig,
-    SentenceTransformersEmbeddingConfig
+    OpenAIEmbeddingConfig,
+    SentenceTransformersEmbeddingConfig,
 )
 from app.core.llm_service import (
     AnthropicLLMConfig,
     AwsBedrockLLMConfig,
     AzureLLMConfig,
     GeminiLLMConfig,
-    OpenAILLMConfig,
-    OllamaConfig,
     LLMFactory,
+    OllamaConfig,
+    OpenAILLMConfig,
 )
 from app.modules.retrieval.retrieval_arango import ArangoService
 from app.utils.embeddings import get_default_embedding_model
@@ -168,7 +168,7 @@ class RetrievalService:
                 elif provider == EmbeddingProvider.HUGGING_FACE_PROVIDER.value:
                     embedding_model =   HuggingFaceEmbeddingConfig(
                       model=config['configuration']['model'],
-                      api_key=config['configuration']['apiKey'],  
+                      api_key=config['configuration']['apiKey'],
                     )
                 elif provider == EmbeddingProvider.SENTENCE_TRANSFOMERS.value:
                     embedding_model =   SentenceTransformersEmbeddingConfig(
