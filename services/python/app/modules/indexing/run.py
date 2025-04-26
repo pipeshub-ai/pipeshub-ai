@@ -460,7 +460,7 @@ class IndexingPipeline:
                       api_key=config['configuration']['apiKey'],
                     )
                 elif provider == EmbeddingProvider.SENTENCE_TRANSFOMERS.value:
-                    embedding_model =   SentenceTransformersEmbeddingConfig(
+                    embedding_model = SentenceTransformersEmbeddingConfig(
                       model=config['configuration']['model'],
                     )
                 
