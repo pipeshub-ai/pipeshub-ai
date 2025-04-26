@@ -1,7 +1,7 @@
 NGROK:
 
 ```
-ngrok http --url=gradually-amused-guppy.ngrok-free.app 8080
+ngrok http --url=gradually-amused-guppy.ngrok-free.app 8088
 ```
 
 Zookeeper and Kafka:

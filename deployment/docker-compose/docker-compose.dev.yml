@@ -8,7 +8,7 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8091:8091"
-      - "8080:8080"
+      - "8088:8088"
       - "3000:3000"
       - "8000:8000"
     env_file:

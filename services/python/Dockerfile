@@ -61,6 +61,6 @@ RUN chmod +x /app/connectors_main
 RUN chmod +x /app/query_main
 
 # Expose necessary ports
-EXPOSE 8000 8080 8091
+EXPOSE 8000 8088 8091
 
 CMD sh -c "/app/connectors_main & /app/indexing_main & /app/query_main & wait"

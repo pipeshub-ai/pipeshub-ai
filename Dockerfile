@@ -77,7 +77,7 @@ RUN npm run build && \
     cp -r dist/ /app/backend/dist/public/
 
 # Expose necessary ports
-EXPOSE 3000 8000 8080 8091
+EXPOSE 3000 8000 8088 8091
 
 # Set working directory for final entrypoint
 WORKDIR /app

@@ -438,7 +438,7 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
-def run(host: str = "0.0.0.0", port: int = 8080, workers: int = 1, reload: bool = True):
+def run(host: str = "0.0.0.0", port: int = 8088, workers: int = 1, reload: bool = True):
     """Run the application"""
     uvicorn.run(
         "app.connectors_main:app",
