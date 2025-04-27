@@ -11,6 +11,7 @@ import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { AuthService } from '../services/auth.service';
+import { ConfigurationManagerService } from '../services/cm.service';
 
 const loggerConfig = {
   service: 'User Manager Container',
@@ -44,10 +45,19 @@ export class UserManagerContainer {
   ): Promise<void> {
     try {
       const mailService = new MailService(appConfig, container.get('Logger'));
-      container.bind<MailService>('MailService').toConstantValue(mailService);
+      container
+        .bind<MailService>('MailService')
+        .toDynamicValue(() => mailService);
 
       const authService = new AuthService(appConfig, container.get('Logger'));
-      container.bind<AuthService>('AuthService').toConstantValue(authService);
+      container
+        .bind<AuthService>('AuthService')
+        .toDynamicValue(() => authService);
+
+      const configurationService = new ConfigurationManagerService();
+      container
+        .bind<ConfigurationManagerService>('ConfigurationManagerService')
+        .toConstantValue(configurationService);
 
       const keyValueStoreService = KeyValueStoreService.getInstance(
         container.get<ConfigurationManagerConfig>('ConfigurationManagerConfig'),
@@ -73,6 +83,9 @@ export class UserManagerContainer {
           container.get<MailService>('MailService'),
           container.get('Logger'),
           container.get<EntitiesEventProducer>('EntitiesEventProducer'),
+          container.get<ConfigurationManagerService>(
+            'ConfigurationManagerService',
+          ),
         );
       });
 

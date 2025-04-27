@@ -21,9 +21,12 @@ import {
   DialogActions,
 } from '@mui/material';
 
-import { Iconify } from 'src/components/iconify';
 import { useAdmin } from 'src/context/AdminContext';
+
+import { Iconify } from 'src/components/iconify';
+
 import { useAuthContext } from 'src/auth/hooks';
+
 import GoogleAuthForm from './google-auth-form';
 import SmtpConfigForm from './smtp-config-form';
 import AzureAdAuthForm from './azureAd-auth-form';

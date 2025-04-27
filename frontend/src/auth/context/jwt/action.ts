@@ -34,6 +34,7 @@ export interface AccountSetupParams {
     postCode?: string;
     country?: string;
   };
+  dataCollectionConsent?: boolean;
 }
 
 type ForgotPasswordParams = {
@@ -141,10 +142,7 @@ export const VerifyOtp = async ({ email, otp }: SignInOtpParams): Promise<AuthRe
       credentials: { otp },
     };
 
-    const res = await axios.post(
-      `${CONFIG.authUrl}/api/v1/userAccount/authenticate`,
-      requestBody
-    );
+    const res = await axios.post(`${CONFIG.authUrl}/api/v1/userAccount/authenticate`, requestBody);
 
     const response = res.data as AuthResponse;
 
@@ -178,7 +176,7 @@ export const authInitConfig = async (email: string): Promise<AuthInitResponse> =
 
     return response.data;
   } catch (error) {
-    console.log(error)
+    console.log(error);
     // throw error;
     throw new Error(`${error.message}`);
   }
@@ -199,10 +197,7 @@ export const signInWithPassword = async ({
       credentials: { password },
     };
 
-    const res = await axios.post(
-      `${CONFIG.authUrl}/api/v1/userAccount/authenticate`, 
-      requestBody
-    );
+    const res = await axios.post(`${CONFIG.authUrl}/api/v1/userAccount/authenticate`, requestBody);
 
     const response = res.data as AuthResponse;
 
@@ -227,13 +222,10 @@ export const SignInWithGoogle = async ({
   credential: string;
 }): Promise<AuthResponse> => {
   try {
-    const res = await axios.post(
-      `${CONFIG.authUrl}/api/v1/userAccount/authenticate`,
-      {
-        credentials: credential,
-        method: 'google',
-      }
-    );
+    const res = await axios.post(`${CONFIG.authUrl}/api/v1/userAccount/authenticate`, {
+      credentials: credential,
+      method: 'google',
+    });
 
     const response = res.data as AuthResponse;
 
@@ -255,13 +247,10 @@ interface AzureCredientals {
 
 export const SignInWithAzureAd = async (credential: AzureCredientals): Promise<AuthResponse> => {
   try {
-    const res = await axios.post(
-      `${CONFIG.authUrl}/api/v1/userAccount/authenticate`,
-      {
-        credentials: credential,
-        method: 'azureAd',
-      }
-    );
+    const res = await axios.post(`${CONFIG.authUrl}/api/v1/userAccount/authenticate`, {
+      credentials: credential,
+      method: 'azureAd',
+    });
 
     const response = res.data as AuthResponse;
 
@@ -285,13 +274,10 @@ export const SignInWithMicrosoft = async (
   credential: MicrosoftCredientals
 ): Promise<AuthResponse> => {
   try {
-    const res = await axios.post(
-      `${CONFIG.authUrl}/api/v1/userAccount/authenticate`,
-      {
-        credentials: credential,
-        method: 'microsoft',
-      }
-    );
+    const res = await axios.post(`${CONFIG.authUrl}/api/v1/userAccount/authenticate`, {
+      credentials: credential,
+      method: 'microsoft',
+    });
 
     const response = res.data as AuthResponse;
 
@@ -321,7 +307,6 @@ export const AccountSetUp = async (accountSetupData: AccountSetupParams): Promis
       if (!_id) {
         throw new Error('Organization ID not found in response');
       }
-
     } else {
       // Extract user details from response for individual accounts
       const { _id } = res.data;
@@ -329,7 +314,6 @@ export const AccountSetUp = async (accountSetupData: AccountSetupParams): Promis
       if (!_id) {
         throw new Error('User ID not found in response');
       }
-
     }
   } catch (error) {
     throw new Error('Error during account setup:', error);

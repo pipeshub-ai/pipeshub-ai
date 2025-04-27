@@ -26,6 +26,7 @@ import { MailService } from '../services/mail.service';
 import { AuthService } from '../services/auth.service';
 import { EntitiesEventProducer } from '../services/entity_events.service';
 import { OrgController } from '../controller/org.controller';
+import { ConfigurationManagerService } from '../services/cm.service';
 
 const UserIdUrlParams = z.object({
   id: z.string().regex(/^[a-fA-F0-9]{24}$/, 'Invalid UserId'),
@@ -623,6 +624,9 @@ export function createUserRouter(container: Container) {
             container.get<MailService>('MailService'),
             logger,
             container.get<EntitiesEventProducer>('EntitiesEventProducer'),
+            container.get<ConfigurationManagerService>(
+              'ConfigurationManagerService',
+            ),
           );
         });
 

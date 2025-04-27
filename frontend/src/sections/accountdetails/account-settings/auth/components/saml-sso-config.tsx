@@ -21,9 +21,12 @@ import {
   CircularProgress,
 } from '@mui/material';
 
-import { Iconify } from 'src/components/iconify';
 import { useAdmin } from 'src/context/AdminContext';
+
+import { Iconify } from 'src/components/iconify';
+
 import { useAuthContext } from 'src/auth/hooks';
+
 import { getSamlSsoConfig, updateSamlSsoConfig } from '../utils/auth-configuration-service';
 
 import type { SamlSsoConfig } from '../utils/auth-configuration-service';

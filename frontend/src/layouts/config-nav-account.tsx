@@ -2,10 +2,11 @@ import settingsIcon from '@iconify-icons/solar/settings-bold-duotone';
 
 import SvgIcon from '@mui/material/SvgIcon';
 
+import { useAdmin } from 'src/context/AdminContext';
+
 import { Iconify } from 'src/components/iconify';
 
 import { useAuthContext } from 'src/auth/hooks';
-import { useAdmin } from 'src/context/AdminContext';
 // ----------------------------------------------------------------------
 
 // Business-specific menu items

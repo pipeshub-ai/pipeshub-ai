@@ -37,7 +37,6 @@ import {
   CircularProgress,
 } from '@mui/material';
 
-
 import { ORIGIN } from './constants/knowledge-search';
 
 import type { SearchResult, KnowledgeSearchProps } from './types/search-response';

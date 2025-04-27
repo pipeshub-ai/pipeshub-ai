@@ -7,6 +7,7 @@ import { useNavigate } from 'react-router';
 import eyeIcon from '@iconify-icons/mdi/eye';
 import tagIcon from '@iconify-icons/mdi/tag';
 import lockIcon from '@iconify-icons/mdi/lock';
+import infoIcon from '@iconify-icons/mdi/info';
 import emailIcon from '@iconify-icons/mdi/email';
 import checkIcon from '@iconify-icons/mdi/check';
 import React, { useState, useEffect } from 'react';
@@ -31,12 +32,15 @@ import {
   styled,
   Snackbar,
   useTheme,
+  Checkbox,
   Container,
   TextField,
   IconButton,
   Typography,
   InputAdornment,
+  FormHelperText,
   CircularProgress,
+  FormControlLabel,
 } from '@mui/material';
 
 import { setEmail } from 'src/store/authSlice';
@@ -45,7 +49,6 @@ import { OrgExists, AccountSetUp } from 'src/auth/context/jwt';
 
 // Import the AccountType type
 export type AccountType = 'individual' | 'business';
-
 
 // Styled components using the theme
 const StyledTextField = styled(TextField)(({ theme }) => ({
@@ -92,6 +95,7 @@ const baseSchema = z.object({
     .regex(/[0-9]/, 'Password must contain at least one number')
     .regex(/[^A-Za-z0-9]/, 'Password must contain at least one special character'),
   confirmPassword: z.string(),
+  dataCollectionConsent: z.boolean(),
 });
 
 // business-specific schema
@@ -231,6 +235,7 @@ interface AccountSetupFormProps {
 export const AccountSetupForm: React.FC<AccountSetupFormProps> = ({ accountType }) => {
   const theme = useTheme();
   const [orgExists, setOrgExists] = useState(false);
+  const [showMorePrivacy, setShowMorePrivacy] = useState(false);
 
   // Get the correct validation schema based on account type
   const schema = getValidationSchema(accountType);
@@ -241,6 +246,7 @@ export const AccountSetupForm: React.FC<AccountSetupFormProps> = ({ accountType 
     contactEmail: '',
     password: '',
     confirmPassword: '',
+    dataCollectionConsent: true,
   };
 
   // Add organization-specific fields if needed
@@ -591,6 +597,147 @@ export const AccountSetupForm: React.FC<AccountSetupFormProps> = ({ accountType 
                       </Grid>
                     </>
                   )}
+
+                  <Grid item xs={12}>
+                    <Box sx={{ mb: 2 }}>
+                      <Controller
+                        name="dataCollectionConsent"
+                        control={control}
+                        render={({ field, fieldState }) => (
+                          <>
+                            <FormControlLabel
+                              control={
+                                <Checkbox
+                                  checked={field.value}
+                                  onChange={(e) => field.onChange(e.target.checked)}
+                                  name={field.name}
+                                />
+                              }
+                              label="I consent to PipesHub collecting my personal information"
+                            />
+                            {fieldState.error && (
+                              <FormHelperText error>{fieldState.error.message}</FormHelperText>
+                            )}
+                          </>
+                        )}
+                      />
+                      <Paper
+                        elevation={0}
+                        sx={{
+                          p: 2,
+                          mt: 1,
+                          bgcolor:
+                            theme.palette.background.neutral ||
+                            alpha(theme.palette.text.secondary, 0.04),
+                          borderRadius: 1,
+                        }}
+                      >
+                        <Typography variant="subtitle2" sx={{ mb: 1 }}>
+                          Purposes for Collecting Personal Information
+                        </Typography>
+                        <Typography
+                          variant="body2"
+                          sx={{ color: theme.palette.text.secondary, mb: 1 }}
+                        >
+                          PipesHub collects and processes personal information for a variety of
+                          business purposes.
+                        </Typography>
+                        {/* Show points only when expanded */}
+                        {showMorePrivacy && (
+                          <>
+                            <Box component="ul" sx={{ pl: 2, m: 0, listStyleType: 'square' }}>
+                              <Typography
+                                component="li"
+                                variant="body2"
+                                sx={{ color: theme.palette.text.secondary }}
+                              >
+                                To provide customer service and support for our products
+                              </Typography>
+                              <Typography
+                                component="li"
+                                variant="body2"
+                                sx={{ color: theme.palette.text.secondary }}
+                              >
+                                To send marketing communications
+                              </Typography>
+                              <Typography
+                                component="li"
+                                variant="body2"
+                                sx={{ color: theme.palette.text.secondary }}
+                              >
+                                To manage your subscription to newsletters or other updates
+                              </Typography>
+                              <Typography
+                                component="li"
+                                variant="body2"
+                                sx={{ color: theme.palette.text.secondary }}
+                              >
+                                For security and fraud prevention purposes
+                              </Typography>
+                              <Typography
+                                component="li"
+                                variant="body2"
+                                sx={{ color: theme.palette.text.secondary }}
+                              >
+                                To personalize your user experience
+                              </Typography>
+                              <Typography
+                                component="li"
+                                variant="body2"
+                                sx={{ color: theme.palette.text.secondary }}
+                              >
+                                To enhance and improve our products and services
+                              </Typography>
+                            </Box>
+
+                            <Box
+                              sx={{
+                                mt: 2.5,
+                                p: 1.5,
+                                borderRadius: 1,
+                                bgcolor: alpha(theme.palette.info.main, 0.08),
+                                border: `1px solid ${alpha(theme.palette.info.main, 0.2)}`,
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 1.5,
+                              }}
+                            >
+                              <Box sx={{ color: theme.palette.info.main, flexShrink: 0 }}>
+                                <Icon icon={infoIcon} width={20} height={20} />
+                              </Box>
+                              <Typography
+                                variant="body2"
+                                color="info.dark"
+                                sx={{ fontWeight: 500 }}
+                              >
+                                Disclaimer: We do not sell, trade, or otherwise transfer your
+                                personal information to third parties
+                              </Typography>
+                            </Box>
+                          </>
+                        )}
+
+                        {/* Show More/Less Button */}
+                        <Button
+                          onClick={() => setShowMorePrivacy(!showMorePrivacy)}
+                          sx={{
+                            mt: 1,
+                            textTransform: 'none',
+                            color: theme.palette.primary.main,
+                            fontWeight: 500,
+                            p: 0,
+                            '&:hover': {
+                              backgroundColor: 'transparent',
+                              textDecoration: 'underline',
+                            },
+                          }}
+                          disableRipple
+                        >
+                          {showMorePrivacy ? 'Show Less' : 'Show More'}
+                        </Button>
+                      </Paper>
+                    </Box>
+                  </Grid>
 
                   {/* Form Actions */}
                   <Grid item xs={12}>

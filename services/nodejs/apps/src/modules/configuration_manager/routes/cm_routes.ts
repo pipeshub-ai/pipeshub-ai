@@ -639,7 +639,15 @@ export function createConfigurationManagerRouter(container: Container): Router {
     ValidationMiddleware.validate(metricsCollectionToggleSchema),
     metricsMiddleware(container),
     toggleMetricsCollection(keyValueStoreService),
-  )
+  );
+
+  router.post(
+    '/internal/metricsCollection/toggle',
+    authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
+    ValidationMiddleware.validate(metricsCollectionToggleSchema),
+    metricsMiddleware(container),
+    toggleMetricsCollection(keyValueStoreService),
+  );
 
   router.get(
     '/metricsCollection/',
@@ -656,7 +664,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
     ValidationMiddleware.validate(metricsCollectionPushIntervalSchema),
     metricsMiddleware(container),
     setMetricsCollectionPushInterval(keyValueStoreService),
-  )
+  );
 
   router.patch(
     '/metricsCollection/serverUrl',
@@ -665,7 +673,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
     ValidationMiddleware.validate(metricsCollectionRemoteServerSchema),
     metricsMiddleware(container),
     setMetricsCollectionRemoteServer(keyValueStoreService),
-  )
+  );
 
   return router;
 }

@@ -10,7 +10,6 @@ import {
   Container,
   Typography,
   AlertTitle,
-  useMediaQuery,
   CircularProgress,
 } from '@mui/material';
 
