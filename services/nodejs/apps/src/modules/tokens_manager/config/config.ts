@@ -5,10 +5,7 @@ export interface AppConfig {
   scopedJwtSecret: string;
   cookieSecret: string;
   rsAvailable: string;
-  encryption: {
-    key: string;
-    algorithm: string;
-  };
+
   communicationBackend: string;
   frontendUrl: string;
   iamBackend: string;
@@ -80,10 +77,7 @@ export const loadAppConfig = async (): Promise<AppConfig> => {
     scopedJwtSecret: await configService.getScopedJwtSecret(),
     cookieSecret: await configService.getCookieSecret(),
     rsAvailable: await configService.getRsAvailable(),
-    encryption: {
-      key: process.env.SECRET_KEY!,
-      algorithm: 'aes-256-gcm',
-    },
+
     frontendUrl: await configService.getFrontendUrl(),
     communicationBackend: await configService.getCommunicationBackendUrl(),
     kbBackend: await configService.getKbBackendUrl(),

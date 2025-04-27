@@ -216,7 +216,6 @@ export class Application {
         : `script-src 'self' https://cdnjs.cloudflare.com ${connectorPublicUrl}; worker-src 'self' blob:;`;
       res.setHeader('Content-Security-Policy', csp);
       next();
-
     });
 
     // Body parsing
