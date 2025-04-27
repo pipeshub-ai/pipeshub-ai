@@ -1,6 +1,8 @@
 import { StoreType } from '../../../libs/keyValueStore/constants/KeyValueStoreType';
 import crypto from 'crypto';
+import { Logger } from '../../../libs/services/logger.service';
 
+const logger = Logger.getInstance({ service: 'ConfigurationManagerConfig' });
 export interface ConfigurationManagerStoreConfig {
   host: string;
   port: number;
@@ -13,11 +15,12 @@ export interface ConfigurationManagerConfig {
   algorithm: string;
 }
 
-export const generateAndStoreSecretKey = (): string => {
-  // Generate a random 32-byte hex string
-
+export const getHashedSecretKey = (): string => {
   const secretKey = process.env.SECRET_KEY;
   if (!secretKey) {
+    logger.warn(
+      'SECRET_KEY environment variable is not set. This is required for production environments',
+    );
     throw new Error('SECRET_KEY environment variable is required');
   }
   const hashedKey = crypto.createHash('sha256').update(secretKey).digest();
@@ -33,7 +36,7 @@ export const loadConfigurationManagerConfig =
         port: parseInt(process.env.STORE_PORT!, 10) || 2379,
         dialTimeout: parseInt(process.env.STORE_DIAL_TIMEOUT!, 10) || 2000,
       },
-      secretKey: generateAndStoreSecretKey(),
+      secretKey: getHashedSecretKey(),
       algorithm: process.env.ALGORITHM! || 'aes-256-gcm',
     };
   };
