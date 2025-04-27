@@ -19,10 +19,8 @@ def token_refresh(func):
         try:
             # Skip token refresh for delegated credentials
             has_is_delegated = hasattr(self, "is_delegated")
-            print(f"🚀 has_is_delegated: {has_is_delegated}")
             if has_is_delegated:
                 is_delegated_true = self.is_delegated
-                print(f"🚀 is_delegated_true: {is_delegated_true}")
                 if not is_delegated_true:
                     await self._check_and_refresh_token()
             return await func(self, *args, **kwargs)

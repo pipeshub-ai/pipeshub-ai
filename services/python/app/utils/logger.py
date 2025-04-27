@@ -28,9 +28,9 @@ def create_logger(service_name):
     Create a logger for a specific service with file and console handlers
     """
     # Create logger
-    logging_level = os.getenv("LOG_LEVEL", "INFO")
+    logging_level = os.getenv("LOG_LEVEL", "info").lower()
     logger = logging.getLogger(service_name)
-    if logging_level == "DEBUG":
+    if logging_level == "debug":
         logger.setLevel(logging.DEBUG)
     else:
         logger.setLevel(logging.INFO)

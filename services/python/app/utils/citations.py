@@ -121,10 +121,6 @@ def process_citations(llm_response, documents: List[Dict[str, Any]]) -> Dict[str
         else:
             response_data = response_content
 
-        # Debug information
-        print(f"Response data type: {type(response_data)}")
-        print(f"Response data: {response_data}")
-
         # Extract document indexes (1-based indexing from template)
         doc_indexes = []
 

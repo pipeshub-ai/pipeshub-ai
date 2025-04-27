@@ -375,17 +375,19 @@ class SyncKafkaRouteConsumer:
             if not org_id:
                 raise ValueError("orgId is required")
 
+            await self.sync_tasks.drive_sync_service.initialize(org_id)
+
             user_id = payload.get("userId")
             if user_id:
                 self.logger.info(f"Resyncing user: {user_id}")
-                await self.sync_tasks.drive_sync_service.initialize(org_id)
+
                 user = await self.arango_service.get_user_by_user_id(user_id)
                 return await self.sync_tasks.drive_sync_service.resync_drive(
                     org_id, user
                 )
             else:
                 self.logger.info(f"Resyncing all users for org: {org_id}")
-                await self.sync_tasks.drive_sync_service.initialize(org_id)
+
                 users = await self.arango_service.get_users(org_id, active=True)
                 for user in users:
                     if not await self.sync_tasks.drive_sync_service.resync_drive(
@@ -405,17 +407,19 @@ class SyncKafkaRouteConsumer:
             if not org_id:
                 raise ValueError("orgId is required")
 
+            await self.sync_tasks.gmail_sync_service.initialize(org_id)
+
             user_id = payload.get("userId")
             if user_id:
                 self.logger.info(f"Resyncing user: {user_id}")
-                await self.sync_tasks.gmail_sync_service.initialize(org_id)
+
                 user = await self.arango_service.get_user_by_user_id(user_id)
                 return await self.sync_tasks.gmail_sync_service.resync_gmail(
                     org_id, user
                 )
             else:
                 self.logger.info(f"Resyncing all users for org: {org_id}")
-                await self.sync_tasks.gmail_sync_service.initialize(org_id)
+
                 users = await self.arango_service.get_users(org_id, active=True)
                 for user in users:
                     if not await self.sync_tasks.gmail_sync_service.resync_gmail(
@@ -434,11 +438,7 @@ class SyncKafkaRouteConsumer:
             org_id = payload.get("orgId")
             if not org_id:
                 raise ValueError("orgId is required")
-            users = await self.arango_service.get_users(org_id, active=True)
-            for user in users:
-                await self.sync_tasks.drive_sync_service.setup_changes_watch(
-                    user["email"]
-                )
+
             await self.resync_drive(payload)
             return True
         except Exception as e:
@@ -454,11 +454,7 @@ class SyncKafkaRouteConsumer:
             org_id = payload.get("orgId")
             if not org_id:
                 raise ValueError("orgId is required")
-            users = await self.arango_service.get_users(org_id, active=True)
-            for user in users:
-                await self.sync_tasks.gmail_sync_service.setup_changes_watch(
-                    org_id, user["email"]
-                )
+
             await self.resync_gmail(payload)
             return True
         except Exception as e:
