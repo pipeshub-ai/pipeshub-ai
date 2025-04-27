@@ -22,7 +22,7 @@ import { Box, CircularProgress } from '@mui/material';
 import CitationSidebar from './highlighter-sidebar';
 
 // Initialize PDF worker
-pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
 
 const getNextId = () => String(Math.random()).slice(2);
 
@@ -33,7 +33,7 @@ interface EnhancedPdfLoaderProps {
   beforeLoad?: any;
   children?: any;
   onError?: any;
-  setLoading : any;
+  setLoading: any;
 }
 
 const EnhancedPdfLoader = ({
@@ -167,7 +167,7 @@ const PdfHighlighterComp = ({
   const [actualPdfBuffer, setActualPdfBuffer] = useState<ArrayBuffer | null>(pdfBuffer || null);
   const scrollViewerTo = useRef<(highlight: HighlightType) => void>(() => {});
   const [processedCitations, setProcessedCitations] = useState<ProcessedCitation[]>([]);
-  console.log(citations)
+  console.log(citations);
   useEffect(() => {
     const style = document.createElement('style');
     style.textContent = `
@@ -304,7 +304,7 @@ const PdfHighlighterComp = ({
         <EnhancedPdfLoader
           url={actualPdfUrl}
           pdfBuffer={actualPdfBuffer || pdfBuffer}
-          setLoading = {setLoading}
+          setLoading={setLoading}
           beforeLoad={
             <Box
               sx={{
