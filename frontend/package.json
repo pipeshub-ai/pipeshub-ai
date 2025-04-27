@@ -119,7 +119,7 @@
     "react-lazy-load-image-component": "^1.6.2",
     "react-markdown": "^9.1.0",
     "react-organizational-chart": "^2.2.1",
-    "react-pdf": "^7.7.1",
+    "react-pdf": "^9.2.1",
     "react-pdf-highlighter": "^6.1.0",
     "react-phone-number-input": "^3.4.5",
     "react-redux": "^9.1.2",
