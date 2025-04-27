@@ -18,9 +18,7 @@ export interface ConfigurationManagerConfig {
 export const getHashedSecretKey = (): string => {
   const secretKey = process.env.SECRET_KEY;
   if (!secretKey) {
-    logger.warn(
-      'SECRET_KEY environment variable is not set. This is required for production environments',
-    );
+    logger.warn('SECRET_KEY environment variable is not set. It is required');
     throw new Error('SECRET_KEY environment variable is required');
   }
   const hashedKey = crypto.createHash('sha256').update(secretKey).digest();
