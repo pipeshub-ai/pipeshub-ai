@@ -470,7 +470,6 @@ class BaseDriveSyncService(ABC):
                             "extractionStatus": "NOT_STARTED",
                             "lastIndexTimestamp": None,
                             "lastExtractionTimestamp": None,
-                            "isDirty": False,
                             "reason": None,
                         }
 

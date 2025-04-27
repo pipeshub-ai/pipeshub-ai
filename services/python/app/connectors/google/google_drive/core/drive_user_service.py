@@ -415,7 +415,7 @@ class DriveUserService:
                 page_token = await self.get_start_page_token_api()
                 if not page_token:
                     raise DriveOperationError(
-                        "Failed to get start page token: " + str(e),
+                        "Failed to get start page token",
                         details={"channel_id": channel_id},
                     )
 
@@ -447,7 +447,7 @@ class DriveUserService:
 
                 if not response or not response.get("resourceId"):
                     raise DriveOperationError(
-                        "Invalid response from changes.watch: " + str(e),
+                        "Invalid response from changes.watch",
                         details={"channel_id": channel_id, "response": response},
                     )
 

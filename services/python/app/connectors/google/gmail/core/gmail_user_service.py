@@ -332,7 +332,7 @@ class GmailUserService:
                 current_messages = results.get("messages", [])
                 if not isinstance(current_messages, list):
                     raise MailOperationError(
-                        "Invalid response format for messages: " + str(e),
+                        "Invalid response format for messages",
                         details={
                             "query": query,
                             "response_type": type(current_messages),
@@ -508,7 +508,7 @@ class GmailUserService:
                 current_threads = results.get("threads", [])
                 if not isinstance(current_threads, list):
                     raise MailOperationError(
-                        "Invalid response format for threads: " + str(e),
+                        "Invalid response format for threads",
                         details={
                             "query": query,
                             "response_type": type(current_threads),
@@ -541,7 +541,7 @@ class GmailUserService:
         try:
             if not isinstance(message, dict):
                 raise MailOperationError(
-                    "Invalid message format: " + str(e), details={"type": type(message)}
+                    "Invalid message format", details={"type": type(message)}
                 )
 
             user_id = user.get("userId")
@@ -756,7 +756,7 @@ class GmailUserService:
 
             if not isinstance(response, dict):
                 raise MailOperationError(
-                    "Invalid response format for user watch: " + str(e),
+                    "Invalid response format for user watch",
                     details={"user_id": user_id, "response_type": type(response)},
                 )
 

@@ -4,11 +4,6 @@ target-version = "py310"
 select = ["E", "F", "W", "I", "F401"]
 ignore = [
     "E501",  # Line too long
-    "F405",  # Name may be undefined, or defined from star imports
-    "F821",
-    "F601",
-    "F403",
-    "F811"
 ]
 src = ["."]
 

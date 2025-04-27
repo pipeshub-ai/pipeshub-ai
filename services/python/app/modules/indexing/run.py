@@ -21,7 +21,15 @@ from app.core.embedding_service import (
     OpenAIEmbeddingConfig,
     SentenceTransformersEmbeddingConfig,
 )
-from app.exceptions.indexing_exceptions import *
+from app.exceptions.indexing_exceptions import (
+    ChunkingError,
+    DocumentProcessingError,
+    EmbeddingDeletionError,
+    EmbeddingError,
+    IndexingError,
+    MetadataProcessingError,
+    VectorStoreError,
+)
 from app.utils.embeddings import get_default_embedding_model
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -585,7 +593,7 @@ class IndexingPipeline:
                 )
                 if not record:
                     raise DocumentProcessingError(
-                        "Record not found in database: " + str(e),
+                        "Record not found in database",
                         doc_id=meta["recordId"],
                     )
 

@@ -256,7 +256,7 @@ class GoogleAdminService:
                 current_groups = results.get("groups", [])
                 if current_groups is None:
                     raise AdminListError(
-                        "Invalid response format from Admin API: " + str(e),
+                        "Invalid response format from Admin API",
                         details={"results": results},
                     )
 
@@ -365,7 +365,7 @@ class GoogleAdminService:
                 current_members = results.get("members", [])
                 if current_members is None:
                     raise AdminListError(
-                        "Invalid response format from Admin API: " + str(e),
+                        "Invalid response format from Admin API",
                         details={"group_email": group_email, "results": results},
                     )
 
@@ -624,7 +624,7 @@ class GoogleAdminService:
         try:
             if not await self.connect_admin(org_id):
                 raise AdminServiceError(
-                    "Failed to connect admin service for watch creation: " + str(e),
+                    "Failed to connect admin service for user info retrieval",
                     details={"org_id": org_id},
                 )
 
@@ -665,7 +665,7 @@ class GoogleAdminService:
         try:
             if not await self.connect_admin(org_id):
                 raise AdminServiceError(
-                    "Failed to connect admin service: " + str(e),
+                    "Failed to connect admin service for group info retrieval",
                     details={"org_id": org_id},
                 )
 
@@ -879,7 +879,7 @@ class GoogleAdminService:
             try:
                 if not await user_service.connect_enterprise_user():
                     raise UserOperationError(
-                        "Failed to connect user service: " + str(e),
+                        "Failed to connect user service",
                         details={"user_email": user_email},
                     )
             except Exception as e:
@@ -929,7 +929,7 @@ class GoogleAdminService:
             try:
                 if not await user_service.connect_enterprise_user():
                     raise UserOperationError(
-                        "Failed to connect user service: " + str(e),
+                        "Failed to connect user service",
                         details={"user_email": user_email},
                     )
             except Exception as e:
