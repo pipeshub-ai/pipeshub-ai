@@ -131,6 +131,13 @@ export function createConfigurationManagerRouter(container: Container): Router {
     getStorageConfig(keyValueStoreService),
   );
 
+  router.get(
+    '/internal/storageConfig',
+    authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
+    metricsMiddleware(container),
+    getStorageConfig(keyValueStoreService),
+  );
+
   // SMTP Config Routes
   /**
    * POST /smtpConfig

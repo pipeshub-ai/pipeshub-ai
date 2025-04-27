@@ -66,21 +66,27 @@ export class StorageController {
   ) {}
 
   async getStorageConfig(
-    req: AuthenticatedUserRequest,
+    req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
     keyValueStoreService: KeyValueStoreService,
     defaultConfig: DefaultStorageConfig,
   ) {
     if (storageConfig != null) {
       return storageConfig;
     }
-    const url = (await keyValueStoreService.get<string>(endpoint)) || '{}';
 
+    const url = (await keyValueStoreService.get<string>(endpoint)) || '{}';
+    let storageConfigRoute;
+    if ('user' in req && req.user && 'userId' in req.user) {
+      storageConfigRoute = 'api/v1/configurationManager/storageConfig';
+    } else {
+      storageConfigRoute = 'api/v1/configurationManager/internal/storageConfig';
+    }
     const cmUrl = JSON.parse(url).cm.endpoint || defaultConfig.endpoint;
 
     const token = req.headers.authorization?.split(' ')[1];
     const configurationManagerServiceCommand =
       new ConfigurationManagerServiceCommand({
-        uri: `${cmUrl}/api/v1/configurationManager/storageConfig`,
+        uri: `${cmUrl}/${storageConfigRoute}`,
         method: HttpMethod.GET,
         headers: {
           'Content-Type': 'application/json',
@@ -216,7 +222,7 @@ export class StorageController {
         permissions,
         customMetadata,
         isVersionedFile,
-        extension
+        extension,
       } = req.body as Partial<Document>;
 
       const orgId = extractOrgId(req);
@@ -250,7 +256,7 @@ export class StorageController {
         permissions: permissions,
         customMetadata,
         storageVendor: storageVendor,
-        extension : `.${extension}`,
+        extension: `.${extension}`,
       };
 
       const savedDocument = await DocumentModel.create(documentInfo);

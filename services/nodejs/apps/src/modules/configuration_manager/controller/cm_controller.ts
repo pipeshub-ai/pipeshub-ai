@@ -1,5 +1,8 @@
 import { Response, NextFunction } from 'express';
-import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
+import {
+  AuthenticatedServiceRequest,
+  AuthenticatedUserRequest,
+} from '../../../libs/middlewares/types';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { Logger } from '../../../libs/services/logger.service';
 import { configPaths } from '../paths/paths';
@@ -151,7 +154,11 @@ export const createStorageConfig =
 
 export const getStorageConfig =
   (keyValueStoreService: KeyValueStoreService) =>
-  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  async (
+    _req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
     try {
       const storageConfig =
         (await keyValueStoreService.get<string>(configPaths.storageService)) ||
