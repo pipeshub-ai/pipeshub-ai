@@ -1,4 +1,5 @@
 # src/config/configuration_service.py
+import hashlib
 import json
 import os
 import threading
@@ -98,11 +99,18 @@ class ConfigurationService:
         self.logger = logger
         self.logger.debug("🔧 Initializing ConfigurationService")
 
+        # Get and hash the secret key to ensure 32 bytes
         secret_key = os.getenv("SECRET_KEY")
         if not secret_key:
             raise ValueError("SECRET_KEY environment variable is required")
+
+        # Hash the secret key to get exactly 32 bytes and convert to hex
+        hashed_key = hashlib.sha256(secret_key.encode()).digest()
+        hex_key = hashed_key.hex()
+        self.logger.debug("🔑 Secret key hashed to 32 bytes and converted to hex")
+
         self.encryption_service = EncryptionService.get_instance(
-            "aes-256-gcm", secret_key
+            "aes-256-gcm", hex_key, logger
         )
         self.logger.debug("🔐 Initialized EncryptionService")
 
