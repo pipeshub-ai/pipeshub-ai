@@ -17,7 +17,7 @@ if sys.platform == "win32":
 
 # Configure base logging settings
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s",
     encoding="utf-8",
 )
@@ -28,8 +28,12 @@ def create_logger(service_name):
     Create a logger for a specific service with file and console handlers
     """
     # Create logger
+    logging_level = os.getenv("LOG_LEVEL", "INFO")
     logger = logging.getLogger(service_name)
-    logger.setLevel(logging.DEBUG)
+    if logging_level == "DEBUG":
+        logger.setLevel(logging.DEBUG)
+    else:
+        logger.setLevel(logging.INFO)
 
     # Prevent DUPLICATE handlers
     if not logger.handlers:

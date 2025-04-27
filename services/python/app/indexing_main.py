@@ -5,11 +5,12 @@ from typing import AsyncGenerator
 
 import httpx
 import uvicorn
-from fastapi import FastAPI
+from fastapi import Body, FastAPI
 from fastapi.responses import JSONResponse
 
 from app.config.configuration_service import config_node_constants
 from app.setups.indexing_setup import AppContainer, initialize_container
+from app.utils.llm import get_llm
 
 container = AppContainer()
 container_lock = asyncio.Lock()
@@ -115,6 +116,62 @@ async def health_check():
             },
         )
 
+@app.post("/llm-health-check")
+async def llm_health_check(llm_configs: list[dict] = Body(...)):
+    """Health check endpoint to validate user-provided LLM configurations"""
+    try:
+        llm = await get_llm(app.container.logger(), app.container.config_service(), llm_configs)
+        # Make a simple test call to the LLM with the provided configurations
+        await llm.ainvoke("Test message to verify LLM health.")
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "healthy",
+                "message": "LLM service is responding",
+                "timestamp": datetime.now(timezone(timedelta(hours=5, minutes=30))).isoformat(),
+            },
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "not healthy",
+                "error": f"LLM service health check failed: {str(e)}",
+                "timestamp": datetime.now(timezone(timedelta(hours=5, minutes=30))).isoformat(),
+            },
+        )
+
+@app.post("/embedding-health-check")
+async def embedding_health_check(embedding_configs: list[dict] = Body(...)):
+    try:
+        indexing_pipeline = await app.container.indexing_pipeline()
+        embedding_model_created = await indexing_pipeline.get_embedding_model_instance(embedding_configs)
+        # Make a simple test call to the embedding model
+        if embedding_model_created:
+            sample_embedding = indexing_pipeline.dense_embeddings.embed_query("Test message to verify embedding model health.")
+            if sample_embedding:
+                return JSONResponse(
+                    status_code=200,
+                    content={
+                "status": "healthy",
+                "message": "Embedding model is responding. Sample embedding size: " + str(len(sample_embedding)),
+                "timestamp": datetime.now(timezone(timedelta(hours=5, minutes=30))).isoformat(),
+            },
+                )
+            else:
+                raise Exception("Embedding model failed to respond")
+        else:
+            raise Exception("Embedding model failed to create")
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "not healthy",
+                "error": f"Embedding model health check failed: {str(e)}",
+                "timestamp": datetime.now(timezone(timedelta(hours=5, minutes=30))).isoformat(),
+            },
+        )
 
 def run(host: str = "0.0.0.0", port: int = 8091, reload: bool = True):
     """Run the application"""

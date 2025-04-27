@@ -1136,7 +1136,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                 )
                 current_state = sync_state.get("syncState")
                 if current_state == "COMPLETED":
-                    self.logger.warning(
+                    self.logger.info(
                         "💥 Gmail sync is already completed for user %s", user["email"]
                     )
                     try:
@@ -1757,32 +1757,39 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                 user["email"]
             )
             if not channel_history:
-                self.logger.warning(
-                    f"""⚠️ No historyId found for {
-                        user['email']}"""
-                )
-                return
+                self.logger.warning(f"⚠️ No historyId found for {user['email']}")
+                return False
 
             changes = await user_service.fetch_gmail_changes(
                 user["email"], channel_history["historyId"]
             )
 
-            if changes:
-                self.logger.info(
-                    "Processing %s changes for user %s", len(changes), user["email"]
-                )
-                await self.arango_service.store_channel_history_id(
-                    changes["historyId"], channel_history["expiration"], user["email"]
-                )
-
+            # Check if changes is valid and has history items
+            if changes and isinstance(changes, dict) and changes.get("history"):
+                self.logger.info(f"📝 Changes found for user {user['email']}")
                 try:
                     await self.change_handler.process_changes(
                         user_service, changes, org_id, user
                     )
+
+                    # Update history ID after successful processing
+                    await self.arango_service.store_channel_history_id(
+                        changes["historyId"],
+                        channel_history["expiration"],
+                        user["email"]
+                    )
+                    self.logger.info(f"🚀 Updated historyId for user {user['email']}")
+
                 except Exception as e:
-                    self.logger.error("Error processing changes: %s", str(e))
+                    self.logger.error(f"Error processing changes: {str(e)}")
+                    return False
+            else:
+                self.logger.info("ℹ️ No changes found for user %s", user["email"])
+
+            return True
+
         except Exception as e:
-            self.logger.error(f"Error processing user {user['email']}: {str(e)}")
+            self.logger.error(f"Error resyncing Gmail for user {user['email']}: {str(e)}")
             return False
 
 
@@ -1974,7 +1981,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
             )
             current_state = sync_state.get("syncState")
             if current_state == "COMPLETED":
-                self.logger.warning(
+                self.logger.info(
                     "💥 Gmail sync is already completed for user %s", user["email"]
                 )
 
@@ -2243,37 +2250,44 @@ class GmailSyncIndividualService(BaseGmailSyncService):
 
     async def resync_gmail(self, org_id, user):
         try:
-            self.logger.info(f"Resyncing Gmail for user {user['email']}")
             user_service = self.gmail_user_service
+            self.logger.info(f"Resyncing Gmail for user {user['email']}")
 
             channel_history = await self.arango_service.get_channel_history_id(
                 user["email"]
             )
             if not channel_history:
-                self.logger.warning(
-                    f"""⚠️ No historyId found for {
-                        user['email']}"""
-                )
-                return
+                self.logger.warning(f"⚠️ No historyId found for {user['email']}")
+                return False
 
             changes = await user_service.fetch_gmail_changes(
                 user["email"], channel_history["historyId"]
             )
 
-            if changes:
-                self.logger.info(
-                    "Processing %s changes for user %s", len(changes), user["email"]
-                )
-                await self.arango_service.store_channel_history_id(
-                    changes["historyId"], channel_history["expiration"], user["email"]
-                )
-
+            # Check if changes is valid and has history items
+            if changes and isinstance(changes, dict) and changes.get("history"):
+                self.logger.info(f"📝 Changes found for user {user['email']}")
                 try:
                     await self.change_handler.process_changes(
                         user_service, changes, org_id, user
                     )
+
+                    # Update history ID after successful processing
+                    await self.arango_service.store_channel_history_id(
+                        changes["historyId"],
+                        channel_history["expiration"],
+                        user["email"]
+                    )
+                    self.logger.info(f"🚀 Updated historyId for user {user['email']}")
+
                 except Exception as e:
-                    self.logger.error("Error processing changes: %s", str(e))
+                    self.logger.error(f"Error processing changes: {str(e)}")
+                    return False
+            else:
+                self.logger.info("ℹ️ No changes found for user %s", user["email"])
+
+            return True
+
         except Exception as e:
-            self.logger.error(f"Error processing user {user['email']}: {str(e)}")
+            self.logger.error(f"Error resyncing Gmail for user {user['email']}: {str(e)}")
             return False

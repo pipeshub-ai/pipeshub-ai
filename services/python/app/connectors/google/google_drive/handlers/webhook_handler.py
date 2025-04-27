@@ -156,15 +156,6 @@ class IndividualDriveWebhookHandler(AbstractDriveWebhookHandler):
         )
         user_id = await self.arango_service.get_entity_id_by_email(user_email)
 
-        # # Get org_id from belongsTo relation for this user
-        # query = f"""
-        # FOR edge IN belongsTo
-        #     FILTER edge._from == 'users/{user_id}'
-        #     AND edge.entityType == 'ORGANIZATION'
-        #     RETURN PARSE_IDENTIFIER(edge._to).key
-        # """
-        # cursor = self.arango_service.db.aql.execute(query)
-        # org_id = next(cursor, None)
         user = await self.arango_service.get_document(
             user_id, CollectionNames.USERS.value
         )

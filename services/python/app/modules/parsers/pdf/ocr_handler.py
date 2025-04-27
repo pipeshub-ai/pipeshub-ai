@@ -88,7 +88,7 @@ class OCRStrategy(ABC):
                         f"📸 Image {img_index + 1} pixel format: {pix.n} channels"
                     )
                     # Optionally save the image:
-                    # pix.save(f"image_{img_index + 1}.png")
+                    # pix.save(f"image_{img_index + 1}_{uuid4()}.png")
 
                     pix = None  # Free memory
                 except Exception as e:

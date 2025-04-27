@@ -14,9 +14,10 @@ from app.core.llm_service import (
 )
 
 
-async def get_llm(logger, config_service: ConfigurationService):
-    ai_models = await config_service.get_config(config_node_constants.AI_MODELS.value)
-    llm_configs = ai_models["llm"]
+async def get_llm(logger, config_service: ConfigurationService, llm_configs = None):
+    if not llm_configs:
+        ai_models = await config_service.get_config(config_node_constants.AI_MODELS.value)
+        llm_configs = ai_models["llm"]
     # For now, we'll use the first available provider that matches our supported types
     # We will add logic to choose a specific provider based on our needs
     llm_config = None

@@ -28,7 +28,6 @@ class EncryptionService:
         self.algorithm = algorithm
         self.secret_key = secret_key  # this is a hex string
         self.logger = logger
-
     @classmethod
     def get_instance(cls, algorithm: str, secret_key: str, logger):
         if cls._instance is None:

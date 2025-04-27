@@ -34,7 +34,7 @@ class config_node_constants(Enum):
     SECRET_KEYS = "/services/secretKeys"
 
     # Non-service paths
-    LOG_LEVEL = "/logLevel"
+    # LOG_LEVEL = "/logLevel"
 
 
 class TokenScopes(Enum):
@@ -51,14 +51,20 @@ class TokenScopes(Enum):
 class Routes(Enum):
     """Constants for routes"""
 
+    # Token paths
     INDIVIDUAL_CREDENTIALS = "/api/v1/configurationManager/internal/connectors/individual/googleWorkspaceCredentials"
     INDIVIDUAL_REFRESH_TOKEN = (
         "/api/v1/connectors/internal/refreshIndividualConnectorToken"
     )
     BUSINESS_CREDENTIALS = "/api/v1/configurationManager/internal/connectors/business/googleWorkspaceCredentials"
-    LLM_CONFIG = "/api/v1/configurationManager/internal/aiModelsConfig"
+
+    # AI Model paths
+    AI_MODEL_CONFIG = "/api/v1/configurationManager/internal/aiModelsConfig"
+
+    # Storage paths
     STORAGE_PLACEHOLDER = "/api/v1/document/internal/placeholder"
     STORAGE_DIRECT_UPLOAD = "/api/v1/document/internal/{documentId}/directUpload"
+    STORAGE_UPLOAD = "/api/v1/document/internal/upload"
 
 class WebhookConfig(Enum):
     """Constants for webhook configuration"""
@@ -131,14 +137,25 @@ class ConfigurationService:
 
     def _create_store(self) -> Etcd3DistributedKeyValueStore:
         self.logger.debug("🔧 Creating ETCD store configuration...")
-        self.logger.debug("ETCD Host: %s", os.getenv("ETCD_HOST"))
-        self.logger.debug("ETCD Port: %s", os.getenv("ETCD_PORT"))
+        self.logger.debug("ETCD URL: %s", os.getenv("ETCD_URL"))
         self.logger.debug("ETCD Timeout: %s", os.getenv("ETCD_TIMEOUT", "5.0"))
         self.logger.debug("ETCD Username: %s", os.getenv("ETCD_USERNAME", "None"))
+        etcd_url = os.getenv("ETCD_URL")
+        if not etcd_url:
+            raise ValueError("ETCD_URL environment variable is required")
+
+        # Remove protocol if present
+        if "://" in etcd_url:
+            etcd_url = etcd_url.split("://")[1]
+
+        # Split host and port
+        parts = etcd_url.split(":")
+        etcd_host = parts[0]
+        etcd_port = parts[1]
 
         config = StoreConfig(
-            host=os.getenv("ETCD_HOST", "localhost"),
-            port=int(os.getenv("ETCD_PORT", "2379")),
+            host=etcd_host,
+            port=int(etcd_port),
             timeout=float(os.getenv("ETCD_TIMEOUT", "5.0")),
             username=os.getenv("ETCD_USERNAME", None),
             password=os.getenv("ETCD_PASSWORD", None),

@@ -211,10 +211,10 @@ class IndividualGmailWebhookHandler(AbstractGmailWebhookHandler):
                 changes = await user_service.fetch_gmail_changes(
                     email_address, current_history_id
                 )
-
-                await self.arango_service.store_channel_history_id(
-                    changes["historyId"], channel_history["expiration"], email_address
-                )
+                if changes:
+                    await self.arango_service.store_channel_history_id(
+                        changes["historyId"], channel_history["expiration"], email_address
+                    )
 
                 user_id = await self.arango_service.get_entity_id_by_email(
                     email_address
@@ -230,7 +230,7 @@ class IndividualGmailWebhookHandler(AbstractGmailWebhookHandler):
                 cursor = self.arango_service.db.aql.execute(query)
                 org_id = next(cursor, None)
 
-                if changes:
+                if changes and isinstance(changes, dict) and changes.get("history"):
                     user = await self.arango_service.get_document(
                         user_id, CollectionNames.USERS.value
                     )
@@ -352,10 +352,10 @@ class EnterpriseGmailWebhookHandler(AbstractGmailWebhookHandler):
                 changes = await user_service.fetch_gmail_changes(
                     email_address, current_history_id
                 )
-
-                await self.arango_service.store_channel_history_id(
-                    changes["historyId"], channel_history["expiration"], email_address
-                )
+                if changes:
+                    await self.arango_service.store_channel_history_id(
+                        changes["historyId"], channel_history["expiration"], email_address
+                    )
 
                 user_id = await self.arango_service.get_entity_id_by_email(
                     email_address
@@ -370,7 +370,7 @@ class EnterpriseGmailWebhookHandler(AbstractGmailWebhookHandler):
                 cursor = self.arango_service.db.aql.execute(query)
                 org_id = next(cursor, None)
 
-                if changes:
+                if changes and isinstance(changes, dict) and changes.get("history"):
                     self.logger.info(
                         "%s webhook: Found %s changes to process",
                         self.handler_type,

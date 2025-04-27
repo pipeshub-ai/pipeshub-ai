@@ -490,6 +490,10 @@ class DriveUserService:
             changes = []
             next_token = page_token
 
+            if self.service is None:
+                self.logger.error("Service is not initialized yet")
+                return [], None
+
             while next_token:
                 try:
                     async with self.google_limiter:

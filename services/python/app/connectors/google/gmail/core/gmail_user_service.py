@@ -789,6 +789,9 @@ class GmailUserService:
         """Fetches new emails using Gmail API's history endpoint"""
         try:
             self.logger.info("🚀 Fetching changes in user mail")
+            if self.service is None:
+                self.logger.error("Service is not initialized yet")
+                return {}
 
             if not history_id:
                 raise MailOperationError(

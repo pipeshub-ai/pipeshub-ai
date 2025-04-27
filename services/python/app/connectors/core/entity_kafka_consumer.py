@@ -470,6 +470,13 @@ class EntityKafkaRouteConsumer:
                 "userId": payload["userId"],
                 "orgId": payload["orgId"],
                 "email": payload["email"],
+                "fullName": payload.get("fullName", ""),
+                "firstName": payload.get("firstName", ""),
+                "middleName": payload.get("middleName", ""),
+                "lastName": payload.get("lastName", ""),
+                "designation": payload.get("designation", ""),
+                "businessPhones": payload.get("businessPhones", []),
+
                 "isActive": True,
                 "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
             }

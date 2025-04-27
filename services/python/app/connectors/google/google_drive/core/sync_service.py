@@ -933,7 +933,7 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                 )
                 current_state = sync_state.get("syncState")
                 if current_state == "COMPLETED":
-                    self.logger.warning(
+                    self.logger.info(
                         "💥 Drive sync is already completed for user %s", user["email"]
                     )
 
@@ -1645,7 +1645,7 @@ class DriveSyncIndividualService(BaseDriveSyncService):
             )
             current_state = sync_state.get("syncState")
             if current_state == "COMPLETED":
-                self.logger.warning(
+                self.logger.info(
                     "💥 Drive sync is already completed for user %s", user["email"]
                 )
 

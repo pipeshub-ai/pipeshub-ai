@@ -1,3 +1,4 @@
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import List, Literal
@@ -722,11 +723,110 @@ class DomainExtractor:
             self.logger.error("❌ Unexpected error uploading to signed URL: %s", str(e))
             raise aiohttp.ClientError(f"Unexpected error: {str(e)}")
 
-    async def save_summary_to_storage(
-        self, org_id: str, record_id: str, summary_doc: dict
-    ) -> str | None:
+    # async def save_summary_to_storage(
+    #     self, org_id: str, record_id: str, summary_doc: dict
+    # ) -> str | None:
+    #     """
+    #     Save summary document to storage
+    #     Returns:
+    #         str | None: document_id if successful, None if failed
+    #     """
+    #     try:
+    #         self.logger.info("🚀 Starting summary storage process for record: %s", record_id)
+
+    #         # Generate JWT token
+    #         try:
+    #             payload = {
+    #                 "orgId": org_id,
+    #                 "scopes": [TokenScopes.STORAGE_TOKEN.value],
+    #             }
+    #             secret_keys = await self.config_service.get_config(
+    #                 config_node_constants.SECRET_KEYS.value
+    #             )
+    #             scoped_jwt_secret = secret_keys.get("scopedJwtSecret")
+    #             if not scoped_jwt_secret:
+    #                 raise ValueError("Missing scoped JWT secret")
+
+    #             jwt_token = jwt.encode(payload, scoped_jwt_secret, algorithm="HS256")
+    #             headers = {
+    #                 "Authorization": f"Bearer {jwt_token}",
+    #                 "Content-Type": "application/json"
+    #             }
+    #         except Exception as e:
+    #             self.logger.error("❌ Failed to generate JWT token: %s", str(e))
+    #             return None
+
+    #         # Get endpoint configuration
+    #         try:
+    #             endpoints = await self.config_service.get_config(
+    #                 config_node_constants.ENDPOINTS.value
+    #             )
+    #             nodejs_endpoint = endpoints.get("cm", {}).get("endpoint")
+    #             if not nodejs_endpoint:
+    #                 raise ValueError("Missing CM endpoint configuration")
+    #         except Exception as e:
+    #             self.logger.error("❌ Failed to get endpoint configuration: %s", str(e))
+    #             return None
+
+    #         placeholder_data = {
+    #             "documentName": f"summary_{record_id}",
+    #             "documentPath": "summaries",
+    #             "extension": "json"
+    #         }
+
+    #         try:
+    #             async with aiohttp.ClientSession() as session:
+    #                 # Step 1: Create placeholder
+    #                 self.logger.info("📝 Creating placeholder for record: %s", record_id)
+    #                 placeholder_url = f"{nodejs_endpoint}{Routes.STORAGE_PLACEHOLDER.value}"
+    #                 document = await self._create_placeholder(session, placeholder_url, placeholder_data, headers)
+
+    #                 document_id = document.get("_id")
+    #                 if not document_id:
+    #                     self.logger.error("❌ No document ID in placeholder response")
+    #                     return None
+
+    #                 self.logger.info("📄 Created placeholder with ID: %s", document_id)
+
+    #                 # Step 2: Get signed URL
+    #                 self.logger.info("🔑 Getting signed URL for document: %s", document_id)
+    #                 upload_data = {
+    #                     "summary": summary_doc,
+    #                     "recordId": record_id
+    #                 }
+
+    #                 upload_url = f"{nodejs_endpoint}{Routes.STORAGE_DIRECT_UPLOAD.value.format(documentId=document_id)}"
+    #                 upload_result = await self._get_signed_url(session, upload_url, upload_data, headers)
+
+    #                 signed_url = upload_result.get('signedUrl')
+    #                 if not signed_url:
+    #                     self.logger.error("❌ No signed URL in response for document: %s", document_id)
+    #                     return None
+
+    #                 # Step 3: Upload to signed URL
+    #                 self.logger.info("📤 Uploading summary to storage for document: %s", document_id)
+    #                 await self._upload_to_signed_url(session, signed_url, upload_data)
+
+    #                 self.logger.info("✅ Successfully completed summary storage process for document: %s", document_id)
+    #                 return document_id
+
+    #         except aiohttp.ClientError as e:
+    #             self.logger.error("❌ Network error during storage process: %s", str(e))
+    #             return None
+    #         except Exception as e:
+    #             self.logger.error("❌ Unexpected error during storage process: %s", str(e))
+    #             self.logger.exception("Detailed error trace:")
+    #             return None
+
+    #     except Exception as e:
+    #         self.logger.error("❌ Critical error in saving summary to storage: %s", str(e))
+    #         self.logger.exception("Detailed error trace:")
+    #         return None
+
+
+    async def save_summary_to_storage(self, org_id: str, record_id: str, summary_doc: dict) -> str | None:
         """
-        Save summary document to storage
+        Save summary document to storage using FormData upload
         Returns:
             str | None: document_id if successful, None if failed
         """
@@ -748,8 +848,7 @@ class DomainExtractor:
 
                 jwt_token = jwt.encode(payload, scoped_jwt_secret, algorithm="HS256")
                 headers = {
-                    "Authorization": f"Bearer {jwt_token}",
-                    "Content-Type": "application/json"
+                    "Authorization": f"Bearer {jwt_token}"
                 }
             except Exception as e:
                 self.logger.error("❌ Failed to generate JWT token: %s", str(e))
@@ -767,57 +866,64 @@ class DomainExtractor:
                 self.logger.error("❌ Failed to get endpoint configuration: %s", str(e))
                 return None
 
-            placeholder_data = {
-                "documentName": f"summary_{record_id}",
-                "documentPath": "summaries",
-                "extension": "json"
-            }
-
             try:
                 async with aiohttp.ClientSession() as session:
-                    # Step 1: Create placeholder
-                    self.logger.info("📝 Creating placeholder for record: %s", record_id)
-                    placeholder_url = f"{nodejs_endpoint}{Routes.STORAGE_PLACEHOLDER.value}"
-                    document = await self._create_placeholder(session, placeholder_url, placeholder_data, headers)
-
-                    document_id = document.get("_id")
-                    if not document_id:
-                        self.logger.error("❌ No document ID in placeholder response")
-                        return None
-
-                    self.logger.info("📄 Created placeholder with ID: %s", document_id)
-
-                    # Step 2: Get signed URL
-                    self.logger.info("🔑 Getting signed URL for document: %s", document_id)
+                    # Convert summary_doc to JSON string and then to bytes
                     upload_data = {
                         "summary": summary_doc,
                         "recordId": record_id
                     }
+                    json_data = json.dumps(upload_data).encode('utf-8')
 
-                    upload_url = f"{nodejs_endpoint}{Routes.STORAGE_DIRECT_UPLOAD.value.format(documentId=document_id)}"
-                    upload_result = await self._get_signed_url(session, upload_url, upload_data, headers)
+                    # Create form data
+                    form_data = aiohttp.FormData()
+                    form_data.add_field('file',
+                                      json_data,
+                                      filename=f'summary_{record_id}.json',
+                                      content_type='application/json')
+                    form_data.add_field('documentName', f'summary_{record_id}')
+                    form_data.add_field('documentPath', 'summaries')
+                    form_data.add_field('isVersionedFile', 'true')
+                    form_data.add_field('extension', 'json')
+                    form_data.add_field('recordId', record_id)
 
-                    signed_url = upload_result.get('signedUrl')
-                    if not signed_url:
-                        self.logger.error("❌ No signed URL in response for document: %s", document_id)
-                        return None
+                    # Make upload request
+                    upload_url = f"{nodejs_endpoint}{Routes.STORAGE_UPLOAD.value}"
+                    self.logger.info("📤 Uploading summary to storage for record: %s", record_id)
 
-                    # Step 3: Upload to signed URL
-                    self.logger.info("📤 Uploading summary to storage for document: %s", document_id)
-                    await self._upload_to_signed_url(session, signed_url, upload_data)
+                    async with session.post(upload_url,
+                                          data=form_data,
+                                          headers=headers) as response:
+                        if response.status != 200:
+                            try:
+                                error_response = await response.json()
+                                self.logger.error("❌ Failed to upload summary. Status: %d, Error: %s",
+                                                response.status, error_response)
+                            except aiohttp.ContentTypeError:
+                                error_text = await response.text()
+                                self.logger.error("❌ Failed to upload summary. Status: %d, Response: %s",
+                                                response.status, error_text[:200])
+                            return None
 
-                    self.logger.info("✅ Successfully completed summary storage process for document: %s", document_id)
-                    return document_id
+                        response_data = await response.json()
+                        document_id = response_data.get('_id')
+
+                        if not document_id:
+                            self.logger.error("❌ No document ID in upload response")
+                            return None
+
+                        self.logger.info("✅ Successfully uploaded summary for document: %s", document_id)
+                        return document_id
 
             except aiohttp.ClientError as e:
-                self.logger.error("❌ Network error during storage process: %s", str(e))
+                self.logger.error("❌ Network error during upload process: %s", str(e))
                 return None
             except Exception as e:
-                self.logger.error("❌ Unexpected error during storage process: %s", str(e))
+                self.logger.error("❌ Unexpected error during upload process: %s", str(e))
                 self.logger.exception("Detailed error trace:")
                 return None
 
         except Exception as e:
-            self.logger.error("❌ Critical error in save_summary_to_storage: %s", str(e))
+            self.logger.error("❌ Critical error in saving summary to storage: %s", str(e))
             self.logger.exception("Detailed error trace:")
             return None
