@@ -172,7 +172,7 @@ export class OrgController {
       );
       if (response.statusCode != 200) {
         throw new BadRequestError(
-          'Error enabling or disabling metrics collection',
+          'Status ${response.statusCode}, Details: ${JSON.stringify(response.data)}',
         );
       }
 

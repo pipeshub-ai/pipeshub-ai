@@ -31,8 +31,14 @@ export class ConfigurationManagerService {
       return { statusCode: 200, data: response.data };
     } catch (error) {
       if (axios.isAxiosError(error)) {
+        let errorMessage = 'Error setting config';
+        if (error.code === 'ECONNABORTED') {
+          errorMessage = 'Request timed out';
+        } else if (error.response) {
+          errorMessage = error.response?.data?.message || errorMessage;
+        }
         throw new AxiosError(
-          error.response?.data?.message || 'Error setting config',
+          errorMessage,
           error.code,
           error.config,
           error.request,
