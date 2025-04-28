@@ -7,7 +7,7 @@ import { KafkaConfig, KafkaMessage } from '../../../libs/types/kafka.types';
 export enum EventType {
   NewRecordEvent = 'newRecord',
   UpdateRecordEvent = 'updateRecord',
-  DeletedRecordEvent = 'deletedRecord',
+  DeletedRecordEvent = 'deleteRecord',
   ReindexRecordEvent = 'reindexRecord'
 }
 

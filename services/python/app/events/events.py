@@ -157,12 +157,6 @@ class EventProcessor:
                 self.logger.error("❌ No record ID provided in event data")
                 return
 
-            # Handle delete event
-            if event_type == EventTypes.DELETE_RECORD.value:
-                self.logger.info(f"🗑️ Deleting embeddings for record {record_id}")
-                await self.processor.indexing_pipeline.delete_embeddings(record_id)
-                return
-
             # For both create and update events, we need to process the document
             if event_type == EventTypes.UPDATE_RECORD.value:
                 # For updates, first delete existing embeddings

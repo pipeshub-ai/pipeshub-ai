@@ -15,6 +15,7 @@ from app.config.configuration_service import (
 )
 from app.config.utils.named_constants.arangodb_constants import (
     CollectionNames,
+    EventTypes,
     ProgressStatus,
 )
 from app.exceptions.indexing_exceptions import IndexingError
@@ -179,6 +180,12 @@ class KafkaConsumerManager:
                 f"Processing record {record_id} with event type: {event_type}. "
                 f"Message ID: {message_id}"
             )
+
+            # Handle delete event
+            if event_type == EventTypes.DELETE_RECORD.value:
+                self.logger.info(f"🗑️ Deleting embeddings for record {record_id}")
+                await self.event_processor.processor.indexing_pipeline.delete_embeddings(record_id)
+                return True
 
             # Signed URL handling
             if payload_data and payload_data.get("signedUrlRoute"):
