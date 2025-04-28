@@ -40,7 +40,6 @@ import {
   getMetricsCollection,
   setMetricsCollectionPushInterval,
   setMetricsCollectionRemoteServer,
-  setPublicUrls,
 } from '../controller/cm_controller';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
@@ -61,7 +60,6 @@ import {
   metricsCollectionPushIntervalSchema,
   metricsCollectionToggleSchema,
   metricsCollectionRemoteServerSchema,
-  publicUrlSchema,
 } from '../validator/validators';
 import { FileProcessorFactory } from '../../../libs/middlewares/file_processor/fp.factory';
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
@@ -619,20 +617,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
       keyValueStoreService,
       appConfig.scopedJwtSecret,
       configService,
-    ),
-  );
-
-  router.post(
-    '/publicUrls',
-    authMiddleware.authenticate,
-    userAdminCheck,
-    ValidationMiddleware.validate(publicUrlSchema),
-    metricsMiddleware(container),
-    setPublicUrls(
-      keyValueStoreService,
-      appConfig.scopedJwtSecret,
-      configService,
-      syncEventService,
     ),
   );
 
