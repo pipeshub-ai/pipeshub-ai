@@ -1440,14 +1440,64 @@ export const setFrontendUrl =
       const { url } = req.body;
       const urls =
         (await keyValueStoreService.get<string>(configPaths.endpoint)) || '{}';
-
       let parsedUrls = JSON.parse(urls);
-
       // Preserve existing `auth` object if it exists, otherwise create a new one
       parsedUrls.frontend = {
         ...parsedUrls.frontend,
         publicEndpoint: url,
       };
+      // Save the updated object back to configPaths.endpoint
+      await keyValueStoreService.set<string>(
+        configPaths.endpoint,
+        JSON.stringify(parsedUrls),
+      );
+
+      const scopedToken = await generateFetchConfigAuthToken(
+        req.user,
+        scopedJwtSecret,
+      );
+      const response = await configService.updateConfig(scopedToken);
+      if (response.statusCode != 200) {
+        throw new BadRequestError('Error updating configs');
+      }
+      res.status(200).json({
+        message: 'Frontend Url saved successfully',
+      });
+    } catch (error: any) {
+      logger.error('Error setting frontend url', { error });
+      next(error);
+    }
+  };
+
+export const setPublicUrls =
+  (
+    keyValueStoreService: KeyValueStoreService,
+    scopedJwtSecret: string,
+    configService: ConfigService,
+    eventService: SyncEventProducer,
+  ) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      if (!req.user) {
+        throw new NotFoundError('User not found');
+      }
+      const { frontendUrl, connectorUrl } = req.body;
+      const urls =
+        (await keyValueStoreService.get<string>(configPaths.endpoint)) || '{}';
+      let parsedUrls = JSON.parse(urls);
+      // Preserve existing `auth` object if it exists, otherwise create a new one
+      if (frontendUrl) {
+        parsedUrls.frontend = {
+          ...parsedUrls.frontend,
+          publicEndpoint: frontendUrl,
+        };
+      }
+      if (connectorUrl) {
+        parsedUrls.connectors = {
+          ...parsedUrls.connectors,
+          publicEndpoint: connectorUrl,
+        };
+      }
 
       // Save the updated object back to configPaths.endpoint
       await keyValueStoreService.set<string>(
@@ -1464,8 +1514,19 @@ export const setFrontendUrl =
         throw new BadRequestError('Error updating configs');
       }
 
+      await eventService.start();
+      let event: Event = {
+        eventType: EventType.ConnectorPublicUrlChangedEvent,
+        timestamp: Date.now(),
+        payload: {
+          url: connectorUrl,
+          orgId: req.user.orgId,
+        } as ConnectorPublicUrlChangedEvent,
+      };
+      await eventService.publishEvent(event);
+
       res.status(200).json({
-        message: 'Frontend Url saved successfully',
+        message: 'Urls saved successfully',
       });
     } catch (error: any) {
       logger.error('Error setting frontend url', { error });
