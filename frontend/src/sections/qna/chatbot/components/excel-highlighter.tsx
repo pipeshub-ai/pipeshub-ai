@@ -43,6 +43,7 @@ interface StyleProps {
 
 interface TableRowType {
   [key: string]: React.ReactNode;
+  __rowNum?: number; // Added to track original Excel row number
 }
 
 interface RichTextStyle {
@@ -213,6 +214,9 @@ const ExcelViewer = ({ citations, fileUrl, excelBuffer }: ExcelViewerprops) => {
   const mountedRef = useRef<boolean>(true);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Store mapping between original Excel row numbers and displayed indices
+  const [rowMapping, setRowMapping] = useState<Map<number, number>>(new Map());
+
   const handleFullscreenChange = useCallback((): void => {
     setIsFullscreen(!!document.fullscreenElement);
   }, []);
@@ -234,30 +238,50 @@ const ExcelViewer = ({ citations, fileUrl, excelBuffer }: ExcelViewerprops) => {
     }
   }, []);
 
-  const scrollToRow = useCallback((num: number): void => {
-    if (!tableRef.current || !mountedRef.current) return;
-    const tableRows = tableRef.current.getElementsByTagName('tr');
-    if (tableRows[num]) {
-      requestAnimationFrame(() => {
-        if (!mountedRef.current) return;
+  // Updated to use rowMapping to find the correct row to scroll to
+  const scrollToRow = useCallback(
+    (originalRowNum: number): void => {
+      if (!tableRef.current || !mountedRef.current) return;
 
-        tableRows[num].scrollIntoView({
-          behavior: 'smooth',
-          block: 'center',
+      // Find the index of the row element in the table that corresponds to this original row number
+      const displayIndex = Array.from(rowMapping.entries()).find(
+        ([orig, index]) => orig === originalRowNum
+      )?.[1];
+
+      if (displayIndex === undefined) {
+        console.warn(`Could not find table row for Excel row number ${originalRowNum}`);
+        return;
+      }
+
+      const tableRows = tableRef.current.getElementsByTagName('tr');
+      // Account for header row (+1) and zero-indexing adjustment (+1)
+      const rowIndex = displayIndex + 2;
+
+      if (tableRows[rowIndex]) {
+        requestAnimationFrame(() => {
+          if (!mountedRef.current) return;
+
+          tableRows[rowIndex].scrollIntoView({
+            behavior: 'smooth',
+            block: 'center',
+          });
+
+          // Remove any previous styling that might have been applied directly
+          // (The highlighting will be handled by the React component's props)
         });
-
-        tableRows[num].style.transition = 'background-color 0.5s ease';
-        tableRows[num].style.backgroundColor = 'rgba(46, 125, 50, 0.2)';
-      });
-    }
-  }, []);
+      }
+    },
+    [rowMapping]
+  );
 
   const handleCitationClick = useCallback(
     (citation: DocumentContent): void => {
       if (!mountedRef.current) return;
       const { blockNum, extension } = citation.metadata;
       if (blockNum[0]) {
-        const highlightedRowNum = extension === 'csv' ? blockNum[0] : blockNum[0] - 1;
+        // Use the exact blockNum from the citation - don't adjust for hidden rows
+        // The row numbers from blockNum match the original Excel row numbers
+        const highlightedRowNum = extension === 'csv' ? blockNum[0] + 1 : blockNum[0];
 
         setSelectedCitation(citation.metadata._id);
         setHighlightedRow(highlightedRowNum);
@@ -304,11 +328,11 @@ const ExcelViewer = ({ citations, fileUrl, excelBuffer }: ExcelViewerprops) => {
       const worksheet = workbook.Sheets[firstSheet];
       const range = XLSX.utils.decode_range(worksheet['!ref'] || 'A1');
 
-      // Get hidden rows
-      const hiddenRows = new Set();
+      // Track hidden rows
+      const hiddenRows = new Set<number>();
       if (worksheet['!rows']) {
         worksheet['!rows'].forEach((row, index) => {
-          if (row?.hidden) hiddenRows.add(index);
+          if (row?.hidden) hiddenRows.add(index + range.s.r);
         });
       }
 
@@ -318,19 +342,34 @@ const ExcelViewer = ({ citations, fileUrl, excelBuffer }: ExcelViewerprops) => {
         return processRichText(cell)?.toString() || `Column${colIndex + 1}`;
       });
 
+      // Create a new mapping between original Excel row numbers and display indices
+      const newRowMapping = new Map<number, number>();
+      let displayIndex = 0;
+
       // Process data rows
       const newData = Array.from({ length: range.e.r - range.s.r }, (_, rowIndex) => {
-        if (hiddenRows.has(rowIndex + range.s.r + 1)) return null;
+        // Calculate the actual Excel row number (1-based)
+        const excelRowNum = rowIndex + range.s.r + 1;
 
-        const rowData: Record<string, React.ReactNode> = {};
+        // Skip hidden rows but keep tracking original row numbers
+        if (hiddenRows.has(excelRowNum - 1)) return null;
+
+        const rowData: Record<string, React.ReactNode> = {
+          __rowNum: excelRowNum, // Store the original Excel row number
+        };
+
         newHeaders.forEach((header, colIndex) => {
           const cellAddress = XLSX.utils.encode_cell({
-            r: rowIndex + range.s.r + 1,
+            r: excelRowNum - 1, // Convert back to 0-based for cell lookup
             c: colIndex + range.s.c,
           });
           const cell = worksheet[cellAddress] as CellData;
           rowData[header] = processRichText(cell);
         });
+
+        // Map the original Excel row number to the display index
+        newRowMapping.set(excelRowNum, displayIndex);
+        displayIndex += 1;
 
         return rowData;
       }).filter(Boolean) as TableRowType[];
@@ -338,6 +377,7 @@ const ExcelViewer = ({ citations, fileUrl, excelBuffer }: ExcelViewerprops) => {
       if (mountedRef.current) {
         setHeaders(newHeaders);
         setTableData(newData);
+        setRowMapping(newRowMapping);
         setIsInitialized(true);
       }
     } catch (err) {
@@ -434,6 +474,7 @@ const ExcelViewer = ({ citations, fileUrl, excelBuffer }: ExcelViewerprops) => {
     setSelectedCitation(null);
     setError(null);
     setIsInitialized(false);
+    setRowMapping(new Map());
     loadExcelFile();
   }, [fileUrl, excelBuffer, loadExcelFile]);
 
@@ -441,10 +482,11 @@ const ExcelViewer = ({ citations, fileUrl, excelBuffer }: ExcelViewerprops) => {
   useEffect(() => {
     if (isInitialized && citations.length > 0 && !highlightedRow && mountedRef.current) {
       const firstCitation = citations[0];
-      
+
       const { blockNum, extension } = firstCitation.metadata;
       if (blockNum[0]) {
-        const highlightedRowNum = extension === 'csv' ? blockNum[0] : blockNum[0] - 1;
+        // Use the exact blockNum from the citation - no adjustment needed
+        const highlightedRowNum = extension === 'csv' ? blockNum[0] + 1 : blockNum[0];
         setHighlightedRow(highlightedRowNum);
         setSelectedCitation(firstCitation.metadata._id);
         scrollToRow(highlightedRowNum);
@@ -481,7 +523,6 @@ const ExcelViewer = ({ citations, fileUrl, excelBuffer }: ExcelViewerprops) => {
         },
       }}
     >
-      {/* Rest of the component remains the same */}
       <ControlsContainer>
         <Tooltip title={isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}>
           <IconButton
@@ -528,19 +569,21 @@ const ExcelViewer = ({ citations, fileUrl, excelBuffer }: ExcelViewerprops) => {
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {tableData.map((row, rowIndex) => (
-                    <StyledTableRow key={rowIndex} highlighted={highlightedRow === rowIndex + 1}>
-                      <RowNumberCell>{rowIndex + 1}</RowNumberCell>
-                      {headers.map((header, colIndex) => (
-                        <StyledTableCell
-                          key={colIndex}
-                          highlighted={highlightedRow === rowIndex + 1}
-                        >
-                          {row[header]}
-                        </StyledTableCell>
-                      ))}
-                    </StyledTableRow>
-                  ))}
+                  {tableData.map((row, displayIndex) => {
+                    const isHighlighted = row.__rowNum === highlightedRow;
+
+                    return (
+                      <StyledTableRow key={displayIndex} highlighted={isHighlighted}>
+                        {/* Display the original Excel row number instead of the index */}
+                        <RowNumberCell>{row.__rowNum}</RowNumberCell>
+                        {headers.map((header, colIndex) => (
+                          <StyledTableCell key={colIndex} highlighted={isHighlighted}>
+                            {row[header]}
+                          </StyledTableCell>
+                        ))}
+                      </StyledTableRow>
+                    );
+                  })}
                 </TableBody>
               </Table>
             </TableContainer>
@@ -592,10 +635,7 @@ const ExcelViewer = ({ citations, fileUrl, excelBuffer }: ExcelViewerprops) => {
                     {citation.metadata.sheetName}
                   </Typography>
                   <Typography variant="caption" color="primary" sx={{ mt: 1, display: 'block' }}>
-                    Row{' '}
-                    {citation.metadata.extension === 'csv'
-                      ? citation.metadata.blockNum[0]
-                      : citation.metadata.blockNum[0] - 1}
+                    Row {citation.metadata.blockNum[0]}
                   </Typography>
                 </Box>
               </ListItem>

@@ -73,7 +73,8 @@ dependencies = [
    "langchain-google-vertexai==2.0.18",
    "langchain-ollama==0.3.0",
    "langchain-aws==0.2.18",
-   "markdown==3.8"
+   "markdown==3.8",
+   "langgraph==0.3.34"
 ]
 
 [tool.setuptools.packages.find]
