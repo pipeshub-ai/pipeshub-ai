@@ -57,17 +57,17 @@ const EnhancedPdfLoader = ({
 
           loadingTask = pdfjsLib.getDocument({
             data: bufferCopy,
+            isEvalSupported: false,
             cMapUrl: `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/cmaps/`,
             cMapPacked: true,
-            // isEvalSupported: false,
           });
         } else if (url) {
           // URL-based loading remains unchanged
           loadingTask = pdfjsLib.getDocument({
             url,
+            isEvalSupported: false,
             cMapUrl: `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/cmaps/`,
             cMapPacked: true,
-            // isEvalSupported: false,
           });
         } else {
           throw new Error('Either url or pdfBuffer must be provided');
