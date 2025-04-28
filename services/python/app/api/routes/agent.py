@@ -1,27 +1,22 @@
-from typing import Annotated, Any, Dict, List, Optional, TypedDict, Union, Callable
 import asyncio
-import functools 
-from pydantic import BaseModel, Field
+import functools
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
+from langgraph.graph import END, StateGraph
+from pydantic import BaseModel
 from typing_extensions import TypedDict
-from langchain.prompts import PromptTemplate
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import Runnable, RunnableConfig
-from langgraph.graph import StateGraph, END
-from langgraph.prebuilt import ToolNode
+
+from app.config.utils.named_constants.arangodb_constants import CollectionNames
+from app.modules.qna.prompt_templates import qna_prompt
 
 # Import placeholder for services that would need to be adapted
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_arango import ArangoService
 from app.modules.retrieval.retrieval_service import RetrievalService
-from app.config.configuration_service import ConfigurationService
-from app.modules.qna.prompt_templates import qna_prompt
 from app.utils.citations import process_citations
-from app.config.utils.named_constants.arangodb_constants import CollectionNames
 from app.utils.query_transform import setup_query_transformation
-
-from fastapi import APIRouter, Request, HTTPException, Depends
-from fastapi.responses import JSONResponse
 
 router = APIRouter()
 
@@ -96,18 +91,18 @@ async def decompose_query_node(
 
         # Import here to avoid circular imports
         from app.utils.query_decompose import QueryDecompositionService
-        
+
         # Call the async function directly
         decomposition_service = QueryDecompositionService(llm, logger=logger)
         decomposition_result = await decomposition_service.decompose_query(state["query"])
-        
+
         decomposed_queries = decomposition_result.get("queries", [])
-        
+
         if not decomposed_queries:
             state["decomposed_queries"] = [{"query": state["query"]}]
         else:
             state["decomposed_queries"] = decomposed_queries
-            
+
         logger.debug(f"decomposed_queries {state['decomposed_queries']}")
         return state
     except Exception as e:
@@ -124,29 +119,29 @@ async def transform_query_node(
     """Node to transform and expand the queries"""
     try:
         rewrite_chain, expansion_chain = setup_query_transformation(llm)
-        
+
         transformed_queries = []
         expanded_queries_set = set()
-        
+
         for query_dict in state["decomposed_queries"]:
             query = query_dict.get("query")
-            
+
             # Run query transformations in parallel
             rewritten_query, expanded_queries = await asyncio.gather(
                 rewrite_chain.ainvoke(query), expansion_chain.ainvoke(query)
             )
-            
+
             # Process rewritten query
             if rewritten_query.strip():
                 transformed_queries.append(rewritten_query.strip())
-            
+
             # Process expanded queries
             expanded_queries_list = [q.strip() for q in expanded_queries.split("\n") if q.strip()]
             for q in expanded_queries_list:
                 if q.lower() not in expanded_queries_set:
                     expanded_queries_set.add(q.lower())
                     transformed_queries.append(q)
-        
+
         # Remove duplicates while preserving order
         unique_queries = []
         seen = set()
@@ -154,7 +149,7 @@ async def transform_query_node(
             if q.lower() not in seen:
                 seen.add(q.lower())
                 unique_queries.append(q)
-                
+
         state["rewritten_queries"] = unique_queries
         return state
     except Exception as e:
@@ -173,11 +168,11 @@ async def retrieve_documents_node(
     try:
         if state.get("error"):
             return state
-            
+
         unique_queries = state.get("rewritten_queries", [])
         if not unique_queries:
             unique_queries = [state["query"]]  # Fallback to original query
-            
+
         results = await retrieval_service.search_with_filters(
             queries=unique_queries,
             org_id=state["org_id"],
@@ -186,7 +181,7 @@ async def retrieve_documents_node(
             filter_groups=state["filters"],
             arango_service=arango_service,
         )
-        
+
         status_code = results.get("status_code", 200)
         if status_code in [202, 500, 503]:
             state["error"] = {
@@ -195,10 +190,10 @@ async def retrieve_documents_node(
                 "message": results.get("message", "No results found"),
             }
             return state
-            
+
         search_results = results.get("searchResults", [])
         logger.debug(f"Retrieved {len(search_results)} documents")
-        
+
         state["search_results"] = search_results
         return state
     except Exception as e:
@@ -216,12 +211,12 @@ async def get_user_info_node(
     try:
         if state.get("error") or not state["send_user_info"]:
             return state
-            
+
         user_info = await arango_service.get_user_by_user_id(state["user_id"])
         org_info = await arango_service.get_document(
             state["org_id"], CollectionNames.ORGS.value
         )
-        
+
         state["user_info"] = user_info
         state["org_info"] = org_info
         return state
@@ -240,9 +235,9 @@ async def rerank_results_node(
     try:
         if state.get("error"):
             return state
-            
+
         search_results = state.get("search_results", [])
-        
+
         # Deduplicate results based on document ID
         seen_ids = set()
         flattened_results = []
@@ -251,7 +246,7 @@ async def rerank_results_node(
             if result_id not in seen_ids:
                 seen_ids.add(result_id)
                 flattened_results.append(result)
-                
+
         # Rerank if we have multiple results
         if len(flattened_results) > 1:
             final_results = await reranker_service.rerank(
@@ -261,7 +256,7 @@ async def rerank_results_node(
             )
         else:
             final_results = flattened_results
-        
+
         logger.debug(f"Final reranked results: {len(final_results)} documents")
         state["final_results"] = final_results
         return state
@@ -279,7 +274,7 @@ def prepare_prompt_node(
     try:
         if state.get("error"):
             return state
-            
+
         # Format user info if available
         user_data = ""
         if state["send_user_info"] and state["user_info"] and state["org_info"]:
@@ -298,7 +293,7 @@ def prepare_prompt_node(
                     f"({state['user_info'].get('designation', '')}) "
                     "Please provide accurate and relevant information based on the available context."
                 )
-        
+
         from jinja2 import Template
         template = Template(qna_prompt)
         rendered_prompt = template.render(
@@ -307,19 +302,19 @@ def prepare_prompt_node(
             rephrased_queries=[],  # This keeps all query results for reference
             chunks=state["final_results"],
         )
-        
+
         # Add conversation history to the messages
         messages = [{"role": "system", "content": "You are an enterprise questions answering expert"}]
-        
+
         for conversation in state["previous_conversations"]:
             if conversation.get("role") == "user_query":
                 messages.append({"role": "user", "content": conversation.get("content")})
             elif conversation.get("role") == "bot_response":
                 messages.append({"role": "assistant", "content": conversation.get("content")})
-        
+
         # Add current query with context
         messages.append({"role": "user", "content": rendered_prompt})
-        
+
         state["messages"] = messages
         return state
     except Exception as e:
@@ -337,12 +332,12 @@ async def generate_answer_node(
     try:
         if state.get("error"):
             return state
-            
+
         # Make async LLM call
         response = await llm.ainvoke(state["messages"])
         # Process citations
         processed_response = process_citations(response, state["final_results"])
-        
+
         state["response"] = processed_response
         return state
     except Exception as e:
@@ -467,14 +462,14 @@ class ChatQuery(BaseModel):
 async def get_services(request: Request):
     """Get all required services from the container"""
     container = request.app.container
-    
+
     # Get services
     retrieval_service = await container.retrieval_service()
     arango_service = await container.arango_service()
     reranker_service = container.reranker_service()
     config_service = container.config_service()
     logger = container.logger()
-    
+
     # Get and verify LLM
     llm = retrieval_service.llm
     if llm is None:
@@ -484,7 +479,7 @@ async def get_services(request: Request):
                 status_code=500,
                 detail="Failed to initialize LLM service. LLM configuration is missing.",
             )
-    
+
     return {
         "retrieval_service": retrieval_service,
         "arango_service": arango_service,
@@ -501,14 +496,14 @@ async def askAI(request: Request, query_info: ChatQuery):
         # Get all services
         services = await get_services(request)
         logger = services["logger"]
-        
+
         # Extract user info from request
         user_info = {
             "orgId": request.state.user.get('orgId'),
             "userId": request.state.user.get('userId'),
             "sendUserInfo": request.query_params.get('sendUserInfo', True)
         }
-        
+
         # Create the LangGraph agent
         qna_graph = create_qna_graph(
             llm=services["llm"],
@@ -517,14 +512,14 @@ async def askAI(request: Request, query_info: ChatQuery):
             reranker_service=services["reranker_service"],
             logger=logger
         )
-        
+
         # Build initial state
         initial_state = build_initial_state(query_info.dict(), user_info)
-        
+
         # Execute the graph with async
         logger.info(f"Starting LangGraph execution for query: {query_info.query}")
         final_state = await qna_graph.ainvoke(initial_state)  # Using async invoke
-        
+
         # Check for errors
         if final_state.get("error"):
             error = final_state["error"]
@@ -537,10 +532,10 @@ async def askAI(request: Request, query_info: ChatQuery):
                     "records": []
                 }
             )
-        
+
         # Return the response
         return final_state["response"]
-        
+
     except HTTPException as he:
         # Re-raise HTTP exceptions with their original status codes
         raise he

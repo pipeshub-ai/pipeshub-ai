@@ -10,10 +10,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.middlewares.auth import authMiddleware
+from app.api.routes.agent import router as agent_router
 from app.api.routes.chatbot import router as chatbot_router
 from app.api.routes.records import router as records_router
 from app.api.routes.search import router as search_router
-from app.api.routes.agent import router as agent_router
 from app.config.configuration_service import config_node_constants
 from app.setups.query_setup import AppContainer
 
