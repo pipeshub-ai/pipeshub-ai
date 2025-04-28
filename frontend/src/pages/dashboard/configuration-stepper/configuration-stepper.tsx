@@ -360,31 +360,23 @@ const ConfigurationStepper: React.FC<ConfigurationStepperProps> = ({ open, onClo
       setSkipSteps((prev) => ({ ...prev, publicUrls: false }));
 
       // Create payload for API call
-      const urlPayload: Record<string, string> = {};
 
       // Only add frontendUrl to payload if it exists and is not empty
       if (data.frontendUrl && data.frontendUrl.trim() !== '') {
-        urlPayload.frontendUrl = data.frontendUrl;
+        await axios.post(`${API_BASE_URL}/frontendPublicUrl`, { url: data.frontendUrl });
       }
 
       // Only add connectorUrl to payload if it exists and is not empty
       if (data.connectorUrl && data.connectorUrl.trim() !== '') {
-        urlPayload.connectorUrl = data.connectorUrl;
+        await axios.post(`${API_BASE_URL}/connectorPublicUrl`, { url: data.connectorUrl });
       }
 
-      // Make the API call if we have at least one URL to send
-      console.log(`1: ${urlPayload}`);
-      console.log(`${urlPayload}`);
-      if (Object.keys(urlPayload).length > 0) {
-        await axios.post(`${API_BASE_URL}/publicUrls`, urlPayload);
-
-        // Show success message
-        setSnackbar({
-          open: true,
-          message: 'URL configuration saved successfully',
-          severity: 'success',
-        });
-      }
+      // Show success message
+      setSnackbar({
+        open: true,
+        message: 'URL configuration saved successfully',
+        severity: 'success',
+      });
     } catch (error: any) {
       console.error('Error saving URL configuration:', error);
       setSubmissionError(error.response?.data?.message || 'Failed to save URL configuration');
