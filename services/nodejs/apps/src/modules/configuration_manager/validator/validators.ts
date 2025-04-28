@@ -291,23 +291,27 @@ export const urlSchema = z.object({
 });
 
 export const metricsCollectionToggleSchema = z.object({
-  body: z.object({
-    enableMetricCollection: z.boolean(),
-  }).transform((data) => {
-    return {
-      enableMetricCollection: data.enableMetricCollection.toString(),
-    };
-  }),
+  body: z
+    .object({
+      enableMetricCollection: z.boolean(),
+    })
+    .transform((data) => {
+      return {
+        enableMetricCollection: data.enableMetricCollection.toString(),
+      };
+    }),
 });
 
 export const metricsCollectionPushIntervalSchema = z.object({
-  body: z.object({
-    pushIntervalMs: z.number(),
-  }).transform((data) => {
-    return {
-      pushIntervalMs: data.pushIntervalMs.toString(),
-    };
-  }),
+  body: z
+    .object({
+      pushIntervalMs: z.number(),
+    })
+    .transform((data) => {
+      return {
+        pushIntervalMs: data.pushIntervalMs.toString(),
+      };
+    }),
 });
 
 export const metricsCollectionRemoteServerSchema = z.object({

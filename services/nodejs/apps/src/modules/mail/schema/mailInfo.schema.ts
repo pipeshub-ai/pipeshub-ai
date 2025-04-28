@@ -7,6 +7,8 @@ export interface MailInfo extends Document {
   to: string[];
   cc?: string[];
   emailTemplateType: string;
+  createdAt: number;
+  updatedAt: number;
 }
 
 // Define the schema
@@ -31,9 +33,25 @@ const mailSchema = new Schema<MailInfo>(
       type: String,
       required: true,
     },
+    createdAt: {
+      type: Number,
+      default: Date.now,
+    },
+    updatedAt: {
+      type: Number,
+      default: Date.now,
+    },
   },
-  { timestamps: true },
+  { timestamps: false },
 );
+
+// Pre-save hook to update updatedAt timestamp
+mailSchema.pre<MailInfo>('save', function (next) {
+  if (!this.isNew) {
+    this.updatedAt = Date.now();
+  }
+  next();
+});
 
 // Create and export the model
 export const MailModel = mongoose.model<MailInfo>(

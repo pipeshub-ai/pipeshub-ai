@@ -34,8 +34,8 @@ interface IUserActivity extends Document {
     | 'SSO';
   ipAddress: string;
   isDeleted?: boolean;
-  createdAt?: Date;
-  updatedAt?: Date;
+  createdAt?: number; // Changed from Date to number
+  updatedAt?: number; // Changed from Date to number
 }
 
 // 🔹 Define Mongoose Schema
@@ -86,13 +86,30 @@ const UserActivitySchema = new Schema<IUserActivity>(
       type: Boolean,
       default: false,
     },
+    createdAt: {
+      type: Number,
+      default: Date.now,
+    },
+    updatedAt: {
+      type: Number,
+      default: Date.now,
+    },
   },
-  { timestamps: true },
+  { timestamps: false },
 );
 
-// 🔹 Ensure Validation Runs on `findOneAndUpdate`
+// Pre-save hook to update the updatedAt field
+UserActivitySchema.pre<IUserActivity>('save', function (next) {
+  if (!this.isNew) {
+    this.updatedAt = Date.now();
+  }
+  next();
+});
+
+// 🔹 Ensure Validation Runs on `findOneAndUpdate` and update timestamps
 UserActivitySchema.pre('findOneAndUpdate', function (next) {
   this.setOptions({ runValidators: true });
+  this.set({ updatedAt: Date.now() });
   next();
 });
 

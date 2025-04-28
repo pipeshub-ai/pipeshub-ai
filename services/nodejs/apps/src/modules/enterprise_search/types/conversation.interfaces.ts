@@ -39,12 +39,12 @@ export interface IFeedback {
   unusedFollowUpQuestions?: string[];
   source?: 'user' | 'system' | 'admin' | 'auto';
   feedbackProvider?: Types.ObjectId;
-  timestamp?: Date;
+  timestamp?: number;
   revisions?: Array<{
     updatedFields?: string[];
     previousValues?: Map<string, any>;
     updatedBy?: Types.ObjectId;
-    updatedAt?: Date;
+    updatedAt?: number;
   }>;
   metrics?: {
     timeToFeedback?: number;
@@ -71,8 +71,8 @@ export interface IMessage {
   followUpQuestions?: IFollowUpQuestion[];
   feedback?: IFeedback[];
   metadata?: IMessageMetadata;
-  createdAt?: Date;
-  updatedAt?: Date;
+  createdAt?: number;
+  updatedAt?: number;
 }
 
 export interface IConversation {
@@ -91,7 +91,7 @@ export interface IConversation {
   deletedBy?: Types.ObjectId;
   isArchived?: boolean;
   archivedBy?: Types.ObjectId;
-  lastActivityAt?: Date;
+  lastActivityAt?: number;
   tags?: Types.ObjectId[];
   conversationSource:
     | 'enterprise_search'
@@ -102,8 +102,8 @@ export interface IConversation {
   conversationSourceRecordId?: Types.ObjectId;
   conversationSourceConnectorIds?: Types.ObjectId[];
   conversationSourceRecordType?: string;
-  createdAt?: Date;
-  updatedAt?: Date;
+  createdAt?: number;
+  updatedAt?: number;
 }
 
 export interface IMessageDocument extends Document, IMessage {
@@ -142,5 +142,3 @@ export interface IAIResponse {
     reason?: string;
   };
 }
-
-

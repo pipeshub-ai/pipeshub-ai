@@ -11,12 +11,14 @@ interface IOrg extends Document {
   shortName?: string;
   domain: string;
   contactEmail: string;
-  accountType:AccountType;
+  accountType: AccountType;
   phoneNumber?: string;
   permanentAddress?: Address;
   isDeleted: boolean;
   deletedByUser?: string;
-  onBoardingStatus : string;
+  onBoardingStatus: string;
+  createdAt: number;
+  updatedAt: number;
 }
 
 const orgSchema = new Schema<IOrg>(
@@ -55,24 +57,28 @@ const orgSchema = new Schema<IOrg>(
         city: { type: String },
         state: { type: String },
         postCode: { type: String },
-        country: { type: String, },
+        country: { type: String },
       },
     },
-    onBoardingStatus : {
-      type : String,
-      enum: ['configured', 'notConfigured','skipped'], 
-
+    onBoardingStatus: {
+      type: String,
+      enum: ['configured', 'notConfigured', 'skipped'],
     },
     isDeleted: { type: Boolean, default: false },
     deletedByUser: { type: String },
+    createdAt: { type: Number, default: Date.now },
+    updatedAt: { type: Number, default: Date.now },
   },
-  { timestamps: true },
+  { timestamps: false },
 );
 
 orgSchema.pre<IOrg>('save', async function (next) {
   try {
     if (!this.slug) {
       this.slug = await generateUniqueSlug('Org');
+    }
+    if (!this.isNew) {
+      this.updatedAt = Date.now();
     }
     next();
   } catch (error) {

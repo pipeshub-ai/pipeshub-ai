@@ -23,8 +23,8 @@ interface IOrgAuthConfig extends Document {
   domain?: string;
   authSteps: IAuthStep[];
   isDeleted?: boolean;
-  createdAt?: Date;
-  updatedAt?: Date;
+  createdAt?: number; // Changed from Date to number
+  updatedAt?: number; // Changed from Date to number
 }
 
 // 🔹 Define Mongoose Schemas
@@ -70,9 +70,31 @@ const OrgAuthConfigSchema = new Schema<IOrgAuthConfig>(
       ],
     },
     isDeleted: { type: Boolean, default: false },
+    createdAt: {
+      type: Number,
+      default: Date.now,
+    },
+    updatedAt: {
+      type: Number,
+      default: Date.now,
+    },
   },
-  { timestamps: true },
+  { timestamps: false },
 );
+
+// Pre-save hook to update the updatedAt field
+OrgAuthConfigSchema.pre<IOrgAuthConfig>('save', function (next) {
+  if (!this.isNew) {
+    this.updatedAt = Date.now();
+  }
+  next();
+});
+
+// Pre-hook for findOneAndUpdate to update the timestamp
+OrgAuthConfigSchema.pre('findOneAndUpdate', function (next) {
+  this.set({ updatedAt: Date.now() });
+  next();
+});
 
 // 🔹 Create and Export Mongoose Model
 export const OrgAuthConfig: Model<IOrgAuthConfig> =

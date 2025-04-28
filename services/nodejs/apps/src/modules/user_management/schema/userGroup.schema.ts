@@ -11,7 +11,10 @@ interface UserGroup extends Document {
   users: Array<Types.ObjectId>;
   isDeleted?: boolean;
   deletedBy?: Types.ObjectId;
+  createdAt: number;
+  updatedAt: number;
 }
+
 const userGroupsSchema = new Schema<UserGroup>(
   {
     slug: { type: String, unique: true },
@@ -32,8 +35,10 @@ const userGroupsSchema = new Schema<UserGroup>(
     users: [{ type: Schema.Types.ObjectId }],
     isDeleted: { type: Boolean, default: false },
     deletedBy: { type: Schema.Types.ObjectId, ref: 'users' },
+    createdAt: { type: Number, default: Date.now },
+    updatedAt: { type: Number, default: Date.now },
   },
-  { timestamps: true },
+  { timestamps: false },
 );
 
 userGroupsSchema.pre<UserGroup>('save', async function (next) {
@@ -41,6 +46,12 @@ userGroupsSchema.pre<UserGroup>('save', async function (next) {
     if (!this.slug) {
       this.slug = await generateUniqueSlug('UserGroup');
     }
+
+    // Update the updatedAt timestamp if this is not a new document
+    if (!this.isNew) {
+      this.updatedAt = Date.now();
+    }
+
     next();
   } catch (error) {
     next(error as Error); // Pass any errors to the next middleware

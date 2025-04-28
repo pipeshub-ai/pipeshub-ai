@@ -11,8 +11,8 @@ interface IConnectorsConfig extends Document {
   name: ConnectorsType;
   isEnabled: boolean;
   lastUpdatedBy: Types.ObjectId;
-  createdAt?: Date;
-  updatedAt?: Date;
+  createdAt?: number;
+  updatedAt?: number;
 }
 
 // Schema for ConnectorsConfig
@@ -22,10 +22,23 @@ const ConnectorsConfigSchema = new Schema<IConnectorsConfig>(
     name: { type: String, enum: Object.values(ConnectorsType), required: true },
     isEnabled: { type: Boolean, default: true },
     lastUpdatedBy: { type: Schema.Types.ObjectId, required: true },
+    createdAt: { type: Number, default: Date.now },
+    updatedAt: { type: Number, default: Date.now },
   },
-  { timestamps: true },
+  { timestamps: false },
 );
+ConnectorsConfigSchema.pre<IConnectorsConfig>('save', function (next) {
+  if (!this.isNew) {
+    this.updatedAt = Date.now();
+  }
+  next();
+});
 
+// Pre-hook for findOneAndUpdate to update the timestamp
+ConnectorsConfigSchema.pre('findOneAndUpdate', function (next) {
+  this.set({ updatedAt: Date.now() });
+  next();
+});
 // Export the Mongoose Model
 export const ConnectorsConfig: Model<IConnectorsConfig> =
   mongoose.model<IConnectorsConfig>(

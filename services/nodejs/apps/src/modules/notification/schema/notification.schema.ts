@@ -1,4 +1,4 @@
-import mongoose, { Document, Schema, Model } from "mongoose";
+import mongoose, { Document, Schema, Model } from 'mongoose';
 
 const { ObjectId } = Schema.Types;
 
@@ -7,8 +7,8 @@ export interface INotification extends Document {
   orgId: mongoose.Types.ObjectId;
   type: string;
   link: string;
-  status: "Read" | "Unread" | "Archived";
-  origin: "Internal Service" | "External Service" | "PipesHub";
+  status: 'Read' | 'Unread' | 'Archived';
+  origin: 'Internal Service' | 'External Service' | 'PipesHub';
   initiator?: mongoose.Types.ObjectId;
   externalInitiator?: string;
   assignedTo: mongoose.Types.ObjectId;
@@ -17,37 +17,37 @@ export interface INotification extends Document {
   payload?: Record<string, any>;
   isDeleted: boolean;
   deletedBy?: mongoose.Types.ObjectId;
-  createdAt?: Date;
-  updatedAt?: Date;
+  createdAt: number;
+  updatedAt: number;
 }
 
 const notificationSchema = new Schema<INotification>(
   {
     title: {
       type: String,
-      required: [true, "Notification title is required"],
+      required: [true, 'Notification title is required'],
     },
     orgId: {
       type: ObjectId,
-      required: [true, "Organization ID is required"],
+      required: [true, 'Organization ID is required'],
     },
     type: {
       type: String,
-      required: [true, "Notification type is required"],
+      required: [true, 'Notification type is required'],
     },
     link: {
       type: String,
-      required: [true, "Link is required"],
+      required: [true, 'Link is required'],
     },
     status: {
       type: String,
-      enum: ["Read", "Unread", "Archived"],
-      default: "Unread",
+      enum: ['Read', 'Unread', 'Archived'],
+      default: 'Unread',
     },
     origin: {
       type: String,
-      enum: ["Internal Service", "External Service", "PipesHub"],
-      default: "Internal Service",
+      enum: ['Internal Service', 'External Service', 'PipesHub'],
+      default: 'Internal Service',
     },
     initiator: {
       type: ObjectId,
@@ -57,12 +57,12 @@ const notificationSchema = new Schema<INotification>(
       type: String,
       validate: {
         validator: (v: string | undefined) => !v || /\S+@\S+\.\S+/.test(v),
-        message: "Invalid email format",
+        message: 'Invalid email format',
       },
     },
     assignedTo: {
       type: ObjectId,
-      required: [true, "Assignee is required"],
+      required: [true, 'Assignee is required'],
     },
     appName: {
       type: String,
@@ -84,12 +84,29 @@ const notificationSchema = new Schema<INotification>(
       type: ObjectId,
       required: false,
     },
+    createdAt: {
+      type: Number,
+      default: Date.now,
+    },
+    updatedAt: {
+      type: Number,
+      default: Date.now,
+    },
   },
-  { timestamps: true }
+  { timestamps: false },
 );
+
+// Pre-save hook to update timestamps
+notificationSchema.pre<INotification>('save', function (next) {
+  if (!this.isNew) {
+    this.updatedAt = Date.now();
+  }
+  next();
+});
 
 // Indexes for performance improvements
 notificationSchema.index({ orgId: 1, status: 1 });
 notificationSchema.index({ assignedTo: 1, isDeleted: 1 });
 
-export const Notifications: Model<INotification> = mongoose.model<INotification>("Notifications", notificationSchema);
+export const Notifications: Model<INotification> =
+  mongoose.model<INotification>('Notifications', notificationSchema);

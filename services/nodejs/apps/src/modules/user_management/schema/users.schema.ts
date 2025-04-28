@@ -19,6 +19,8 @@ export interface User extends Document, Address {
   address?: Address;
   isDeleted?: boolean;
   deletedBy?: string;
+  createdAt?: number;
+  updatedAt?: number;
 }
 
 const userSchema = new Schema<User>(
@@ -49,14 +51,20 @@ const userSchema = new Schema<User>(
     },
     isDeleted: { type: Boolean, default: false },
     deletedBy: { type: String },
+    createdAt: { type: Number, default: Date.now },
+    updatedAt: { type: Number, default: Date.now },
   },
-  { timestamps: true },
+  { timestamps: false },
 );
 
 userSchema.pre<User>('save', async function (next) {
   try {
     if (!this.slug) {
       this.slug = await generateUniqueSlug('User');
+    }
+
+    if (!this.isNew) {
+      this.updatedAt = Date.now();
     }
     next();
   } catch (error) {

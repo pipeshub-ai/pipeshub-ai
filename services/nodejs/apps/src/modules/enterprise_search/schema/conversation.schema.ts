@@ -73,13 +73,13 @@ const feedbackSchema = new Schema<IFeedback>(
       default: 'user',
     },
     feedbackProvider: { type: Schema.Types.ObjectId },
-    timestamp: { type: Date, default: Date.now },
+    timestamp: { type: Number, default: Date.now },
     revisions: [
       {
         updatedFields: [{ type: String }],
         previousValues: { type: Map, of: Schema.Types.Mixed },
         updatedBy: { type: Schema.Types.ObjectId },
-        updatedAt: { type: Date, default: Date.now },
+        updatedAt: { type: Number, default: Date.now },
       },
     ],
     metrics: {
@@ -115,9 +115,19 @@ const messageSchema = new Schema<IMessage>(
       modelVersion: { type: String },
       aiTransactionId: { type: String },
     },
+    createdAt: { type: Number, default: Date.now },
+    updatedAt: { type: Number, default: Date.now },
   },
-  { timestamps: true },
+  { timestamps: false },
 );
+
+// Pre-save hook for message schema
+messageSchema.pre('save', function (next) {
+  if (!this.isNew) {
+    this.updatedAt = Date.now();
+  }
+  next();
+});
 
 // Schema for the overall conversation/thread
 const conversationSchema = new Schema<IConversation>(
@@ -140,10 +150,20 @@ const conversationSchema = new Schema<IConversation>(
     deletedBy: { type: Schema.Types.ObjectId },
     isArchived: { type: Boolean, default: false },
     archivedBy: { type: Schema.Types.ObjectId },
-    lastActivityAt: { type: Date, default: Date.now },
+    lastActivityAt: { type: Number, default: Date.now },
+    createdAt: { type: Number, default: Date.now },
+    updatedAt: { type: Number, default: Date.now },
   },
-  { timestamps: true },
+  { timestamps: false },
 );
+
+// Pre-save hook for conversation schema
+conversationSchema.pre('save', function (next) {
+  if (!this.isNew) {
+    this.updatedAt = Date.now();
+  }
+  next();
+});
 
 // Create additional indexes as needed
 conversationSchema.index({ orgId: 1, initiator: 1 });
@@ -151,5 +171,7 @@ conversationSchema.index({ isShared: 1 });
 conversationSchema.index({ 'messages.content': 'text' });
 
 // Export the model
-export const Conversation: Model<IConversation> =
-  mongoose.model<IConversation>('conversations', conversationSchema);
+export const Conversation: Model<IConversation> = mongoose.model<IConversation>(
+  'conversations',
+  conversationSchema,
+);

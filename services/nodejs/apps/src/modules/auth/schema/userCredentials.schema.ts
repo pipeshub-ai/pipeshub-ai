@@ -12,8 +12,8 @@ export interface IUserCredentials extends Document {
   wrongCredentialCount: number;
   isBlocked: boolean;
   isDeleted: boolean;
-  createdAt?: Date;
-  updatedAt?: Date;
+  createdAt?: number;
+  updatedAt?: number;
 }
 
 // Define the Mongoose schema
@@ -52,9 +52,18 @@ const userCredentialSchema = new Schema<IUserCredentials>(
       type: Boolean,
       default: false,
     },
+    createdAt: { type: Number, default: Date.now },
+    updatedAt: { type: Number, default: Date.now },
   },
-  { timestamps: true },
+  { timestamps: false },
 );
+
+userCredentialSchema.pre<IUserCredentials>('save', function (next) {
+  if (!this.isNew) {
+    this.updatedAt = Date.now();
+  }
+  next();
+});
 
 // Pre-hooks to enforce validation on update methods
 userCredentialSchema.pre(

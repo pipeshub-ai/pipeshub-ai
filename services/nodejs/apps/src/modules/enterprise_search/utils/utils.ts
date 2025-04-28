@@ -8,23 +8,26 @@ import {
 import { IAIResponse } from '../types/conversation.interfaces';
 import mongoose from 'mongoose';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
-import { BadRequestError, InternalServerError } from '../../../libs/errors/http.errors';
+import {
+  BadRequestError,
+  InternalServerError,
+} from '../../../libs/errors/http.errors';
 import { ICitation } from '../schema/citation.schema';
 
 export const buildUserQueryMessage = (query: string): IMessage => ({
   messageType: 'user_query',
   content: query,
   contentFormat: 'MARKDOWN',
-  createdAt: new Date(),
-  updatedAt: new Date(),
+  createdAt: Date.now(),
+  updatedAt: Date.now(),
 });
 
 export const buildAIFailureResponseMessage = (): IMessage => ({
   messageType: 'error',
-  content: "Error Generating Response, Please try again",
+  content: 'Error Generating Response, Please try again',
   contentFormat: 'MARKDOWN',
-  createdAt: new Date(),
-  updatedAt: new Date(),
+  createdAt: Date.now(),
+  updatedAt: Date.now(),
 });
 
 export const buildAIResponseMessage = (
@@ -37,8 +40,8 @@ export const buildAIResponseMessage = (
 
   return {
     messageType: 'bot_response',
-    createdAt: new Date(),
-    updatedAt: new Date(),
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
     content: aiResponse.data.answer,
     contentFormat: 'MARKDOWN',
     citations: citations.map((citation) => ({
@@ -139,7 +142,7 @@ export const buildFilter = (
     isDeleted: false,
     isArchived: false,
     $or: [
-      { userId: new mongoose.Types.ObjectId(`${userId}`), },
+      { userId: new mongoose.Types.ObjectId(`${userId}`) },
       { 'sharedWith.userId': new mongoose.Types.ObjectId(`${userId}`) },
       { isShared: true },
     ],
@@ -361,7 +364,7 @@ export const sortMessages = (
 ) => {
   return [...messages].sort((a, b) => {
     if (sortOptions.field === 'createdAt') {
-      return (a.createdAt?.getTime() || 0) - (b.createdAt?.getTime() || 0);
+      return (a.createdAt || 0) - (b.createdAt || 0);
     }
     return String(a[sortOptions.field]) > String(b[sortOptions.field]) ? 1 : -1;
   });

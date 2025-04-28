@@ -15,8 +15,8 @@ export interface IEnterpriseSemanticSearch extends Document {
   userId: mongoose.Types.ObjectId;
   citationIds: mongoose.Types.ObjectId[]; // Array of references to citation documents
   records: Record<string, any>;
-  createdAt: Date;
-  updatedAt: Date;
+  createdAt: number;
+  updatedAt: number;
 }
 
 const enterpriseSemanticSearchSchema = new Schema<IEnterpriseSemanticSearch>(
@@ -25,15 +25,17 @@ const enterpriseSemanticSearchSchema = new Schema<IEnterpriseSemanticSearch>(
     limit: { type: Number, required: true },
     orgId: { type: Schema.Types.ObjectId, required: true, index: true },
     userId: { type: Schema.Types.ObjectId, required: true, index: true },
-    citationIds: [{ 
-      type: Schema.Types.ObjectId, 
-      ref: 'citation',
-      index: true
-    }],
+    citationIds: [
+      {
+        type: Schema.Types.ObjectId,
+        ref: 'citation',
+        index: true,
+      },
+    ],
     records: {
       type: Map,
       of: String,
-      default: {}
+      default: {},
     },
     isShared: { type: Boolean, default: false },
     shareLink: { type: String },
@@ -46,9 +48,28 @@ const enterpriseSemanticSearchSchema = new Schema<IEnterpriseSemanticSearch>(
     ],
     isArchived: { type: Boolean, default: false },
     archivedBy: { type: Schema.Types.ObjectId },
+    createdAt: {
+      type: Number,
+      default: Date.now,
+    },
+    updatedAt: {
+      type: Number,
+      default: Date.now,
+    },
   },
   {
-    timestamps: true,
+    timestamps: false,
+  },
+);
+
+// Pre-save hook to update updatedAt timestamp
+enterpriseSemanticSearchSchema.pre<IEnterpriseSemanticSearch>(
+  'save',
+  function (next) {
+    if (!this.isNew) {
+      this.updatedAt = Date.now();
+    }
+    next();
   },
 );
 

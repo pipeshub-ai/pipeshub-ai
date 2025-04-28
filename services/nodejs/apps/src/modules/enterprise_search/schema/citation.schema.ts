@@ -39,8 +39,8 @@ export interface ICitation extends Document {
   chunkIndex: number;
   metadata: ICitationMetadata;
   citationType: string;
-  createdAt: Date;
-  updatedAt: Date;
+  createdAt: number;
+  updatedAt: number;
 }
 
 export interface AiSearchResponse {
@@ -91,11 +91,31 @@ const citationSchema = new Schema<ICitation, ICitationModel>(
     chunkIndex: { type: Number, required: true },
     metadata: { type: citationMetadataSchema, required: true },
     citationType: { type: String, required: true },
+    createdAt: {
+      type: Number,
+      default: Date.now,
+    },
+    updatedAt: {
+      type: Number,
+      default: Date.now,
+    },
   },
   {
-    timestamps: true,
+    timestamps: false,
   },
 );
+citationSchema.pre<ICitation>('save', function (next) {
+  if (!this.isNew) {
+    this.updatedAt = Date.now();
+  }
+  next();
+});
+
+// Pre-hook for findOneAndUpdate to update the timestamp
+citationSchema.pre('findOneAndUpdate', function (next) {
+  this.set({ updatedAt: Date.now() });
+  next();
+});
 
 // Create text index on citation content
 citationSchema.index({ content: 'text' });
