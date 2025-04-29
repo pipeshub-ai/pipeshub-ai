@@ -34,6 +34,8 @@ import axios from 'axios';
 const logger = Logger.getInstance({
   service: 'Knowledge Base Controller',
 });
+const AI_SERVICE_UNAVAILABLE_MESSAGE =
+  'AI Service is currently unavailable. Please check your network connection or try again later.';
 
 export const createRecords =
   (
@@ -256,7 +258,10 @@ export const getRecordById =
             (await aiCommand.execute()) as AIServiceResponse<IServiceRecordsResponse>;
         } catch (error: any) {
           if (error.cause && error.cause.code === 'ECONNREFUSED') {
-            throw new InternalServerError('AI Service is currently unavailable. Please check your network connection or try again later.',error);
+            throw new InternalServerError(
+              AI_SERVICE_UNAVAILABLE_MESSAGE,
+              error,
+            );
           }
           logger.error(' Failed error ', error);
           throw new InternalServerError('Failed to get AI response', error);
@@ -1077,7 +1082,10 @@ export const reindexRecord =
             (await aiCommand.execute()) as AIServiceResponse<IServiceRecordsResponse>;
         } catch (error: any) {
           if (error.cause && error.cause.code === 'ECONNREFUSED') {
-            throw new InternalServerError('AI Service is currently unavailable. Please check your network connection or try again later.',error);
+            throw new InternalServerError(
+              AI_SERVICE_UNAVAILABLE_MESSAGE,
+              error,
+            );
           }
           logger.error(' Failed error ', error);
           throw new InternalServerError('Failed to get AI response', error);

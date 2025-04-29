@@ -54,6 +54,8 @@ import Citation, {
 
 const logger = Logger.getInstance({ service: 'Enterprise Search Service' });
 const rsAvailable = process.env.REPLICA_SET_AVAILABLE === 'true';
+const AI_SERVICE_UNAVAILABLE_MESSAGE =
+  'AI Service is currently unavailable. Please check your network connection or try again later.';
 
 export const createConversation =
   (appConfig: AppConfig) =>
@@ -180,10 +182,7 @@ export const createConversation =
           ? await savedConversation.save({ session })
           : await savedConversation.save();
         if (error.cause && error.cause.code === 'ECONNREFUSED') {
-          throw new InternalServerError(
-            'AI Service is currently unavailable. Please check your network connection or try again later.',
-            error,
-          );
+          throw new InternalServerError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
         }
         throw error;
       }
@@ -333,7 +332,7 @@ export const addMessage =
           } catch (error: any) {
             if (error.cause && error.cause.code === 'ECONNREFUSED') {
               throw new InternalServerError(
-                'AI Service is currently unavailable. Please check your network connection or try again later.',
+                AI_SERVICE_UNAVAILABLE_MESSAGE,
                 error,
               );
             }
@@ -417,7 +416,7 @@ export const addMessage =
             : await conversation.save();
           if (error.cause && error.cause.code === 'ECONNREFUSED') {
             throw new InternalServerError(
-              'AI Service is currently unavailable. Please check your network connection or try again later.',
+              AI_SERVICE_UNAVAILABLE_MESSAGE,
               error,
             );
           }
@@ -1255,7 +1254,7 @@ export const regenerateAnswers =
         } catch (error: any) {
           if (error.cause && error.cause.code === 'ECONNREFUSED') {
             throw new InternalServerError(
-              'AI Service is currently unavailable. Please check your network connection or try again later.',
+              AI_SERVICE_UNAVAILABLE_MESSAGE,
               error,
             );
           }
@@ -1923,16 +1922,10 @@ export const search =
           (await aiCommand.execute()) as AIServiceResponse<AiSearchResponse>;
       } catch (error: any) {
         if (error.cause && error.cause.code === 'ECONNREFUSED') {
-          throw new InternalServerError(
-            'AI Service is currently unavailable. Please check your network connection or try again later.',
-            error,
-          );
+          throw new InternalServerError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
         }
         logger.error(' Failed error ', error);
-        throw new InternalServerError(
-          'AI Service is currently unavailable. Please check your network connection or try again later.',
-          error,
-        );
+        throw new InternalServerError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
       }
       if (!aiResponse || aiResponse.statusCode !== 200 || !aiResponse.data) {
         throw new InternalServerError(
