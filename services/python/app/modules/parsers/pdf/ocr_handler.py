@@ -40,8 +40,8 @@ class OCRStrategy(ABC):
 
             # Log detailed image information
             significant_images = 0
-            MIN_IMAGE_WIDTH = 300  # Minimum width in pixels for a significant image
-            MIN_IMAGE_HEIGHT = 300  # Minimum height in pixels for a significant image
+            MIN_IMAGE_WIDTH = 500  # Minimum width in pixels for a significant image
+            MIN_IMAGE_HEIGHT = 500  # Minimum height in pixels for a significant image
 
             for img_index, img in enumerate(images):
                 # img tuple contains: (xref, smask, width, height, bpc, colorspace, ...)
@@ -60,7 +60,7 @@ class OCRStrategy(ABC):
             # Multiple criteria for OCR need
             has_minimal_text = len(text) < 100  # Less than 100 characters
             has_significant_images = (
-                significant_images > 0
+                significant_images > 2
             )  # Contains substantial images
             text_density = (
                 sum((w[2] - w[0]) * (w[3] - w[1]) for w in words) / page_area

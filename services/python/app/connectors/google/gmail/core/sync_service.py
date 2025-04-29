@@ -664,22 +664,27 @@ class BaseGmailSyncService(ABC):
                                         ).has(entity_id):
                                             entityType = CollectionNames.GROUPS.value
                                             permType = "GROUP"
-                                        else:
-                                            permType = "USER"
-                                            continue
-
-                                        permissions.append(
-                                            {
-                                                "_from": f"{entityType}/{entity_id}",
-                                                "_to": f"records/{attachment_key}",
-                                                "role": role,
-                                                "externalPermissionId": None,
-                                                "type": permType,
-                                                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                                                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                                                "lastUpdatedTimestampAtSource": get_epoch_timestamp_in_ms(),
-                                            }
+                                    else:
+                                        # Save entity in people collection
+                                        entityType = CollectionNames.PEOPLE.value
+                                        entity_id = str(uuid.uuid4())
+                                        permType = "USER"
+                                        await self.arango_service.save_to_people_collection(
+                                            entity_id, email
                                         )
+
+                                    permissions.append(
+                                        {
+                                            "_from": f"{entityType}/{entity_id}",
+                                            "_to": f"records/{attachment_key}",
+                                            "role": role,
+                                            "externalPermissionId": None,
+                                            "type": permType,
+                                            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                                            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                                            "lastUpdatedTimestampAtSource": get_epoch_timestamp_in_ms(),
+                                        }
+                                    )
                             else:
                                 self.logger.warning(
                                     "⚠️ Could not find attachment key for permission relation: attachment %s",

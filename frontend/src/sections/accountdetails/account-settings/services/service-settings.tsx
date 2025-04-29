@@ -53,15 +53,15 @@ export default function ServiceSettings() {
     <Box sx={{ width: '100%' }}>
       <Box sx={{ borderBottom: 1, borderColor: 'divider', pl: 2 }}>
         <Tabs value={tabValue} onChange={handleTabChange} aria-label="services tabs">
-          <Tab label="External Services" id="services-tab-0" aria-controls="services-tabpanel-0" />
-          <Tab label="Internal Services" id="services-tab-1" aria-controls="services-tabpanel-1" />
+          <Tab label="Internal Services" id="services-tab-0" aria-controls="services-tabpanel-0" />
+          <Tab label="External Services" id="services-tab-1" aria-controls="services-tabpanel-1" />
         </Tabs>
       </Box>
       <TabPanel value={tabValue} index={0}>
-        <ExternalServicesSettings />
+        <InternalServicesSettings />
       </TabPanel>
       <TabPanel value={tabValue} index={1}>
-        <InternalServicesSettings />
+        <ExternalServicesSettings />
       </TabPanel>
     </Box>
   );

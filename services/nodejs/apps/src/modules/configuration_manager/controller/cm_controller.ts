@@ -1440,15 +1440,12 @@ export const setFrontendUrl =
       const { url } = req.body;
       const urls =
         (await keyValueStoreService.get<string>(configPaths.endpoint)) || '{}';
-
       let parsedUrls = JSON.parse(urls);
-
       // Preserve existing `auth` object if it exists, otherwise create a new one
       parsedUrls.frontend = {
         ...parsedUrls.frontend,
         publicEndpoint: url,
       };
-
       // Save the updated object back to configPaths.endpoint
       await keyValueStoreService.set<string>(
         configPaths.endpoint,
@@ -1463,7 +1460,6 @@ export const setFrontendUrl =
       if (response.statusCode != 200) {
         throw new BadRequestError('Error updating configs');
       }
-
       res.status(200).json({
         message: 'Frontend Url saved successfully',
       });

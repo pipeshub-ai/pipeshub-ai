@@ -1,16 +1,20 @@
+import type {
+  ReactNode} from 'react';
 import type { AxiosRequestConfig } from 'axios';
+
 import axios from 'axios';
-import { CONFIG } from 'src/config-global';
 import React, {
-  useState,
-  createContext,
-  useContext,
-  ReactNode,
-  useEffect,
   useMemo,
+  useState,
+  useEffect,
+  useContext,
   useCallback,
+  createContext,
 } from 'react';
-import { Snackbar, Alert } from '@mui/material';
+
+import { Alert, Snackbar } from '@mui/material';
+
+import { CONFIG } from 'src/config-global';
 
 // ----------------------------------------------------------------------
 

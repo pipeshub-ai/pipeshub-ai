@@ -109,6 +109,7 @@ class DriveUserService:
 
             try:
                 self.service = build("drive", "v3", credentials=creds)
+                self.logger.debug("Self Drive Service: %s", self.service)
             except Exception as e:
                 raise DriveOperationError(
                     "Failed to build Drive service: " + str(e),
@@ -160,6 +161,7 @@ class DriveUserService:
             )
 
             self.service = build("drive", "v3", credentials=creds)
+            self.logger.debug("Self Drive Service: %s", self.service)
 
             # Update token expiry time
             self.token_expiry = datetime.fromtimestamp(
@@ -174,6 +176,7 @@ class DriveUserService:
             self.service = build(
                 "drive", "v3", credentials=self.credentials, cache_discovery=False
             )
+            self.logger.debug("Self Drive Service: %s", self.service)
             return True
 
         except Exception as e:

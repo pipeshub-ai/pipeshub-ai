@@ -1,11 +1,11 @@
 import asyncio
 import json
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
 from typing import Dict, Optional
 
 from app.config.configuration_service import ConfigurationService
 from app.config.utils.named_constants.arangodb_constants import CollectionNames
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class AbstractGmailWebhookHandler(ABC):
@@ -52,7 +52,7 @@ class AbstractGmailWebhookHandler(ABC):
     async def _log_headers(self, headers: Dict) -> Dict:
         """Log webhook headers and return important headers"""
         try:
-            timestamp = datetime.now(timezone.utc)
+            timestamp = get_epoch_timestamp_in_ms()
 
             important_headers = {
                 "resource_id": headers.get("x-goog-resource-id"),
@@ -60,7 +60,7 @@ class AbstractGmailWebhookHandler(ABC):
                 "resource_state": headers.get("x-goog-resource-state"),
                 "channel_id": headers.get("x-goog-channel-id"),
                 "message_number": headers.get("x-goog-message-number"),
-                "timestamp": timestamp.isoformat(),
+                "timestamp": timestamp,
                 "handler_type": self.handler_type,
             }
 
@@ -82,7 +82,7 @@ class AbstractGmailWebhookHandler(ABC):
             )
             return {
                 "resource_state": headers.get("x-goog-resource-state", "unknown"),
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": get_epoch_timestamp_in_ms(),
                 "handler_type": self.handler_type,
             }
 

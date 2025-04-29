@@ -134,7 +134,7 @@
     "stylis-plugin-rtl": "^2.1.1",
     "swr": "^2.2.5",
     "turndown": "^7.2.0",
-    "xlsx": "^0.18.5",
+    "xlsx": "file:packages/xlsx-0.20.3.tgz",
     "yet-another-react-lightbox": "^3.21.4",
     "zod": "^3.23.8"
   },

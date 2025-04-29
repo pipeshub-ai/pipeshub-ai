@@ -445,7 +445,6 @@ class IndexingPipeline:
                     config_node_constants.AI_MODELS.value
                 )
                 embedding_configs = ai_models["embedding"]
-            self.logger.info(f"Embedding configs: {embedding_configs}")
             embedding_model = None
 
             for config in embedding_configs:
@@ -457,7 +456,6 @@ class IndexingPipeline:
                         azure_endpoint=config['configuration']['endpoint'],
                         azure_api_version=AZURE_EMBEDDING_API_VERSION,
                     )
-
                 elif provider == EmbeddingProvider.OPENAI_PROVIDER.value:
                     embedding_model = OpenAIEmbeddingConfig(
                         model=config["configuration"]["model"],
@@ -503,10 +501,6 @@ class IndexingPipeline:
                     "Failed to get embedding model: " + str(e),
                     details={"error": str(e)},
                 )
-                # embedding_model = DEFAULT_EMBEDDING_MODEL
-                # self.dense_embeddings = await get_default_embedding_model()
-                # sample_embedding = self.dense_embeddings.embed_query("test")
-                # embedding_size = len(sample_embedding)
 
             self.logger.info(
                 f"Using embedding model: {embedding_model}, embedding_size: {embedding_size}"

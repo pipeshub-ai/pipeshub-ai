@@ -154,7 +154,8 @@ class ArangoService:
                 FOR records IN @@anyone
                 FILTER records.organization == @orgId
                 FOR record IN @@records
-                FILTER record._key == records.file_key
+                FILTER record != null
+                    AND record._key == records.file_key
                 RETURN record
             )
 
@@ -319,7 +320,11 @@ class ArangoService:
 
             # Execute with profiling enabled
             cursor = self.db.aql.execute(
-                query, bind_vars=bind_vars, profile=2, fail_on_warning=True, stream=True
+                query,
+                bind_vars=bind_vars,
+                profile=2,
+                fail_on_warning=False,
+                stream=True
             )
             result = list(cursor)
             if result:

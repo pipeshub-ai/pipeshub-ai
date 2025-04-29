@@ -603,7 +603,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.get(
     '/frontendPublicUrl',
     authMiddleware.authenticate,
-    userAdminCheck,
     metricsMiddleware(container),
     getFrontendUrl(keyValueStoreService),
   );
@@ -624,7 +623,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.get(
     '/connectorPublicUrl',
     authMiddleware.authenticate,
-    userAdminCheck,
     metricsMiddleware(container),
     getConnectorPublicUrl(keyValueStoreService),
   );

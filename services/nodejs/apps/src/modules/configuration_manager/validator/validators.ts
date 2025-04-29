@@ -290,6 +290,14 @@ export const urlSchema = z.object({
   }),
 });
 
+
+export const publicUrlSchema = z.object({
+  body: z.object({
+    frontendUrl: z.string().url().optional(),
+    connectorUrl: z.string().url().optional(),
+  }),
+});
+
 export const metricsCollectionToggleSchema = z.object({
   body: z
     .object({

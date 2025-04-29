@@ -32,6 +32,7 @@ class config_node_constants(Enum):
     KAFKA = "/services/kafka"
     ENDPOINTS = "/services/endpoints"
     SECRET_KEYS = "/services/secretKeys"
+    STORAGE = "/services/storage"
 
     # Non-service paths
     # LOG_LEVEL = "/logLevel"
@@ -241,7 +242,8 @@ class ConfigurationService:
             value_json = json.dumps(value)
 
             EXCLUDED_KEYS = [
-                "/services/endpoints",
+                config_node_constants.ENDPOINTS.value,
+                config_node_constants.STORAGE.value,
             ]
             if key not in EXCLUDED_KEYS:
                 # Encrypt the value
@@ -333,7 +335,10 @@ class ConfigurationService:
             if encrypted_value is not None:
                 try:
                     # Determine if value needs decryption
-                    UNENCRYPTED_KEYS = ["/services/endpoints"]
+                    UNENCRYPTED_KEYS = [
+                        config_node_constants.ENDPOINTS.value,
+                        config_node_constants.STORAGE.value,
+                    ]
                     needs_decryption = key not in UNENCRYPTED_KEYS
 
                     # Get decrypted or raw value

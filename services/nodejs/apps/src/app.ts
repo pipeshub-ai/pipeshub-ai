@@ -79,7 +79,6 @@ export class Application {
       // Loads configuration
       const configurationManagerConfig = loadConfigurationManagerConfig();
       const appConfig = await loadAppConfig();
-      console.log(appConfig);
 
       this.tokenManagerContainer = await TokenManagerContainer.initialize(
         configurationManagerConfig,

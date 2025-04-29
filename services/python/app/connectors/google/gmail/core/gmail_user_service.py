@@ -129,6 +129,7 @@ class GmailUserService:
 
             try:
                 self.service = build("gmail", "v1", credentials=creds)
+                self.logger.debug("Self Gmail Service: %s", self.service)
             except Exception as e:
                 raise MailOperationError(
                     "Failed to build Gmail service: " + str(e),
@@ -181,7 +182,7 @@ class GmailUserService:
             )
 
             self.service = build("gmail", "v1", credentials=creds)
-
+            self.logger.debug("Self Gmail Service: %s", self.service)
             # Update token expiry time
             self.token_expiry = datetime.fromtimestamp(
                 creds_data.get("access_token_expiry_time", 0) / 1000, tz=timezone.utc
@@ -201,6 +202,7 @@ class GmailUserService:
                 self.service = build(
                     "gmail", "v1", credentials=self.credentials, cache_discovery=False
                 )
+                self.logger.debug("Self Gmail Service: %s", self.service)
             except Exception as e:
                 raise MailOperationError(
                     "Failed to build Gmail service: " + str(e),
@@ -727,10 +729,7 @@ class GmailUserService:
 
             try:
                 async with self.google_limiter:
-                    request_body = {"topicName": topic, "labelIds": ["INBOX"]}
-                    # self.service.users().stop(
-                    #     userId=user_id,
-                    # )
+                    request_body = {"topicName": topic, "labelIds": ["INBOX", "SENT"]}
                     response = (
                         self.service.users()
                         .watch(userId=user_id, body=request_body)
@@ -808,10 +807,11 @@ class GmailUserService:
                             userId=user_email,
                             startHistoryId=history_id,
                             labelId="INBOX",
-                            historyTypes=["messageAdded", "messageDeleted"],
+                            historyTypes=["messageAdded", "messageDeleted", "labelAdded"],
                         )
                         .execute()
                     )
+                    self.logger.info(f"Inbox response: {inbox_response}")
 
                     sent_response = (
                         self.service.users()
@@ -820,10 +820,11 @@ class GmailUserService:
                             userId=user_email,
                             startHistoryId=history_id,
                             labelId="SENT",
-                            historyTypes=["messageAdded", "messageDeleted"],
+                            historyTypes=["messageAdded", "messageDeleted", "labelAdded"],
                         )
                         .execute()
                     )
+                    self.logger.info(f"Sent response: {sent_response}")
 
             except HttpError as e:
                 if e.resp.status == 404:

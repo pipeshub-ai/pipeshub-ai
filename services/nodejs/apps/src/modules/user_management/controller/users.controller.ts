@@ -718,7 +718,6 @@ export class UserController {
       if (!emails) {
         throw new BadRequestError('emails are required');
       }
-      console.log(this.config);
 
       const orgId = req.user?.orgId;
       // Check if emails array is provided

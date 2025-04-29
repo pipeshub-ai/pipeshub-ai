@@ -34,7 +34,9 @@ import SmtpConfigStep from './smtp-config';
 import StorageConfigStep from './storage-config';
 import ConnectorConfigStep from './connector-config';
 import EmbeddingConfigStep from './embedding-config';
+import UrlConfigStep from './internal-services-stepper';
 
+import type { UrlFormValues } from './internal-services-stepper';
 import type {
   LlmFormValues,
   SmtpFormValues,
@@ -46,7 +48,7 @@ import type {
 } from './types';
 
 // Updated steps to include Storage
-const steps: string[] = ['LLM', 'Embeddings', 'Storage', 'Connector', 'SMTP'];
+const steps: string[] = ['LLM', 'Embeddings', 'Storage', 'PublicUrls', 'Connector', 'SMTP'];
 
 // API base URLs
 const API_BASE_URL = '/api/v1/configurationManager';
@@ -81,12 +83,14 @@ const ConfigurationStepper: React.FC<ConfigurationStepperProps> = ({ open, onClo
     embedding: boolean;
     storage: boolean; // Add storage step
     connector: boolean;
+    publicUrls: boolean;
     smtp: boolean;
   }>({
     llm: false,
     embedding: false,
     storage: false,
     connector: false,
+    publicUrls: false,
     smtp: false,
   });
 
@@ -95,6 +99,7 @@ const ConfigurationStepper: React.FC<ConfigurationStepperProps> = ({ open, onClo
   const [embeddingValues, setEmbeddingValues] = useState<EmbeddingFormValues | null>(null);
   const [storageValues, setStorageValues] = useState<StorageFormValues | null>(null);
   const [connectorValues, setConnectorValues] = useState<ConnectorFormValues | null>(null);
+  const [urlValues, setUrlValues] = useState<UrlFormValues | null>(null);
   const [smtpValues, setSmtpValues] = useState<SmtpFormValues | null>(null);
   const [serviceCredentialsFile, setServiceCredentialsFile] = useState<File | null>(null);
   const [adminEmail, setAdminEmail] = useState<string>('');
@@ -112,6 +117,7 @@ const ConfigurationStepper: React.FC<ConfigurationStepperProps> = ({ open, onClo
         llm: false,
         embedding: false,
         storage: false,
+        publicUrls: false,
         connector: false,
         smtp: false,
       });
@@ -150,7 +156,9 @@ const ConfigurationStepper: React.FC<ConfigurationStepperProps> = ({ open, onClo
     onClose();
   };
 
-  const handleSkipStep = (step: 'embedding' | 'storage' | 'connector' | 'smtp'): void => {
+  const handleSkipStep = (
+    step: 'embedding' | 'storage' | 'publicUrls' | 'connector' | 'smtp'
+  ): void => {
     // Mark the step as skipped
     setSkipSteps((prev) => ({ ...prev, [step]: true }));
 
@@ -158,6 +166,9 @@ const ConfigurationStepper: React.FC<ConfigurationStepperProps> = ({ open, onClo
       setEmbeddingValues(null);
     }
 
+    if (step === 'publicUrls') {
+      setUrlValues(null);
+    }
     // If skipping storage, set default local storage values
     if (step === 'storage') {
       const defaultLocalStorage: StorageFormValues = {
@@ -169,7 +180,7 @@ const ConfigurationStepper: React.FC<ConfigurationStepperProps> = ({ open, onClo
     }
 
     // If this is the last step (SMTP), submit all configurations
-    if (step === 'smtp' && activeStep === 4) {
+    if (step === 'smtp' && activeStep === 5) {
       submitAllConfigurations();
     } else {
       // Otherwise, move to the next step
@@ -243,17 +254,39 @@ const ConfigurationStepper: React.FC<ConfigurationStepperProps> = ({ open, onClo
       return;
     }
 
-    // For Connector step
     if (activeStep === 3) {
       // If already marked as skipped, just go to the next step
-      if (skipSteps.connector) {
+      if (skipSteps.publicUrls) {
         setActiveStep(4);
+        return;
+      }
+
+      // If we already have URL values, just go to the next step
+      if (urlValues) {
+        setActiveStep(4);
+        return;
+      }
+
+      // Otherwise, try to submit the form or skip
+      const urlFormSubmitted = await submitUrlForm();
+      if (!urlFormSubmitted) {
+        // URL is not required, so skip if invalid
+        handleSkipStep('publicUrls');
+        return;
+      }
+      setActiveStep(4);
+    }
+    // For Connector step
+    if (activeStep === 4) {
+      // If already marked as skipped, just go to the next step
+      if (skipSteps.connector) {
+        setActiveStep(5);
         return;
       }
 
       // If we already have connector values, just go to the next step
       if (connectorValues) {
-        setActiveStep(4);
+        setActiveStep(5);
         return;
       }
 
@@ -263,7 +296,7 @@ const ConfigurationStepper: React.FC<ConfigurationStepperProps> = ({ open, onClo
         handleSkipStep('connector');
         return;
       }
-      setActiveStep(4);
+      setActiveStep(5);
     }
   };
 
@@ -316,6 +349,40 @@ const ConfigurationStepper: React.FC<ConfigurationStepperProps> = ({ open, onClo
         handleNext();
       }
     }, 0);
+  };
+
+  const handleUrlSubmit = async (data: UrlFormValues): Promise<void> => {
+    try {
+      setIsSubmitting(true);
+
+      // Save the URL data to state
+      setUrlValues(data);
+      setSkipSteps((prev) => ({ ...prev, publicUrls: false }));
+
+      // Create payload for API call
+
+      // Only add frontendUrl to payload if it exists and is not empty
+      if (data.frontendUrl && data.frontendUrl.trim() !== '') {
+        await axios.post(`${API_BASE_URL}/frontendPublicUrl`, { url: data.frontendUrl });
+      }
+
+      // Only add connectorUrl to payload if it exists and is not empty
+      if (data.connectorUrl && data.connectorUrl.trim() !== '') {
+        await axios.post(`${API_BASE_URL}/connectorPublicUrl`, { url: data.connectorUrl });
+      }
+
+      // Show success message
+      setSnackbar({
+        open: true,
+        message: 'URL configuration saved successfully',
+        severity: 'success',
+      });
+    } catch (error: any) {
+      console.error('Error saving URL configuration:', error);
+      setSubmissionError(error.response?.data?.message || 'Failed to save URL configuration');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const handleConnectorSubmit = (data: ConnectorFormValues, file: File | null): void => {
@@ -446,6 +513,22 @@ const ConfigurationStepper: React.FC<ConfigurationStepperProps> = ({ open, onClo
       return false;
     } catch (error) {
       console.error('Error validating storage form:', error);
+      return false;
+    }
+  };
+  const submitUrlForm = async (): Promise<boolean> => {
+    try {
+      // Method 1: Use the window method
+      if (typeof (window as any).submitUrlForm === 'function') {
+        const result = await Promise.resolve((window as any).submitUrlForm());
+        // Wait for state to update
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        return result === true; // Ensure it's explicitly true
+      }
+
+      return false;
+    } catch (error) {
+      console.error('Error validating URL form:', error);
       return false;
     }
   };
@@ -929,6 +1012,38 @@ const ConfigurationStepper: React.FC<ConfigurationStepperProps> = ({ open, onClo
       }
 
       case 3: {
+        // Public URLs step
+        // IMPORTANT: Reset the skip state when user tries to continue
+        if (skipSteps.publicUrls) {
+          // If user wants to continue instead of skip now, we should validate
+          setSkipSteps((prev) => ({ ...prev, publicUrls: false }));
+        }
+
+        // Check if there's any input in the URL form
+        const hasUrlInput =
+          typeof (window as any).hasUrlInput === 'function' ? (window as any).hasUrlInput() : false;
+
+        if (hasUrlInput) {
+          // If there's any input, validate all fields
+          const urlSuccess = await submitUrlForm();
+          if (!urlSuccess) {
+            setSubmissionError('Please complete all required URL fields or use the "Skip" button.');
+            return;
+          }
+
+          // Submit the URL configuration immediately upon successful validation
+        } else {
+          // No input - suggest using the Skip button
+          setSubmissionError(
+            'Please use the "Skip" button if you don\'t want to configure public URLs.'
+          );
+          return;
+        }
+
+        setActiveStep(4);
+        break;
+      }
+      case 4: {
         // Connector step
         // IMPORTANT: Reset the skip state when user tries to continue
         // This ensures validation is applied even if previously skipped
@@ -960,11 +1075,11 @@ const ConfigurationStepper: React.FC<ConfigurationStepperProps> = ({ open, onClo
           return;
         }
 
-        setActiveStep(4);
+        setActiveStep(5);
         break;
       }
 
-      case 4: {
+      case 5: {
         // SMTP step (final)
         // IMPORTANT: Reset the skip state when user tries to continue
         // This ensures validation is applied even if previously skipped
@@ -1032,7 +1147,16 @@ const ConfigurationStepper: React.FC<ConfigurationStepperProps> = ({ open, onClo
             initialValues={storageValues}
           />
         );
+
       case 3:
+        return (
+          <UrlConfigStep
+            onSubmit={handleUrlSubmit}
+            onSkip={() => handleSkipStep('publicUrls')}
+            initialValues={urlValues}
+          />
+        );
+      case 4:
         return (
           <ConnectorConfigStep
             onSubmit={handleConnectorSubmit}
@@ -1048,7 +1172,7 @@ const ConfigurationStepper: React.FC<ConfigurationStepperProps> = ({ open, onClo
             }
           />
         );
-      case 4:
+      case 5:
         return (
           <SmtpConfigStep
             onSubmit={handleSmtpSubmit}
@@ -1111,6 +1235,9 @@ const ConfigurationStepper: React.FC<ConfigurationStepperProps> = ({ open, onClo
                   handleSkipStep('storage');
                   break;
                 case 3:
+                  handleSkipStep('publicUrls');
+                  break;
+                case 4:
                   handleSkipStep('connector');
                   break;
                 default:
@@ -1166,6 +1293,8 @@ const ConfigurationStepper: React.FC<ConfigurationStepperProps> = ({ open, onClo
         case 2:
           return skipSteps.storage || storageValues ? 'completed' : undefined;
         case 3:
+          return skipSteps.publicUrls || urlValues ? 'completed' : undefined;
+        case 4:
           return skipSteps.connector || connectorValues ? 'completed' : undefined;
         default:
           return undefined;
