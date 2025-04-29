@@ -608,7 +608,6 @@ const ChatInterface = () => {
         }));
       }
     } catch (error) {
-      console.log(error);
       const errorMessage: FormattedMessage = {
         type: 'bot',
         content: 'Sorry, I encountered an error processing your request.',

@@ -140,6 +140,7 @@ const ConfigurationStepper: React.FC<ConfigurationStepperProps> = ({ open, onClo
     try {
       setIsSubmitting(true);
       // Only update status to 'skipped' when explicitly clicking Cancel
+      await submitAllConfigurations();
       await updateOnboardingStatus('skipped');
     } catch (error) {
       console.error('Error updating onboarding status:', error);
@@ -1379,7 +1380,7 @@ const ConfigurationStepper: React.FC<ConfigurationStepperProps> = ({ open, onClo
           disabled={isSubmitting}
           aria-label="close"
         >
-          <Iconify icon={closeIcon} />
+          {activeStep >= 1 && <Iconify icon={closeIcon} />}
         </IconButton>
       </DialogTitle>
 
