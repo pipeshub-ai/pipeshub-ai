@@ -1,6 +1,5 @@
 import asyncio
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator
 
 import httpx
@@ -12,10 +11,12 @@ from fastapi.responses import JSONResponse
 from app.api.middlewares.auth import authMiddleware
 from app.api.routes.agent import router as agent_router
 from app.api.routes.chatbot import router as chatbot_router
+from app.api.routes.health import router as health_router
 from app.api.routes.records import router as records_router
 from app.api.routes.search import router as search_router
 from app.config.configuration_service import config_node_constants
 from app.setups.query_setup import AppContainer
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 container = AppContainer()
 
@@ -158,9 +159,7 @@ async def health_check():
                     content={
                         "status": "fail",
                         "error": f"Connector service unhealthy: {connector_response.text}",
-                        "timestamp": datetime.now(
-                            timezone(timedelta(hours=5, minutes=30))
-                        ).isoformat(),
+                        "timestamp": get_epoch_timestamp_in_ms(),
                     },
                 )
 
@@ -168,9 +167,7 @@ async def health_check():
                 status_code=200,
                 content={
                     "status": "healthy",
-                    "timestamp": datetime.now(
-                        timezone(timedelta(hours=5, minutes=30))
-                    ).isoformat(),
+                    "timestamp": get_epoch_timestamp_in_ms(),
                 },
             )
     except httpx.RequestError as e:
@@ -179,9 +176,7 @@ async def health_check():
             content={
                 "status": "fail",
                 "error": f"Failed to connect to connector service: {str(e)}",
-                "timestamp": datetime.now(
-                    timezone(timedelta(hours=5, minutes=30))
-                ).isoformat(),
+                "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
     except Exception as e:
@@ -190,9 +185,7 @@ async def health_check():
             content={
                 "status": "fail",
                 "error": str(e),
-                "timestamp": datetime.now(
-                    timezone(timedelta(hours=5, minutes=30))
-                ).isoformat(),
+                "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
 
@@ -202,6 +195,7 @@ app.include_router(search_router, prefix="/api/v1")
 app.include_router(chatbot_router, prefix="/api/v1")
 app.include_router(records_router, prefix="/api/v1")
 app.include_router(agent_router, prefix="/api/v1")
+app.include_router(health_router, prefix="/api/v1")
 
 
 def run(host: str = "0.0.0.0", port: int = 8000, reload: bool = True):

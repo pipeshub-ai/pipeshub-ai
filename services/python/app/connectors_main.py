@@ -1,6 +1,5 @@
 import asyncio
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator
 
 import uvicorn
@@ -18,6 +17,7 @@ from app.setups.connector_setup import (
     initialize_enterprise_account_services_fn,
     initialize_individual_account_services_fn,
 )
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 container = AppContainer()
 
@@ -405,9 +405,7 @@ async def health_check():
             status_code=200,
             content={
                 "status": "healthy",
-                "timestamp": datetime.now(
-                    timezone(timedelta(hours=5, minutes=30))
-                ).isoformat(),
+                "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
     except Exception as e:
@@ -416,9 +414,7 @@ async def health_check():
             content={
                 "status": "fail",
                 "error": str(e),
-                "timestamp": datetime.now(
-                    timezone(timedelta(hours=5, minutes=30))
-                ).isoformat(),
+                "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
 

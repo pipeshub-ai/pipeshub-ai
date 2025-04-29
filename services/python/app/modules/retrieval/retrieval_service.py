@@ -33,6 +33,7 @@ from app.core.llm_service import (
     OpenAILLMConfig,
 )
 from app.exceptions.fastapi_responses import Status
+from app.exceptions.indexing_exceptions import IndexingError
 from app.modules.retrieval.retrieval_arango import ArangoService
 from app.utils.embeddings import get_default_embedding_model
 
@@ -150,13 +151,14 @@ class RetrievalService:
             self.logger.error(f"Error getting LLM: {str(e)}")
             return None
 
-    async def get_embedding_model_instance(self):
+    async def get_embedding_model_instance(self, embedding_configs = None):
         try:
             self.logger.info("Getting embedding model")
-            ai_models = await self.config_service.get_config(
-                config_node_constants.AI_MODELS.value
-            )
-            embedding_configs = ai_models["embedding"]
+            if not embedding_configs:
+                ai_models = await self.config_service.get_config(
+                    config_node_constants.AI_MODELS.value
+                )
+                embedding_configs = ai_models["embedding"]
             embedding_model = None
             for config in embedding_configs:
                 provider = config["provider"]
@@ -181,6 +183,7 @@ class RetrievalService:
                     embedding_model =   SentenceTransformersEmbeddingConfig(
                       model=config['configuration']['model'],
                     )
+
             try:
                 if not embedding_model:
                     self.logger.info(
@@ -206,12 +209,12 @@ class RetrievalService:
                 embedding_size = len(sample_embedding)
             except Exception as e:
                 self.logger.warning(
-                    f"Error with configured embedding model, falling back to default: {str(e)}"
+                    f"Error with configured embedding model: {str(e)}"
                 )
-                embedding_model = DEFAULT_EMBEDDING_MODEL
-                self.dense_embeddings = await get_default_embedding_model()
-                sample_embedding = self.dense_embeddings.embed_query("test")
-                embedding_size = len(sample_embedding)
+                raise IndexingError(
+                    "Failed to get embedding model: " + str(e),
+                    details={"error": str(e)},
+                )
 
             self.logger.info(
                 f"Using embedding model: {embedding_model}, embedding_size: {embedding_size}"
