@@ -78,7 +78,7 @@ export const createConversation =
         initiator: userId,
         title: req.body.query.slice(0, 100),
         messages: [userQueryMessage] as IMessageDocument[],
-        lastActivityAt: new Date(),
+        lastActivityAt: Date.now(),
       };
 
       const conversation = new Conversation(userConversationData);
@@ -140,7 +140,7 @@ export const createConversation =
         ) as IMessageDocument;
         // Add the AI message to the conversation
         savedConversation.messages.push(aiResponseMessage);
-        savedConversation.lastActivityAt = new Date();
+        savedConversation.lastActivityAt = Date.now();
 
         const updatedConversation = session
           ? await savedConversation.save({ session })
@@ -175,12 +175,15 @@ export const createConversation =
         const failedMessage =
           buildAIFailureResponseMessage() as IMessageDocument;
         savedConversation.messages.push(failedMessage);
-        savedConversation.lastActivityAt = new Date();
+        savedConversation.lastActivityAt = Date.now();
         session
           ? await savedConversation.save({ session })
           : await savedConversation.save();
         if (error.cause && error.cause.code === 'ECONNREFUSED') {
-          throw new InternalServerError('AI Service is currently unavailable. Please check your network connection or try again later.',error);
+          throw new InternalServerError(
+            'AI Service is currently unavailable. Please check your network connection or try again later.',
+            error,
+          );
         }
         throw error;
       }
@@ -290,7 +293,7 @@ export const addMessage =
         const userQueryMessage = buildUserQueryMessage(req.body.query);
         // First, add the user message to the existing conversation
         conversation.messages.push(userQueryMessage as IMessageDocument);
-        conversation.lastActivityAt = new Date();
+        conversation.lastActivityAt = Date.now();
 
         // Save the user message to the existing conversation first
         const savedConversation = session
@@ -329,7 +332,10 @@ export const addMessage =
               (await aiServiceCommand.execute()) as AIServiceResponse<IAIResponse>;
           } catch (error: any) {
             if (error.cause && error.cause.code === 'ECONNREFUSED') {
-              throw new InternalServerError('AI Service is currently unavailable. Please check your network connection or try again later.',error);
+              throw new InternalServerError(
+                'AI Service is currently unavailable. Please check your network connection or try again later.',
+                error,
+              );
             }
             logger.error(' Failed error ', error);
             throw new InternalServerError('Failed to get AI response', error);
@@ -364,7 +370,7 @@ export const addMessage =
           ) as IMessageDocument;
           // Add the AI message to the existing conversation
           savedConversation.messages.push(aiResponseMessage);
-          savedConversation.lastActivityAt = new Date();
+          savedConversation.lastActivityAt = Date.now();
 
           // Save the updated conversation with AI response
           const updatedConversation = session
@@ -405,12 +411,15 @@ export const addMessage =
           const failedMessage =
             buildAIFailureResponseMessage() as IMessageDocument;
           conversation.messages.push(failedMessage);
-          conversation.lastActivityAt = new Date();
+          conversation.lastActivityAt = Date.now();
           session
             ? await conversation.save({ session })
             : await conversation.save();
           if (error.cause && error.cause.code === 'ECONNREFUSED') {
-            throw new InternalServerError('AI Service is currently unavailable. Please check your network connection or try again later.',error);
+            throw new InternalServerError(
+              'AI Service is currently unavailable. Please check your network connection or try again later.',
+              error,
+            );
           }
           throw error;
         }
@@ -742,7 +751,7 @@ export const deleteConversationById = async (
           $set: {
             isDeleted: true,
             deletedBy: userId,
-            lastActivityAt: new Date(),
+            lastActivityAt: Date.now(),
           },
         },
         {
@@ -1245,7 +1254,10 @@ export const regenerateAnswers =
             (await aiCommand.execute()) as AIServiceResponse<IAIResponse>;
         } catch (error: any) {
           if (error.cause && error.cause.code === 'ECONNREFUSED') {
-            throw new InternalServerError('AI Service is currently unavailable. Please check your network connection or try again later.',error);
+            throw new InternalServerError(
+              'AI Service is currently unavailable. Please check your network connection or try again later.',
+              error,
+            );
           }
           logger.error(' Failed error ', error);
           throw new InternalServerError('Failed to get AI response', error);
@@ -1286,7 +1298,7 @@ export const regenerateAnswers =
           {
             $set: {
               [`messages.${conversation.messages.length - 1}`]: newMessage,
-              lastActivityAt: new Date(),
+              lastActivityAt: Date.now(),
             },
           },
           {
@@ -1498,7 +1510,7 @@ export const updateFeedback = async (
       const feedbackEntry = {
         ...req.body,
         feedbackProvider: userId,
-        timestamp: new Date(),
+        timestamp: Date.now(),
         metrics: {
           timeToFeedback:
             Date.now() - Number(conversation.messages[messageIndex]?.createdAt),
@@ -1624,7 +1636,7 @@ export const archiveConversation = async (
             $set: {
               isArchived: true,
               archivedBy: userId,
-              lastActivityAt: new Date(),
+              lastActivityAt: Date.now(),
             },
           },
           {
@@ -1737,7 +1749,7 @@ export const unarchiveConversation = async (
             $set: {
               isArchived: false,
               archivedBy: null,
-              lastActivityAt: new Date(),
+              lastActivityAt: Date.now(),
             },
           },
           {
@@ -1911,10 +1923,16 @@ export const search =
           (await aiCommand.execute()) as AIServiceResponse<AiSearchResponse>;
       } catch (error: any) {
         if (error.cause && error.cause.code === 'ECONNREFUSED') {
-          throw new InternalServerError('AI Service is currently unavailable. Please check your network connection or try again later.',error);
+          throw new InternalServerError(
+            'AI Service is currently unavailable. Please check your network connection or try again later.',
+            error,
+          );
         }
         logger.error(' Failed error ', error);
-        throw new InternalServerError('AI Service is currently unavailable. Please check your network connection or try again later.', error);
+        throw new InternalServerError(
+          'AI Service is currently unavailable. Please check your network connection or try again later.',
+          error,
+        );
       }
       if (!aiResponse || aiResponse.statusCode !== 200 || !aiResponse.data) {
         throw new InternalServerError(
@@ -2374,7 +2392,7 @@ export const archiveSearch = async (
         $set: {
           isArchived: true,
           archivedBy: userId,
-          lastActivityAt: new Date(),
+          lastActivityAt: Date.now(),
         },
       }).exec();
 
@@ -2449,7 +2467,7 @@ export const unarchiveSearch = async (
         $set: {
           isArchived: false,
           archivedBy: null,
-          lastActivityAt: new Date(),
+          lastActivityAt: Date.now(),
         },
       }).exec();
 

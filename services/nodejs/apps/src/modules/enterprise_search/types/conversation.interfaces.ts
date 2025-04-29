@@ -44,7 +44,7 @@ export interface IFeedback {
     updatedFields?: string[];
     previousValues?: Map<string, any>;
     updatedBy?: Types.ObjectId;
-    updatedAt?: Date;
+    updatedAt?: Number;
   }>;
   metrics?: {
     timeToFeedback?: number;
@@ -91,7 +91,7 @@ export interface IConversation {
   deletedBy?: Types.ObjectId;
   isArchived?: boolean;
   archivedBy?: Types.ObjectId;
-  lastActivityAt?: Date;
+  lastActivityAt?: Number;
   tags?: Types.ObjectId[];
   conversationSource:
     | 'enterprise_search'
@@ -142,5 +142,3 @@ export interface IAIResponse {
     reason?: string;
   };
 }
-
-

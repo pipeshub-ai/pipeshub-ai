@@ -73,13 +73,13 @@ const feedbackSchema = new Schema<IFeedback>(
       default: 'user',
     },
     feedbackProvider: { type: Schema.Types.ObjectId },
-    timestamp: { type: Date, default: Date.now },
+    timestamp: { type: Number, default: Date.now },
     revisions: [
       {
         updatedFields: [{ type: String }],
         previousValues: { type: Map, of: Schema.Types.Mixed },
         updatedBy: { type: Schema.Types.ObjectId },
-        updatedAt: { type: Date, default: Date.now },
+        updatedAt: { type: Number, default: Date.now },
       },
     ],
     metrics: {
@@ -140,7 +140,7 @@ const conversationSchema = new Schema<IConversation>(
     deletedBy: { type: Schema.Types.ObjectId },
     isArchived: { type: Boolean, default: false },
     archivedBy: { type: Schema.Types.ObjectId },
-    lastActivityAt: { type: Date, default: Date.now },
+    lastActivityAt: { type: Number, default: Date.now },
   },
   { timestamps: true },
 );
@@ -151,5 +151,7 @@ conversationSchema.index({ isShared: 1 });
 conversationSchema.index({ 'messages.content': 'text' });
 
 // Export the model
-export const Conversation: Model<IConversation> =
-  mongoose.model<IConversation>('conversations', conversationSchema);
+export const Conversation: Model<IConversation> = mongoose.model<IConversation>(
+  'conversations',
+  conversationSchema,
+);
