@@ -68,7 +68,10 @@ RUN npm run build
 
 # Set up frontend
 WORKDIR /app/frontend
+RUN mkdir -p packages
 COPY frontend/package*.json ./
+COPY frontend/packages ./packages/
+
 RUN npm config set legacy-peer-deps true && npm install
 
 # Copy frontend source files
