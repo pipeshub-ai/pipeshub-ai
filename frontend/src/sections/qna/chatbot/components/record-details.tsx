@@ -5,7 +5,6 @@ import type {
 } from 'src/sections/knowledgebase/types/record-details';
 
 import { Icon } from '@iconify/react';
-import linkIcon from '@iconify-icons/mdi/link';
 import React, { useState, useEffect } from 'react';
 import categoryIcon from '@iconify-icons/mdi/shape';
 import loadingIcon from '@iconify-icons/mdi/loading';
@@ -16,6 +15,7 @@ import filePdfIcon from '@iconify-icons/mdi/file-pdf-box';
 import fileIcon from '@iconify-icons/mdi/file-text-outline';
 import topicIcon from '@iconify-icons/mdi/bookmark-outline';
 import fileDocIcon from '@iconify-icons/mdi/file-document-outline';
+import linkIcon from '@iconify-icons/mdi/external-link';
 
 import {
   Box,

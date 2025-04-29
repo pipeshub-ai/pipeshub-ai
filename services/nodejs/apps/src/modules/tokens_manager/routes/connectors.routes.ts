@@ -323,6 +323,14 @@ export function createConnectorRouter(container: Container) {
               );
             }
             const configData = response.data;
+            if (
+              response.data &&
+              typeof response.data === 'object' &&
+              Object.keys(response.data).length === 0
+            ) {
+              res.status(204).end();
+              return;
+            }
             if (!configData.clientId) {
               throw new NotFoundError('Client Id is missing');
             }

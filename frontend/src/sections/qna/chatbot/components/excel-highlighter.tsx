@@ -626,7 +626,7 @@ const ExcelViewer = ({ citations, fileUrl, excelBuffer }: ExcelViewerprops) => {
               >
                 <Box>
                   <Typography variant="subtitle2" gutterBottom>
-                    Citation {index + 1}
+                    Citation {citation.chunkIndex ? citation.chunkIndex : index + 1}
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
                     {citation.content}

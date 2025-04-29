@@ -152,24 +152,45 @@ const ChatInterface = () => {
         feedback: apiMessage.feedback || [],
       };
     }
-
+    
     // For bot messages
     if (apiMessage.messageType === 'bot_response') {
       return {
         ...baseMessage,
         type: 'bot',
         confidence: apiMessage.confidence || '',
-        citations: (apiMessage.citations || []).map((citation: Citation) => ({
+        citations: (apiMessage?.citations || []).map((citation: Citation) => ({
           id: citation.citationId,
-          _id: citation.citationData?._id || citation.citationId,
+          _id: citation?.citationData?._id || citation.citationId,
           citationId: citation.citationId,
-          content: citation.citationData.content || '',
-          metadata: citation.citationData.metadata || [],
-          orgId: citation.orgId,
-          citationType: citation.citationType,
-          createdAt: citation.citationData?.createdAt || new Date().toISOString(),
-          updatedAt: citation.citationData?.updatedAt || new Date().toISOString(),
-          chunkIndex: citation.citationData.chunkIndex || 1,
+          content: citation?.citationData?.content || '',
+          metadata: citation?.citationData?.metadata || [],
+          orgId: citation?.citationData?.metadata?.orgId || '',
+          citationType: citation?.citationType || '',
+          createdAt: citation?.citationData?.createdAt || new Date().toISOString(),
+          updatedAt: citation?.citationData?.updatedAt || new Date().toISOString(),
+          chunkIndex: citation?.citationData?.chunkIndex || 1,
+        })),
+      };
+    }
+  
+    if (apiMessage.messageType === 'error') {
+      return {
+        ...baseMessage,
+        type: 'bot',
+        messageType:'error',
+        confidence: apiMessage.confidence || '',
+        citations: (apiMessage?.citations || []).map((citation: Citation) => ({
+          id: citation.citationId,
+          _id: citation?.citationData?._id || citation.citationId,
+          citationId: citation.citationId,
+          content: citation?.citationData?.content || '',
+          metadata: citation?.citationData?.metadata || [],
+          orgId: citation?.citationData?.metadata?.orgId || '',
+          citationType: citation?.citationType || '',
+          createdAt: citation?.citationData?.createdAt || new Date().toISOString(),
+          updatedAt: citation?.citationData?.updatedAt || new Date().toISOString(),
+          chunkIndex: citation?.citationData?.chunkIndex || 1,
         })),
       };
     }
@@ -197,7 +218,7 @@ const ChatInterface = () => {
       console.log('PPT with large file size');
       throw new Error('Large fize size, redirecting to web page ');
     }
-  }
+  };
 
   const onViewPdf = async (
     url: string,
@@ -470,7 +491,6 @@ const ChatInterface = () => {
     setFileBuffer(null);
   };
 
-
   // Also update the toggleCitations function to handle citation state more explicitly
   const toggleCitations = useCallback((index: number): void => {
     setExpandedCitations((prev) => {
@@ -588,6 +608,7 @@ const ChatInterface = () => {
         }));
       }
     } catch (error) {
+      console.log(error);
       const errorMessage: FormattedMessage = {
         type: 'bot',
         content: 'Sorry, I encountered an error processing your request.',

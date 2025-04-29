@@ -48,6 +48,7 @@ export interface DocumentContent {
   score?: number;
   citationType: string;
   metadata: DocumentMetadata;
+  chunkIndex?:number;
 }
 
 export interface AggregatedDocument {

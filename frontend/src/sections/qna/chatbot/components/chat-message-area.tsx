@@ -111,7 +111,7 @@ const ChatMessagesArea = ({
       const botMessages = messages.filter((msg) => msg.type === 'bot');
       const lastBotMessage = botMessages[botMessages.length - 1];
       return (
-        message.type === 'bot' &&
+       ( message.type === 'bot' &&  message.messageType !== 'error') &&
         message.id === lastBotMessage?.id &&
         !message.id.startsWith('error-')
       );
