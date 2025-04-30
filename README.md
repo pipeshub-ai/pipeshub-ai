@@ -136,7 +136,7 @@ git clone https://github.com/pipeshub-ai/pipeshub-ai.git
 cd pipeshub-ai/deployment/docker-compose
 
 # Copy and update the environment file
-cp .env.template .env
+cp env.template .env
 # 👉 Edit the .env file to set secrets, passwords, and the public URLs
 #    of the Frontend and Connector services (required for webhook notifications and real-time updates)
 
