@@ -34,8 +34,13 @@ Beyond search, our platform allows enterprises to create custom apps and AI agen
 <h2>Spotlight Features</h2>
 
 #### Your Workplace, Our AI.
-
-[![PipesHub Workplace AI](https://img.youtube.com/vi/czDNbS_OEDQ/0.jpg)](https://www.youtube.com/watch?v=czDNbS_OEDQ)
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=czDNbS_OEDQ">
+    <img src="https://img.youtube.com/vi/czDNbS_OEDQ/maxresdefault.jpg" alt="PipesHub Workplace AI" width="600" style="border-radius:10px"/>
+    <br>
+    <img src="https://img.shields.io/badge/Watch%20Video-red?style=for-the-badge&logo=youtube&logoColor=white" alt="Watch on YouTube"/>
+  </a>
+</p>
 
 ## Unmatched Value of PipesHub
 
@@ -145,6 +150,8 @@ docker compose -f docker-compose.prod.yml -p pipeshub-ai up -d
 
 # To stop the services
 docker compose -f docker-compose.prod.yml -p pipeshub-ai down
-
-
 ```
+
+## 👥 Contributing
+
+Want to join our community of developers? Please check out our [Contributing Guide](https://github.com/pipeshub-ai/blob/main/CONTRIBUTING.md) for more details on how to set up the development environment, our coding standards, and the contribution workflow.
