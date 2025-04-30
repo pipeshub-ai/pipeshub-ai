@@ -646,35 +646,50 @@ const ConfigurationStepper: React.FC<ConfigurationStepperProps> = ({ open, onClo
           },
         ],
         // Include embedding configuration if available
-        embedding: embeddingValues
-          ? [
+        embedding: (() => {
+          // If no embedding values or skipped, or if using default, return empty array
+          if (!embeddingValues || embeddingValues.modelType === 'default') {
+            return []; // Empty array = use system default embeddings
+          }
+
+          // For sentence transformers option
+          if (embeddingValues.modelType === 'sentenceTransformers') {
+            return [
               {
-                provider: embeddingValues.modelType === 'openai' ? 'openAI' : 'azureOpenAI',
-                configuration: (() => {
-                  // For OpenAI embedding
-                  if (embeddingValues.modelType === 'openai') {
-                    return {
-                      apiKey: embeddingValues.apiKey,
-                      model: embeddingValues.model,
-                    };
-                  }
-
-                  // For Azure OpenAI embedding
-                  const config: any = {
-                    apiKey: embeddingValues.apiKey,
-                    model: embeddingValues.model,
-                  };
-
-                  // Add endpoint for Azure
-                  if (embeddingValues.endpoint && embeddingValues.endpoint.trim() !== '') {
-                    config.endpoint = embeddingValues.endpoint;
-                  }
-
-                  return config;
-                })(),
+                provider: 'sentenceTransformers',
+                configuration: {
+                  apiKey: '', // Empty string for API key
+                  model: embeddingValues.model || 'all-MiniLM-L6-v2', // Use provided model or default
+                },
               },
-            ]
-          : [], // Empty array if no embedding values or skipped
+            ];
+          }
+
+          // For OpenAI embedding
+          if (embeddingValues.modelType === 'openai') {
+            return [
+              {
+                provider: 'openAI',
+                configuration: {
+                  apiKey: embeddingValues.apiKey,
+                  model: embeddingValues.model,
+                },
+              },
+            ];
+          }
+
+          // For Azure OpenAI embedding
+          return [
+            {
+              provider: 'azureOpenAI',
+              configuration: {
+                apiKey: embeddingValues.apiKey,
+                model: embeddingValues.model,
+                ...(embeddingValues.endpoint && { endpoint: embeddingValues.endpoint }),
+              },
+            },
+          ];
+        })(),
         // Include other model types with empty arrays to match API format
         ocr: [],
         slm: [],

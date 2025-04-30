@@ -30,8 +30,8 @@ export interface AzureLlmFormValues {
 
 // Embedding configuration
 export interface EmbeddingFormValues {
-  modelType: 'openai' | 'azureOpenAI';
-  apiKey: string;
+  modelType: 'openai' | 'azureOpenAI' | 'sentenceTransformers' | 'default';
+  apiKey?: string;
   model: string;
   endpoint?: string; // Only required for Azure
 }

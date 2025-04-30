@@ -89,9 +89,10 @@ export default function PersonalProfile() {
   const [saveChanges, setSaveChanges] = useState<boolean>(false);
   const [currentEmail, setCurrentEmail] = useState<string>(''); // Store the current email
   const { isAdmin } = useAdmin();
-  const [showCurrentPassword, setShowCurrentPassword] = useState<boolean>(false);
-  const [showNewPassword, setShowNewPassword] = useState<boolean>(false);
-  const [showConfirmPassword, setShowConfirmPassword] = useState<boolean>(false);
+  const [passwordVisibility, setPasswordVisibility] = useState({
+    current: false,
+    new: false,
+  });
 
   const methods = useForm<ProfileFormData>({
     resolver: zodResolver(ProfileSchema),
@@ -256,8 +257,7 @@ export default function PersonalProfile() {
 
   const handleClosePasswordDialog = () => {
     setIsChangePasswordOpen(false);
-    setShowCurrentPassword(false); // Hide passwords
-    setShowNewPassword(false); // Hide passwords
+    setPasswordVisibility({ current: false, new: false }); // Reset all visibilities
     passwordMethods.reset(); // Clear all form fields
   };
 
@@ -461,7 +461,7 @@ export default function PersonalProfile() {
             <Field.Text
               name="currentPassword"
               label="Current password"
-              type={showCurrentPassword ? 'text' : 'password'}
+              type={passwordVisibility.current ? 'text' : 'password'}
               fullWidth
               margin="normal"
               variant="outlined"
@@ -470,11 +470,16 @@ export default function PersonalProfile() {
                   <InputAdornment position="end">
                     <IconButton
                       aria-label="toggle current password visibility"
-                      onClick={() => setShowCurrentPassword(!showCurrentPassword)}
+                      onClick={() =>
+                        setPasswordVisibility({
+                          ...passwordVisibility,
+                          current: !passwordVisibility.current,
+                        })
+                      }
                       edge="end"
                     >
                       <Iconify
-                        icon={showCurrentPassword ? visibilityIcon : visibilityOffIcon}
+                        icon={passwordVisibility.current ? visibilityIcon : visibilityOffIcon}
                         width={20}
                         height={20}
                       />
@@ -499,12 +504,17 @@ export default function PersonalProfile() {
                 <Button
                   startIcon={
                     <Iconify
-                      icon={showNewPassword ? visibilityIcon : visibilityOffIcon}
+                      icon={passwordVisibility.new ? visibilityIcon : visibilityOffIcon}
                       width={18}
                       height={18}
                     />
                   }
-                  onClick={() => setShowNewPassword(!showNewPassword)}
+                  onClick={() =>
+                    setPasswordVisibility({
+                      ...passwordVisibility,
+                      new: !passwordVisibility.new,
+                    })
+                  }
                   size="small"
                   sx={{
                     textTransform: 'none',
@@ -513,7 +523,7 @@ export default function PersonalProfile() {
                     fontSize: '0.75rem',
                   }}
                 >
-                  {showNewPassword ? 'Hide' : 'Show'}
+                  {passwordVisibility.new ? 'Hide' : 'Show'}
                 </Button>
               </Box>
 
@@ -521,7 +531,7 @@ export default function PersonalProfile() {
               <Field.Text
                 name="newPassword"
                 label="New password"
-                type={showNewPassword ? 'text' : 'password'}
+                type={passwordVisibility.new ? 'text' : 'password'}
                 fullWidth
                 margin="normal"
                 variant="outlined"
@@ -553,7 +563,7 @@ export default function PersonalProfile() {
               <Field.Text
                 name="repeatNewPassword"
                 label="Confirm new password"
-                type={showNewPassword ? 'text' : 'password'}
+                type={passwordVisibility.new ? 'text' : 'password'}
                 fullWidth
                 margin="normal"
                 variant="outlined"
