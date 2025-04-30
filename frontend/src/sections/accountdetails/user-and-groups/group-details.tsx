@@ -106,11 +106,11 @@ export default function GroupDetails() {
   const filterGroupUsers = (users: AppUser[], groupUserIds: string[]): AppUser[] =>
     users.filter((user: AppUser) => groupUserIds.includes(user._id));
 
-  // Filter users based on search term
+  // Filter users based on search term with null checks
   const filteredUsers = groupUsers.filter(
     (user) =>
-      user.fullName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      user.email.toLowerCase().includes(searchTerm.toLowerCase())
+      (user?.fullName?.toLowerCase() || '').includes(searchTerm.toLowerCase()) ||
+      (user?.email?.toLowerCase() || '').includes(searchTerm.toLowerCase())
   );
 
   useEffect(() => {
@@ -246,8 +246,8 @@ export default function GroupDetails() {
 
   const open = Boolean(anchorEl);
 
-  // Function to get avatar color based on name
-  const getAvatarColor = (name: string) => {
+  // Function to get avatar color based on name with null check
+  const getAvatarColor = (name: string | null | undefined) => {
     const colors = [
       theme.palette.primary.main,
       theme.palette.info.main,
@@ -256,19 +256,25 @@ export default function GroupDetails() {
       theme.palette.error.main,
     ];
 
+    // Default color if name is null or undefined
+    if (!name) return colors[0];
+
     // Simple hash function using array methods instead of for loop with i++
     const hash = name.split('').reduce((acc, char) => char.charCodeAt(0) + (acc * 32 - acc), 0);
 
     return colors[Math.abs(hash) % colors.length];
   };
 
-  // Get initials from full name
-  const getInitials = (fullName: string) =>
-    fullName
+  // Get initials from full name with null check
+  const getInitials = (fullName: string | null | undefined) => {
+    if (!fullName) return '?';
+
+    return fullName
       .split(' ')
       .map((n) => n[0])
       .join('')
       .toUpperCase();
+  };
 
   if (isLoading) {
     return (
@@ -533,13 +539,15 @@ export default function GroupDetails() {
                               </Avatar>
                             </Tooltip>
                             <Box>
-                              <Typography variant="subtitle2">{user.fullName}</Typography>
+                              <Typography variant="subtitle2">
+                                {user.fullName || 'Invited User'}
+                              </Typography>
                               <Typography
                                 variant="body2"
                                 color="text.secondary"
                                 sx={{ fontSize: '0.75rem' }}
                               >
-                                {user.email}
+                                {user.email || 'No email'}
                               </Typography>
                             </Box>
                           </Stack>
@@ -658,10 +666,10 @@ export default function GroupDetails() {
               </Avatar>
               <Box>
                 <Typography variant="h6" sx={{ mb: 0.5 }}>
-                  {selectedUser.fullName}
+                  {selectedUser.fullName || 'Invited User'}
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
-                  {selectedUser.email}
+                  {selectedUser.email || 'No email'}
                 </Typography>
               </Box>
             </Stack>
@@ -800,8 +808,8 @@ export default function GroupDetails() {
         </DialogTitle>
         <DialogContent>
           <Typography variant="body2" sx={{ mt: 1 }}>
-            Are you sure you want to remove <strong>{selectedUser?.fullName}</strong> from the{' '}
-            <strong>{group.name}</strong> group?
+            Are you sure you want to remove <strong>{selectedUser?.fullName || 'this user'}</strong>{' '}
+            from the <strong>{group.name}</strong> group?
           </Typography>
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
@@ -1092,7 +1100,7 @@ function AddUsersToGroupsModal({
           <Autocomplete<GroupUser, true>
             multiple
             options={allUsers.filter((user) => user._id !== null)}
-            getOptionLabel={(option: GroupUser) => option?.fullName ?? 'Unknown User'}
+            getOptionLabel={(option: GroupUser) => option?.fullName ?? 'Invited User'}
             renderInput={(params) => (
               <TextField
                 {...params}
@@ -1105,7 +1113,7 @@ function AddUsersToGroupsModal({
             renderTags={(value, getTagProps) =>
               value.map((option, index) => (
                 <Chip
-                  label={option.fullName}
+                  label={option.fullName || 'Invited User'}
                   {...getTagProps({ index })}
                   sx={{
                     bgcolor: alpha(theme.palette.primary.main, 0.08),
@@ -1126,12 +1134,12 @@ function AddUsersToGroupsModal({
                       color: theme.palette.primary.main,
                     }}
                   >
-                    {option.fullName?.charAt(0)}
+                    {option.fullName?.charAt(0) || '?'}
                   </Avatar>
                   <Box>
-                    <Typography variant="body2">{option.fullName}</Typography>
+                    <Typography variant="body2">{option.fullName || 'Invited User'}</Typography>
                     <Typography variant="caption" color="text.secondary">
-                      {option.email}
+                      {option.email || 'No email'}
                     </Typography>
                   </Box>
                 </Stack>

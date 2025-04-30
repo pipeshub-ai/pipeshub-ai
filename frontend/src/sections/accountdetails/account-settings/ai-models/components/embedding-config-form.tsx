@@ -12,7 +12,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm, Controller } from 'react-hook-form';
 import infoIcon from '@iconify-icons/mdi/info-outline';
 import eyeOffIcon from '@iconify-icons/eva/eye-off-fill';
-import React, { useState, useEffect, forwardRef, useImperativeHandle } from 'react';
+import React, { useState, useEffect, forwardRef, useImperativeHandle, useRef } from 'react';
 
 import { alpha, useTheme } from '@mui/material/styles';
 import {
@@ -35,9 +35,26 @@ import axios from 'src/utils/axios';
 
 import { Iconify } from 'src/components/iconify';
 
+// Define the loading overlay style
+const loadingOverlayStyle = {
+  position: 'absolute',
+  top: 0,
+  left: 0,
+  right: 0,
+  bottom: 0,
+  backgroundColor: 'rgba(255, 255, 255, 0)',
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'center',
+  justifyContent: 'center',
+  zIndex: 1000,
+  backdropFilter: 'blur(0px)',
+  borderRadius: 1,
+};
+
 // Embedding form values interfaces
 interface EmbeddingFormValues {
-  modelType: 'openAI' | 'azureOpenAI' | 'default';
+  modelType: 'openAI' | 'azureOpenAI' | 'sentenceTransformers' | 'default';
   apiKey?: string;
   model?: string;
   endpoint?: string;
@@ -54,6 +71,12 @@ interface AzureEmbeddingFormValues {
   endpoint: string;
   apiKey: string;
   model: string;
+}
+
+interface SentenceTransformersFormValues {
+  modelType: 'sentenceTransformers';
+  model: string;
+  apiKey?: string;
 }
 
 interface DefaultEmbeddingFormValues {
@@ -94,6 +117,13 @@ const azureSchema = z.object({
   model: z.string().min(1, 'Model is required'),
 });
 
+// Zod schema for Sentence Transformers validation
+const sentenceTransformersSchema = z.object({
+  modelType: z.literal('sentenceTransformers'),
+  model: z.string().min(1, 'Model is required'),
+  apiKey: z.string().optional(),
+});
+
 // Zod schema for Default option (no validation needed)
 const defaultSchema = z.object({
   modelType: z.literal('default'),
@@ -103,6 +133,7 @@ const defaultSchema = z.object({
 const embeddingSchema = z.discriminatedUnion('modelType', [
   openaiSchema,
   azureSchema,
+  sentenceTransformersSchema,
   defaultSchema,
 ]);
 
@@ -118,9 +149,11 @@ const getEmbeddingConfig = async (): Promise<EmbeddingFormValues | null> => {
       const config = embeddingConfig.configuration;
 
       // Set the modelType based on the provider
-      let modelType: 'openAI' | 'azureOpenAI' | 'default';
+      let modelType: 'openAI' | 'azureOpenAI' | 'sentenceTransformers' | 'default';
       if (embeddingConfig.provider === 'azureOpenAI') {
         modelType = 'azureOpenAI';
+      } else if (embeddingConfig.provider === 'sentenceTransformers') {
+        modelType = 'sentenceTransformers';
       } else {
         modelType = 'openAI';
       }
@@ -166,16 +199,24 @@ const updateEmbeddingConfig = async (
       return updateResponse;
     }
 
-    // For OpenAI or Azure, prepare the configuration
+    // For OpenAI, Azure, or Sentence Transformers, prepare the configuration
     // Remove modelType from the configuration before sending
     const { modelType, ...cleanConfig } = config;
+
+    // Determine the correct provider based on modelType
+    const actualProvider =
+      modelType === 'azureOpenAI'
+        ? 'azureOpenAI'
+        : modelType === 'sentenceTransformers'
+          ? 'sentenceTransformers'
+          : 'openAI';
 
     // Create the updated config object
     const updatedConfig = {
       ...currentConfig,
       embedding: [
         {
-          provider,
+          provider: actualProvider,
           configuration: cleanConfig,
         },
       ],
@@ -205,11 +246,24 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
     const [formSubmitSuccess, setFormSubmitSuccess] = useState(false);
     const [fetchError, setFetchError] = useState<boolean>(false);
 
-    const [modelType, setModelType] = useState<'openAI' | 'azureOpenAI' | 'default'>(
-      provider === 'Azure OpenAI' ? 'azureOpenAI' : provider === 'default' ? 'default' : 'openAI'
+    // Refs to prevent race conditions
+    const isSavingRef = useRef(false);
+    const formSubmitSuccessRef = useRef(false);
+    const saveErrorRef = useRef<string | null>(null);
+
+    const [modelType, setModelType] = useState<
+      'openAI' | 'azureOpenAI' | 'sentenceTransformers' | 'default'
+    >(
+      provider === 'azureOpenAI'
+        ? 'azureOpenAI'
+        : provider === 'sentenceTransformers'
+          ? 'sentenceTransformers'
+          : provider === 'default'
+            ? 'default'
+            : 'openAI'
     );
 
-    // Create separate forms for OpenAI, Azure, and Default
+    // Create separate forms for each model type
     const {
       control: openaiControl,
       handleSubmit: handleOpenAISubmit,
@@ -242,6 +296,21 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
     });
 
     const {
+      control: sentenceTransformersControl,
+      handleSubmit: handleSentenceTransformersSubmit,
+      reset: resetSentenceTransformers,
+      formState: { isValid: isSentenceTransformersValid },
+    } = useForm<SentenceTransformersFormValues>({
+      resolver: zodResolver(sentenceTransformersSchema),
+      mode: 'onChange',
+      defaultValues: {
+        modelType: 'sentenceTransformers',
+        model: '',
+        apiKey: '',
+      },
+    });
+
+    const {
       control: defaultControl,
       handleSubmit: handleDefaultSubmit,
       formState: { isValid: isDefaultValid },
@@ -253,6 +322,21 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
       },
     });
 
+    // Update state from refs in a controlled way
+    useEffect(() => {
+      if (isSavingRef.current !== isSaving) {
+        setIsSaving(isSavingRef.current);
+      }
+
+      if (formSubmitSuccessRef.current !== formSubmitSuccess) {
+        setFormSubmitSuccess(formSubmitSuccessRef.current);
+      }
+
+      if (saveErrorRef.current !== saveError) {
+        setSaveError(saveErrorRef.current);
+      }
+    }, [isSaving, formSubmitSuccess, saveError]);
+
     // OpenAI form submit handler
     const onOpenAISubmit: SubmitHandler<OpenAIEmbeddingFormValues> = async (data) => {
       try {
@@ -260,14 +344,23 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
         if (onSaveSuccess) {
           onSaveSuccess();
         }
-        setIsEditing(false);
+        formSubmitSuccessRef.current = true;
         setFormSubmitSuccess(true);
+        return true;
       } catch (error) {
         const errorMessage =
           error.response?.data?.message || 'Failed to save OpenAI embedding configuration';
+        saveErrorRef.current = errorMessage;
         setSaveError(errorMessage);
         console.error('Error saving OpenAI embedding configuration:', error);
+        formSubmitSuccessRef.current = false;
         setFormSubmitSuccess(false);
+        return false;
+      } finally {
+        // Only set editing to false after successful save
+        if (formSubmitSuccessRef.current) {
+          setIsEditing(false);
+        }
       }
     };
 
@@ -278,14 +371,53 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
         if (onSaveSuccess) {
           onSaveSuccess();
         }
-        setIsEditing(false);
+        formSubmitSuccessRef.current = true;
         setFormSubmitSuccess(true);
+        return true;
       } catch (error) {
         const errorMessage =
           error.response?.data?.message || 'Failed to save Azure OpenAI embedding configuration';
+        saveErrorRef.current = errorMessage;
         setSaveError(errorMessage);
         console.error('Error saving Azure OpenAI embedding configuration:', error);
+        formSubmitSuccessRef.current = false;
         setFormSubmitSuccess(false);
+        return false;
+      } finally {
+        // Only set editing to false after successful save
+        if (formSubmitSuccessRef.current) {
+          setIsEditing(false);
+        }
+      }
+    };
+
+    // Sentence Transformers form submit handler
+    const onSentenceTransformersSubmit: SubmitHandler<SentenceTransformersFormValues> = async (
+      data
+    ) => {
+      try {
+        await updateEmbeddingConfig(data, 'sentenceTransformers');
+        if (onSaveSuccess) {
+          onSaveSuccess();
+        }
+        formSubmitSuccessRef.current = true;
+        setFormSubmitSuccess(true);
+        return true;
+      } catch (error) {
+        const errorMessage =
+          error.response?.data?.message ||
+          'Failed to save Sentence Transformers embedding configuration';
+        saveErrorRef.current = errorMessage;
+        setSaveError(errorMessage);
+        console.error('Error saving Sentence Transformers embedding configuration:', error);
+        formSubmitSuccessRef.current = false;
+        setFormSubmitSuccess(false);
+        return false;
+      } finally {
+        // Only set editing to false after successful save
+        if (formSubmitSuccessRef.current) {
+          setIsEditing(false);
+        }
       }
     };
 
@@ -296,14 +428,23 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
         if (onSaveSuccess) {
           onSaveSuccess();
         }
-        setIsEditing(false);
+        formSubmitSuccessRef.current = true;
         setFormSubmitSuccess(true);
+        return true;
       } catch (error) {
         const errorMessage =
           error.response?.data?.message || 'Failed to save default embedding configuration';
+        saveErrorRef.current = errorMessage;
         setSaveError(errorMessage);
         console.error('Error saving default embedding configuration:', error);
+        formSubmitSuccessRef.current = false;
         setFormSubmitSuccess(false);
+        return false;
+      } finally {
+        // Only set editing to false after successful save
+        if (formSubmitSuccessRef.current) {
+          setIsEditing(false);
+        }
       }
     };
 
@@ -311,84 +452,84 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
     useImperativeHandle(ref, () => ({
       handleSave: async (): Promise<SaveResult> => {
         try {
+          // Prevent multiple save operations
+          if (isSavingRef.current) {
+            return {
+              success: false,
+              error: 'A save operation is already in progress',
+            };
+          }
+
+          // Set loading state BEFORE any other operations
+          isSavingRef.current = true;
           setIsSaving(true);
+
+          // Give UI time to render loading state before continuing
+          await new Promise((resolve) => setTimeout(resolve, 50));
+
+          saveErrorRef.current = null;
           setSaveError(null);
+          formSubmitSuccessRef.current = false;
           setFormSubmitSuccess(false);
 
-          // Create a promise that will resolve with the result of the form submission
-          return await new Promise<SaveResult>((resolve) => {
-            if (modelType === 'openAI') {
-              // Execute the OpenAI form submission
+          let formResult: boolean | undefined = false;
+
+          if (modelType === 'openAI') {
+            // Execute the form submission
+            formResult = await new Promise<boolean>((resolve) => {
               handleOpenAISubmit(async (data) => {
-                try {
-                  await updateEmbeddingConfig(data, 'openAI');
-                  if (onSaveSuccess) {
-                    onSaveSuccess();
-                  }
-                  setIsEditing(false);
-                  setFormSubmitSuccess(true);
-                  resolve({ success: true });
-                } catch (error) {
-                  const errorMessage =
-                    error.response?.data?.message ||
-                    'Failed to save OpenAI embedding configuration';
-                  setSaveError(errorMessage);
-                  console.error('Error saving OpenAI embedding configuration:', error);
-                  setFormSubmitSuccess(false);
-                  resolve({ success: false, error: errorMessage });
-                } finally {
-                  setIsSaving(false);
-                }
+                const result: any = await onOpenAISubmit(data);
+                resolve(result);
               })();
-            } else if (modelType === 'azureOpenAI') {
-              // Execute the Azure form submission
+            });
+          } else if (modelType === 'azureOpenAI') {
+            // Execute the form submission
+            formResult = await new Promise<boolean>((resolve) => {
               handleAzureSubmit(async (data) => {
-                try {
-                  await updateEmbeddingConfig(data, 'azureOpenAI');
-                  if (onSaveSuccess) {
-                    onSaveSuccess();
-                  }
-                  setIsEditing(false);
-                  setFormSubmitSuccess(true);
-                  resolve({ success: true });
-                } catch (error) {
-                  const errorMessage =
-                    error.response?.data?.message ||
-                    'Failed to save Azure OpenAI embedding configuration';
-                  setSaveError(errorMessage);
-                  console.error('Error saving Azure OpenAI embedding configuration:', error);
-                  setFormSubmitSuccess(false);
-                  resolve({ success: false, error: errorMessage });
-                } finally {
-                  setIsSaving(false);
-                }
+                const result: any = await onAzureSubmit(data);
+                resolve(result);
               })();
-            } else if (modelType === 'default') {
-              // Execute the default form submission
+            });
+          } else if (modelType === 'sentenceTransformers') {
+            // Execute the form submission
+            formResult = await new Promise<boolean>((resolve) => {
+              handleSentenceTransformersSubmit(async (data) => {
+                const result: any = await onSentenceTransformersSubmit(data);
+                resolve(result);
+              })();
+            });
+          } else if (modelType === 'default') {
+            // Execute the form submission for default
+            formResult = await new Promise<boolean>((resolve) => {
               handleDefaultSubmit(async (data) => {
-                try {
-                  await updateEmbeddingConfig(data, 'default');
-                  if (onSaveSuccess) {
-                    onSaveSuccess();
-                  }
-                  setIsEditing(false);
-                  setFormSubmitSuccess(true);
-                  resolve({ success: true });
-                } catch (error) {
-                  const errorMessage =
-                    error.response?.data?.message ||
-                    'Failed to save default embedding configuration';
-                  setSaveError(errorMessage);
-                  console.error('Error saving default embedding configuration:', error);
-                  setFormSubmitSuccess(false);
-                  resolve({ success: false, error: errorMessage });
-                } finally {
-                  setIsSaving(false);
-                }
+                const result: any = await onDefaultSubmit(data);
+                resolve(result);
               })();
-            }
-          });
+            });
+          }
+
+          // Keep loading state for a short delay to avoid UI flickering
+          await new Promise((resolve) => setTimeout(resolve, 300));
+
+          // If there was an error during form submission
+          if (formResult === false) {
+            isSavingRef.current = false;
+            setIsSaving(false);
+            return {
+              success: false,
+              error: saveErrorRef.current || 'Failed to save configuration',
+            };
+          }
+
+          // If we got here, the submission was successful
+          isSavingRef.current = false;
+          setIsSaving(false);
+          return { success: true };
         } catch (error) {
+          // Small delay before changing state to avoid UI flickering
+          await new Promise((resolve) => setTimeout(resolve, 300));
+
+          isSavingRef.current = false;
           setIsSaving(false);
           console.error('Error in handleSave:', error);
           return {
@@ -422,6 +563,13 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
                 apiKey: config.apiKey || '',
                 model: config.model || '',
               });
+            } else if (config.modelType === 'sentenceTransformers') {
+              // For Sentence Transformers configuration
+              resetSentenceTransformers({
+                modelType: 'sentenceTransformers',
+                model: config.model || '',
+                apiKey: config.apiKey || '',
+              });
             } else if (config.modelType === 'openAI') {
               // For OpenAI configuration
               resetOpenAI({
@@ -444,6 +592,11 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
               apiKey: '',
               model: '',
             });
+            resetSentenceTransformers({
+              modelType: 'sentenceTransformers',
+              model: '',
+              apiKey: '',
+            });
           }
         } catch (error) {
           console.error('Failed to load Embedding configuration:', error);
@@ -462,25 +615,44 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
             apiKey: '',
             model: '',
           });
+          resetSentenceTransformers({
+            modelType: 'sentenceTransformers',
+            model: '',
+            apiKey: '',
+          });
         } finally {
           setIsLoading(false);
         }
       };
 
       fetchConfig();
-    }, [resetOpenAI, resetAzure]);
+    }, [resetOpenAI, resetAzure, resetSentenceTransformers]);
 
-    // Reset saveError when it changes
+    // Reset saveError after a timeout
     useEffect(() => {
       if (saveError) {
         // Clear save error after 5 seconds
         const timer = setTimeout(() => {
+          saveErrorRef.current = null;
           setSaveError(null);
         }, 5000);
         return () => clearTimeout(timer);
       }
       return undefined;
     }, [saveError]);
+
+    // Auto-hide success message after a timeout
+    useEffect(() => {
+      if (formSubmitSuccess) {
+        // Clear success message after 5 seconds
+        const timer = setTimeout(() => {
+          formSubmitSuccessRef.current = false;
+          setFormSubmitSuccess(false);
+        }, 5000);
+        return () => clearTimeout(timer);
+      }
+      return undefined;
+    }, [formSubmitSuccess]);
 
     // Notify parent of validation status
     useEffect(() => {
@@ -490,15 +662,27 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
         isCurrentFormValid = isOpenAIValid;
       } else if (modelType === 'azureOpenAI') {
         isCurrentFormValid = isAzureValid;
+      } else if (modelType === 'sentenceTransformers') {
+        isCurrentFormValid = isSentenceTransformersValid;
       } else if (modelType === 'default') {
         isCurrentFormValid = isDefaultValid;
       }
 
       onValidationChange(isCurrentFormValid && isEditing);
-    }, [isOpenAIValid, isAzureValid, isDefaultValid, isEditing, modelType, onValidationChange]);
+    }, [
+      isOpenAIValid,
+      isAzureValid,
+      isSentenceTransformersValid,
+      isDefaultValid,
+      isEditing,
+      modelType,
+      onValidationChange,
+    ]);
 
     // Handle model type change
-    const handleModelTypeChange = (newType: 'openAI' | 'azureOpenAI' | 'default') => {
+    const handleModelTypeChange = (
+      newType: 'openAI' | 'azureOpenAI' | 'sentenceTransformers' | 'default'
+    ) => {
       setModelType(newType);
       // Don't reset forms - we keep separate state for each
     };
@@ -523,6 +707,12 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
                   apiKey: config.apiKey || '',
                   model: config.model || '',
                 });
+              } else if (config.modelType === 'sentenceTransformers') {
+                resetSentenceTransformers({
+                  modelType: 'sentenceTransformers',
+                  model: config.model || '',
+                  apiKey: config.apiKey || '',
+                });
               } else if (config.modelType === 'openAI') {
                 resetOpenAI({
                   modelType: 'openAI',
@@ -532,7 +722,7 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
               }
               // Default case is handled by the default state
             } else {
-              // Reset both forms to default values
+              // Reset all forms to default values
               resetOpenAI({
                 modelType: 'openAI',
                 apiKey: '',
@@ -544,6 +734,11 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
                 apiKey: '',
                 model: '',
               });
+              resetSentenceTransformers({
+                modelType: 'sentenceTransformers',
+                model: '',
+                apiKey: '',
+              });
             }
           })
           .catch((error) => {
@@ -551,7 +746,10 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
             setFetchError(true);
             setSaveError('Failed to reload configuration. View-only mode enabled.');
           });
+        saveErrorRef.current = null;
         setSaveError(null);
+        formSubmitSuccessRef.current = false;
+        setFormSubmitSuccess(false);
       }
       setIsEditing(!isEditing);
     };
@@ -565,7 +763,7 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
     }
 
     return (
-      <>
+      <Box sx={{ position: 'relative' }}>
         <Box
           sx={{
             mb: 3,
@@ -591,9 +789,11 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
               your application.
               {modelType === 'azureOpenAI'
                 ? ' You need an active Azure subscription with Azure OpenAI Service enabled.'
-                : modelType === 'default'
-                  ? ' Using the default embedding model provided by the system.'
-                  : ' Enter your OpenAI API credentials to get started.'}
+                : modelType === 'sentenceTransformers'
+                  ? ' Use Sentence Transformers for local embedding generation.'
+                  : modelType === 'default'
+                    ? ' Using the default embedding model provided by the system.'
+                    : ' Enter your OpenAI API credentials to get started.'}
               {fetchError && ' (View-only mode due to connection error)'}
             </Typography>
           </Box>
@@ -607,6 +807,7 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
               startIcon={<Iconify icon={isEditing ? closeIcon : pencilIcon} />}
               color={isEditing ? 'error' : 'primary'}
               size="small"
+              disabled={isSaving}
             >
               {isEditing ? 'Cancel' : 'Edit'}
             </Button>
@@ -616,19 +817,24 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
         <Grid container spacing={2.5} sx={{ mb: 2 }}>
           {/* Model Type selector - common for all forms */}
           <Grid item xs={12}>
-            <FormControl fullWidth size="small" disabled={!isEditing || fetchError}>
+            <FormControl fullWidth size="small" disabled={!isEditing || fetchError || isSaving}>
               <InputLabel>Provider Type</InputLabel>
               <Select
                 name="modelType"
                 value={modelType}
                 label="Provider Type"
                 onChange={(e: SelectChangeEvent) => {
-                  const newType = e.target.value as 'openAI' | 'azureOpenAI' | 'default';
+                  const newType = e.target.value as
+                    | 'openAI'
+                    | 'azureOpenAI'
+                    | 'sentenceTransformers'
+                    | 'default';
                   handleModelTypeChange(newType);
                 }}
               >
                 <MenuItem value="openAI">OpenAI API</MenuItem>
                 <MenuItem value="azureOpenAI">Azure OpenAI Service</MenuItem>
+                <MenuItem value="sentenceTransformers">Sentence Transformers</MenuItem>
                 <MenuItem value="default">Default (System Provided)</MenuItem>
               </Select>
             </FormControl>
@@ -650,7 +856,7 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
                       error={!!fieldState.error}
                       helperText={fieldState.error?.message || 'Your OpenAI API Key'}
                       required
-                      disabled={!isEditing || fetchError}
+                      disabled={!isEditing || fetchError || isSaving}
                       type={showOpenAIPassword ? 'text' : 'password'}
                       InputProps={{
                         startAdornment: (
@@ -664,7 +870,7 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
                               onClick={() => setShowOpenAIPassword(!showOpenAIPassword)}
                               edge="end"
                               size="small"
-                              disabled={!isEditing || fetchError}
+                              disabled={!isEditing || fetchError || isSaving}
                             >
                               <Iconify
                                 icon={showOpenAIPassword ? eyeOffIcon : eyeIcon}
@@ -703,7 +909,7 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
                         'e.g., text-embedding-3-small, text-embedding-3-large'
                       }
                       required
-                      disabled={!isEditing || fetchError}
+                      disabled={!isEditing || fetchError || isSaving}
                       InputProps={{
                         startAdornment: (
                           <InputAdornment position="start">
@@ -743,7 +949,7 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
                         fieldState.error?.message || 'e.g., https://your-resource.openai.azure.com/'
                       }
                       required
-                      disabled={!isEditing || fetchError}
+                      disabled={!isEditing || fetchError || isSaving}
                       InputProps={{
                         startAdornment: (
                           <InputAdornment position="start">
@@ -776,7 +982,7 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
                       error={!!fieldState.error}
                       helperText={fieldState.error?.message || 'Your Azure OpenAI API Key'}
                       required
-                      disabled={!isEditing || fetchError}
+                      disabled={!isEditing || fetchError || isSaving}
                       type={showAzurePassword ? 'text' : 'password'}
                       InputProps={{
                         startAdornment: (
@@ -790,7 +996,7 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
                               onClick={() => setShowAzurePassword(!showAzurePassword)}
                               edge="end"
                               size="small"
-                              disabled={!isEditing || fetchError}
+                              disabled={!isEditing || fetchError || isSaving}
                             >
                               <Iconify
                                 icon={showAzurePassword ? eyeOffIcon : eyeIcon}
@@ -829,7 +1035,7 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
                         'e.g., text-embedding-3-small, text-embedding-3-large'
                       }
                       required
-                      disabled={!isEditing || fetchError}
+                      disabled={!isEditing || fetchError || isSaving}
                       InputProps={{
                         startAdornment: (
                           <InputAdornment position="start">
@@ -851,6 +1057,42 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
             </>
           )}
 
+          {/* Sentence Transformers Form */}
+          {modelType === 'sentenceTransformers' && (
+            <Grid item xs={12} md={12}>
+              <Controller
+                name="model"
+                control={sentenceTransformersControl}
+                render={({ field, fieldState }) => (
+                  <TextField
+                    {...field}
+                    label="Model Name"
+                    fullWidth
+                    size="small"
+                    error={!!fieldState.error}
+                    helperText={fieldState.error?.message || 'e.g., all-MiniLM-L6-v2'}
+                    required
+                    disabled={!isEditing || fetchError || isSaving}
+                    InputProps={{
+                      startAdornment: (
+                        <InputAdornment position="start">
+                          <Iconify icon={robotIcon} width={18} height={18} />
+                        </InputAdornment>
+                      ),
+                    }}
+                    sx={{
+                      '& .MuiOutlinedInput-root': {
+                        '& fieldset': {
+                          borderColor: alpha(theme.palette.text.primary, 0.15),
+                        },
+                      },
+                    }}
+                  />
+                )}
+              />
+            </Grid>
+          )}
+
           {/* Default Option - No fields needed */}
           {modelType === 'default' && (
             <Grid item xs={12}>
@@ -868,12 +1110,22 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
           </Alert>
         )}
 
+        {formSubmitSuccess && !saveError && (
+          <Alert severity="success" sx={{ mt: 3 }}>
+            Configuration saved successfully.
+          </Alert>
+        )}
+
+        {/* Overlay loading indicator - replaces the old one */}
         {isSaving && (
-          <Box sx={{ display: 'flex', justifyContent: 'center', mt: 3 }}>
-            <CircularProgress size={24} />
+          <Box sx={loadingOverlayStyle}>
+            <CircularProgress size={32} />
+            <Typography variant="body2" sx={{ mt: 2, fontWeight: 500 }}>
+              Saving configuration...
+            </Typography>
           </Box>
         )}
-      </>
+      </Box>
     );
   }
 );

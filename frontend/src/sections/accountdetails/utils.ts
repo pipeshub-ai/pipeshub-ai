@@ -240,7 +240,7 @@ export const removeUserFromGroup = async (userId: string, groupId: string | null
 
 export const removeUser = async (userId: string) => {
   try {
-    const response = await axios.post(`${CONFIG.backendUrl}/api/v1/users/${userId}`);
+    const response = await axios.delete(`${CONFIG.backendUrl}/api/v1/users/${userId}`);
     return response.data;
   } catch (error) {
     throw new Error('Error deleting user');

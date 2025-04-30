@@ -71,6 +71,14 @@ interface AddUsersToGroupsModalProps {
   groups: AppUserGroup[];
 }
 
+// Get initials from full name
+const getInitials = (fullName: string) =>
+  fullName
+    .split(' ')
+    .map((n) => n[0])
+    .join('')
+    .toUpperCase();
+
 const Users = () => {
   const theme = useTheme();
   const [users, setUsers] = useState<GroupUser[]>([]);
@@ -109,7 +117,10 @@ const Users = () => {
         setUserId(orgId);
         const response = await getAllUsersWithGroups();
         const groupsData = await allGroups();
-        const loggedInUsers = response.filter((user) => user?.email !== null);
+        const loggedInUsers = response.filter(
+          (user) => user?.email !== null && user?.fullName && user.hasLoggedIn === true
+        );
+        console.log(users)
         setUsers(loggedInUsers);
         setGroups(groupsData);
       } catch (error) {
@@ -120,15 +131,14 @@ const Users = () => {
     };
 
     fetchUsersAndGroups();
+     // eslint-disable-next-line
   }, []);
 
-  const filteredUsers = users
-    .filter((user) => user.fullName)
-    .filter(
-      (user) =>
-        user.fullName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        user.email.toLowerCase().includes(searchTerm.toLowerCase())
-    );
+  const filteredUsers = users.filter(
+    (user) =>
+      (user?.fullName?.toLowerCase() || '').includes(searchTerm.toLowerCase()) ||
+      (user?.email?.toLowerCase() || '').includes(searchTerm.toLowerCase())
+  );
 
   const handleChangePage = (event: unknown, newPage: number) => {
     setPage(newPage);
@@ -160,7 +170,7 @@ const Users = () => {
       await removeUser(deleteUserId);
       const updatedUsers = await getAllUsersWithGroups();
 
-      const loggedInUsers = updatedUsers.filter((user) => user.email !== null);
+      const loggedInUsers = updatedUsers.filter((user) => user.email !== null && user.fullName);
       setUsers(loggedInUsers);
       setSnackbarState({ open: true, message: 'User removed successfully', severity: 'success' });
     } catch (error) {
@@ -187,7 +197,7 @@ const Users = () => {
     try {
       const updatedUsers = await getAllUsersWithGroups();
 
-      const loggedInUsers = updatedUsers.filter((user) => user?.email !== '');
+      const loggedInUsers = updatedUsers.filter((user) => user?.email !== '' && user?.fullName);
       setUsers(loggedInUsers);
       setSnackbarState({
         open: true,
@@ -203,7 +213,7 @@ const Users = () => {
     try {
       const updatedUsers = await getAllUsersWithGroups();
 
-      const loggedInUsers = updatedUsers.filter((user) => user.email !== null);
+      const loggedInUsers = updatedUsers.filter((user) => user.email !== null && user.fullName);
       setUsers(loggedInUsers);
       setSnackbarState({
         open: true,
@@ -255,15 +265,6 @@ const Users = () => {
 
     return colors[Math.abs(hash) % colors.length];
   };
-
-  // Get initials from full name
-  // Get initials from full name
-  const getInitials = (fullName: string) =>
-    fullName
-      .split(' ')
-      .map((n) => n[0])
-      .join('')
-      .toUpperCase();
 
   if (loading) {
     return (
@@ -409,13 +410,15 @@ const Users = () => {
                             </Avatar>
                           </Tooltip>
                           <Box>
-                            <Typography variant="subtitle2">{user.fullName}</Typography>
+                            <Typography variant="subtitle2">
+                              {user.fullName || 'Unnamed User'}
+                            </Typography>
                             <Typography
                               variant="body2"
                               color="text.secondary"
                               sx={{ fontSize: '0.75rem' }}
                             >
-                              {user.email}
+                              {user.email || 'No email'}
                             </Typography>
                           </Box>
                         </Stack>
@@ -625,15 +628,15 @@ const Users = () => {
               </Avatar>
               <Box>
                 <Typography variant="h6" sx={{ mb: 0.5 }}>
-                  {selectedUser.fullName}
+                  {selectedUser.fullName || 'Unnamed User'}
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
-                  {selectedUser.email}
+                  {selectedUser.email || 'No email'}
                 </Typography>
               </Box>
             </Stack>
 
-            {selectedUser.groups.length > 0 && (
+            {selectedUser.groups && selectedUser.groups.length > 0 && (
               <Box>
                 <Typography variant="subtitle2" sx={{ mb: 1 }}>
                   Groups
@@ -642,7 +645,7 @@ const Users = () => {
                   {selectedUser.groups.map((group, idx) => (
                     <Chip
                       key={idx}
-                      label={group.name}
+                      label={group.name || 'Unnamed Group'}
                       size="small"
                       sx={{
                         fontSize: '0.75rem',
@@ -705,7 +708,8 @@ const Users = () => {
         </DialogTitle>
         <DialogContent>
           <Typography variant="body2" sx={{ mt: 1 }}>
-            Are you sure you want to remove {selectedUser?.fullName}? This action cannot be undone.
+            Are you sure you want to remove {selectedUser?.fullName || 'this user'}? This action
+            cannot be undone.
           </Typography>
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
@@ -955,9 +959,9 @@ function AddUsersToGroupsModal({
           {allUsers && (
             <Autocomplete<GroupUser, true>
               multiple
-              options={allUsers.filter((user) => Boolean(user?.fullName))}
+              options={allUsers.filter((user) => Boolean(user?._id && user?.fullName))}
               getOptionLabel={(option) => {
-                if (!option._id) return 'Unknown User';
+                if (!option._id || !option.fullName) return 'Unknown User';
                 return option.fullName;
               }}
               renderInput={(params) => <TextField {...params} label="Select Users" />}
@@ -966,7 +970,7 @@ function AddUsersToGroupsModal({
               renderTags={(value, getTagProps) =>
                 value.map((option, index) => (
                   <Chip
-                    label={option.fullName}
+                    label={option.fullName || 'Unnamed User'}
                     {...getTagProps({ index })}
                     sx={{
                       bgcolor: alpha(theme.palette.primary.main, 0.08),
@@ -975,6 +979,29 @@ function AddUsersToGroupsModal({
                   />
                 ))
               }
+              renderOption={(props, option) => (
+                <li {...props}>
+                  <Stack direction="row" alignItems="center" spacing={1.5}>
+                    <Avatar
+                      sx={{
+                        width: 24,
+                        height: 24,
+                        fontSize: '0.75rem',
+                        bgcolor: alpha(theme.palette.primary.main, 0.08),
+                        color: theme.palette.primary.main,
+                      }}
+                    >
+                      {getInitials(option.fullName)}
+                    </Avatar>
+                    <Box>
+                      <Typography variant="body2">{option.fullName || 'Unnamed User'}</Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        {option.email || 'No email'}
+                      </Typography>
+                    </Box>
+                  </Stack>
+                </li>
+              )}
             />
           )}
           <Autocomplete
