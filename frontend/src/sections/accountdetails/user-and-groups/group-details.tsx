@@ -829,6 +829,7 @@ export default function GroupDetails() {
         autoHideDuration={6000}
         onClose={handleSnackbarClose}
         anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
+        sx={{ mt: 6 }}
       >
         <Alert
           onClose={handleSnackbarClose}
@@ -973,7 +974,12 @@ function EditGroupModal({
           Save Changes
         </Button>
       </DialogActions>
-      <Snackbar open={snackbarState.open} autoHideDuration={6000} onClose={handleSnackbarClose}>
+      <Snackbar
+        open={snackbarState.open}
+        autoHideDuration={6000}
+        onClose={handleSnackbarClose}
+        sx={{ mt: 6 }}
+      >
         <Alert
           onClose={handleSnackbarClose}
           severity={snackbarState.severity}
@@ -1196,7 +1202,12 @@ function AddUsersToGroupsModal({
         </Button>
       </DialogActions>
 
-      <Snackbar open={snackbarState.open} autoHideDuration={6000} onClose={handleSnackbarClose}>
+      <Snackbar
+        open={snackbarState.open}
+        autoHideDuration={6000}
+        onClose={handleSnackbarClose}
+        sx={{ mt: 6 }}
+      >
         <Alert
           onClose={handleSnackbarClose}
           severity={snackbarState.severity}

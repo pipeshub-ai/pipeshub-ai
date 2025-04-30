@@ -2,6 +2,8 @@ import { z as zod } from 'zod';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import lockIcon from '@iconify-icons/mdi/lock-outline';
+import visibilityIcon from '@iconify-icons/mdi/eye-outline';
+import visibilityOffIcon from '@iconify-icons/mdi/eye-off-outline';
 import React, { useState, useEffect, useCallback } from 'react';
 
 import { LoadingButton } from '@mui/lab';
@@ -22,6 +24,8 @@ import {
   DialogContent,
   DialogActions,
   CircularProgress,
+  InputAdornment,
+  IconButton,
 } from '@mui/material';
 
 import { useAdmin } from 'src/context/AdminContext';
@@ -85,6 +89,9 @@ export default function PersonalProfile() {
   const [saveChanges, setSaveChanges] = useState<boolean>(false);
   const [currentEmail, setCurrentEmail] = useState<string>(''); // Store the current email
   const { isAdmin } = useAdmin();
+  const [showCurrentPassword, setShowCurrentPassword] = useState<boolean>(false);
+  const [showNewPassword, setShowNewPassword] = useState<boolean>(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState<boolean>(false);
 
   const methods = useForm<ProfileFormData>({
     resolver: zodResolver(ProfileSchema),
@@ -245,6 +252,13 @@ export default function PersonalProfile() {
     } catch (err) {
       // setSnackbar({ open: true, message: err.errorMessage, severity: 'error' });
     }
+  };
+
+  const handleClosePasswordDialog = () => {
+    setIsChangePasswordOpen(false);
+    setShowCurrentPassword(false); // Hide passwords
+    setShowNewPassword(false); // Hide passwords
+    passwordMethods.reset(); // Clear all form fields
   };
 
   if (loading) {
@@ -425,7 +439,7 @@ export default function PersonalProfile() {
       {/* Password Dialog */}
       <Dialog
         open={isChangePasswordOpen}
-        onClose={() => setIsChangePasswordOpen(false)}
+        onClose={handleClosePasswordDialog}
         PaperProps={{
           sx: {
             borderRadius: 1,
@@ -443,62 +457,117 @@ export default function PersonalProfile() {
           onSubmit={passwordMethods.handleSubmit(handleChangePassword)}
         >
           <DialogContent sx={{ pt: 1, pb: 1 }}>
+            {/* Current Password Field with View Toggle */}
             <Field.Text
               name="currentPassword"
               label="Current password"
-              type="password"
+              type={showCurrentPassword ? 'text' : 'password'}
               fullWidth
               margin="normal"
               variant="outlined"
+              InputProps={{
+                endAdornment: (
+                  <InputAdornment position="end">
+                    <IconButton
+                      aria-label="toggle current password visibility"
+                      onClick={() => setShowCurrentPassword(!showCurrentPassword)}
+                      edge="end"
+                    >
+                      <Iconify
+                        icon={showCurrentPassword ? visibilityIcon : visibilityOffIcon}
+                        width={20}
+                        height={20}
+                      />
+                    </IconButton>
+                  </InputAdornment>
+                ),
+              }}
               sx={{
                 '& .MuiOutlinedInput-root': {
                   height: 56,
                 },
               }}
             />
-            <Field.Text
-              name="newPassword"
-              label="New password"
-              type="password"
-              fullWidth
-              margin="normal"
-              variant="outlined"
-              sx={{
-                '& .MuiOutlinedInput-root': {
-                  height: 56,
-                },
-              }}
-            />
-            <Typography
-              variant="caption"
-              color="text.secondary"
-              sx={{
-                display: 'block',
-                mt: 0.5,
-                mb: 1.5,
-                fontSize: '0.7rem',
-                lineHeight: 1.4,
-              }}
-            >
-              Password must have at least 8 characters with lowercase, uppercase, number and symbol
-            </Typography>
-            <Field.Text
-              name="repeatNewPassword"
-              label="Confirm new password"
-              type="password"
-              fullWidth
-              margin="normal"
-              variant="outlined"
-              sx={{
-                '& .MuiOutlinedInput-root': {
-                  height: 56,
-                },
-              }}
-            />
+
+            <Box sx={{ position: 'relative', mt: 2 }}>
+              <Typography variant="subtitle2" fontWeight={500} color="text.primary" sx={{ mb: 1 }}>
+                New Password
+              </Typography>
+
+              {/* Show/Hide toggle for both new password fields */}
+              <Box sx={{ position: 'absolute', top: 0, right: 0 }}>
+                <Button
+                  startIcon={
+                    <Iconify
+                      icon={showNewPassword ? visibilityIcon : visibilityOffIcon}
+                      width={18}
+                      height={18}
+                    />
+                  }
+                  onClick={() => setShowNewPassword(!showNewPassword)}
+                  size="small"
+                  sx={{
+                    textTransform: 'none',
+                    color: 'text.secondary',
+                    fontWeight: 400,
+                    fontSize: '0.75rem',
+                  }}
+                >
+                  {showNewPassword ? 'Hide' : 'Show'}
+                </Button>
+              </Box>
+
+              {/* New Password Field */}
+              <Field.Text
+                name="newPassword"
+                label="New password"
+                type={showNewPassword ? 'text' : 'password'}
+                fullWidth
+                margin="normal"
+                variant="outlined"
+                sx={{
+                  '& .MuiOutlinedInput-root': {
+                    height: 56,
+                  },
+                  mt: 0,
+                }}
+              />
+
+              {/* Password requirements */}
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{
+                  display: 'block',
+                  mt: 0.5,
+                  mb: 1.5,
+                  fontSize: '0.7rem',
+                  lineHeight: 1.4,
+                }}
+              >
+                Password must have at least 8 characters with lowercase, uppercase, number and
+                symbol
+              </Typography>
+
+              {/* Confirm New Password Field - uses same visibility state */}
+              <Field.Text
+                name="repeatNewPassword"
+                label="Confirm new password"
+                type={showNewPassword ? 'text' : 'password'}
+                fullWidth
+                margin="normal"
+                variant="outlined"
+                sx={{
+                  '& .MuiOutlinedInput-root': {
+                    height: 56,
+                  },
+                }}
+              />
+            </Box>
           </DialogContent>
           <DialogActions sx={{ px: 2.5, pb: 2, pt: 1 }}>
             <Button
-              onClick={() => setIsChangePasswordOpen(false)}
+              onClick={handleClosePasswordDialog}
               size="small"
               sx={{
                 textTransform: 'none',
@@ -537,6 +606,7 @@ export default function PersonalProfile() {
         autoHideDuration={4000}
         onClose={handleCloseSnackbar}
         anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
+        sx={{ mt: 6 }}
       >
         <Alert
           onClose={handleCloseSnackbar}
