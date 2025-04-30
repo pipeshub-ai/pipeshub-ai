@@ -36,11 +36,12 @@ export class KeyValueStoreService implements IKVStoreConnection {
    * Creates a new store instance using the factory with default serialization/deserialization
    */
   async connect(): Promise<void> {
-    this.logger.info('Connecting to key-value store');
-    const storeType: StoreType = KeyValueStoreType.fromString(
-      this.config.storeType,
-    );
     try {
+      this.logger.info('Connecting to key-value store');
+      const storeType: StoreType = KeyValueStoreType.fromString(
+        this.config.storeType,
+      );
+
       if (!this.isInitialized) {
         this.store = KeyValueStoreFactory.createStore(
           storeType,
