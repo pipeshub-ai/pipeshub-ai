@@ -733,6 +733,7 @@ const Users = () => {
         autoHideDuration={6000}
         onClose={handleSnackbarClose}
         anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
+        sx={{ mt: 6 }}
       >
         <Alert
           onClose={handleSnackbarClose}
@@ -867,7 +868,12 @@ function AddUserModal({ open, onClose, groups, onUsersAdded }: AddUserModalProps
           Send Invites
         </Button>
       </DialogActions>
-      <Snackbar open={snackbarState.open} autoHideDuration={6000} onClose={handleSnackbarClose}>
+      <Snackbar
+        open={snackbarState.open}
+        autoHideDuration={6000}
+        onClose={handleSnackbarClose}
+        sx={{ mt: 6 }}
+      >
         <Alert
           onClose={handleSnackbarClose}
           severity={snackbarState.severity}
@@ -1006,7 +1012,12 @@ function AddUsersToGroupsModal({
           Add to Groups
         </Button>
       </DialogActions>
-      <Snackbar open={snackbarState.open} autoHideDuration={6000} onClose={handleSnackbarClose}>
+      <Snackbar
+        open={snackbarState.open}
+        autoHideDuration={6000}
+        onClose={handleSnackbarClose}
+        sx={{ mt: 6 }}
+      >
         <Alert
           onClose={handleSnackbarClose}
           severity={snackbarState.severity}

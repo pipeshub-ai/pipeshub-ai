@@ -390,6 +390,7 @@ const AuthMethodsList: React.FC<AuthMethodsListProps> = ({
         autoHideDuration={6000}
         onClose={handleCloseError}
         anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
+        sx={{mt:6}}
       >
         <Alert
           onClose={handleCloseError}

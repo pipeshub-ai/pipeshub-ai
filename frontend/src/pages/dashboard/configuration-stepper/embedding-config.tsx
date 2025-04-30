@@ -42,10 +42,25 @@ const azureEmbeddingSchema = z.object({
   model: z.string().min(1, 'Model is required'),
 });
 
+// Zod schema for Sentence Transformers embedding validation
+const sentenceTransformersEmbeddingSchema = z.object({
+  modelType: z.literal('sentenceTransformers'),
+  model: z.string().min(1, 'Model is required'),
+  // apiKey is not required for sentenceTransformers
+});
+
+// Zod schema for Default option - no validation needed
+const defaultEmbeddingSchema = z.object({
+  modelType: z.literal('default'),
+  // No other fields required for default
+});
+
 // Combined schema using discriminated union
 const embeddingSchema = z.discriminatedUnion('modelType', [
   openaiEmbeddingSchema,
   azureEmbeddingSchema,
+  sentenceTransformersEmbeddingSchema,
+  defaultEmbeddingSchema,
 ]);
 
 interface EmbeddingConfigStepProps {
@@ -54,17 +69,15 @@ interface EmbeddingConfigStepProps {
   initialValues: EmbeddingFormValues | null;
 }
 
-// Removed model options array as we're using a text field instead
-
 const EmbeddingConfigStep: React.FC<EmbeddingConfigStepProps> = ({
   onSubmit,
   onSkip,
   initialValues,
 }) => {
   const [showPassword, setShowPassword] = useState<boolean>(false);
-  const [modelType, setModelType] = useState<'openai' | 'azureOpenAI'>(
-    initialValues?.modelType || 'openai'
-  );
+  const [modelType, setModelType] = useState<
+    'openai' | 'azureOpenAI' | 'sentenceTransformers' | 'default'
+  >(initialValues?.modelType || 'default');
 
   // Get default values based on modelType
   const getDefaultValues = () => {
@@ -74,6 +87,18 @@ const EmbeddingConfigStep: React.FC<EmbeddingConfigStepProps> = ({
         endpoint: initialValues?.endpoint || '',
         apiKey: initialValues?.apiKey || '',
         model: initialValues?.model || '',
+      };
+    }
+    if (modelType === 'sentenceTransformers') {
+      return {
+        modelType: 'sentenceTransformers' as const,
+        model: initialValues?.model || '', // Default model for sentence transformers
+      };
+    }
+    if (modelType === 'default') {
+      // Default option - no additional configuration needed
+      return {
+        modelType: 'default' as const,
       };
     }
     return {
@@ -87,31 +112,48 @@ const EmbeddingConfigStep: React.FC<EmbeddingConfigStepProps> = ({
     control,
     handleSubmit,
     reset,
-    formState: { errors, isValid, isDirty, touchedFields },
+    formState: { errors, isValid, isDirty },
     trigger,
+    watch,
   } = useForm<EmbeddingFormValues>({
     resolver: zodResolver(embeddingSchema),
     mode: 'onChange', // Validate on change
     defaultValues: getDefaultValues(),
   });
 
+  // Watch the current modelType for conditional rendering
+  const currentModelType = watch('modelType');
+
   // Handle model type change
-  const handleModelTypeChange = (newType: 'openai' | 'azureOpenAI') => {
+  const handleModelTypeChange = (
+    newType: 'openai' | 'azureOpenAI' | 'sentenceTransformers' | 'default'
+  ) => {
     setModelType(newType);
-    reset(
-      newType === 'azureOpenAI'
-        ? {
-            modelType: 'azureOpenAI',
-            endpoint: '',
-            apiKey: '',
-            model: '',
-          }
-        : {
-            modelType: 'openai',
-            apiKey: '',
-            model: '',
-          }
-    );
+
+    if (newType === 'azureOpenAI') {
+      reset({
+        modelType: 'azureOpenAI',
+        endpoint: '',
+        apiKey: '',
+        model: '',
+      });
+    } else if (newType === 'sentenceTransformers') {
+      reset({
+        modelType: 'sentenceTransformers',
+        model: '', // Default model
+      });
+    } else if (newType === 'default') {
+      // Just reset to default with no additional fields
+      reset({
+        modelType: 'default',
+      });
+    } else {
+      reset({
+        modelType: 'openai',
+        apiKey: '',
+        model: '',
+      });
+    }
   };
 
   // Initialize form with initial values if available
@@ -130,6 +172,11 @@ const EmbeddingConfigStep: React.FC<EmbeddingConfigStepProps> = ({
   useEffect(() => {
     // Method to check if form has any input
     window.hasEmbeddingInput = () => {
+      // If using default or sentenceTransformers, consider it as having input
+      if (modelType === 'default' || modelType === 'sentenceTransformers') {
+        return true;
+      }
+
       const values = getDefaultValues();
       return Object.values(values).some(
         (val) => typeof val === 'string' && val.trim() !== '' && val !== values.model
@@ -138,7 +185,14 @@ const EmbeddingConfigStep: React.FC<EmbeddingConfigStepProps> = ({
 
     // Method to validate and submit the form programmatically
     window.submitEmbeddingForm = async () => {
-      // Trigger validation for all fields
+      // If using default option, always consider it valid
+      if (modelType === 'default') {
+        const data = { modelType: 'default' };
+        onSubmit(data as EmbeddingFormValues);
+        return true;
+      }
+
+      // Otherwise trigger validation for all fields
       const isFormValid = await trigger();
 
       if (isFormValid) {
@@ -156,7 +210,14 @@ const EmbeddingConfigStep: React.FC<EmbeddingConfigStepProps> = ({
     };
 
     // Method to check if the form is valid
-    window.isEmbeddingFormValid = async () => trigger();
+    window.isEmbeddingFormValid = async () => {
+      // Default is always valid
+      if (modelType === 'default') {
+        return true;
+      }
+
+      return trigger();
+    };
 
     return () => {
       // Clean up when component unmounts
@@ -165,7 +226,7 @@ const EmbeddingConfigStep: React.FC<EmbeddingConfigStepProps> = ({
       delete window.hasEmbeddingInput;
     };
     // eslint-disable-next-line
-  }, [handleSubmit, onSubmit, trigger]);
+  }, [handleSubmit, onSubmit, trigger, modelType]);
 
   // Direct form submission handler
   const onFormSubmit = (data: EmbeddingFormValues) => {
@@ -189,9 +250,9 @@ const EmbeddingConfigStep: React.FC<EmbeddingConfigStepProps> = ({
       </Typography>
 
       <Alert severity="info" sx={{ mb: 3 }}>
-        You can configure embeddings for your application or proceed without configuring (no
-        configuration means default settings will be used). All fields marked with{' '}
-        <span style={{ color: 'error.main' }}>*</span> are required if you choose to configure.
+        Select the embedding provider to use. You can use the default system embeddings or configure
+        a specific provider. All fields marked with <span style={{ color: 'error.main' }}>*</span>{' '}
+        are required for the selected provider.
       </Alert>
 
       <Grid container spacing={2}>
@@ -206,11 +267,17 @@ const EmbeddingConfigStep: React.FC<EmbeddingConfigStepProps> = ({
                   {...field}
                   label="Provider *"
                   onChange={(e: SelectChangeEvent) => {
-                    const newType = e.target.value as 'openai' | 'azureOpenAI';
+                    const newType = e.target.value as
+                      | 'openai'
+                      | 'azureOpenAI'
+                      | 'sentenceTransformers'
+                      | 'default';
                     field.onChange(newType);
                     handleModelTypeChange(newType);
                   }}
                 >
+                  <MenuItem value="default">Default (System Embeddings)</MenuItem>
+                  <MenuItem value="sentenceTransformers">Sentence Transformer</MenuItem>
                   <MenuItem value="openai">OpenAI</MenuItem>
                   <MenuItem value="azureOpenAI">Azure OpenAI</MenuItem>
                 </Select>
@@ -220,8 +287,42 @@ const EmbeddingConfigStep: React.FC<EmbeddingConfigStepProps> = ({
           />
         </Grid>
 
+        {/* Show message for default option */}
+        {currentModelType === 'default' && (
+          <Grid item xs={12}>
+            <Alert severity="success" sx={{ mt: 1 }}>
+              Using default system embeddings. No additional configuration required.
+            </Alert>
+          </Grid>
+        )}
+
+        {/* Fields for Sentence Transformers */}
+        {currentModelType === 'sentenceTransformers' && (
+          <Grid item xs={12}>
+            <Controller
+              name="model"
+              control={control}
+              render={({ field, fieldState }) => (
+                <TextField
+                  {...field}
+                  label="Embedding Model"
+                  fullWidth
+                  size="small"
+                  error={!!fieldState.error}
+                  helperText={fieldState.error?.message || 'e.g: all-MiniLM-L6-v2'}
+                  required
+                  onBlur={() => {
+                    field.onBlur();
+                    trigger('model');
+                  }}
+                />
+              )}
+            />
+          </Grid>
+        )}
+
         {/* Azure OpenAI specific fields */}
-        {modelType === 'azureOpenAI' && (
+        {currentModelType === 'azureOpenAI' && (
           <Grid item xs={12}>
             <Controller
               name="endpoint"
@@ -248,74 +349,77 @@ const EmbeddingConfigStep: React.FC<EmbeddingConfigStepProps> = ({
           </Grid>
         )}
 
-        {/* Common fields for both providers */}
-        <Grid item xs={12}>
-          <Controller
-            name="apiKey"
-            control={control}
-            render={({ field, fieldState }) => (
-              <TextField
-                {...field}
-                label="API Key"
-                fullWidth
-                size="small"
-                error={!!fieldState.error}
-                helperText={fieldState.error?.message}
-                type={showPassword ? 'text' : 'password'}
-                required
-                onBlur={() => {
-                  field.onBlur();
-                  trigger('apiKey');
-                }}
-                InputProps={{
-                  endAdornment: (
-                    <InputAdornment position="end">
-                      <IconButton
-                        onClick={() => setShowPassword(!showPassword)}
-                        edge="end"
-                        size="small"
-                      >
-                        <Iconify
-                          icon={showPassword ? eyeOffIcon : eyeIcon}
-                          width={16}
-                          height={16}
-                        />
-                      </IconButton>
-                    </InputAdornment>
-                  ),
-                }}
-              />
-            )}
-          />
-        </Grid>
+        {/* API Key field - only show for OpenAI and Azure OpenAI */}
+        {(currentModelType === 'openai' || currentModelType === 'azureOpenAI') && (
+          <Grid item xs={12}>
+            <Controller
+              name="apiKey"
+              control={control}
+              render={({ field, fieldState }) => (
+                <TextField
+                  {...field}
+                  label="API Key"
+                  fullWidth
+                  size="small"
+                  error={!!fieldState.error}
+                  helperText={fieldState.error?.message}
+                  type={showPassword ? 'text' : 'password'}
+                  required
+                  onBlur={() => {
+                    field.onBlur();
+                    trigger('apiKey');
+                  }}
+                  InputProps={{
+                    endAdornment: (
+                      <InputAdornment position="end">
+                        <IconButton
+                          onClick={() => setShowPassword(!showPassword)}
+                          edge="end"
+                          size="small"
+                        >
+                          <Iconify
+                            icon={showPassword ? eyeOffIcon : eyeIcon}
+                            width={16}
+                            height={16}
+                          />
+                        </IconButton>
+                      </InputAdornment>
+                    ),
+                  }}
+                />
+              )}
+            />
+          </Grid>
+        )}
 
-        <Grid item xs={12}>
-          <Controller
-            name="model"
-            control={control}
-            render={({ field, fieldState }) => (
-              <TextField
-                {...field}
-                label="Embedding Model"
-                fullWidth
-                size="small"
-                error={!!fieldState.error}
-                helperText={
-                  fieldState.error?.message ||
-                  'e.g., text-embedding-3-small, text-embedding-3-large'
-                }
-                required
-                onBlur={() => {
-                  field.onBlur();
-                  trigger('model');
-                }}
-              />
-            )}
-          />
-        </Grid>
+        {/* Model field - only show for OpenAI and Azure OpenAI */}
+        {(currentModelType === 'openai' || currentModelType === 'azureOpenAI') && (
+          <Grid item xs={12}>
+            <Controller
+              name="model"
+              control={control}
+              render={({ field, fieldState }) => (
+                <TextField
+                  {...field}
+                  label="Embedding Model"
+                  fullWidth
+                  size="small"
+                  error={!!fieldState.error}
+                  helperText={
+                    fieldState.error?.message ||
+                    'e.g., text-embedding-3-small, text-embedding-3-large'
+                  }
+                  required
+                  onBlur={() => {
+                    field.onBlur();
+                    trigger('model');
+                  }}
+                />
+              )}
+            />
+          </Grid>
+        )}
       </Grid>
-
-      {/* Removed "Use Default Configuration" button as skipping is default */}
 
       {/* This hidden submit button ensures the form can be submitted programmatically */}
       <Button type="submit" style={{ display: 'none' }} id="embedding-form-submit-button">

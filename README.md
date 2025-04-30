@@ -1,4 +1,3 @@
-
 <a name="readme-top"></a>
 
 <h2 align="center">
@@ -18,10 +17,12 @@
 </p>
 
 <!--Intro-->
+
 <strong>[PipesHub](https://github.com/pipeshub-ai/pipeshub-ai)</strong> is the workplace AI platform for enterprises to improve how businesses operate and help employees and AI agents work more efficiently.
 In most companies, important work data is spread across multiple apps like Google Workspace, Microsoft 365, Slack, Jira, Confluence, and more. PipesHub AI helps you quickly find the right information using natural language search—just like Google.
 It can answer questions, provide insights, and more. The platform not only delivers the most relevant results but also shows where the information came from, with proper citations, using Knowledge Graphs and Page Ranking.
 Beyond search, our platform allows enterprises to create custom apps and AI agents using a No-Code interface.
+
 <h2>High Level Architecture Diagram</h2>
   <img
     width="700"
@@ -30,16 +31,16 @@ Beyond search, our platform allows enterprises to create custom apps and AI agen
     alt="PipesHub System Architecture"
   />
 
-
 <h2>Spotlight Features</h2>
 
 #### Your Workplace, Our AI.
+
 [![PipesHub Workplace AI](https://img.youtube.com/vi/czDNbS_OEDQ/0.jpg)](https://www.youtube.com/watch?v=czDNbS_OEDQ)
 
-
 ## Unmatched Value of PipesHub
+
 - **Choose Any Model, Your Way** – Bring your preferred deep learning models for both indexing and inference with total flexibility.
-- **Real-Time or Scheduled Indexing** – Index data as it flows or schedule it to run exactly when you need. 
+- **Real-Time or Scheduled Indexing** – Index data as it flows or schedule it to run exactly when you need.
 - **Access-Driven Visibility** – Source-level permissions ensure every document is shown only to those who are authorized.
 - **Built-In Data Security** – Sensitive information stays secure, always..
 - **Deploy Anywhere** – Fully supports both on-premise and cloud-based deployments.
@@ -48,6 +49,7 @@ Beyond search, our platform allows enterprises to create custom apps and AI agen
 - **Modular & Scalable Architecture** – Every service is loosely coupled to scale independently and adapt to your needs.
 
 ## Connectors
+
 - Google Drive
 - Gmail
 - Google Calendar
@@ -62,6 +64,7 @@ Beyond search, our platform allows enterprises to create custom apps and AI agen
 - MS Teams(Release coming this month)
 
 ## File Formats Supported
+
 - PDF(including scanned PDFs)
 - Docx/Doc
 - XLSX/XLS
@@ -76,6 +79,7 @@ Beyond search, our platform allows enterprises to create custom apps and AI agen
 - Video(Coming Soon)
 
 ## RoadMap
+
 - Code Search
 - Workplace AI Agents
 - MCP
@@ -83,7 +87,6 @@ Beyond search, our platform allows enterprises to create custom apps and AI agen
 - Personalized Search
 - Highly available and scalable Kubernetes deployment
 - PageRank
-  
 
 ## 📦 Developer Build
 
@@ -99,14 +102,11 @@ git clone https://github.com/pipeshub-ai/pipeshub-ai.git
 cd pipeshub-ai/deployment/docker-compose
 ```
 
-#### 🛠️ Copy and update the environment file
+# Set Optional Environment Variables
 
-```bash
-cp env.template .env
-```
-
-> 👉 Edit the `.env` file to set secrets, passwords, and the public URLs of the **Frontend** and **Connector** services  
+> 👉 Set Environment Variables for secrets, passwords, and the public URLs of the **Frontend** and **Connector** services  
 > _(Required for webhook notifications and real-time updates)_
+> Refer to env.template
 
 #### 🚀 Start the development deployment with build
 
@@ -135,10 +135,10 @@ git clone https://github.com/pipeshub-ai/pipeshub-ai.git
 # Navigate to the deployment folder
 cd pipeshub-ai/deployment/docker-compose
 
-# Copy and update the environment file
-cp env.template .env
-# 👉 Edit the .env file to set secrets, passwords, and the public URLs
-#    of the Frontend and Connector services (required for webhook notifications and real-time updates)
+# Set Environment Variables
+> 👉 Set Environment Variables for secrets, passwords, and the public URLs of the **Frontend** and **Connector** services
+> _(Required for webhook notifications and real-time updates)_
+> Refer to env.template
 
 # Start the production deployment
 docker compose -f docker-compose.prod.yml -p pipeshub-ai up -d
@@ -147,3 +147,4 @@ docker compose -f docker-compose.prod.yml -p pipeshub-ai up -d
 docker compose -f docker-compose.prod.yml -p pipeshub-ai down
 
 
+```

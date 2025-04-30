@@ -34,6 +34,8 @@ import axios from 'axios';
 const logger = Logger.getInstance({
   service: 'Knowledge Base Controller',
 });
+const AI_SERVICE_UNAVAILABLE_MESSAGE =
+  'AI Service is currently unavailable. Please check your network connection or try again later.';
 
 export const createRecords =
   (
@@ -260,7 +262,7 @@ export const getRecordById =
         } catch (error: any) {
           if (error.cause && error.cause.code === 'ECONNREFUSED') {
             throw new InternalServerError(
-              'AI Service is currently unavailable. Please check your network connection or try again later.',
+              AI_SERVICE_UNAVAILABLE_MESSAGE,
               error,
             );
           }
@@ -1086,7 +1088,7 @@ export const reindexRecord =
         } catch (error: any) {
           if (error.cause && error.cause.code === 'ECONNREFUSED') {
             throw new InternalServerError(
-              'AI Service is currently unavailable. Please check your network connection or try again later.',
+              AI_SERVICE_UNAVAILABLE_MESSAGE,
               error,
             );
           }

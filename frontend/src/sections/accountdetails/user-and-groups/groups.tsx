@@ -676,6 +676,7 @@ export default function Groups() {
         autoHideDuration={6000}
         onClose={handleSnackbarClose}
         anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
+        sx={{mt:6}}
       >
         <Alert
           onClose={handleSnackbarClose}

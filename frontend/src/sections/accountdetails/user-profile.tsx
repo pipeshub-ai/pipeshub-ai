@@ -679,6 +679,7 @@ export default function UserProfile() {
         autoHideDuration={4000}
         onClose={handleCloseSnackbar}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        sx={{mt:6}}
       >
         <Alert
           onClose={handleCloseSnackbar}
