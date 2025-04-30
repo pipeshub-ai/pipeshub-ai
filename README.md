@@ -154,4 +154,4 @@ docker compose -f docker-compose.prod.yml -p pipeshub-ai down
 
 ## 👥 Contributing
 
-Want to join our community of developers? Please check out our [Contributing Guide](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/CONTRIBUTION.md) for more details on how to set up the development environment, our coding standards, and the contribution workflow.
+Want to join our community of developers? Please check out our [Contributing Guide](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/CONTRIBUTING.md) for more details on how to set up the development environment, our coding standards, and the contribution workflow.
