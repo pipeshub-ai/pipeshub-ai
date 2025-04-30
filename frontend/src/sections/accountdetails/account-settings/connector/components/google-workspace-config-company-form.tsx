@@ -17,6 +17,7 @@ import {
   Paper,
   Stack,
   Button,
+  Tooltip,
   TextField,
   Typography,
   CircularProgress,
@@ -32,6 +33,7 @@ interface GoogleWorkspaceConfigFormProps {
   onValidationChange: (isValid: boolean) => void;
   onSaveSuccess?: () => void;
   onFileRemoved?: () => void;
+  isEnabled?: boolean;
 }
 
 export interface GoogleWorkspaceConfigFormRef {
@@ -41,7 +43,7 @@ export interface GoogleWorkspaceConfigFormRef {
 export const GoogleWorkspaceConfigForm = forwardRef<
   GoogleWorkspaceConfigFormRef,
   GoogleWorkspaceConfigFormProps
->(({ onValidationChange, onSaveSuccess, onFileRemoved }, ref) => {
+>(({ onValidationChange, onSaveSuccess, onFileRemoved, isEnabled }, ref) => {
   const theme = useTheme();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [enableRealTimeUpdates, setEnableRealTimeUpdates] = useState(false);
@@ -579,13 +581,31 @@ export const GoogleWorkspaceConfigForm = forwardRef<
               <Typography variant="h6">Google Workspace Configuration</Typography>
 
               {!formEditMode ? (
-                <Button
-                  variant="contained"
-                  startIcon={<Iconify icon={editOutlineIcon} width={18} height={18} />}
-                  onClick={handleEnterEditMode}
-                >
-                  Edit Configuration
-                </Button>
+                !isEnabled ? (
+                  <span>
+                    <Button
+                      variant="contained"
+                      startIcon={<Iconify icon={editOutlineIcon} width={18} height={18} />}
+                      disabled={isEnabled}
+                      onClick={handleEnterEditMode}
+                    >
+                      Edit Configuration
+                    </Button>
+                  </span>
+                ) : (
+                  <Tooltip title="Disable the connector before editing it" placement="top">
+                    <span>
+                      <Button
+                        variant="contained"
+                        startIcon={<Iconify icon={editOutlineIcon} width={18} height={18} />}
+                        disabled={isEnabled}
+                        onClick={handleEnterEditMode}
+                      >
+                        Edit Configuration
+                      </Button>
+                    </span>
+                  </Tooltip>
+                )
               ) : (
                 <Stack direction="row" spacing={1}>
                   <Button

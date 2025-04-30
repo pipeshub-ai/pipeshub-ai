@@ -1,19 +1,20 @@
 import { Helmet } from 'react-helmet-async';
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { Snackbar, Alert } from '@mui/material';
+import { useState, useEffect, useCallback } from 'react';
+
+import { Alert, Snackbar } from '@mui/material';
 
 import axios from 'src/utils/axios';
 
-import { UserProvider } from 'src/context/UserContext';
-import { useAdmin } from 'src/context/AdminContext'; // Import useAdmin hook
+import { useAdmin } from 'src/context/AdminContext';
+import { UserProvider } from 'src/context/UserContext'; // Import useAdmin hook
 
 import { ChatBotView } from 'src/sections/qna/view';
 
-import { AuthProvider } from 'src/auth/context/jwt';
 import { useAuthContext } from 'src/auth/hooks';
+import { AuthProvider } from 'src/auth/context/jwt';
 
-import ConfigurationStepper from '../configuration-stepper/configuration-stepper';
 import FullNameDialog from '../components/full-name-dialog';
+import ConfigurationStepper from '../configuration-stepper/configuration-stepper';
 
 // ----------------------------------------------------------------------
 

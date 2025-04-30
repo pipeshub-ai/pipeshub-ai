@@ -51,6 +51,7 @@ import {
   EventType,
   Event,
 } from '../services/entity_event.service';
+import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck';
 
 const CONNECTORS = [{ key: 'googleWorkspace', name: 'Google Workspace' }];
 const logger = Logger.getInstance({
@@ -111,6 +112,7 @@ export function createConnectorRouter(container: Container) {
   router.get(
     '/credentials',
     authMiddleware.authenticate,
+    userAdminCheck,
     async (
       req: AuthenticatedUserRequest,
       res: Response,
@@ -147,6 +149,7 @@ export function createConnectorRouter(container: Container) {
   router.post(
     '/credentials',
     authMiddleware.authenticate,
+    userAdminCheck,
     ...FileProcessorFactory.createJSONUploadProcessor({
       fieldName: 'googleWorkspaceCredentials',
       allowedMimeTypes: ['application/json'],
@@ -181,6 +184,7 @@ export function createConnectorRouter(container: Container) {
   router.delete(
     '/credentials',
     authMiddleware.authenticate,
+    userAdminCheck,
     async (
       req: AuthenticatedUserRequest,
       res: Response,
@@ -209,6 +213,7 @@ export function createConnectorRouter(container: Container) {
   router.get(
     '/credentials/download',
     authMiddleware.authenticate,
+    userAdminCheck,
     async (
       req: AuthenticatedUserRequest,
       res: Response,
@@ -283,6 +288,7 @@ export function createConnectorRouter(container: Container) {
   router.get(
     '/config',
     authMiddleware.authenticate,
+    userAdminCheck,
     ValidationMiddleware.validate(ServiceValidationSchema),
     async (
       req: AuthenticatedUserRequest,
@@ -396,6 +402,7 @@ export function createConnectorRouter(container: Container) {
   router.post(
     '/config',
     authMiddleware.authenticate,
+    userAdminCheck,
     ValidationMiddleware.validate(oAuthValidationSchema),
     async (
       req: AuthenticatedUserRequest,
@@ -423,6 +430,7 @@ export function createConnectorRouter(container: Container) {
   router.post(
     '/disable',
     authMiddleware.authenticate,
+    userAdminCheck,
     async (
       req: AuthenticatedUserRequest,
       res: Response,
@@ -486,6 +494,7 @@ export function createConnectorRouter(container: Container) {
   router.post(
     '/enable',
     authMiddleware.authenticate,
+    userAdminCheck,
     async (
       req: AuthenticatedUserRequest,
       res: Response,
@@ -584,6 +593,7 @@ export function createConnectorRouter(container: Container) {
   router.post(
     '/getTokenFromCode',
     authMiddleware.authenticate,
+    userAdminCheck,
     async (
       req: AuthenticatedUserRequest,
       res: Response,

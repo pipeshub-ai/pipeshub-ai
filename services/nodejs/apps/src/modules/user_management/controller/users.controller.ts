@@ -673,7 +673,7 @@ export class UserController {
             jwtAuthToken: mailAuthToken,
           },
           usersMails: [email],
-          subject: 'You are invited to join Pipeshub',
+          subject: 'You are invited to join PipesHub',
           templateData: {
             invitee: user?.fullName,
             link: `${this.config.frontendUrl}/reset-password?token=${passwordResetToken}`,
@@ -689,7 +689,7 @@ export class UserController {
             jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
           },
           usersMails: [email],
-          subject: 'You are invited to join Pipeshub',
+          subject: 'You are invited to join PipesHub',
           templateData: {
             invitee: user?.fullName,
             link: `${this.config.frontendUrl}/sign-in`,
@@ -854,7 +854,7 @@ export class UserController {
               jwtAuthToken: mailAuthToken,
             },
             usersMails: [email],
-            subject: 'You are invited to join Pipeshub',
+            subject: 'You are invited to join PipesHub',
             templateData: {
               invitee: req.user?.fullName,
               link: `${this.config.frontendUrl}/reset-password?token=${passwordResetToken}`,
@@ -873,7 +873,7 @@ export class UserController {
               ),
             },
             usersMails: [email],
-            subject: 'You are invited to join Pipeshub',
+            subject: 'You are invited to join PipesHub',
             templateData: {
               invitee: req.user?.fullName,
               link: `${this.config.frontendUrl}/sign-in`,
@@ -938,7 +938,7 @@ export class UserController {
               jwtAuthToken: mailAuthToken,
             },
             usersMails: [email],
-            subject: 'You are invited to re-join Pipeshub',
+            subject: 'You are invited to re-join PipesHub',
             templateData: {
               invitee: req.user?.fullName,
               link: `${this.config.frontendUrl}/reset-password?token=${passwordResetToken}`,
@@ -957,7 +957,7 @@ export class UserController {
               ),
             },
             usersMails: [email],
-            subject: 'You are invited to re-join Pipeshub',
+            subject: 'You are invited to re-join PipesHub',
             templateData: {
               invitee: req.user?.fullName,
               link: `${this.config.frontendUrl}/sign-in`,

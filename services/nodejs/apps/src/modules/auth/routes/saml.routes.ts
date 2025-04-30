@@ -73,7 +73,6 @@ export function createSamlRouter(container: Container) {
     passport.authenticate('saml', { failureRedirect: '/' }),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
-        // logger.info(req?.user);
         const relayStateBase64 = req.body.RelayState || req.query.RelayState;
         const relayStateDecoded = relayStateBase64
           ? JSON.parse(Buffer.from(relayStateBase64, 'base64').toString('utf8'))
@@ -82,8 +81,6 @@ export function createSamlRouter(container: Container) {
         const orgId = relayStateDecoded.orgId;
         const sessionToken = relayStateDecoded.sessionToken;
 
-        logger.info('Extracted orgId:', orgId);
-        logger.info('Extracted Session Token:', sessionToken);
         if (!sessionToken) {
           throw new UnauthorizedError('Invalid Session token');
         }

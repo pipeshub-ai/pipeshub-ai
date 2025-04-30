@@ -356,20 +356,29 @@ const ConfigurationStepper: React.FC<ConfigurationStepperProps> = ({ open, onClo
     try {
       setIsSubmitting(true);
 
-      // Save the URL data to state
-      setUrlValues(data);
+      // Remove trailing slashes from URLs
+      const processedData = {
+        ...data,
+        frontendUrl: data.frontendUrl?.endsWith('/')
+          ? data.frontendUrl.slice(0, -1)
+          : data.frontendUrl,
+        connectorUrl: data.connectorUrl?.endsWith('/')
+          ? data.connectorUrl.slice(0, -1)
+          : data.connectorUrl,
+      };
+
+      // Save the processed URL data to state
+      setUrlValues(processedData);
       setSkipSteps((prev) => ({ ...prev, publicUrls: false }));
 
-      // Create payload for API call
-
       // Only add frontendUrl to payload if it exists and is not empty
-      if (data.frontendUrl && data.frontendUrl.trim() !== '') {
-        await axios.post(`${API_BASE_URL}/frontendPublicUrl`, { url: data.frontendUrl });
+      if (processedData.frontendUrl && processedData.frontendUrl.trim() !== '') {
+        await axios.post(`${API_BASE_URL}/frontendPublicUrl`, { url: processedData.frontendUrl });
       }
 
       // Only add connectorUrl to payload if it exists and is not empty
-      if (data.connectorUrl && data.connectorUrl.trim() !== '') {
-        await axios.post(`${API_BASE_URL}/connectorPublicUrl`, { url: data.connectorUrl });
+      if (processedData.connectorUrl && processedData.connectorUrl.trim() !== '') {
+        await axios.post(`${API_BASE_URL}/connectorPublicUrl`, { url: processedData.connectorUrl });
       }
 
       // Show success message

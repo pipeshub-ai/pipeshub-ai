@@ -45,6 +45,7 @@ interface ConfigureConnectorDialogProps {
   onSave: () => void;
   onFileRemoved: (connectorId: string) => void;
   connectorType: string | null;
+  isEnabled: boolean | null;
 }
 
 // Create a type for any form ref that has a handleSave method
@@ -58,6 +59,7 @@ const ConfigureConnectorDialog = ({
   onSave,
   onFileRemoved,
   connectorType,
+  isEnabled,
 }: ConfigureConnectorDialogProps) => {
   const theme = useTheme();
   const [isValid, setIsValid] = useState(false);
@@ -176,6 +178,7 @@ const ConfigureConnectorDialog = ({
                   onSaveSuccess={handleFormSaveSuccess}
                   onFileRemoved={() => onFileRemoved('googleWorkspace')} //
                   ref={googleWorkspaceFormRef}
+                  isEnabled={isEnabled || false}
                 />
               )}
             </Box>

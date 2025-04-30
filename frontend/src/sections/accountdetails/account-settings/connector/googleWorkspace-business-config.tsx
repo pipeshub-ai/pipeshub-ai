@@ -363,13 +363,6 @@ const GoogleWorkspaceBusinessPage = () => {
               return '';
             };
 
-            const getSettingsTooltipMessage = () => {
-              if (isEnabled) {
-                return `Disable ${connector.title} to modify settings`;
-              }
-              return `Configure ${connector.title}`;
-            };
-
             // Determine status color and text
             const getStatusColor = () => {
               if (isEnabled) return connector.color;
@@ -463,34 +456,23 @@ const GoogleWorkspaceBusinessPage = () => {
                     </Typography>
                   </Box>
 
-                  <Tooltip title={getSettingsTooltipMessage()} placement="top" arrow>
-                    <span>
-                      {' '}
-                      {/* Using span instead of div for better tooltip compatibility */}
-                      <IconButton
-                        size="small"
-                        onClick={() => handleConfigureConnector(connector.id)}
-                        disabled={isEnabled}
-                        sx={{
-                          mr: 1,
-                          color: isEnabled
-                            ? theme.palette.text.disabled
-                            : theme.palette.text.secondary,
-                          '&:hover': {
-                            bgcolor: isEnabled
-                              ? 'transparent'
-                              : alpha(theme.palette.primary.main, 0.08),
-                            color: isEnabled
-                              ? theme.palette.text.disabled
-                              : theme.palette.primary.main,
-                          },
-                        }}
-                        aria-label={`Configure ${connector.title}`}
-                      >
-                        <Iconify icon={settingsIcon} width={20} height={20} />
-                      </IconButton>
-                    </span>
-                  </Tooltip>
+                  <IconButton
+                    size="small"
+                    onClick={() => handleConfigureConnector(connector.id)}
+                    sx={{
+                      mr: 1,
+                      color: theme.palette.text.secondary,
+                      '&:hover': {
+                        bgcolor: isEnabled
+                          ? 'transparent'
+                          : alpha(theme.palette.primary.main, 0.08),
+                        color: isEnabled ? theme.palette.text.disabled : theme.palette.primary.main,
+                      },
+                    }}
+                    aria-label={`Configure ${connector.title}`}
+                  >
+                    <Iconify icon={settingsIcon} width={20} height={20} />
+                  </IconButton>
 
                   <Tooltip
                     title={getTooltipMessage()}
@@ -575,6 +557,7 @@ const GoogleWorkspaceBusinessPage = () => {
         onSave={handleSaveConfiguration}
         onFileRemoved={handleFileRemoved}
         connectorType={currentConnector}
+        isEnabled={connectorStatus[currentConnector || 'googleWorkspace']}
       />
 
       {/* Success snackbar */}

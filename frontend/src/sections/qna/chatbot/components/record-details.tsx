@@ -10,12 +10,12 @@ import categoryIcon from '@iconify-icons/mdi/shape';
 import loadingIcon from '@iconify-icons/mdi/loading';
 import departmentIcon from '@iconify-icons/mdi/domain';
 import languageIcon from '@iconify-icons/mdi/translate';
+import linkIcon from '@iconify-icons/mdi/external-link';
 import openNewIcon from '@iconify-icons/mdi/open-in-new';
 import filePdfIcon from '@iconify-icons/mdi/file-pdf-box';
 import fileIcon from '@iconify-icons/mdi/file-text-outline';
 import topicIcon from '@iconify-icons/mdi/bookmark-outline';
 import fileDocIcon from '@iconify-icons/mdi/file-document-outline';
-import linkIcon from '@iconify-icons/mdi/external-link';
 
 import {
   Box,

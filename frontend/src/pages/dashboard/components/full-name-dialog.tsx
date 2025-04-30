@@ -1,24 +1,27 @@
+import * as zod from 'zod';
+import { useForm } from 'react-hook-form';
 import { useState, useEffect } from 'react';
+import { zodResolver } from '@hookform/resolvers/zod';
+
 import {
+  Box,
+  Stack,
+  Alert,
   Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogActions,
   Button,
   TextField,
   Typography,
-  Stack,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
   CircularProgress,
-  Box,
-  Alert,
 } from '@mui/material';
-import { useForm } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
-import * as zod from 'zod';
+
+import { Iconify } from 'src/components/iconify';
+
+import { updateUser, getUserIdFromToken } from 'src/sections/accountdetails/utils';
 
 import { useAuthContext } from 'src/auth/hooks';
-import { getUserIdFromToken, updateUser } from 'src/sections/accountdetails/utils';
-import { Iconify } from 'src/components/iconify';
 import { STORAGE_KEY, STORAGE_KEY_REFRESH } from 'src/auth/context/jwt/constant';
 
 // Schema for validation

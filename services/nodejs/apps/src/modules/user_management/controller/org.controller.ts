@@ -233,7 +233,7 @@ export class OrgController {
           usersMails: [contactEmail],
           subject: 'New Org Account Creation',
           templateData: {
-            invitee: 'Pipeshub',
+            invitee: 'PipesHub',
             name: 'User',
             orgname: org.registeredName,
             link: `${this.config.frontendUrl}`,

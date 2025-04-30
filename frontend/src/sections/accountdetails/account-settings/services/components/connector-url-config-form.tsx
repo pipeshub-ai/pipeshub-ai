@@ -35,6 +35,8 @@ const isValidURL = (url: string): boolean => {
   return false;
 };
 
+const removeTrailingSlash = (url: string): string => (url.endsWith('/') ? url.slice(0, -1) : url);
+
 export interface ConnectorUrlConfigFormRef {
   handleSave: () => Promise<SaveResult>;
 }
@@ -152,11 +154,12 @@ const ConnectorUrlConfigForm = forwardRef<ConnectorUrlConfigFormRef, ConnectorUr
       setSaveError(null);
 
       try {
-        const response = await updateConnectorPublicUrl(formData.url);
+        const urlToSave = removeTrailingSlash(formData.url);
+        const response = await updateConnectorPublicUrl(urlToSave);
         const warningHeader = response.data?.warningMessage;
         // Update original data after successful save
         setOriginalData({
-          url: formData.url,
+          url: urlToSave,
         });
 
         // Exit edit mode

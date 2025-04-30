@@ -5,7 +5,10 @@ import hashIcon from '@iconify-icons/eva/hash-outline';
 import lockIcon from '@iconify-icons/eva/lock-outline';
 import eyeOffIcon from '@iconify-icons/eva/eye-off-fill';
 import uploadIcon from '@iconify-icons/eva/upload-outline';
+import editOutlineIcon from '@iconify-icons/eva/edit-outline';
+import saveOutlineIcon from '@iconify-icons/eva/save-outline';
 import fileTextIcon from '@iconify-icons/mdi/file-text-outline';
+import closeOutlineIcon from '@iconify-icons/eva/close-outline';
 import { useRef, useState, useEffect, forwardRef, useCallback, useImperativeHandle } from 'react';
 
 import { alpha, useTheme } from '@mui/material/styles';
@@ -15,7 +18,9 @@ import {
   Link,
   Alert,
   Paper,
+  Stack,
   Button,
+  Tooltip,
   TextField,
   Typography,
   IconButton,
@@ -32,6 +37,7 @@ import { getConnectorPublicUrl } from '../../services/utils/services-configurati
 interface GoogleWorkspaceConfigFormProps {
   onValidationChange: (isValid: boolean) => void;
   onSaveSuccess?: () => void;
+  isEnabled?: boolean;
 }
 
 export interface GoogleWorkspaceConfigFormRef {
@@ -81,7 +87,7 @@ type GoogleWorkspaceConfigFormData = z.infer<typeof googleWorkspaceConfigSchema>
 const GoogleWorkspaceConfigForm = forwardRef<
   GoogleWorkspaceConfigFormRef,
   GoogleWorkspaceConfigFormProps
->(({ onValidationChange, onSaveSuccess }, ref) => {
+>(({ onValidationChange, onSaveSuccess, isEnabled }, ref) => {
   const theme = useTheme();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [formData, setFormData] = useState<GoogleWorkspaceConfigFormData>({
@@ -109,7 +115,27 @@ const GoogleWorkspaceConfigForm = forwardRef<
     urisMismatch: boolean;
   } | null>(null);
 
+  // New state variables for edit mode
+  const [formEditMode, setFormEditMode] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+
+  // Store original values for cancel operation
+  const [originalState, setOriginalState] = useState({
+    clientId: '',
+    clientSecret: '',
+    redirectUri: '',
+    topicName: '',
+    enableRealTimeUpdates: false,
+    fileName: null as string | null,
+  });
+
   const handleRealTimeUpdatesChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (!formEditMode && isConfigured) {
+      // If trying to change when not in edit mode, enter edit mode first
+      handleEnterEditMode();
+      return;
+    }
+
     const { checked } = event.target;
     setEnableRealTimeUpdates(checked);
 
@@ -124,6 +150,12 @@ const GoogleWorkspaceConfigForm = forwardRef<
 
   // Handle topic name change
   const handleTopicNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!formEditMode && isConfigured) {
+      // If trying to change when not in edit mode, enter edit mode first
+      handleEnterEditMode();
+      return;
+    }
+
     const name = e.target.value;
     setTopicName(name);
     validateTopicName(name);
@@ -141,6 +173,42 @@ const GoogleWorkspaceConfigForm = forwardRef<
     },
     [enableRealTimeUpdates]
   );
+
+  // Enable edit mode
+  const handleEnterEditMode = () => {
+    // Store original values before editing
+    setOriginalState({
+      clientId: formData.clientId,
+      clientSecret: formData.clientSecret,
+      redirectUri: formData.redirectUri,
+      topicName,
+      enableRealTimeUpdates,
+      fileName,
+    });
+
+    setFormEditMode(true);
+  };
+
+  // Cancel edit mode and restore original values
+  const handleCancelEdit = () => {
+    setFormData({
+      clientId: originalState.clientId,
+      clientSecret: originalState.clientSecret,
+      redirectUri: originalState.redirectUri,
+    });
+    setTopicName(originalState.topicName);
+    setEnableRealTimeUpdates(originalState.enableRealTimeUpdates);
+    setFileName(originalState.fileName);
+
+    // Clear any errors
+    setErrors({});
+    setTopicNameError(null);
+    setFileUploadError(null);
+
+    setFormEditMode(false);
+    setSaveError(null);
+  };
+
   useEffect(() => {
     const initializeForm = async () => {
       setIsLoading(true);
@@ -163,11 +231,13 @@ const GoogleWorkspaceConfigForm = forwardRef<
         });
 
         if (response.data) {
-          setFormData({
+          const formValues = {
             clientId: response.data.googleClientId || '',
             clientSecret: response.data.googleClientSecret || '',
             redirectUri: uris.recommendedRedirectUri,
-          });
+          };
+
+          setFormData(formValues);
 
           if (Object.prototype.hasOwnProperty.call(response.data, 'enableRealTimeUpdates')) {
             setEnableRealTimeUpdates(response.data.enableRealTimeUpdates);
@@ -177,7 +247,18 @@ const GoogleWorkspaceConfigForm = forwardRef<
             }
           }
 
+          // Set original state
+          setOriginalState({
+            clientId: formValues.clientId,
+            clientSecret: formValues.clientSecret,
+            redirectUri: formValues.redirectUri,
+            topicName: response.data.topicName || '',
+            enableRealTimeUpdates: response.data.enableRealTimeUpdates || false,
+            fileName: 'google-workspace-credentials.json',
+          });
+
           setIsConfigured(true);
+          setFileName('google-workspace-credentials.json');
         }
       } catch (error) {
         console.error('Error fetching Google Workspace config:', error);
@@ -218,7 +299,11 @@ const GoogleWorkspaceConfigForm = forwardRef<
       // Parse the data with zod schema
       googleWorkspaceConfigSchema.parse(formData);
       setErrors({});
-      onValidationChange(true);
+
+      // Also validate topic name if real-time updates are enabled
+      const isTopicValid = !enableRealTimeUpdates || validateTopicName(topicName);
+
+      onValidationChange(isTopicValid);
     } catch (validationError) {
       if (validationError instanceof z.ZodError) {
         // Extract errors into a more manageable format
@@ -231,10 +316,16 @@ const GoogleWorkspaceConfigForm = forwardRef<
         onValidationChange(false);
       }
     }
-  }, [formData, onValidationChange]);
+  }, [formData, enableRealTimeUpdates, topicName, onValidationChange, validateTopicName]);
 
   // Handle input change
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!formEditMode && isConfigured) {
+      // If trying to edit when not in edit mode, enter edit mode first
+      handleEnterEditMode();
+      return;
+    }
+
     const { name, value } = e.target;
 
     // Don't update redirectUri when user tries to change it
@@ -248,6 +339,12 @@ const GoogleWorkspaceConfigForm = forwardRef<
 
   // Handle file upload click
   const handleUploadClick = () => {
+    if (!formEditMode && isConfigured) {
+      // If trying to upload when not in edit mode, enter edit mode first
+      handleEnterEditMode();
+      return;
+    }
+
     if (fileInputRef.current) {
       fileInputRef.current.click();
     }
@@ -347,6 +444,9 @@ const GoogleWorkspaceConfigForm = forwardRef<
       setIsConfigured(true);
       setSaveSuccess(true);
 
+      // Exit edit mode
+      setFormEditMode(false);
+
       if (onSaveSuccess) {
         onSaveSuccess();
       }
@@ -395,6 +495,59 @@ const GoogleWorkspaceConfigForm = forwardRef<
         </Box>
       ) : (
         <>
+          {/* Header with Edit button when configured */}
+          {isConfigured && (
+            <Box
+              sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}
+            >
+              <Typography variant="h6">Google Workspace Configuration</Typography>
+
+              {!formEditMode ? (
+                !isEnabled ? (
+                  <Button
+                    variant="contained"
+                    startIcon={<Iconify icon={editOutlineIcon} width={18} height={18} />}
+                    onClick={handleEnterEditMode}
+                  >
+                    Edit Configuration
+                  </Button>
+                ) : (
+                  <Tooltip title="Disable the connector before editing it" placement="top">
+                    <span>
+                      <Button
+                        variant="contained"
+                        startIcon={<Iconify icon={editOutlineIcon} width={18} height={18} />}
+                        disabled={isEnabled}
+                        onClick={handleEnterEditMode}
+                      >
+                        Edit Configuration
+                      </Button>
+                    </span>
+                  </Tooltip>
+                )
+              ) : (
+                <Stack direction="row" spacing={1}>
+                  <Button
+                    variant="outlined"
+                    startIcon={<Iconify icon={closeOutlineIcon} width={18} height={18} />}
+                    onClick={handleCancelEdit}
+                    color="inherit"
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="contained"
+                    startIcon={<Iconify icon={saveOutlineIcon} width={18} height={18} />}
+                    onClick={handleSave}
+                    color="primary"
+                  >
+                    Save Changes
+                  </Button>
+                </Stack>
+              )}
+            </Box>
+          )}
+
           {saveError && (
             <Alert
               severity="error"
@@ -569,6 +722,7 @@ const GoogleWorkspaceConfigForm = forwardRef<
                 size="small"
                 onClick={handleUploadClick}
                 startIcon={<Iconify icon={uploadIcon} width={18} height={18} />}
+                disabled={isConfigured && !formEditMode}
                 sx={{
                   minWidth: 120,
                   flexShrink: 0,
@@ -612,6 +766,7 @@ const GoogleWorkspaceConfigForm = forwardRef<
                 }
                 required
                 size="small"
+                disabled={isConfigured && !formEditMode}
                 InputProps={{
                   startAdornment: (
                     <InputAdornment position="start">
@@ -645,6 +800,7 @@ const GoogleWorkspaceConfigForm = forwardRef<
                 }
                 required
                 size="small"
+                disabled={isConfigured && !formEditMode}
                 InputProps={{
                   startAdornment: (
                     <InputAdornment position="start">
@@ -657,6 +813,7 @@ const GoogleWorkspaceConfigForm = forwardRef<
                         onClick={handleToggleClientSecretVisibility}
                         edge="end"
                         size="small"
+                        disabled={isConfigured && !formEditMode}
                       >
                         <Iconify
                           icon={showClientSecret ? eyeOffIcon : eyeIcon}
@@ -694,7 +851,7 @@ const GoogleWorkspaceConfigForm = forwardRef<
                   sx={{
                     display: 'flex',
                     alignItems: 'center',
-                    cursor: 'pointer',
+                    cursor: isConfigured && !formEditMode ? 'default' : 'pointer',
                   }}
                 >
                   <Box
@@ -703,11 +860,12 @@ const GoogleWorkspaceConfigForm = forwardRef<
                     id="realtime-updates-checkbox"
                     checked={enableRealTimeUpdates}
                     onChange={handleRealTimeUpdatesChange}
+                    disabled={isConfigured && !formEditMode}
                     sx={{
                       mr: 1.5,
                       width: 20,
                       height: 20,
-                      cursor: 'pointer',
+                      cursor: isConfigured && !formEditMode ? 'default' : 'pointer',
                     }}
                   />
                   <Typography variant="subtitle2">Enable Real-time Gmail Updates</Typography>
@@ -731,6 +889,7 @@ const GoogleWorkspaceConfigForm = forwardRef<
                     onChange={handleTopicNameChange}
                     placeholder="projects/your-project/topics/your-topic"
                     error={!!topicNameError}
+                    disabled={isConfigured && !formEditMode}
                     helperText={
                       topicNameError ||
                       'Enter the Google Pub/Sub topic that will receive Gmail notifications'

@@ -72,7 +72,10 @@ import {
   checkRedisHealth,
 } from '../middlewares/health.middleware';
 
-import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck';
+import {
+  scopedUserAdminCheck,
+  userAdminCheck,
+} from '../../user_management/middlewares/userAdminCheck';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import { AppConfig } from '../../tokens_manager/config/config';
 import {
@@ -422,6 +425,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.post(
     '/internal/connectors/googleWorkspaceCredentials',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
+    scopedUserAdminCheck,
     metricsMiddleware(container),
     ...FileProcessorFactory.createJSONUploadProcessor({
       fieldName: 'googleWorkspaceCredentials',
@@ -470,6 +474,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.get(
     '/internal/connectors/individual/googleWorkspaceCredentials',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
+    scopedUserAdminCheck,
     metricsMiddleware(container),
     (req: AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
       if (!req.tokenPayload) {
@@ -485,6 +490,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.get(
     '/internal/connectors/business/googleWorkspaceCredentials',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
+    scopedUserAdminCheck,
     metricsMiddleware(container),
     (req: AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
       if (!req.tokenPayload) {
@@ -500,6 +506,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.delete(
     '/internal/connectors/business/googleWorkspaceCredentials',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
+    scopedUserAdminCheck,
     metricsMiddleware(container),
     (req: AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
       if (!req.tokenPayload) {
@@ -541,6 +548,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.get(
     '/internal/connectors/googleWorkspaceOauthConfig',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
+    scopedUserAdminCheck,
     metricsMiddleware(container),
     getGoogleWorkspaceOauthConfig(keyValueStoreService),
   );
@@ -548,6 +556,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.post(
     '/internal/connectors/googleWorkspaceOauthConfig',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
+    scopedUserAdminCheck,
     metricsMiddleware(container),
     ValidationMiddleware.validate(googleWorkspaceConfigSchema),
     (req: AuthenticatedServiceRequest, res: Response, next: NextFunction) => {

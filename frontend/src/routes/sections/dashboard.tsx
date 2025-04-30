@@ -101,67 +101,36 @@ function AdminRouteGuard({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
-export function FullNameGuard({ children }: { children: ReactNode }) {
-  const { user } = useAuthContext();
-
-  // Check if user has a full name
-  const hasFullName = !!(user?.fullName && user.fullName.trim() !== '');
-
-  if (!hasFullName) {
-    // Redirect to the home page where the dialog will appear
-    return <Navigate to="/" replace />;
-  }
-
-  // If we're here, the user has a full name and can proceed
-  return <>{children}</>;
-}
-
 // Route components with guards
 const BusinessOnlyRoute = ({ component: Component }: { component: React.ComponentType }) => (
   <AuthGuard>
-    <FullNameGuard>
-      <BusinessRouteGuard>
-        <Component />
-      </BusinessRouteGuard>
-    </FullNameGuard>
+    <BusinessRouteGuard>
+      <Component />
+    </BusinessRouteGuard>
   </AuthGuard>
 );
 
 const BusinessAdminOnlyRoute = ({ component: Component }: { component: React.ComponentType }) => (
   <AuthGuard>
-    <FullNameGuard>
-      <AdminRouteGuard>
-        <Component />
-      </AdminRouteGuard>
-    </FullNameGuard>
+    <AdminRouteGuard>
+      <Component />
+    </AdminRouteGuard>
   </AuthGuard>
 );
 
 const IndividualOnlyRoute = ({ component: Component }: { component: React.ComponentType }) => (
   <AuthGuard>
-    <FullNameGuard>
-      <IndividualRouteGuard>
-        <Component />
-      </IndividualRouteGuard>
-    </FullNameGuard>
+    <IndividualRouteGuard>
+      <Component />
+    </IndividualRouteGuard>
   </AuthGuard>
 );
 
 const AdminProtectedRoute = ({ component: Component }: { component: React.ComponentType }) => (
   <AuthGuard>
-    <FullNameGuard>
-      <AdminRouteGuard>
-        <Component />
-      </AdminRouteGuard>
-    </FullNameGuard>
-  </AuthGuard>
-);
-
-const ProtectedRoute = ({ component: Component }: { component: React.ComponentType }) => (
-  <AuthGuard>
-    <FullNameGuard>
+    <AdminRouteGuard>
       <Component />
-    </FullNameGuard>
+    </AdminRouteGuard>
   </AuthGuard>
 );
 
@@ -186,7 +155,7 @@ export const dashboardRoutes = [
         path: 'account',
         children: [
           // Catch-all redirect for /account path
-          { index: true, element: <ProtectedRoute component={AccountTypeRedirect} /> },
+          { index: true, element: <AccountTypeRedirect /> },
 
           // Business account routes
           {
@@ -227,14 +196,7 @@ export const dashboardRoutes = [
             path: 'company-settings',
             children: [
               // Index route for company-settings
-              {
-                index: true,
-                element: (
-                  <ProtectedRoute
-                    component={() => <Navigate to="/account/company-settings/profile" replace />}
-                  />
-                ),
-              },
+              { index: true, element: <Navigate to="/account/company-settings/profile" replace /> },
 
               {
                 path: 'users',
@@ -269,14 +231,9 @@ export const dashboardRoutes = [
                     element: CONFIG.auth.skip ? (
                       <Navigate to="/account/company-settings/settings/authentication" replace />
                     ) : (
-                      <FullNameGuard>
-                        <AdminRouteGuard>
-                          <Navigate
-                            to="/account/company-settings/settings/authentication"
-                            replace
-                          />
-                        </AdminRouteGuard>
-                      </FullNameGuard>
+                      <AdminRouteGuard>
+                        <Navigate to="/account/company-settings/settings/authentication" replace />
+                      </AdminRouteGuard>
                     ),
                   },
 
@@ -348,14 +305,7 @@ export const dashboardRoutes = [
             path: 'individual',
             children: [
               // Index route for individual
-              {
-                index: true,
-                element: (
-                  <ProtectedRoute
-                    component={() => <Navigate to="/account/individual/profile" replace />}
-                  />
-                ),
-              },
+              { index: true, element: <Navigate to="/account/individual/profile" replace /> },
 
               {
                 path: 'profile',
@@ -374,11 +324,9 @@ export const dashboardRoutes = [
                     element: CONFIG.auth.skip ? (
                       <Navigate to="/account/individual/settings/authentication" replace />
                     ) : (
-                      <FullNameGuard>
-                        <IndividualRouteGuard>
-                          <Navigate to="/account/individual/settings/authentication" replace />
-                        </IndividualRouteGuard>
-                      </FullNameGuard>
+                      <IndividualRouteGuard>
+                        <Navigate to="/account/individual/settings/authentication" replace />
+                      </IndividualRouteGuard>
                     ),
                   },
 
@@ -449,10 +397,10 @@ export const dashboardRoutes = [
       {
         path: 'knowledge-base',
         children: [
-          { path: 'details', element: <ProtectedRoute component={KnowledgeBaseList} /> },
+          { path: 'details', element: <KnowledgeBaseList /> },
           {
             path: 'search',
-            children: [{ element: <ProtectedRoute component={KnowledgeSearch} />, index: true }],
+            children: [{ element: <KnowledgeSearch />, index: true }],
           },
           {
             path: 'company-settings/groups/:id',

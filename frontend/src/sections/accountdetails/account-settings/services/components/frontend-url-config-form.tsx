@@ -22,6 +22,8 @@ import {
   updateFrontendPublicUrl,
 } from '../utils/services-configuration-service';
 
+const removeTrailingSlash = (url: string): string => (url.endsWith('/') ? url.slice(0, -1) : url);
+
 interface FrontendUrlFormProps {
   onValidationChange: (isValid: boolean) => void;
   onSaveSuccess?: () => void;
@@ -153,11 +155,12 @@ const FrontendUrlConfigForm = forwardRef<FrontendUrlConfigFormRef, FrontendUrlFo
       setSaveError(null);
 
       try {
-        const response = await updateFrontendPublicUrl(formData.url);
+        const urlToSave = removeTrailingSlash(formData.url);
+        const response = await updateFrontendPublicUrl(urlToSave);
         const warningHeader = response.data?.warningMessage;
         // Update original data after successful save
         setOriginalData({
-          url: formData.url,
+          url: urlToSave,
         });
 
         // Exit edit mode

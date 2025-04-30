@@ -662,7 +662,7 @@ export default function CompanyProfile() {
                 </Typography>
                 <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.85rem' }}>
                   Your logo will appear on your account dashboard, emails, and documents generated
-                  from Pipeshub.
+                  from PipesHub.
                 </Typography>
               </Paper>
             </Grid>
