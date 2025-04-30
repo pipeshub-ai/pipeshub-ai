@@ -73,7 +73,7 @@ export const createRecords =
       );
 
       // Get or create a knowledge base for this organization
-      const kb = await recordRelationService.getOrCreateKnowledgeBase(orgId);
+      const kb = await recordRelationService.getOrCreateKnowledgeBase(userId,orgId);
 
       // Make sure the user has permission on this knowledge base
       await recordRelationService.createKbUserPermission(
@@ -713,7 +713,7 @@ export const getRecords =
 
       // Check if knowledge base exists
       const { exists: kbExists } =
-        await recordRelationService.checkKBExists(orgId);
+        await recordRelationService.checkKBExists(userId,orgId); 
       if (!kbExists) {
         logger.warn(
           'Attempting to fetch records for organization without knowledge base',

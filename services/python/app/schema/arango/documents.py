@@ -319,6 +319,7 @@ kb_schema = {
     "rule": {
         "type": "object",
         "properties": {
+            "userId":{"type" : "string"},
             "orgId": {"type": "string"},
             "name": {"type": "string", "default": "Default"},
             "createdAtTimestamp": {"type": "number"},

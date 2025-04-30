@@ -106,23 +106,25 @@ export class RecordRelationService {
         }
         // Linear backoff
         const delay = baseDelay * attempt;
-        await new Promise(resolve => setTimeout(resolve, delay));
+        await new Promise((resolve) => setTimeout(resolve, delay));
         logger.debug(`Retry attempt ${attempt} checking record existence`, {
           recordId: recordKey,
           attempt,
-          delay
+          delay,
         });
       } catch (error) {
         logger.error(`Error checking record existence on attempt ${attempt}`, {
           recordId: recordKey,
           error,
-          attempt
+          attempt,
         });
       }
     }
 
     if (!recordExists) {
-      logger.warn(`Record ${recordKey} not found in database after ${maxRetries} attempts`);
+      logger.warn(
+        `Record ${recordKey} not found in database after ${maxRetries} attempts`,
+      );
     }
 
     return recordExists;
@@ -285,33 +287,35 @@ export class RecordRelationService {
    * @returns The knowledge base document
    */
   async getOrCreateKnowledgeBase(
+    userId: string,
     orgId: string,
     name: string = 'Default',
   ): Promise<any> {
     try {
-      if (!orgId) {
+      if (!userId || !orgId) {
         throw new NotFoundError(
-          'Organization ID is required to get or create a knowledge base',
+          'Both User ID and Organization ID are required to get or create a knowledge base',
         );
       }
 
       // Check if a knowledge base already exists for this organization
       const cursor = await this.db.query(aql`
         FOR kb IN ${this.kbCollection}
-          FILTER kb.orgId == ${orgId} AND kb.isDeleted == false
+          FILTER kb.userId == ${userId} AND kb.orgId == ${orgId} AND kb.isDeleted == false
           RETURN kb
       `);
 
       const existingKBs = await cursor.all();
 
       if (existingKBs.length > 0) {
-        logger.info(`Found existing knowledge base for organization ${orgId}`);
+        logger.info(`Found existing knowledge base for user ${userId} in organization ${orgId}`);
         return existingKBs[0];
       }
 
       // Create a new knowledge base
       const currentTime = Date.now();
       const kb = {
+        userId,
         orgId,
         name,
         createdAtTimestamp: currentTime,
@@ -344,26 +348,27 @@ export class RecordRelationService {
    * @returns An object with exists flag and the knowledge base document if found
    */
   async checkKBExists(
+    userId: string,
     orgId: string,
   ): Promise<{ exists: boolean; knowledgeBase?: any }> {
     try {
-      if (!orgId) {
+      if (!userId || !orgId) {
         throw new NotFoundError(
-          'Organization ID is required to check if a knowledge base exists',
+          'User ID and Organization ID are required to check if a knowledge base exists',
         );
       }
 
       // Check if a knowledge base already exists for this organization
       const cursor = await this.db.query(aql`
-      FOR kb IN ${this.kbCollection}
-        FILTER kb.orgId == ${orgId} AND kb.isDeleted == false
-        RETURN kb
-    `);
+        FOR kb IN ${this.kbCollection}
+          FILTER kb.userId == ${userId} AND kb.orgId == ${orgId} AND kb.isDeleted == false
+          RETURN kb
+      `);
 
       const existingKBs = await cursor.all();
 
       if (existingKBs.length > 0) {
-        logger.info(`Found existing knowledge base for organization ${orgId}`);
+        logger.info(`Found existing knowledge base for user ${userId} in organization ${orgId}`);
         return {
           exists: true,
           knowledgeBase: existingKBs[0],
@@ -371,7 +376,7 @@ export class RecordRelationService {
       }
 
       // No knowledge base found
-      logger.info(`No knowledge base found for organization ${orgId}`);
+      logger.info(`No knowledge base found for user ${userId} in organization ${orgId}`);
       return { exists: false };
     } catch (error) {
       logger.error('Failed to check if knowledge base exists', {
@@ -1502,7 +1507,7 @@ export class RecordRelationService {
       logger.debug('Validating user knowledge base access', { userId, orgId });
 
       // Get the knowledge base for this organization
-      const kb = await this.getOrCreateKnowledgeBase(orgId);
+      const kb = await this.getOrCreateKnowledgeBase(userId, orgId);
 
       // Find the user by userId and orgId
       let user;
