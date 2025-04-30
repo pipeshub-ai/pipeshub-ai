@@ -720,12 +720,13 @@ export class UserController {
     try {
       const { emails } = req.body;
       const { groupIds } = req.body;
-      if (!emails) {
-        throw new BadRequestError('emails are required');
-      }
       if (!req.user) {
         throw new NotFoundError('User not found');
       }
+      if (!emails) {
+        throw new BadRequestError('emails are required');
+      }
+
       const orgId = req.user?.orgId;
       const org = await Org.findOne({ _id: req.user.orgId, isDeleted: false });
       // Check if emails array is provided

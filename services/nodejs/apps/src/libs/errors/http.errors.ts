@@ -30,7 +30,12 @@ export class GoneError extends HttpError {
 }
 export class LargePayloadError extends HttpError {
   constructor(message: string, metadata?: ErrorMetadata) {
-    super('PAYLOAD_TOO_LARGE', message, HTTP_STATUS.PAYLOAD_TOO_LARGE, metadata);
+    super(
+      'PAYLOAD_TOO_LARGE',
+      message,
+      HTTP_STATUS.PAYLOAD_TOO_LARGE,
+      metadata,
+    );
   }
 }
 
@@ -99,7 +104,12 @@ export class GatewayTimeoutError extends HttpError {
 
 export class UnprocessableEntityError extends HttpError {
   constructor(message: string, metadata?: ErrorMetadata) {
-    super('UNPROCESSABLE_ENTITY', message, HTTP_STATUS.UNPROCESSABLE_ENTITY, metadata);
+    super(
+      'UNPROCESSABLE_ENTITY',
+      message,
+      HTTP_STATUS.UNPROCESSABLE_ENTITY,
+      metadata,
+    );
   }
 }
 

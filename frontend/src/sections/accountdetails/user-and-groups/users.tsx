@@ -832,7 +832,11 @@ function AddUserModal({ open, onClose, groups, onUsersAdded }: AddUserModalProps
       }
 
       const groupIds = selectedGroups.map((group) => group._id);
+
+      // Attempt to invite users
       await inviteUsers({ emails, groupIds });
+
+      // Only clear data after successful API call
       dispatch(updateInvitesCount(emails.length));
       setSnackbarState({ open: true, message: 'Users added successfully', severity: 'success' });
 
@@ -843,11 +847,27 @@ function AddUserModal({ open, onClose, groups, onUsersAdded }: AddUserModalProps
       onUsersAdded();
       onClose();
     } catch (err: any) {
+      // Improved error handling
+      let errorMessage = 'Failed to add users';
+
+      // Extract more specific error message if available
+      if (err.errorMessage) {
+        errorMessage = err.errorMessage;
+      } else if (err.message) {
+        errorMessage = err.message;
+      } else if (typeof err === 'string') {
+        errorMessage = err;
+      }
+
+      // Display error but preserve the email list
       setSnackbarState({
         open: true,
-        message: err.errorMessage || 'Failed to add users',
+        message: errorMessage,
         severity: 'error',
       });
+
+      // Log error for debugging
+      console.error('Error inviting users:', err);
     }
   };
 
@@ -991,7 +1011,7 @@ function AddUserModal({ open, onClose, groups, onUsersAdded }: AddUserModalProps
           onClick={handleAddUsers}
           variant="contained"
           color="primary"
-          startIcon={<Iconify icon={closeIcon} />}
+          startIcon={<Iconify icon={emailIcon} />}
           sx={{ borderRadius: 1 }}
           disabled={emails.length === 0}
         >
