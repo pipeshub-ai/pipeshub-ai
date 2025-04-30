@@ -12,6 +12,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 from app.config.configuration_service import ConfigurationService
+from app.config.utils.named_constants.arangodb_constants import AccountType
 from app.connectors.google.gmail.core.gmail_drive_interface import GmailDriveInterface
 from app.connectors.google.scopes import GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES
 from app.connectors.utils.decorators import exponential_backoff, token_refresh
@@ -304,7 +305,7 @@ class GmailUserService:
 
     @exponential_backoff()
     @token_refresh
-    async def list_messages(self, query: str = "newer_than:180d") -> List[Dict]:
+    async def list_messages(self, query: str = "newer_than:30d") -> List[Dict]:
         """Get list of messages"""
         try:
             self.logger.info("🚀 Getting list of messages")
@@ -705,13 +706,20 @@ class GmailUserService:
 
     @exponential_backoff()
     @token_refresh
-    async def create_gmail_user_watch(self, user_id="me") -> Dict:
+    async def create_gmail_user_watch(self, user_id="me", accountType=AccountType.INDIVIDUAL.value) -> Dict:
         """Create user watch"""
         try:
             self.logger.info("🚀 Creating user watch for user %s", user_id)
-            creds_data = await self.google_token_handler.get_individual_token(
-                self.org_id, self.user_id
-            )
+            if accountType == AccountType.INDIVIDUAL.value:
+                self.logger.info("Creating Individual Gmail User watch")
+                creds_data = await self.google_token_handler.get_individual_token(
+                    self.org_id, self.user_id
+                )
+            else:
+                self.logger.info("Creating Enterprise Gmail User watch")
+                creds_data = await self.google_token_handler.get_enterprise_token(
+                    self.org_id
+                )
             self.logger.info(f"🚀 Google workspace config: {creds_data}")
             enable_real_time_updates = creds_data.get("enableRealTimeUpdates", False)
             self.logger.info(f"🚀 Enable real time updates: {enable_real_time_updates}")

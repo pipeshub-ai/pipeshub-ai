@@ -29,6 +29,7 @@ from pydantic import ValidationError
 
 from app.config.configuration_service import config_node_constants
 from app.config.utils.named_constants.arangodb_constants import (
+    AccountType,
     CollectionNames,
     Connectors,
     MimeTypes,
@@ -293,7 +294,7 @@ async def download_file(
             )
             user = await arango_service.get_user_by_user_id(user_id)
 
-            # # Get the user email from the record to impersonate
+            # Get the user email from the record to impersonate
             credentials = credentials.with_subject(user["email"])
             return credentials
 
@@ -369,7 +370,7 @@ async def download_file(
         file_id = record.get("externalRecordId")
 
         # Different auth handling based on account type
-        if org["accountType"] in ["enterprise", "business"]:
+        if org["accountType"] in [AccountType.ENTERPRISE.value, AccountType.BUSINESS.value]:
             # Use service account credentials
             creds = await get_service_account_credentials(user_id)
         else:
@@ -741,7 +742,7 @@ async def stream_record(
         recordType = record.get("recordType")
 
         # Different auth handling based on account type
-        if org["accountType"] in ["enterprise", "business"]:
+        if org["accountType"] in [AccountType.ENTERPRISE.value, AccountType.BUSINESS.value]:
             # Use service account credentials
             creds = await get_service_account_credentials(user_id)
         else:

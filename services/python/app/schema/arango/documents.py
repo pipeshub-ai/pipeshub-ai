@@ -140,6 +140,7 @@ record_schema = {
                 "enum": ["ONEDRIVE", "DRIVE", "CONFLUENCE", "GMAIL", "SLACK"],
             },
             "summaryDocumentId": {"type": ["string", "null"]},
+            "virtualRecordId": {"type": ["string", "null"], "default": None},
             # Arango collection entry
             "createdAtTimestamp": {"type": "number"},
             # Arango collection entry
@@ -181,7 +182,7 @@ record_schema = {
             "externalRecordId",
             "recordType",
             "origin",
-            "createdAtTimestamp",
+            "createdAtTimestamp"
         ],
         "additionalProperties": False,
     },
@@ -280,9 +281,9 @@ record_group_schema = {
                 "type": "string",
                 "enum": ["ONEDRIVE", "DRIVE", "CONFLUENCE", "SLACK"],
             },
-            "createdAtTimestamp": {"type": "number"},  # Arango record entry
-            "updatedAtTimestamp": {"type": "number"},  # Arango record entry
-            "lastSyncTimestampstamp": {"type": "number"},  # Arango record entry
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+            "lastSyncTimestampstamp": {"type": "number"},
             "isDeletedAtSource": {"type": "boolean", "default": False},
             "deletedAtSourceTimestamp": {"type": "number"},
             "sourceCreatedAtTimestamp": {"type": "number"},

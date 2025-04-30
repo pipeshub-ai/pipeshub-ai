@@ -13,7 +13,9 @@ from app.config.utils.named_constants.ai_models_named_constants import (
     DEFAULT_EMBEDDING_MODEL,
     EmbeddingProvider,
 )
-from app.config.utils.named_constants.arangodb_constants import CollectionNames
+from app.config.utils.named_constants.arangodb_constants import (
+    CollectionNames,
+)
 from app.core.embedding_service import (
     AzureEmbeddingConfig,
     EmbeddingFactory,
@@ -562,6 +564,7 @@ class IndexingPipeline:
             # Process metadata for each chunk
             for chunk in chunks:
                 try:
+                    virtual_record_id = chunk.metadata["virtualRecordId"]
                     meta = chunk.metadata
                     enhanced_metadata = self._process_metadata(meta)
                     chunk.metadata = enhanced_metadata
@@ -603,8 +606,10 @@ class IndexingPipeline:
                     {
                         "indexingStatus": "COMPLETED",
                         "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
+                        "virtualRecordId": virtual_record_id,
                     }
                 )
+
                 docs = [doc]
 
                 success = await self.arango_service.batch_upsert_nodes(
@@ -638,12 +643,14 @@ class IndexingPipeline:
                 details={"error": str(e)},
             )
 
-    async def delete_embeddings(self, record_id: str):
+    async def delete_embeddings(self, record_id: str, virtual_record_id: str):
         """
-        Delete all embeddings associated with a record ID from the vector store
+        Delete embeddings only if this is the last record with this virtual_record_id.
+        If other records exist with the same virtual_record_id, skip deletion.
 
         Args:
             record_id (str): ID of the record whose embeddings should be deleted
+            virtual_record_id (str): Virtual record ID to check for other records
 
         Raises:
             EmbeddingDeletionError: If there's an error during the deletion process
@@ -654,7 +661,24 @@ class IndexingPipeline:
                     "No record ID provided for deletion", record_id=record_id
                 )
 
-            self.logger.info(f"🗑️ Deleting embeddings for record {record_id}")
+            self.logger.info(f"🔍 Checking other records with virtual_record_id {virtual_record_id}")
+
+            # Get other records with same virtual_record_id
+            other_records = await self.arango_service.get_records_by_virtual_record_id(
+                virtual_record_id=virtual_record_id
+            )
+
+            # Filter out the current record
+            other_records = [r for r in other_records if r != record_id]
+
+            if other_records:
+                self.logger.info(
+                    f"⏭️ Skipping embedding deletion for record {record_id} as other records "
+                    f"exist with same virtual_record_id: {other_records}"
+                )
+                return
+
+            self.logger.info("🗑️ Proceeding with deletion as no other records exist")
 
             try:
                 filter_dict = Filter(
@@ -792,19 +816,14 @@ class IndexingPipeline:
         """
         try:
             block_type = meta.get("blockType", "text")
-            record_id = meta.get("recordId", "")
+            virtual_record_id = meta.get("virtualRecordId", "")
             record_name = meta.get("recordName", "")
             if isinstance(block_type, list):
                 block_type = block_type[0]
 
-            # if record_id:
-            #     record_id = [record_id]
-            # if record_name:
-            #     record_name = [record_name]
-
             enhanced_metadata = {
                 "orgId": meta.get("orgId", ""),
-                "recordId": record_id,
+                "virtualRecordId": virtual_record_id,
                 "recordName": record_name,
                 "recordType": meta.get("recordType", ""),
                 "recordVersion": meta.get("version", ""),

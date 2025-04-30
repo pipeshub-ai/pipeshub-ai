@@ -773,85 +773,6 @@ class GoogleAdminService:
             self.logger.error(f"❌ Failed to create admin watch: {str(e)}")
             raise
 
-    # async def create_gmail_user_watch(self, org_id: str, user_email: str) -> Dict:
-    #     """Create user watch by impersonating the user"""
-    #     try:
-    #         self.logger.info("🚀 Creating user watch for user %s", user_email)
-
-    #         creds_data = await self.google_token_handler.get_enterprise_token(org_id)
-    #         enable_real_time_updates = creds_data.get('enableRealTimeUpdates', False)
-    #         self.logger.debug(f"🚀 Enable real time updates: {enable_real_time_updates}")
-    #         if not enable_real_time_updates:
-    #             return {}
-
-    #         topic = creds_data.get('topicName', '')
-    #         self.logger.debug(f"🚀 Topic: {topic}")
-
-    #         try:
-    #             gmail_service = build(
-    #                 'gmail', 'v1',
-    #                 credentials=self.credentials,
-    #                 cache_discovery=False
-    #             )
-    #         except Exception as e:
-    #             raise MailOperationError(
-    #                 "Failed to build Gmail service: " + str(e),
-    #                 details={
-    #                     "user_email": user_email,
-    #                     "error": str(e)
-    #                 }
-    #             )
-
-    #         try:
-    #             async with self.google_limiter:
-    #                 request_body = {
-    #                     'labelIds': ['INBOX'],
-    #                     'topicName': topic
-    #                 }
-    #                 response = gmail_service.users().watch(
-    #                     userId='me',
-    #                     body=request_body
-    #                 ).execute()
-    #                 response['expiration'] = int(response['expiration'])
-    #         except HttpError as e:
-    #             if e.resp.status == 403:
-    #                 raise DrivePermissionError(
-    #                     "Permission denied creating user watch",
-    #                     details={
-    #                         "user_email": user_email,
-    #                         "error": str(e)
-    #                     }
-    #                 )
-    #             elif e.resp.status == 429:
-    #                 raise AdminQuotaError(
-    #                     "Rate limit exceeded creating user watch",
-    #                     details={
-    #                         "user_email": user_email,
-    #                         "error": str(e)
-    #                     }
-    #                 )
-    #             raise MailOperationError(
-    #                 "Failed to create user watch",
-    #                 details={
-    #                     "user_email": user_email,
-    #                     "error": str(e)
-    #                 }
-    #             )
-
-    #         self.logger.info("✅ User watch created successfully for %s", user_email)
-    #         return response
-
-    #     except (DrivePermissionError, AdminQuotaError, MailOperationError):
-    #         raise
-    #     except Exception as e:
-    #         raise GoogleMailError(
-    #             "Unexpected error creating user watch: " + str(e),
-    #             details={
-    #                 "user_email": user_email,
-    #                 "error": str(e)
-    #             }
-    #         )
-
     async def create_drive_user_service(
         self, user_email: str
     ) -> Optional[DriveUserService]:
@@ -859,6 +780,10 @@ class GoogleAdminService:
         try:
             # Create delegated credentials for the user
             try:
+                user_key = await self.arango_service.get_entity_id_by_email(user_email)
+                user = await self.arango_service.get_document(user_key, CollectionNames.USERS.value,)
+                if self.credentials is None:
+                    await self.connect_admin(user.get("orgId"))
                 user_credentials = self.credentials.with_subject(user_email)
             except Exception as e:
                 raise AdminDelegationError(
@@ -908,6 +833,10 @@ class GoogleAdminService:
         try:
             # Create delegated credentials for the user
             try:
+                user_key = await self.arango_service.get_entity_id_by_email(user_email)
+                user = await self.arango_service.get_document(user_key, CollectionNames.USERS.value)
+                if self.credentials is None:
+                    await self.connect_admin(user.get("orgId"))
                 user_credentials = self.credentials.with_subject(user_email)
             except Exception as e:
                 raise AdminDelegationError(
@@ -954,7 +883,17 @@ class GoogleAdminService:
         """Get or create a GCalUserService for a specific user"""
         try:
             # Create delegated credentials for the user
-            user_credentials = self.credentials.with_subject(user_email)
+            try:
+                user_key = await self.arango_service.get_entity_id_by_email(user_email)
+                user = await self.arango_service.get_document(user_key, CollectionNames.USERS.value)
+                if self.credentials is None:
+                    await self.connect_admin(user.get("orgId"))
+                user_credentials = self.credentials.with_subject(user_email)
+            except Exception as e:
+                raise AdminDelegationError(
+                    "Failed to create delegated credentials for user: " + str(e),
+                    details={"user_email": user_email, "error": str(e)},
+                )
 
             # Create new user service
             user_service = GCalUserService(
@@ -984,7 +923,17 @@ class GoogleAdminService:
         """Create a ParserUserService for a specific user"""
         try:
             self.logger.info("🚀 Creating parser user service for %s", user_email)
-            user_credentials = self.credentials.with_subject(user_email)
+            try:
+                user_key = await self.arango_service.get_entity_id_by_email(user_email)
+                user = await self.arango_service.get_document(user_key, CollectionNames.USERS.value)
+                if self.credentials is None:
+                    await self.connect_admin(user.get("orgId"))
+                user_credentials = self.credentials.with_subject(user_email)
+            except Exception as e:
+                raise AdminDelegationError(
+                    "Failed to create delegated credentials for user: " + str(e),
+                    details={"user_email": user_email, "error": str(e)},
+                )
             # Create new user service
             user_service = ParserUserService(
                 logger=self.logger,

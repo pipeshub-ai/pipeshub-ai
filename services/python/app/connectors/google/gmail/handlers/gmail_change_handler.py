@@ -1,5 +1,4 @@
 import uuid
-from datetime import datetime, timezone
 
 from app.config.configuration_service import config_node_constants
 from app.config.utils.named_constants.arangodb_constants import (
@@ -123,6 +122,7 @@ class GmailChangeHandler:
                         "sourceLastModifiedTimestamp": message.get("internalDate"),
                         "isDeleted": False,
                         "isArchived": False,
+                        "virtualRecordId": None,
                         "lastIndexTimestamp": None,
                         "lastExtractionTimestamp": None,
                         "indexingStatus": "NOT_STARTED",
@@ -217,6 +217,7 @@ class GmailChangeHandler:
                                     "externalRevisionId": None,
                                     "origin": OriginTypes.CONNECTOR.value,
                                     "connectorName": Connectors.GOOGLE_MAIL.value,
+                                    "virtualRecordId": None,
                                     "lastSyncTimestamp": get_epoch_timestamp_in_ms(),
                                     "isDeleted": False,
                                     "isArchived": False,
@@ -304,8 +305,8 @@ class GmailChangeHandler:
 
                                 permission_records.append(
                                     {
-                                        "_from": f"{entityType}/{entity_id}",
-                                        "_to": f'records/{message_record["_key"]}',
+                                        "_to": f"{entityType}/{entity_id}",
+                                        "_from": f'records/{message_record["_key"]}',
                                         "externalPermissionId": None,
                                         "type": permType,
                                         "role": "READER",
@@ -318,8 +319,8 @@ class GmailChangeHandler:
                                     for attachment_record in attachment_records:
                                         permission_records.append(
                                             {
-                                                "_from": f"{entityType}/{entity_id}",
-                                                "_to": f'records/{attachment_record["_key"]}',
+                                                "_to": f"{entityType}/{entity_id}",
+                                                "_from": f'records/{attachment_record["_key"]}',
                                                 "externalPermissionId": None,
                                                 "type": permType,
                                                 "role": "READER",
@@ -365,20 +366,19 @@ class GmailChangeHandler:
                         "eventType": EventTypes.NEW_RECORD.value,
                         "body": message_data.get("body", ""),
                         "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user_id}/gmail/record/{message_record['_key']}/signedUrl",
-                        "metadataRoute": f"/api/v1/gmail/record/{message_record['_key']}/metadata",
                         "connectorName": Connectors.GOOGLE_MAIL.value,
                         "origin": OriginTypes.CONNECTOR.value,
                         "mimeType": "text/gmail_content",
                         "createdAtSourceTimestamp": int(
                             message.get(
                                 "internalDate",
-                                datetime.now(timezone.utc).timestamp(),
+                                get_epoch_timestamp_in_ms(),
                             )
                         ),
                         "modifiedAtSourceTimestamp": int(
                             message.get(
                                 "internalDate",
-                                datetime.now(timezone.utc).timestamp(),
+                                get_epoch_timestamp_in_ms(),
                             )
                         ),
                     }
@@ -409,7 +409,6 @@ class GmailChangeHandler:
                                 "recordType": RecordTypes.ATTACHMENT.value,
                                 "recordVersion": 0,
                                 "eventType": EventTypes.NEW_RECORD.value,
-                                "metadataRoute": f"/api/v1/{org_id}/{user_id}/gmail/attachments/{attachment_key}/metadata",
                                 "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user_id}/gmail/record/{attachment_key}/signedUrl",
                                 "connectorName": Connectors.GOOGLE_MAIL.value,
                                 "extension": extension,
@@ -552,6 +551,7 @@ class GmailChangeHandler:
                                 attachment_event = {
                                     "orgId": org_id,
                                     "recordId": attachment["_key"],
+                                    "virtualRecordId":attachment.get("virtualRecordId", None),
                                     "recordName": attachment.get("recordName", "Unnamed Attachment"),
                                     "recordType": RecordTypes.ATTACHMENT.value,
                                     "recordVersion": 0,
@@ -577,6 +577,7 @@ class GmailChangeHandler:
                             message_event = {
                                 "orgId": org_id,
                                 "recordId": existing_message["_key"],
+                                "virtualRecordId": existing_message.get("virtualRecordId", None),
                                 "recordName": existing_message.get("recordName", "No Subject"),
                                 "recordType": RecordTypes.MAIL.value,
                                 "recordVersion": 0,

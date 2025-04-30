@@ -57,6 +57,8 @@ class EventTypes(Enum):
     NEW_RECORD = "newRecord"
     UPDATE_RECORD = "updateRecord"
     DELETE_RECORD = "deleteRecord"
+    REINDEX_RECORD = "reindexRecord"
+    REINDEX_FAILED = "reindexFailed"
 
 
 class CollectionNames(Enum):
@@ -133,6 +135,7 @@ class ExtensionTypes(Enum):
     CSV = "csv"
     TXT = "txt"
     MD = "md"
+    MDX = "mdx"
     HTML = "html"
 
 
@@ -158,3 +161,15 @@ class ProgressStatus(Enum):
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     FILE_TYPE_NOT_SUPPORTED = "FILE_TYPE_NOT_SUPPORTED"
+
+
+class AccountType(Enum):
+    INDIVIDUAL = "individual"
+    ENTERPRISE = "enterprise"
+    BUSINESS = "business"
+    ADMIN = "admin"
+
+class Apps(Enum):
+    GMAIL = "GMAIL"
+    DRIVE = "DRIVE"
+    CALENDAR = "CALENDAR"

@@ -8,7 +8,10 @@ from langgraph.graph import END, StateGraph
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
-from app.config.utils.named_constants.arangodb_constants import CollectionNames
+from app.config.utils.named_constants.arangodb_constants import (
+    AccountType,
+    CollectionNames,
+)
 from app.modules.qna.prompt_templates import qna_prompt
 
 # Import placeholder for services that would need to be adapted
@@ -278,7 +281,7 @@ def prepare_prompt_node(
         # Format user info if available
         user_data = ""
         if state["send_user_info"] and state["user_info"] and state["org_info"]:
-            if state["org_info"].get("accountType") in ["enterprise", "business"]:
+            if state["org_info"].get("accountType") in [AccountType.ENTERPRISE.value, AccountType.BUSINESS.value]:
                 user_data = (
                     "I am the user of the organization. "
                     f"My name is {state['user_info'].get('fullName', 'a user')} "

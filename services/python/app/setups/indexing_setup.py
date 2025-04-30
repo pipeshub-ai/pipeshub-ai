@@ -18,8 +18,12 @@ from app.config.configuration_service import (
     RedisConfig,
     config_node_constants,
 )
-from app.config.utils.named_constants.arangodb_constants import QdrantCollectionNames
+from app.config.utils.named_constants.arangodb_constants import (
+    ExtensionTypes,
+    QdrantCollectionNames,
+)
 from app.core.ai_arango_service import ArangoService
+from app.core.redis_scheduler import RedisScheduler
 from app.events.events import EventProcessor
 from app.events.processor import Processor
 from app.modules.extraction.domain_extraction import DomainExtractor
@@ -31,6 +35,7 @@ from app.modules.parsers.excel.excel_parser import ExcelParser
 from app.modules.parsers.excel.xls_parser import XLSParser
 from app.modules.parsers.html_parser.html_parser import HTMLParser
 from app.modules.parsers.markdown.markdown_parser import MarkdownParser
+from app.modules.parsers.markdown.mdx_parser import MDXParser
 from app.modules.parsers.pptx.ppt_parser import PPTParser
 from app.modules.parsers.pptx.pptx_parser import PPTXParser
 from app.services.kafka_consumer import KafkaConsumerManager
@@ -137,15 +142,16 @@ class AppContainer(containers.DeclarativeContainer):
     async def _create_parsers(logger):
         """Async factory for Parsers"""
         parsers = {
-            "docx": DocxParser(),
-            "doc": DocParser(),
-            "pptx": PPTXParser(),
-            "ppt": PPTParser(),
-            "html": HTMLParser(),
-            "md": MarkdownParser(),
-            "csv": CSVParser(),
-            "excel": ExcelParser(logger),
-            "xls": XLSParser(),
+            ExtensionTypes.DOCX.value: DocxParser(),
+            ExtensionTypes.DOC.value: DocParser(),
+            ExtensionTypes.PPTX.value: PPTXParser(),
+            ExtensionTypes.PPT.value: PPTParser(),
+            ExtensionTypes.HTML.value: HTMLParser(),
+            ExtensionTypes.MD.value: MarkdownParser(),
+            ExtensionTypes.MDX.value: MDXParser(),
+            ExtensionTypes.CSV.value: CSVParser(),
+            ExtensionTypes.XLSX.value: ExcelParser(logger),
+            ExtensionTypes.XLS.value: XLSParser(),
         }
         return parsers
 
@@ -198,13 +204,29 @@ class AppContainer(containers.DeclarativeContainer):
         arango_service=arango_service,
     )
 
+    # Redis scheduler
+    async def _create_redis_scheduler(logger, config_service):
+        """Async factory for RedisScheduler"""
+        redis_config = await config_service.get_config(
+            config_node_constants.REDIS.value
+        )
+        redis_url = f"redis://{redis_config['host']}:{redis_config['port']}/{RedisConfig.REDIS_DB.value}"
+
+        redis_scheduler = RedisScheduler(redis_url=redis_url, logger=logger, delay_hours=1)
+        return redis_scheduler
+
+    redis_scheduler = providers.Resource(
+        _create_redis_scheduler, logger=logger, config_service=config_service
+    )
+
     # Kafka consumer with async initialization
-    async def _create_kafka_consumer(logger, config_service, event_processor):
+    async def _create_kafka_consumer(logger, config_service, event_processor, redis_scheduler):
         """Async factory for KafkaConsumerManager"""
         consumer = KafkaConsumerManager(
             logger=logger,
             config_service=config_service,
             event_processor=event_processor,
+            redis_scheduler=redis_scheduler,
         )
         # Add any necessary async initialization
         return consumer
@@ -214,6 +236,7 @@ class AppContainer(containers.DeclarativeContainer):
         logger=logger,
         config_service=config_service,
         event_processor=event_processor,
+        redis_scheduler=redis_scheduler,
     )
 
     # Wire everything up

@@ -828,10 +828,11 @@ class DriveUserService:
                         "isArchived": False,
                         "isDeleted": False,
                         "isDirty": True,
+                        "virtualRecordId": None,
                         "indexingStatus": "NOT_STARTED",
                         "extractionStatus": "NOT_STARTED",
-                        "lastIndexTimestamp": 0,
-                        "lastExtractionTimestamp": 0,
+                        "lastIndexTimestamp": None,
+                        "lastExtractionTimestamp": None,
                         "isLatestVersion": False,
                         "reason": None,
                     },
@@ -889,6 +890,7 @@ class DriveUserService:
                         "isArchived": False,
                         "isDeleted": False,
                         "isDirty": True,
+                        "virtualRecordId": None,
                         "isLatestVersion": False,
                         "indexingStatus": "NOT_STARTED",
                         "extractionStatus": "NOT_STARTED",
@@ -901,4 +903,109 @@ class DriveUserService:
             raise GoogleDriveError(
                 "Unexpected error getting drive info: " + str(e),
                 details={"drive_id": drive_id, "error": str(e)},
+            )
+
+    @exponential_backoff()
+    @token_refresh
+    async def get_shared_with_me_files(self, user_email: str) -> List[Dict]:
+        """Get all files shared with the user along with their metadata and permissions"""
+        try:
+            self.logger.info("🚀 Getting files shared with me")
+
+            if self.service is None:
+                self.logger.error("Service is not initialized yet")
+                return []
+
+            try:
+                async with self.google_limiter:
+                    response = (
+                        self.service.files()
+                        .list(
+                            q="sharedWithMe=true",
+                            spaces="drive",
+                            fields="files(*)",
+                            supportsAllDrives=True,
+                            includeItemsFromAllDrives=True,
+                        )
+                        .execute()
+                    )
+            except HttpError as e:
+                if e.resp.status == 403:
+                    raise DrivePermissionError(
+                        "Permission denied getting shared files: " + str(e),
+                        details={"error": str(e)},
+                    )
+                raise DriveOperationError(
+                    "Failed to list shared files: " + str(e),
+                    details={"error": str(e)},
+                )
+
+            files = response.get("files", [])
+
+            # Process each shared file to add permissions
+            for file in files:
+                # Create permission entry for the current user
+                user_permission = {
+                    "id": str(uuid.uuid4()),  # Generate unique permission ID
+                    "type": "user",
+                    "role": file.get("sharingUser", {}).get("me", True) and "owner" or "reader",
+                    "emailAddress": user_email,
+                    "displayName": file.get("sharingUser", {}).get("displayName", ""),
+                    "photoLink": file.get("sharingUser", {}).get("photoLink", ""),
+                    "kind": "drive#permission",
+                    "deleted": False,
+                    "permissionDetails": [
+                        {
+                            "permissionType": "user",
+                            "role": file.get("sharingUser", {}).get("me", True) and "owner" or "reader",
+                            "inherited": False
+                        }
+                    ]
+                }
+
+                # Create permission entry for the owner
+                owner_permission = {
+                    "id": str(uuid.uuid4()),
+                    "type": "user",
+                    "role": "owner",
+                    "emailAddress": file.get("owners", [{}])[0].get("emailAddress", ""),
+                    "displayName": file.get("owners", [{}])[0].get("displayName", ""),
+                    "photoLink": file.get("owners", [{}])[0].get("photoLink", ""),
+                    "kind": "drive#permission",
+                    "deleted": False,
+                    "permissionDetails": [
+                        {
+                            "permissionType": "user",
+                            "role": "owner",
+                            "inherited": False
+                        }
+                    ]
+                }
+
+                # Add permissions array to file metadata
+                file["permissions"] = [owner_permission, user_permission]
+
+                # Add shared flag
+                file["isSharedWithMe"] = True
+
+                # Add sharing user details if available
+                if "sharingUser" in file:
+                    file["sharingUserEmail"] = file["sharingUser"].get("emailAddress")
+                    file["sharingUserName"] = file["sharingUser"].get("displayName")
+
+            self.logger.info("✅ Found %s files shared with me", len(files))
+            for file in files:
+                self.logger.info(
+                    "📄 Shared file: %s (id: %s)", file.get("name"), file.get("id")
+                )
+                self.logger.debug("File details: %s", file)
+
+            return files
+
+        except (DrivePermissionError, DriveOperationError):
+            raise
+        except Exception as e:
+            raise GoogleDriveError(
+                "Unexpected error getting shared files: " + str(e),
+                details={"error": str(e)},
             )

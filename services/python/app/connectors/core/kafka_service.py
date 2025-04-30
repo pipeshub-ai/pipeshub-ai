@@ -45,11 +45,11 @@ class KafkaService:
                 "payload": {
                     "orgId": event_data.get("orgId"),
                     "recordId": event_data.get("recordId"),
+                    "virtualRecordId": event_data.get("virtualRecordId", None),
                     "recordName": event_data.get("recordName"),
                     "recordType": event_data.get("recordType"),
                     "version": event_data.get("recordVersion", 0),
                     "signedUrlRoute": event_data.get("signedUrlRoute"),
-                    "metadataRoute": event_data.get("metadataRoute"),
                     "connectorName": event_data.get("connectorName"),
                     "origin": event_data.get("origin"),
                     "extension": event_data.get("extension"),

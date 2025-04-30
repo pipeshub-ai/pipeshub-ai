@@ -8,6 +8,7 @@ from arango.database import TransactionDatabase
 
 from app.config.configuration_service import ConfigurationService, config_node_constants
 from app.config.utils.named_constants.arangodb_constants import CollectionNames
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class ArangoService:
@@ -360,3 +361,241 @@ class ArangoService:
         """
         cursor = self.db.aql.execute(query)
         return list(cursor)
+
+    async def find_duplicate_files(
+        self,
+        file_key: str,
+        md5_checksum: str,
+        size_in_bytes: int,
+        transaction: Optional[TransactionDatabase] = None,
+    ) -> List[str]:
+        """
+        Find duplicate files based on MD5 checksum and file size
+
+        Args:
+            md5_checksum (str): MD5 checksum of the file
+            size_in_bytes (int): Size of the file in bytes
+            transaction (Optional[TransactionDatabase]): Optional database transaction
+
+        Returns:
+            List[str]: List of file keys that match both criteria
+        """
+        try:
+            self.logger.info(
+                "🔍 Finding duplicate files with MD5: %s and size: %d bytes",
+                md5_checksum,
+                size_in_bytes,
+            )
+
+            query = f"""
+            FOR file IN {CollectionNames.FILES.value}
+                FILTER file.md5Checksum == @md5_checksum
+                AND file.sizeInBytes == @size_in_bytes
+                AND file._key != @file_key
+                LET record = (
+                    FOR r IN {CollectionNames.RECORDS.value}
+                        FILTER r._key == file._key
+                        RETURN r
+                )[0]
+                RETURN record
+            """
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(
+                query,
+                bind_vars={
+                    "md5_checksum": md5_checksum,
+                    "size_in_bytes": size_in_bytes,
+                    "file_key": file_key
+                }
+            )
+
+            duplicate_records = list(cursor)
+
+            if duplicate_records:
+                self.logger.info(
+                    "✅ Found %d duplicate record(s) matching criteria",
+                    len(duplicate_records)
+                )
+                self.logger.info(f"Duplicate records: {[record['_key'] for record in duplicate_records]}")
+            else:
+                self.logger.info("✅ No duplicate records found")
+
+            return duplicate_records
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to find duplicate files: %s",
+                str(e)
+            )
+            if transaction:
+                raise
+            return []
+
+    async def copy_document_relationships(self, source_key: str, target_key: str):
+        """
+        Copy all relationships (edges) from source document to target document.
+        This includes departments, categories, subcategories, languages, and topics.
+
+        Args:
+            source_key (str): Key of the source document
+            target_key (str): Key of the target document
+        """
+        try:
+            self.logger.info(f"🚀 Copying relationships from {source_key} to {target_key}")
+
+            # Define collections to copy relationships from
+            edge_collections = [
+                CollectionNames.BELONGS_TO_DEPARTMENT.value,
+                CollectionNames.BELONGS_TO_CATEGORY.value,
+                CollectionNames.BELONGS_TO_LANGUAGE.value,
+                CollectionNames.BELONGS_TO_TOPIC.value
+            ]
+
+            for collection in edge_collections:
+                # Find all edges from source document
+                query = f"""
+                FOR edge IN {collection}
+                    FILTER edge._from == @source_doc
+                    RETURN {{
+                        from: edge._from,
+                        to: edge._to,
+                        timestamp: edge.createdAtTimestamp
+                    }}
+                """
+
+                cursor = self.db.aql.execute(
+                    query,
+                    bind_vars={
+                        "source_doc": f"{CollectionNames.RECORDS.value}/{source_key}"
+                    }
+                )
+
+                edges = list(cursor)
+
+                if edges:
+                    # Create new edges for target document
+                    new_edges = []
+                    for edge in edges:
+                        new_edge = {
+                            "_from": f"{CollectionNames.RECORDS.value}/{target_key}",
+                            "_to": edge["to"],
+                            "createdAtTimestamp": get_epoch_timestamp_in_ms()
+                        }
+                        new_edges.append(new_edge)
+
+                    # Batch create the new edges
+                    await self.batch_create_edges(new_edges, collection)
+                    self.logger.info(
+                        f"✅ Copied {len(new_edges)} relationships from collection {collection}"
+                    )
+
+            self.logger.info(f"✅ Successfully copied all relationships to {target_key}")
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ Error copying relationships from {source_key} to {target_key}: {str(e)}"
+            )
+            raise
+
+    async def get_records_by_virtual_record_id(
+        self,
+        virtual_record_id: str,
+        accessible_record_ids: Optional[List[str]] = None
+    ) -> List[str]:
+        """
+        Get all record keys that have the given virtualRecordId.
+        Optionally filter by a list of record IDs.
+
+        Args:
+            virtual_record_id (str): Virtual record ID to look up
+            record_ids (Optional[List[str]]): Optional list of record IDs to filter by
+
+        Returns:
+            List[str]: List of record keys that match the criteria
+        """
+        try:
+            self.logger.info(
+                "🔍 Finding records with virtualRecordId: %s", virtual_record_id
+            )
+
+            # Base query
+            query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.virtualRecordId == @virtual_record_id
+            """
+
+            # Add optional filter for record IDs
+            if accessible_record_ids:
+                query += """
+                AND record._key IN @accessible_record_ids
+                """
+
+            query += """
+                RETURN record._key
+            """
+
+            bind_vars = {"virtual_record_id": virtual_record_id}
+            if accessible_record_ids:
+                bind_vars["accessible_record_ids"] = accessible_record_ids
+
+            cursor = self.db.aql.execute(query, bind_vars=bind_vars)
+            results = list(cursor)
+
+            self.logger.info(
+                "✅ Found %d records with virtualRecordId %s",
+                len(results),
+                virtual_record_id
+            )
+            return results
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Error finding records with virtualRecordId %s: %s",
+                virtual_record_id,
+                str(e)
+            )
+            return []
+
+
+
+    # async def try_acquire_processing_lock(self, lock_key: str, record_id: str) -> bool:
+    #     """
+    #     Atomically try to acquire processing lock and mark the file as being processed
+    #     """
+    #     # Ensure locks collection exists with TTL index
+    #     if not await self.db.has_collection("duplicate_locks"):
+    #         collection = await self.db.create_collection("duplicate_locks")
+    #         # Create TTL index to auto-expire locks after 5 minutes
+    #         await collection.add_ttl_index(["timestamp"], expireAfter=300)
+    #         self.logger.info("Created duplicate_locks collection with TTL index")
+
+    #     query = """
+    #     UPSERT { _key: @lock_key }
+    #     INSERT {
+    #         _key: @lock_key,
+    #         processing_id: @record_id,
+    #         timestamp: @timestamp,
+    #         status: 'processing'
+    #     }
+    #     UPDATE {
+    #         processing_id: @record_id,
+    #         timestamp: @timestamp,
+    #         status: 'processing'
+    #     }
+    #     IN duplicate_locks
+    #     RETURN { old: OLD, new: NEW }
+    #     """
+
+    #     bind_vars = {
+    #         "lock_key": lock_key,
+    #         "record_id": record_id,
+    #         "timestamp": get_epoch_timestamp_in_ms()
+    #     }
+
+    #     result = await self.db.aql.execute(query, bind_vars=bind_vars)
+    #     result = await result.next()
+
+    #     return result["old"] is None
+
+

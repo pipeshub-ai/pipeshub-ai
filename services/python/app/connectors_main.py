@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.middlewares.auth import authMiddleware
-from app.config.utils.named_constants.arangodb_constants import Connectors
+from app.config.utils.named_constants.arangodb_constants import AccountType, Connectors
 from app.connectors.api.router import router
 from app.connectors.core.entity_kafka_consumer import EntityKafkaRouteConsumer
 from app.setups.connector_setup import (
@@ -60,21 +60,21 @@ async def resume_sync_services(app_container: AppContainer) -> None:
         # Process each organization
         for org in orgs:
             org_id = org["_key"]
-            accountType = org.get("accountType", "individual")
+            accountType = org.get("accountType", AccountType.INDIVIDUAL.value)
 
             # Ensure the method is called on the correct object
-            if accountType == "enterprise" or accountType == "business":
+            if accountType == AccountType.ENTERPRISE.value or accountType == AccountType.BUSINESS.value:
                 await initialize_enterprise_account_services_fn(org_id, app_container)
-            elif accountType == "individual":
+            elif accountType == AccountType.INDIVIDUAL.value:
                 await initialize_individual_account_services_fn(org_id, app_container)
             else:
                 logger.error("Account Type not valid")
                 return False
 
             user_type = (
-                "enterprise"
-                if accountType in ["enterprise", "business"]
-                else "individual"
+                AccountType.ENTERPRISE.value
+                if accountType in [AccountType.ENTERPRISE.value, AccountType.BUSINESS.value]
+                else AccountType.INDIVIDUAL.value
             )
 
             logger.info(
@@ -215,7 +215,7 @@ async def resume_sync_services(app_container: AppContainer) -> None:
                 for user in drive_sync_needed:
                     if drive_sync_service:
                         try:
-                            if user_type == "enterprise" or user_type == "business":
+                            if user_type == AccountType.ENTERPRISE.value or user_type == AccountType.BUSINESS.value:
                                 await drive_sync_service.sync_specific_user(
                                     user["email"]
                                 )
@@ -251,7 +251,7 @@ async def resume_sync_services(app_container: AppContainer) -> None:
                 for user in gmail_sync_needed:
                     if gmail_sync_service:
                         try:
-                            if user_type == "enterprise" or user_type == "business":
+                            if user_type == AccountType.ENTERPRISE.value or user_type == AccountType.BUSINESS.value:
                                 await gmail_sync_service.sync_specific_user(
                                     user["email"]
                                 )

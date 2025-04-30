@@ -255,8 +255,8 @@ class RetrievalService:
             formatted_results.append(formatted_result)
         return formatted_results
 
-    def _build_qdrant_filter(
-        self, org_id: str, accessible_records: List[str]
+    async def _build_qdrant_filter(
+        self, org_id: str, accessible_records: List[str], arango_service: ArangoService
     ) -> Filter:
         """
         Build Qdrant filter for accessible records with both org_id and record_id conditions.
@@ -268,6 +268,14 @@ class RetrievalService:
         Returns:
             Qdrant Filter object
         """
+        virtual_record_ids = []
+        for record_id in accessible_records:
+            record = await arango_service.get_document(
+                record_id, CollectionNames.RECORDS.value
+            )
+            if record.get("virtualRecordId"):
+                virtual_record_ids.append(record.get("virtualRecordId"))
+
         return Filter(
             must=[
                 FieldCondition(  # org_id condition
@@ -276,9 +284,9 @@ class RetrievalService:
                 Filter(  # recordId must be one of the accessible_records
                     should=[
                         FieldCondition(
-                            key="metadata.recordId", match=MatchValue(value=record_id)
+                            key="metadata.virtualRecordId", match=MatchValue(value=virtual_record_id)
                         )
-                        for record_id in accessible_records
+                        for virtual_record_id in virtual_record_ids
                     ]
                 ),
             ]
@@ -329,11 +337,11 @@ class RetrievalService:
                 }
 
             # Extract record IDs from accessible records
-            record_ids = [
+            accessible_record_ids = [
                 record["_key"] for record in accessible_records if record is not None
             ]
             # Build Qdrant filter
-            qdrant_filter = self._build_qdrant_filter(org_id, record_ids)
+            qdrant_filter = await self._build_qdrant_filter(org_id, accessible_record_ids, arango_service)
 
             all_results = []
             seen_chunks = set()
@@ -402,7 +410,6 @@ class RetrievalService:
                 results = await self.vector_store.asimilarity_search_with_score(
                     query=processed_query, k=limit, filter=qdrant_filter
                 )
-                self.logger.info(f"Results: {results}")
                 # Add to results if content not already seen
                 for doc, score in results:
                     if doc.page_content not in seen_chunks:
@@ -410,15 +417,39 @@ class RetrievalService:
                         seen_chunks.add(doc.page_content)
 
             search_results = self._format_results(all_results)
-            record_ids = list(
-                set(result["metadata"]["recordId"] for result in search_results)
+
+            # Create mapping of virtualRecordId to first accessible record ID
+            virtual_to_record_map = {}
+            virtual_record_ids = list(
+                set(result["metadata"]["virtualRecordId"] for result in search_results)
             )
+
+            # Get all record IDs for these virtual record IDs
+            all_record_ids = []
+            for virtual_record_id in virtual_record_ids:
+                record_ids = await arango_service.get_records_by_virtual_record_id(
+                    virtual_record_id,
+                    accessible_record_ids=accessible_record_ids
+                )
+                if record_ids:  # Only add if we found accessible records
+                    virtual_to_record_map[virtual_record_id] = record_ids[0]  # Use first record ID
+                    all_record_ids.extend(record_ids)
+
+            # Convert to set to remove any duplicates
+            unique_record_ids = set(all_record_ids)
+
+            # Replace virtualRecordId with first accessible record ID in search results
+            for result in search_results:
+                virtual_id = result["metadata"]["virtualRecordId"]
+                if virtual_id in virtual_to_record_map:
+                    result["metadata"]["recordId"] = virtual_to_record_map[virtual_id]
+
             user = await arango_service.get_user_by_user_id(user_id)
 
             # Get full record documents from Arango
             records = []
-            if record_ids:
-                for record_id in record_ids:
+            if unique_record_ids:
+                for record_id in unique_record_ids:
                     record = await arango_service.get_document(
                         record_id, CollectionNames.RECORDS.value
                     )

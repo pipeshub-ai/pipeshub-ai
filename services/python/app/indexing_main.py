@@ -27,7 +27,6 @@ async def get_initialized_container() -> AppContainer:
                 get_initialized_container.initialized = True
     return container
 
-
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context manager for FastAPI"""

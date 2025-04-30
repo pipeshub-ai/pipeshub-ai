@@ -2,10 +2,7 @@ import asyncio
 import random
 from functools import wraps
 
-from googleapiclient.errors import HttpError
-
 from app.exceptions.connector_google_exceptions import (
-    AdminQuotaError,
     GoogleAuthError,
     GoogleConnectorError,
 )
@@ -38,11 +35,7 @@ def exponential_backoff(
 ):
     """
     Decorator implementing exponential backoff for rate limiting and server errors.
-
-    Args:
-        max_retries (int): Maximum number of retry attempts
-        initial_delay (float): Initial delay in seconds
-        max_delay (float): Maximum delay in seconds
+    Works with existing error conversion in methods.
     """
 
     def decorator(func):
@@ -50,55 +43,33 @@ def exponential_backoff(
         async def wrapper(*args, **kwargs):
             retries = 0
             delay = initial_delay
+            last_exception = None
 
-            while True:
+            while retries <= max_retries:
                 try:
                     return await func(*args, **kwargs)
 
-                except HttpError as e:
-                    status_code = e.resp.status
-                    error_details = {
-                        "status_code": status_code,
-                        "function": func.__name__,
-                        "attempt": retries + 1,
-                        "max_retries": max_retries,
-                    }
-
-                    # Check if we should retry
-                    should_retry = status_code in [429, 403] or (  # Rate limits
-                        500 <= status_code <= 599
-                    )  # Server errors
-
-                    if not should_retry or retries >= max_retries:
-                        if status_code in [429, 403]:
-                            raise AdminQuotaError(
-                                "API quota exceeded: " + str(e),
-                                details={**error_details, "error": str(e)},
-                            )
-                        else:
-                            raise GoogleConnectorError(
-                                f"HTTP error {status_code}: " + str(e),
-                                details={**error_details, "error": str(e)},
-                            )
+                except GoogleConnectorError as e:
+                    # This will catch all our custom Google exceptions
+                    if retries >= max_retries:
+                        raise  # If out of retries, let the converted error propagate
+                    last_exception = e
 
                     # Calculate delay with jitter
                     jitter = random.uniform(0, 0.1 * delay)
-                    retry_after = e.resp.headers.get("Retry-After")
-
-                    if retry_after:
-                        delay = float(retry_after)
-                    else:
-                        delay = min(delay * 2 + jitter, max_delay)
-
+                    delay = min(delay * 2 + jitter, max_delay)
                     await asyncio.sleep(delay)
                     retries += 1
 
-                except Exception as e:
-                    raise GoogleConnectorError(
-                        "Unexpected error in Google API call: " + str(e),
-                        details={"function": func.__name__, "error": str(e)},
-                    )
+                except Exception:
+                    # For any non-Google exceptions, raise immediately
+                    raise
+
+            # If we somehow exit the loop without raising or returning
+            raise last_exception or GoogleConnectorError(
+                "Unexpected exit from retry loop",
+                details={"function": func.__name__},
+            )
 
         return wrapper
-
     return decorator

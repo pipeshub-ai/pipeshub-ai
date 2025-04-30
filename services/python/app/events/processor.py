@@ -7,7 +7,10 @@ from app.config.utils.named_constants.ai_models_named_constants import (
     AzureDocIntelligenceModel,
     OCRProvider,
 )
-from app.config.utils.named_constants.arangodb_constants import CollectionNames
+from app.config.utils.named_constants.arangodb_constants import (
+    CollectionNames,
+    ExtensionTypes,
+)
 from app.modules.parsers.pdf.ocr_handler import OCRHandler
 from app.utils.llm import get_llm
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -31,7 +34,7 @@ class Processor:
         self.parsers = parsers
         self.config_service = config_service
 
-    async def process_google_slides(self, record_id, record_version, orgId, content):
+    async def process_google_slides(self, record_id, record_version, orgId, content, virtual_record_id):
         """Process Google Slides presentation and extract structured content
 
         Args:
@@ -101,7 +104,7 @@ class Processor:
                     full_text_content, orgId
                 )
                 record = await self.domain_extractor.save_metadata_to_db(
-                    orgId, record_id, metadata
+                    orgId, record_id, metadata, virtual_record_id
                 )
                 file = await self.arango_service.get_document(
                     record_id, CollectionNames.FILES.value
@@ -168,6 +171,7 @@ class Processor:
                                             "totalSlides": slide["totalSlides"],
                                             "elementId": element["id"],
                                             "elementType": "shape",
+                                            "virtualRecordId": virtual_record_id,
                                         },
                                     }
                                 )
@@ -189,6 +193,7 @@ class Processor:
                                             "elementId": element["id"],
                                             "rowIndex": cell["rowIndex"],
                                             "columnIndex": cell["columnIndex"],
+                                            "virtualRecordId": virtual_record_id,
                                         },
                                     }
                                 )
@@ -213,7 +218,7 @@ class Processor:
             )
             raise
 
-    async def process_google_docs(self, record_id, record_version, orgId, content):
+    async def process_google_docs(self, record_id, record_version, orgId, content, virtual_record_id):
         """Process Google Docs document and extract structured content
 
         Args:
@@ -254,7 +259,7 @@ class Processor:
                     full_text_content, orgId
                 )
                 record = await self.domain_extractor.save_metadata_to_db(
-                    orgId, record_id, metadata
+                    orgId, record_id, metadata, virtual_record_id
                 )
                 file = await self.arango_service.get_document(
                     record_id, CollectionNames.FILES.value
@@ -372,6 +377,7 @@ class Processor:
                                         "blockText": json.dumps(full_context),
                                         "start_index": item["start_index"],
                                         "end_index": item["end_index"],
+                                        "virtualRecordId": virtual_record_id,
                                     },
                                 }
                             )
@@ -398,6 +404,7 @@ class Processor:
                                         "column": cell["column"],
                                         "start_index": cell["start_index"],
                                         "end_index": cell["end_index"],
+                                        "virtualRecordId": virtual_record_id,
                                     },
                                 }
                             )
@@ -419,7 +426,7 @@ class Processor:
             self.logger.error(f"❌ Error processing Google Docs document: {str(e)}")
             raise
 
-    async def process_google_sheets(self, record_id, record_version, orgId, content):
+    async def process_google_sheets(self, record_id, record_version, orgId, content, virtual_record_id):
         self.logger.info("🚀 Processing Google Sheets")
         try:
             # Initialize Google Docs parser
@@ -449,7 +456,7 @@ class Processor:
                         combined_text, orgId
                     )
                     record = await self.domain_extractor.save_metadata_to_db(
-                        orgId, record_id, metadata
+                        orgId, record_id, metadata, virtual_record_id
                     )
                     file = await self.arango_service.get_document(
                         record_id, CollectionNames.FILES.value
@@ -480,6 +487,7 @@ class Processor:
                                     "blockNum": block_num,
                                     "blockType": "table_row",
                                     "blockText": json.dumps(row_data),
+                                    "virtualRecordId": virtual_record_id,
                                 },
                             }
                         )
@@ -501,7 +509,7 @@ class Processor:
             raise
 
     async def process_gmail_message(
-        self, recordName, recordId, version, source, orgId, html_content
+        self, recordName, recordId, version, source, orgId, html_content, virtual_record_id
     ):
         self.logger.info("🚀 Processing Gmail Message")
 
@@ -544,7 +552,7 @@ class Processor:
                         text_content, orgId
                     )
                     record = await self.domain_extractor.save_metadata_to_db(
-                        orgId, recordId, metadata
+                        orgId, recordId, metadata, virtual_record_id
                     )
                     mail = await self.arango_service.get_document(
                         recordId, CollectionNames.MAILS.value
@@ -591,6 +599,7 @@ class Processor:
                                 "blockType": context.get("label", "text"),
                                 "blockNum": [idx],
                                 "blockText": json.dumps(full_context),
+                                "virtualRecordId": virtual_record_id,
                             },
                         }
                     )
@@ -616,6 +625,7 @@ class Processor:
                         "extractionStatus": "COMPLETED",
                         "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
                         "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
+                        "virtualRecordId": virtual_record_id
                     }
                 )
                 await self.arango_service.batch_upsert_nodes(
@@ -675,7 +685,7 @@ class Processor:
             raise
 
     async def process_pdf_document(
-        self, recordName, recordId, version, source, orgId, pdf_binary
+        self, recordName, recordId, version, source, orgId, pdf_binary, virtual_record_id
     ):
         """Process PDF document with automatic OCR selection based on environment settings"""
         self.logger.info(
@@ -744,7 +754,7 @@ class Processor:
                         paragraphs_text, orgId
                     )
                     record = await self.domain_extractor.save_metadata_to_db(
-                        orgId, recordId, metadata
+                        orgId, recordId, metadata, virtual_record_id
                     )
                     file = await self.arango_service.get_document(
                         recordId, CollectionNames.FILES.value
@@ -796,6 +806,7 @@ class Processor:
                             "blockNum": [int(s.get("block_number", 0))],
                             "pageNum": [int(s.get("page_number", 0))],
                             "bounding_box": s["bounding_box"],
+                            "virtualRecordId": virtual_record_id,
                         },
                     }
                     for idx, s in enumerate(sentences)
@@ -845,22 +856,22 @@ class Processor:
             raise
 
     async def process_doc_document(
-        self, recordName, recordId, version, source, orgId, doc_binary
+        self, recordName, recordId, version, source, orgId, doc_binary, virtual_record_id
     ):
         self.logger.info(
             f"🚀 Starting DOC document processing for record: {recordName}"
         )
         # Implement DOC processing logic here
-        parser = self.parsers["doc"]
+        parser = self.parsers[ExtensionTypes.DOC.value]
         doc_result = parser.convert_doc_to_docx(doc_binary)
         await self.process_docx_document(
-            recordName, recordId, version, source, orgId, doc_result
+            recordName, recordId, version, source, orgId, doc_result, virtual_record_id
         )
 
         return {"status": "success", "message": "DOC processed successfully"}
 
     async def process_docx_document(
-        self, recordName, recordId, version, source, orgId, docx_binary
+        self, recordName, recordId, version, source, orgId, docx_binary, virtual_record_id
     ):
         """Process DOCX document and extract structured content
 
@@ -880,7 +891,7 @@ class Processor:
             # Convert binary to string if necessary
             # Initialize DocxParser and parse content
             self.logger.debug("📄 Processing DOCX content")
-            parser = self.parsers["docx"]
+            parser = self.parsers[ExtensionTypes.DOCX.value]
             docx_result = parser.parse(docx_binary)
 
             # Get the full document structure
@@ -905,7 +916,7 @@ class Processor:
                         text_content, orgId
                     )
                     record = await self.domain_extractor.save_metadata_to_db(
-                        orgId, recordId, metadata
+                        orgId, recordId, metadata, virtual_record_id
                     )
                     file = await self.arango_service.get_document(
                         recordId, CollectionNames.FILES.value
@@ -947,6 +958,7 @@ class Processor:
                                 "blockType": context.get("label", "text"),
                                 "blockNum": [idx],
                                 "blockText": json.dumps(full_context),
+                                "virtualRecordId": virtual_record_id,
                             },
                         }
                     )
@@ -1015,7 +1027,7 @@ class Processor:
             raise
 
     async def process_excel_document(
-        self, recordName, recordId, version, source, orgId, excel_binary
+        self, recordName, recordId, version, source, orgId, excel_binary, virtual_record_id
     ):
         """Process Excel document and extract structured content"""
         self.logger.info(
@@ -1025,7 +1037,7 @@ class Processor:
         try:
             self.logger.debug("📊 Processing Excel content")
             llm = await get_llm(self.logger, self.config_service)
-            parser = self.parsers["excel"]
+            parser = self.parsers[ExtensionTypes.XLSX.value]
             excel_result = parser.parse(excel_binary)
 
             # Extract domain metadata from text content
@@ -1037,7 +1049,7 @@ class Processor:
                         excel_result["text_content"], orgId
                     )
                     record = await self.domain_extractor.save_metadata_to_db(
-                        orgId, recordId, metadata
+                        orgId, recordId, metadata, virtual_record_id
                     )
                     file = await self.arango_service.get_document(
                         recordId, CollectionNames.FILES.value
@@ -1114,6 +1126,7 @@ class Processor:
                                     "blockNum": block_num,
                                     "blockType": "table_row",
                                     "blockText": json.dumps(row_data),
+                                    "virtualRecordId": virtual_record_id,
                                 },
                             }
                         )
@@ -1151,7 +1164,7 @@ class Processor:
             raise
 
     async def process_xls_document(
-        self, recordName, recordId, version, source, orgId, xls_binary
+        self, recordName, recordId, version, source, orgId, xls_binary, virtual_record_id
     ):
         """Process XLS document and extract structured content"""
         self.logger.info(
@@ -1160,12 +1173,12 @@ class Processor:
 
         try:
             # Convert XLS to XLSX binary
-            xls_parser = self.parsers["xls"]
+            xls_parser = self.parsers[ExtensionTypes.XLS.value]
             xlsx_binary = xls_parser.convert_xls_to_xlsx(xls_binary)
 
             # Process the converted XLSX using the Excel parser
             result = await self.process_excel_document(
-                recordName, recordId, version, source, orgId, xlsx_binary
+                recordName, recordId, version, source, orgId, xlsx_binary, virtual_record_id
             )
             self.logger.debug("📑 XLS document processed successfully")
             return result
@@ -1175,7 +1188,7 @@ class Processor:
             raise
 
     async def process_csv_document(
-        self, recordName, recordId, version, source, orgId, csv_binary
+        self, recordName, recordId, version, source, orgId, csv_binary, virtual_record_id
     ):
         """Process CSV document and extract structured content
 
@@ -1194,7 +1207,7 @@ class Processor:
         try:
             # Initialize CSV parser
             self.logger.debug("📊 Processing CSV content")
-            parser = self.parsers["csv"]
+            parser = self.parsers[ExtensionTypes.CSV.value]
 
             llm = await get_llm(self.logger, self.config_service)
 
@@ -1245,7 +1258,7 @@ class Processor:
                             csv_text, orgId
                         )
                         record = await self.domain_extractor.save_metadata_to_db(
-                            orgId, recordId, metadata
+                            orgId, recordId, metadata, virtual_record_id
                         )
                         file = await self.arango_service.get_document(
                             recordId, CollectionNames.FILES.value
@@ -1285,11 +1298,12 @@ class Processor:
                         {
                             "text": row_text,
                             "metadata": {
-                                **(domain_metadata),
+                                **(domain_metadata or {}),
                                 "recordId": recordId,
                                 "blockType": "table_row",
                                 "blockText": json.dumps(row),
                                 "blockNum": [idx],
+                                "virtualRecordId": virtual_record_id,
                             },
                         }
                     )
@@ -1409,7 +1423,7 @@ class Processor:
         return ordered_items
 
     async def process_html_document(
-        self, recordName, recordId, version, source, orgId, html_content
+        self, recordName, recordId, version, source, orgId, html_content, virtual_record_id
     ):
         """Process HTML document and extract structured content"""
         self.logger.info(
@@ -1427,7 +1441,7 @@ class Processor:
 
             # Initialize HTML parser and parse content
             self.logger.debug("📄 Processing HTML content")
-            parser = self.parsers["html"]
+            parser = self.parsers[ExtensionTypes.HTML.value]
             html_result = parser.parse_string(html_content)
 
             # Get the full document structure
@@ -1453,7 +1467,7 @@ class Processor:
                         text_content, orgId
                     )
                     record = await self.domain_extractor.save_metadata_to_db(
-                        orgId, recordId, metadata
+                        orgId, recordId, metadata, virtual_record_id
                     )
                     file = await self.arango_service.get_document(
                         recordId, CollectionNames.FILES.value
@@ -1496,6 +1510,7 @@ class Processor:
                                 "blockType": context.get("label", "text"),
                                 "blockNum": [idx],
                                 "blockText": json.dumps(full_context),
+                                "virtualRecordId": virtual_record_id,
                             },
                         }
                     )
@@ -1563,8 +1578,39 @@ class Processor:
             self.logger.error(f"❌ Error processing HTML document: {str(e)}")
             raise
 
+    async def process_mdx_document(
+        self, recordName: str, recordId: str, version: str, source: str, orgId: str, mdx_content: str, virtual_record_id
+    ):
+        """Process MDX document by converting it to MD and then processing it as markdown
+
+        Args:
+            recordName (str): Name of the record
+            recordId (str): ID of the record
+            version (str): Version of the record
+            source (str): Source of the record
+            orgId (str): Organization ID
+            mdx_content (str): Content of the MDX file
+
+        Returns:
+            dict: Processing status and message
+        """
+        self.logger.info(
+            f"🚀 Starting MDX document processing for record: {recordName}"
+        )
+
+        # Convert MDX to MD using our parser
+        parser = self.parsers[ExtensionTypes.MDX.value]
+        md_content = parser.convert_mdx_to_md(mdx_content)
+
+        # Process the converted markdown content
+        await self.process_md_document(
+            recordName, recordId, version, source, orgId, md_content, virtual_record_id
+        )
+
+        return {"status": "success", "message": "MDX processed successfully"}
+
     async def process_md_document(
-        self, recordName, recordId, version, source, orgId, md_binary
+        self, recordName, recordId, version, source, orgId, md_binary, virtual_record_id
     ):
         self.logger.info(
             f"🚀 Starting Markdown document processing for record: {recordName}"
@@ -1576,7 +1622,7 @@ class Processor:
 
             # Initialize Markdown parser
             self.logger.debug("📄 Processing Markdown content")
-            parser = self.parsers["md"]
+            parser = self.parsers[ExtensionTypes.MD.value]
             md_result = parser.parse_string(md_content)
             # Get the full document structure
             doc_dict = md_result.export_to_dict()
@@ -1598,7 +1644,7 @@ class Processor:
                         text_content, orgId
                     )
                     record = await self.domain_extractor.save_metadata_to_db(
-                        orgId, recordId, metadata
+                        orgId, recordId, metadata, virtual_record_id
                     )
                     file = await self.arango_service.get_document(
                         recordId, CollectionNames.FILES.value
@@ -1664,6 +1710,7 @@ class Processor:
                             "blockType": item.get("label", "text"),
                             "blockNum": [idx],
                             "blockText": json.dumps(full_context),
+                            "virtualRecordId": virtual_record_id,
                             "codeLanguage": (
                                 item.get("language")
                                 if item.get("label") == "code"
@@ -1739,7 +1786,7 @@ class Processor:
             raise
 
     async def process_txt_document(
-        self, recordName, recordId, version, source, orgId, txt_binary
+        self, recordName, recordId, version, source, orgId, txt_binary, virtual_record_id
     ):
         """Process TXT document and extract structured content"""
         self.logger.info(
@@ -1774,7 +1821,7 @@ class Processor:
                     text_content, orgId
                 )
                 record = await self.domain_extractor.save_metadata_to_db(
-                    orgId, recordId, metadata
+                    orgId, recordId, metadata, virtual_record_id
                 )
                 file = await self.arango_service.get_document(
                     recordId, CollectionNames.FILES.value
@@ -1820,6 +1867,7 @@ class Processor:
                             "blockType": "text",
                             "blockNum": [idx],
                             "blockText": json.dumps(full_context),
+                            "virtualRecordId": virtual_record_id,
                         },
                     }
                 )
@@ -1868,7 +1916,7 @@ class Processor:
             raise
 
     async def process_pptx_document(
-        self, recordName, recordId, version, source, orgId, pptx_binary
+        self, recordName, recordId, version, source, orgId, pptx_binary, virtual_record_id
     ):
         """Process PPTX document and extract structured content
 
@@ -1887,7 +1935,7 @@ class Processor:
         try:
             # Initialize PPTX parser
             self.logger.debug("📄 Processing PPTX content")
-            parser = self.parsers["pptx"]
+            parser = self.parsers[ExtensionTypes.PPTX.value]
             pptx_result = parser.parse_binary(pptx_binary)
 
             # Get the full document structure
@@ -1982,7 +2030,7 @@ class Processor:
                         text_content, orgId
                     )
                     record = await self.domain_extractor.save_metadata_to_db(
-                        orgId, recordId, metadata
+                        orgId, recordId, metadata, virtual_record_id
                     )
                     file = await self.arango_service.get_document(
                         recordId, CollectionNames.FILES.value
@@ -2054,6 +2102,7 @@ class Processor:
                                 "blockNum": [idx],
                                 "blockText": json.dumps(full_context),
                                 "pageNum": [pageNum],
+                                "virtualRecordId": virtual_record_id,
                             },
                         }
                     )
@@ -2117,7 +2166,7 @@ class Processor:
             raise
 
     async def process_ppt_document(
-        self, recordName, recordId, version, source, orgId, ppt_binary
+        self, recordName, recordId, version, source, orgId, ppt_binary, virtual_record_id
     ):
         """Process PPT document and extract structured content
 
@@ -2132,10 +2181,10 @@ class Processor:
         self.logger.info(
             f"🚀 Starting PPT document processing for record: {recordName}"
         )
-        parser = self.parsers["ppt"]
+        parser = self.parsers[ExtensionTypes.PPT.value]
         ppt_result = parser.convert_ppt_to_pptx(ppt_binary)
         await self.process_pptx_document(
-            recordName, recordId, version, source, orgId, ppt_result
+            recordName, recordId, version, source, orgId, ppt_result, virtual_record_id
         )
 
         return {"status": "success", "message": "PPT processed successfully"}

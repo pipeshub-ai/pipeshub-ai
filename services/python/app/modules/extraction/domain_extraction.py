@@ -1,6 +1,5 @@
 import json
 import uuid
-from datetime import datetime, timezone
 from typing import List, Literal
 
 import aiohttp
@@ -26,6 +25,7 @@ from app.config.utils.named_constants.arangodb_constants import (
 )
 from app.modules.extraction.prompt_template import prompt
 from app.utils.llm import get_llm
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Update the Literal types
 SentimentType = Literal["Positive", "Neutral", "Negative"]
@@ -298,7 +298,7 @@ class DomainExtractor:
             raise
 
     async def save_metadata_to_db(
-        self, org_id: str, record_id: str, metadata: DocumentClassification
+        self, org_id: str, record_id: str, metadata: DocumentClassification, virtual_record_id: str
     ):
         """
         Extract metadata from a document in ArangoDB and create department relationships
@@ -325,9 +325,7 @@ class DomainExtractor:
                         edge = {
                             "_from": f"{CollectionNames.RECORDS.value}/{record_id}",
                             "_to": f"{CollectionNames.DEPARTMENTS.value}/{dept_doc['_key']}",
-                            "createdAtTimestamp": int(
-                                datetime.now(timezone.utc).timestamp()
-                            ),
+                            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                         }
                         await self.arango_service.batch_create_edges(
                             [edge], CollectionNames.BELONGS_TO_DEPARTMENT.value
@@ -386,9 +384,7 @@ class DomainExtractor:
                     {
                         "_from": f"records/{record_id}",
                         "_to": f"categories/{category_key}",
-                        "createdAtTimestamp": int(
-                            datetime.now(timezone.utc).timestamp()
-                        ),
+                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                     }
                 )
 
@@ -435,9 +431,7 @@ class DomainExtractor:
                         {
                             "_from": f"records/{record_id}",
                             "_to": f"{collection_name}/{key}",
-                            "createdAtTimestamp": int(
-                                datetime.now(timezone.utc).timestamp()
-                            ),
+                            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                         }
                     )
 
@@ -462,9 +456,7 @@ class DomainExtractor:
                             {
                                 "_from": f"{collection_name}/{key}",
                                 "_to": f"{parent_collection}/{parent_key}",
-                                "createdAtTimestamp": int(
-                                    datetime.now(timezone.utc).timestamp()
-                                ),
+                                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                             }
                         )
                 return key
@@ -522,9 +514,7 @@ class DomainExtractor:
                         {
                             "_from": f"records/{record_id}",
                             "_to": f"languages/{lang_key}",
-                            "createdAtTimestamp": int(
-                                datetime.now(timezone.utc).timestamp()
-                            ),
+                            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                         }
                     )
 
@@ -570,15 +560,13 @@ class DomainExtractor:
                         {
                             "_from": f"records/{record_id}",
                             "_to": f"topics/{topic_key}",
-                            "createdAtTimestamp": int(
-                                datetime.now(timezone.utc).timestamp()
-                            ),
+                            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                         }
                     )
 
             # Handle summary document
             if metadata.summary:
-                document_id = await self.save_summary_to_storage(org_id, record_id, metadata.summary)
+                document_id = await self.save_summary_to_storage(org_id, record_id,virtual_record_id, metadata.summary)
                 if document_id is None:
                     self.logger.error("❌ Failed to save summary to storage")
 
@@ -591,9 +579,7 @@ class DomainExtractor:
                 {
                     "summaryDocumentId": document_id,
                     "extractionStatus": "COMPLETED",
-                    "lastExtractionTimestamp": int(
-                        datetime.now(timezone.utc).timestamp()
-                    ),
+                    "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
                 }
             )
             docs = [doc]
@@ -724,7 +710,7 @@ class DomainExtractor:
             raise aiohttp.ClientError(f"Unexpected error: {str(e)}")
 
 
-    async def save_summary_to_storage(self, org_id: str, record_id: str, summary_doc: dict) -> str | None:
+    async def save_summary_to_storage(self, org_id: str, record_id: str, virtual_record_id: str, summary_doc: dict) -> str | None:
         """
         Save summary document to storage using FormData upload
         Returns:
@@ -780,7 +766,7 @@ class DomainExtractor:
                         # Convert summary_doc to JSON string and then to bytes
                         upload_data = {
                             "summary": summary_doc,
-                            "recordId": record_id
+                            "virtualRecordId": virtual_record_id
                         }
                         json_data = json.dumps(upload_data).encode('utf-8')
 
@@ -857,7 +843,7 @@ class DomainExtractor:
                         self.logger.info("🔑 Getting signed URL for document: %s", document_id)
                         upload_data = {
                             "summary": summary_doc,
-                            "recordId": record_id
+                            "virtualRecordId": virtual_record_id
                         }
 
                         upload_url = f"{nodejs_endpoint}{Routes.STORAGE_DIRECT_UPLOAD.value.format(documentId=document_id)}"

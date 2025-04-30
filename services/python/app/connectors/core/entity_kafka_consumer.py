@@ -10,6 +10,7 @@ from dependency_injector.wiring import inject
 # Import required services
 from app.config.configuration_service import KafkaConfig, config_node_constants
 from app.config.utils.named_constants.arangodb_constants import (
+    AccountType,
     CollectionNames,
     Connectors,
 )
@@ -250,9 +251,9 @@ class EntityKafkaRouteConsumer:
         """Handle organization creation event"""
 
         accountType = (
-            "enterprise"
-            if payload["accountType"] in ["business", "enterprise"]
-            else "individual"
+            AccountType.ENTERPRISE.value
+            if payload["accountType"] in [AccountType.BUSINESS.value, AccountType.ENTERPRISE.value]
+            else AccountType.INDIVIDUAL.value
         )
         try:
             org_data = {
@@ -422,18 +423,6 @@ class EntityKafkaRouteConsumer:
                 org_apps = await self.arango_service.get_org_apps(payload["orgId"])
 
                 for app in org_apps:
-                    # Create edge between user and app
-                    app_edge_data = {
-                        "_from": f"{CollectionNames.USERS.value}/{user_data['_key']}",
-                        "_to": f"{CollectionNames.APPS.value}/{app['_key']}",
-                        "syncState": "NOT_STARTED",
-                        "lastSyncUpdate": get_epoch_timestamp_in_ms(),
-                    }
-                    await self.arango_service.batch_create_edges(
-                        [app_edge_data],
-                        CollectionNames.USER_APP_RELATION.value,
-                    )
-
                     if app["name"].lower() in ["calendar"]:
                         self.logger.info("Skipping init")
                         continue
@@ -598,15 +587,16 @@ class EntityKafkaRouteConsumer:
             enabled_apps = set(apps)
 
             if enabled_apps:
+                self.logger.info(f"Enabled apps are: {enabled_apps}")
                 # Initialize services based on account type
                 if self.app_container:
                     accountType = org["accountType"]
                     # Use the existing app container to initialize services
-                    if accountType == "enterprise" or accountType == "business":
+                    if accountType == AccountType.ENTERPRISE.value or accountType == AccountType.BUSINESS.value:
                         await initialize_enterprise_account_services_fn(
                             org_id, self.app_container
                         )
-                    elif accountType == "individual":
+                    elif accountType == AccountType.INDIVIDUAL.value:
                         await initialize_individual_account_services_fn(
                             org_id, self.app_container
                         )
@@ -622,49 +612,16 @@ class EntityKafkaRouteConsumer:
                     )
 
                 user_type = (
-                    "enterprise"
-                    if org["accountType"] in ["enterprise", "business"]
-                    else "individual"
+                    AccountType.ENTERPRISE.value
+                    if org["accountType"] in [AccountType.ENTERPRISE.value, AccountType.BUSINESS.value]
+                    else AccountType.INDIVIDUAL.value
                 )
 
                 # Handle enterprise/business account type
-                if user_type == "enterprise":
+                if user_type == AccountType.ENTERPRISE.value:
                     active_users = await self.arango_service.get_users(
                         org_id, active=True
                     )
-                    user_app_edges = []
-
-                    # Initialize each app and create user-app edges
-                    for user in active_users:
-                        for app in app_docs:
-                            if app["name"] in enabled_apps:
-                                # Check if relation already exists
-                                query = f"""
-                                    FOR r IN {CollectionNames.USER_APP_RELATION.value}
-                                    FILTER r._from == "{CollectionNames.USERS.value}/{user['_key']}"
-                                    AND r._to == "{CollectionNames.APPS.value}/{app['_key']}"
-                                    RETURN r
-                                """
-                                cursor = self.arango_service.db.aql.execute(query)
-                                existing_relation = list(cursor)
-
-                                if not existing_relation:
-                                    edge_data = {
-                                        "_from": f"{CollectionNames.USERS.value}/{user['_key']}",
-                                        "_to": f"{CollectionNames.APPS.value}/{app['_key']}",
-                                        "syncState": "NOT_STARTED",
-                                        "lastSyncUpdate": get_epoch_timestamp_in_ms(),
-                                    }
-
-                                    user_app_edges.append(edge_data)
-
-                                if (
-                                    user_app_edges
-                                ):  # Only create edges if there are new relations to create
-                                    await self.arango_service.batch_create_edges(
-                                        user_app_edges,
-                                        CollectionNames.USER_APP_RELATION.value,
-                                    )
 
                     for app_name in enabled_apps:
                         if app_name in [Connectors.GOOGLE_CALENDAR.value]:
@@ -692,38 +649,6 @@ class EntityKafkaRouteConsumer:
                     active_users = await self.arango_service.get_users(
                         org_id, active=True
                     )
-                    user_app_edges = []
-
-                    for user in active_users:
-                        for app in app_docs:
-                            if app["name"] in enabled_apps:
-                                # Check if relation already exists
-                                query = f"""
-                                    FOR r IN {CollectionNames.USER_APP_RELATION.value}
-                                    FILTER r._from == "{CollectionNames.USERS.value}/{user['_key']}"
-                                    AND r._to == "{CollectionNames.APPS.value}/{app['_key']}"
-                                    RETURN r
-                                """
-                                cursor = self.arango_service.db.aql.execute(query)
-                                existing_relation = list(cursor)
-
-                                if not existing_relation:
-                                    edge_data = {
-                                        "_from": f"{CollectionNames.USERS.value}/{user['_key']}",
-                                        "_to": f"{CollectionNames.APPS.value}/{app['_key']}",
-                                        "syncState": "NOT_STARTED",
-                                        "lastSyncUpdate": get_epoch_timestamp_in_ms(),
-                                    }
-
-                                    user_app_edges.append(edge_data)
-
-                                if (
-                                    user_app_edges
-                                ):  # Only create edges if there are new relations to create
-                                    await self.arango_service.batch_create_edges(
-                                        user_app_edges,
-                                        CollectionNames.USER_APP_RELATION.value,
-                                    )
 
                     # First initialize each app
                     for app_name in enabled_apps:

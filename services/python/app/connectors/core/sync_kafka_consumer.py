@@ -7,6 +7,7 @@ from confluent_kafka import Consumer, KafkaError
 from dependency_injector.wiring import inject
 
 from app.config.configuration_service import KafkaConfig, config_node_constants
+from app.config.utils.named_constants.arangodb_constants import Connectors
 
 
 class SyncKafkaRouteConsumer:
@@ -35,6 +36,7 @@ class SyncKafkaRouteConsumer:
                 "connectorPublicUrlChanged": self.connector_public_url_changed,
                 "gmailUpdatesEnabledEvent": self.gmail_updates_enabled_event,
                 "gmailUpdatesDisabledEvent": self.gmail_updates_disabled_event,
+                "reindexFailed": self.reindex_failed,
             }
         }
         self.consume_task = None
@@ -375,7 +377,7 @@ class SyncKafkaRouteConsumer:
             if not org_id:
                 raise ValueError("orgId is required")
 
-            await self.sync_tasks.drive_sync_service.initialize(org_id)
+            await self.sync_tasks.drive_sync_service.connect_services(org_id)
 
             user_id = payload.get("userId")
             if user_id:
@@ -407,7 +409,7 @@ class SyncKafkaRouteConsumer:
             if not org_id:
                 raise ValueError("orgId is required")
 
-            await self.sync_tasks.gmail_sync_service.initialize(org_id)
+            await self.sync_tasks.gmail_sync_service.connect_services(org_id)
 
             user_id = payload.get("userId")
             if user_id:
@@ -478,6 +480,28 @@ class SyncKafkaRouteConsumer:
             self.logger.error("Error handling Gmail updates disabled event: %s", str(e))
             return False
 
+    async def reindex_failed(self, payload):
+        """Reindex failed records"""
+        try:
+            self.logger.info(f"Payload: {payload}")
+            org_id = payload.get("orgId")
+            connector = payload.get("connector")
+            if not org_id or not connector:
+                self.logger.info(f"Org ID: {org_id}, Connector: {connector}")
+                raise ValueError("orgId and connector are required")
+
+            if connector == Connectors.GOOGLE_DRIVE.value:
+                await self.sync_tasks.drive_sync_service.reindex_failed_records(org_id)
+            elif connector == Connectors.GOOGLE_MAIL.value:
+                await self.sync_tasks.gmail_sync_service.reindex_failed_records(org_id)
+            else:
+                raise ValueError("Invalid connector")
+
+            return True
+        except Exception as e:
+            self.logger.error("Error reindexing failed records: %s", str(e))
+            return False
+
     async def consume_messages(self):
         """Main consumption loop."""
         try:
@@ -497,7 +521,6 @@ class SyncKafkaRouteConsumer:
                             self.logger.error(f"Kafka error: {message.error()}")
                             continue
 
-                    self.logger.info(f"Received message: {message}")
                     success = await self.process_message(message)
 
                     if success:

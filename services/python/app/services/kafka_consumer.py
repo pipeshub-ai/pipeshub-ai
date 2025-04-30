@@ -16,6 +16,8 @@ from app.config.configuration_service import (
 from app.config.utils.named_constants.arangodb_constants import (
     CollectionNames,
     EventTypes,
+    ExtensionTypes,
+    MimeTypes,
     ProgressStatus,
 )
 from app.exceptions.indexing_exceptions import IndexingError
@@ -62,7 +64,7 @@ async def make_api_call(signed_url_route: str, token: str) -> dict:
 
 
 class KafkaConsumerManager:
-    def __init__(self, logger, config_service: ConfigurationService, event_processor):
+    def __init__(self, logger, config_service: ConfigurationService, event_processor, redis_scheduler):
         self.logger = logger
         self.consumer = None
         self.running = False
@@ -75,6 +77,10 @@ class KafkaConsumerManager:
 
         # Message tracking
         self.processed_messages: Dict[str, List[int]] = {}
+
+        self.redis_scheduler = redis_scheduler
+        # Create task for processing scheduled updates
+        self.scheduled_update_task = None
 
     async def create_consumer(self):
         try:
@@ -175,17 +181,97 @@ class KafkaConsumerManager:
 
             payload_data = data.get("payload", {})
             record_id = payload_data.get("recordId")
+            extension = payload_data.get("extension", "unknown")
+            mime_type = payload_data.get("mimeType", "unknown")
+            virtual_record_id = payload_data.get("virtualRecordId")
 
             self.logger.info(
                 f"Processing record {record_id} with event type: {event_type}. "
-                f"Message ID: {message_id}"
+                f"Message ID: {message_id} Virtual Record ID: {virtual_record_id}"
+                f"Message ID: {message_id}, Extension: {extension}, Mime Type: {mime_type}"
             )
 
             # Handle delete event
             if event_type == EventTypes.DELETE_RECORD.value:
                 self.logger.info(f"🗑️ Deleting embeddings for record {record_id}")
-                await self.event_processor.processor.indexing_pipeline.delete_embeddings(record_id)
+                await self.event_processor.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
                 return True
+
+            if event_type == EventTypes.UPDATE_RECORD.value:
+                await self.redis_scheduler.schedule_update(data)
+                self.logger.info(f"Scheduled update for record {record_id}")
+                return True
+
+            if extension is None and mime_type != "text/gmail_content":
+                extension = payload_data["recordName"].split(".")[-1]
+
+            self.logger.info("🚀 Checking for mime_type")
+            self.logger.info("🚀 mime_type: %s", mime_type)
+            self.logger.info("🚀 extension: %s", extension)
+
+            record = await self.event_processor.arango_service.get_document(
+                record_id, CollectionNames.RECORDS.value
+            )
+            if record is None:
+                self.logger.error(f"❌ Record {record_id} not found in database")
+                return
+            doc = dict(record)
+
+            supported_mime_types = [
+                MimeTypes.GMAIL.value,
+                MimeTypes.GOOGLE_SLIDES.value,
+                MimeTypes.GOOGLE_DOCS.value,
+                MimeTypes.GOOGLE_SHEETS.value,
+            ]
+
+            supported_extensions = [
+                ExtensionTypes.PDF.value,
+                ExtensionTypes.DOCX.value,
+                ExtensionTypes.DOC.value,
+                ExtensionTypes.XLSX.value,
+                ExtensionTypes.XLS.value,
+                ExtensionTypes.CSV.value,
+                ExtensionTypes.HTML.value,
+                ExtensionTypes.PPTX.value,
+                ExtensionTypes.PPT.value,
+                ExtensionTypes.MD.value,
+                ExtensionTypes.MDX.value,
+                ExtensionTypes.TXT.value,
+            ]
+
+            if (
+                mime_type not in supported_mime_types
+                and extension not in supported_extensions
+            ):
+                self.logger.info(
+                    f"🔴🔴🔴 Unsupported file: Mime Type: {mime_type}, Extension: {extension} 🔴🔴🔴"
+                )
+
+                doc.update(
+                    {
+                        "indexingStatus": ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+                        "extractionStatus": ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+                    }
+                )
+                docs = [doc]
+                await self.event_processor.arango_service.batch_upsert_nodes(
+                    docs, CollectionNames.RECORDS.value
+                )
+
+                return True
+
+            # Update with new metadata fields
+            doc.update(
+                {
+                    "indexingStatus": ProgressStatus.IN_PROGRESS.value,
+                    "extractionStatus": ProgressStatus.IN_PROGRESS.value,
+                }
+            )
+
+            docs = [doc]
+            await self.event_processor.arango_service.batch_upsert_nodes(
+                docs, CollectionNames.RECORDS.value
+            )
 
             # Signed URL handling
             if payload_data and payload_data.get("signedUrlRoute"):
@@ -405,14 +491,108 @@ class KafkaConsumerManager:
 
         return token
 
+    async def process_scheduled_updates(self):
+        """Process any scheduled updates that are ready"""
+        while self.running:
+            try:
+                # Get ready events
+                ready_events = await self.redis_scheduler.get_ready_events()
+
+                for event in ready_events:
+                    try:
+                        # Process the event
+                        payload_data = event.get("payload", {})
+                        record_id = payload_data.get("recordId")
+                        extension = payload_data.get("extension", "unknown")
+                        mime_type = payload_data.get("mimeType", "unknown")
+
+                        if extension is None and mime_type != "text/gmail_content":
+                            extension = payload_data["recordName"].split(".")[-1]
+
+                        self.logger.info(
+                            f"Processing update for record {record_id}"
+                            f"Extension: {extension}, Mime Type: {mime_type}"
+                        )
+
+                        record = await self.event_processor.arango_service.get_document(
+                            record_id, CollectionNames.RECORDS.value
+                        )
+                        if record is None:
+                            self.logger.error(f"❌ Record {record_id} not found in database")
+                            return
+                        doc = dict(record)
+
+                        # Update with new metadata fields
+                        doc.update(
+                            {
+                                "indexingStatus": ProgressStatus.IN_PROGRESS.value,
+                                "extractionStatus": ProgressStatus.IN_PROGRESS.value,
+                            }
+                        )
+
+                        docs = [doc]
+                        await self.event_processor.arango_service.batch_upsert_nodes(
+                            docs, CollectionNames.RECORDS.value
+                        )
+
+                        if payload_data and payload_data.get("signedUrlRoute"):
+                            try:
+                                payload = {
+                                    "orgId": payload_data["orgId"],
+                                    "scopes": ["storage:token"],
+                                }
+                                token = await self.generate_jwt(payload)
+                                self.logger.debug(f"Generated JWT token for record {record_id}")
+
+                                response = await make_api_call(
+                                    payload_data["signedUrlRoute"], token
+                                )
+                                self.logger.debug(
+                                    f"Received signed URL response for record {record_id}"
+                                )
+
+                                if response.get("is_json"):
+                                    signed_url = response["data"]["signedUrl"]
+                                    payload_data["signedUrl"] = signed_url
+                                else:
+                                    payload_data["buffer"] = response["data"]
+                                event["payload"] = payload_data
+
+                                await self.event_processor.on_event(event)
+
+                            except Exception as e:
+                                self.logger.error(f"Error processing signed URL: {str(e)}")
+                                raise
+
+                        # Remove processed event
+                        await self.redis_scheduler.remove_processed_event(event)
+
+                        self.logger.info(
+                            f"Processed scheduled update for record "
+                            f"{event.get('payload', {}).get('recordId')}"
+                        )
+                    except Exception as e:
+                        self.logger.error(f"Error processing scheduled update: {str(e)}")
+
+                # Wait before next check
+                await asyncio.sleep(60)  # Check every minute
+
+            except Exception as e:
+                self.logger.error(f"Error in scheduled update processor: {str(e)}")
+                await asyncio.sleep(60)
+
     async def start(self):
-        """Start the consumer."""
+        """Start the consumer and scheduled update processor."""
         self.running = True
         await self.create_consumer()
+        # Start scheduled update processing
+        self.scheduled_update_task = asyncio.create_task(self.process_scheduled_updates())
 
     def stop(self):
-        """Stop the consumer."""
+        """Stop the consumer and scheduled update processor."""
         self.running = False
+        if self.scheduled_update_task:
+            self.scheduled_update_task.cancel()
 
     async def _update_document_status(
         self,

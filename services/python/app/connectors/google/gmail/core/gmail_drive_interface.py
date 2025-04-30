@@ -1,6 +1,7 @@
 from typing import Dict, Optional
 
 from app.config.configuration_service import ConfigurationService
+from app.config.utils.named_constants.arangodb_constants import AccountType
 from app.connectors.google.google_drive.core.drive_user_service import DriveUserService
 from app.connectors.utils.decorators import exponential_backoff
 from app.connectors.utils.rate_limiter import GoogleAPIRateLimiter
@@ -47,7 +48,7 @@ class GmailDriveInterface:
         """
         try:
             # For enterprise setup
-            if account_type == "enterprise" or account_type == "business":
+            if account_type == AccountType.ENTERPRISE.value or account_type == AccountType.BUSINESS.value:
                 if not user_email:
                     self.logger.error("❌ User email required for enterprise setup")
                     return None

@@ -1,4 +1,4 @@
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from arango import ArangoClient
 
@@ -606,3 +606,62 @@ class ArangoService:
                 f"Failed to check record access and get details: {str(e)}"
             )
             raise
+
+    async def get_records_by_virtual_record_id(
+        self,
+        virtual_record_id: str,
+        accessible_record_ids: Optional[List[str]] = None
+    ) -> List[str]:
+        """
+        Get all record keys that have the given virtualRecordId.
+        Optionally filter by a list of record IDs.
+
+        Args:
+            virtual_record_id (str): Virtual record ID to look up
+            record_ids (Optional[List[str]]): Optional list of record IDs to filter by
+
+        Returns:
+            List[str]: List of record keys that match the criteria
+        """
+        try:
+            self.logger.info(
+                "🔍 Finding records with virtualRecordId: %s", virtual_record_id
+            )
+
+            # Base query
+            query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.virtualRecordId == @virtual_record_id
+            """
+
+            # Add optional filter for record IDs
+            if accessible_record_ids:
+                query += """
+                AND record._key IN @accessible_record_ids
+                """
+
+            query += """
+                RETURN record._key
+            """
+
+            bind_vars = {"virtual_record_id": virtual_record_id}
+            if accessible_record_ids:
+                bind_vars["accessible_record_ids"] = accessible_record_ids
+
+            cursor = self.db.aql.execute(query, bind_vars=bind_vars)
+            results = list(cursor)
+
+            self.logger.info(
+                "✅ Found %d records with virtualRecordId %s",
+                len(results),
+                virtual_record_id
+            )
+            return results
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Error finding records with virtualRecordId %s: %s",
+                virtual_record_id,
+                str(e)
+            )
+            return []

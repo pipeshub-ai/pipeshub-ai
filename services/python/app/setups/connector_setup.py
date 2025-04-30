@@ -24,25 +24,25 @@ from app.connectors.google.admin.admin_webhook_handler import AdminWebhookHandle
 from app.connectors.google.admin.google_admin_service import GoogleAdminService
 from app.connectors.google.core.arango_service import ArangoService
 from app.connectors.google.core.sync_tasks import SyncTasks
-from app.connectors.google.gmail.core.gmail_user_service import GmailUserService
-from app.connectors.google.gmail.core.sync_service import (
+from app.connectors.google.gmail.core.gmail_sync_service import (
     GmailSyncEnterpriseService,
     GmailSyncIndividualService,
 )
-from app.connectors.google.gmail.handlers.change_handler import GmailChangeHandler
-from app.connectors.google.gmail.handlers.webhook_handler import (
+from app.connectors.google.gmail.core.gmail_user_service import GmailUserService
+from app.connectors.google.gmail.handlers.gmail_change_handler import GmailChangeHandler
+from app.connectors.google.gmail.handlers.gmail_webhook_handler import (
     EnterpriseGmailWebhookHandler,
     IndividualGmailWebhookHandler,
 )
-from app.connectors.google.google_drive.core.drive_user_service import DriveUserService
-from app.connectors.google.google_drive.core.sync_service import (
+from app.connectors.google.google_drive.core.drive_sync_service import (
     DriveSyncEnterpriseService,
     DriveSyncIndividualService,
 )
-from app.connectors.google.google_drive.handlers.change_handler import (
+from app.connectors.google.google_drive.core.drive_user_service import DriveUserService
+from app.connectors.google.google_drive.handlers.drive_change_handler import (
     DriveChangeHandler,
 )
-from app.connectors.google.google_drive.handlers.webhook_handler import (
+from app.connectors.google.google_drive.handlers.drive_webhook_handler import (
     EnterpriseDriveWebhookHandler,
     IndividualDriveWebhookHandler,
 )

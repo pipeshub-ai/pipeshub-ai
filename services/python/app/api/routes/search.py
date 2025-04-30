@@ -101,6 +101,7 @@ async def search(
         )
         custom_status_code = results.get("status_code", 500)
         logger.info(f"Custom status code: {custom_status_code}")
+        logger.info(f"Results: {results}")
 
         return JSONResponse(status_code=custom_status_code, content=results)
 

@@ -1,6 +1,8 @@
 import asyncio
+import hashlib
 import json
 from io import BytesIO
+from uuid import uuid4
 
 import aiohttp
 
@@ -10,7 +12,9 @@ from app.config.utils.named_constants.arangodb_constants import (
     ExtensionTypes,
     MimeTypes,
     ProgressStatus,
+    RecordTypes,
 )
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class EventProcessor:
@@ -150,6 +154,7 @@ class EventProcessor:
             event_data = event_data.get("payload")
             record_id = event_data.get("recordId")
             org_id = event_data.get("orgId")
+            virtual_record_id = event_data.get("virtualRecordId")
 
             self.logger.info(f"📥 Processing event: {event_type}: {record_id}")
 
@@ -158,12 +163,15 @@ class EventProcessor:
                 return
 
             # For both create and update events, we need to process the document
-            if event_type == EventTypes.UPDATE_RECORD.value:
+            if event_type == EventTypes.REINDEX_RECORD.value or event_type == EventTypes.UPDATE_RECORD.value:
                 # For updates, first delete existing embeddings
                 self.logger.info(
                     f"""🔄 Updating record {record_id} - deleting existing embeddings"""
                 )
-                await self.processor.indexing_pipeline.delete_embeddings(record_id)
+                await self.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
+
+            if virtual_record_id is None:
+                virtual_record_id = str(uuid4())
 
             # Update indexing status to IN_PROGRESS
             record = await self.arango_service.get_document(
@@ -173,19 +181,6 @@ class EventProcessor:
                 self.logger.error(f"❌ Record {record_id} not found in database")
                 return
             doc = dict(record)
-
-            # Update with new metadata fields
-            doc.update(
-                {
-                    "indexingStatus": ProgressStatus.IN_PROGRESS.value,
-                    "extractionStatus": ProgressStatus.IN_PROGRESS.value,
-                }
-            )
-
-            docs = [doc]
-            await self.arango_service.batch_upsert_nodes(
-                docs, CollectionNames.RECORDS.value
-            )
 
             # Extract necessary data
             record_version = event_data.get("version", 0)
@@ -197,52 +192,6 @@ class EventProcessor:
             if extension is None and mime_type != "text/gmail_content":
                 extension = event_data["recordName"].split(".")[-1]
 
-            self.logger.info("🚀 Checking for mime_type")
-            self.logger.info("🚀 mime_type: %s", mime_type)
-            self.logger.info("🚀 extension: %s", extension)
-
-            supported_mime_types = [
-                MimeTypes.GMAIL.value,
-                MimeTypes.GOOGLE_SLIDES.value,
-                MimeTypes.GOOGLE_DOCS.value,
-                MimeTypes.GOOGLE_SHEETS.value,
-            ]
-
-            supported_extensions = [
-                ExtensionTypes.PDF.value,
-                ExtensionTypes.DOCX.value,
-                ExtensionTypes.DOC.value,
-                ExtensionTypes.XLSX.value,
-                ExtensionTypes.XLS.value,
-                ExtensionTypes.CSV.value,
-                ExtensionTypes.HTML.value,
-                ExtensionTypes.PPTX.value,
-                ExtensionTypes.PPT.value,
-                ExtensionTypes.MD.value,
-                ExtensionTypes.TXT.value,
-            ]
-
-            if (
-                mime_type not in supported_mime_types
-                and extension not in supported_extensions
-            ):
-                self.logger.info(
-                    f"🔴🔴🔴 Unsupported file: Mime Type: {mime_type}, Extension: {extension} 🔴🔴🔴"
-                )
-                doc = docs[0]
-                doc.update(
-                    {
-                        "indexingStatus": ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
-                        "extractionStatus": ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
-                    }
-                )
-                docs = [doc]
-                await self.arango_service.batch_upsert_nodes(
-                    docs, CollectionNames.RECORDS.value
-                )
-
-                return
-
             if mime_type == "text/gmail_content":
                 self.logger.info("🚀 Processing Gmail Message")
                 result = await self.processor.process_gmail_message(
@@ -252,6 +201,7 @@ class EventProcessor:
                     source=connector,
                     orgId=org_id,
                     html_content=event_data.get("body"),
+                    virtual_record_id = virtual_record_id
                 )
 
                 return result
@@ -266,6 +216,76 @@ class EventProcessor:
 
             self.logger.debug(f"file_content type: {type(file_content)}")
 
+            record_type = doc.get("recordType")
+            if record_type == RecordTypes.FILE.value:
+                try:
+                    file = await self.arango_service.get_document(
+                        record_id, CollectionNames.FILES.value
+                    )
+                    file_doc = dict(file)
+
+                    md5_checksum = file_doc.get("md5Checksum")
+                    size_in_bytes = file_doc.get("sizeInBytes")
+                    if md5_checksum is None:
+                        md5_checksum = hashlib.md5(file_content).hexdigest()
+                        file_doc.update({"md5Checksum": md5_checksum})
+                        self.logger.info(f"🚀 Calculated md5_checksum: {md5_checksum}")
+                        await self.arango_service.batch_upsert_nodes([file_doc], CollectionNames.FILES.value)
+
+                    # Add indexingStatus to initial duplicate check to find in-progress files
+                    duplicate_files = await self.arango_service.find_duplicate_files(file_doc.get('_key'), md5_checksum, size_in_bytes)
+                    if duplicate_files:
+                        # Wait and check for processed duplicates
+                        for attempt in range(60):  # Wait up to 60 seconds
+                            processed_duplicate = next(
+                                (f for f in duplicate_files if f.get("summaryDocumentId") and f.get("virtualRecordId")),
+                                None
+                            )
+
+                            if processed_duplicate:
+                                # Use data from processed duplicate
+                                doc.update({
+                                    "summaryDocumentId": processed_duplicate.get("summaryDocumentId"),
+                                    "virtualRecordId": processed_duplicate.get("virtualRecordId"),
+                                    "indexingStatus": ProgressStatus.COMPLETED.value,
+                                    "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
+                                    "extractionStatus": ProgressStatus.COMPLETED.value,
+                                    "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
+                                })
+                                await self.arango_service.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
+
+                                # Copy all relationships from the processed duplicate to this document
+                                await self.arango_service.copy_document_relationships(
+                                    processed_duplicate.get("_key"),
+                                    doc.get("_key")
+                                )
+                                return
+
+                            # Check if any duplicate is in progress
+                            in_progress = next(
+                                (f for f in duplicate_files if f.get("indexingStatus") == ProgressStatus.IN_PROGRESS.value),
+                                None
+                            )
+
+                            if in_progress:
+                                self.logger.info(f"🚀 Duplicate file {in_progress.get('_key')} is being processed, waiting...")
+                                self.logger.info(f"Retried {attempt} times")
+                                await asyncio.sleep(5)
+                                # Refresh duplicate files list
+                                duplicate_files = await self.arango_service.find_duplicate_files(
+                                    file_doc.get('_key'), md5_checksum, size_in_bytes
+                                )
+                            else:
+                                # No file is being processed, we can proceed
+                                break
+
+                        self.logger.info(f"🚀 No processed duplicate found, proceeding with processing for {record_id}")
+                    else:
+                        self.logger.info(f"🚀 No duplicate files found for record {record_id}")
+                except Exception as e:
+                    self.logger.error(f"❌ Error in file processing: {repr(e)}")
+                    raise
+
             if mime_type == MimeTypes.GOOGLE_SLIDES.value:
                 self.logger.info("🚀 Processing Google Slides")
                 # Decode JSON content if it's streamed data
@@ -278,7 +298,7 @@ class EventProcessor:
                         )
                         raise
                 result = await self.processor.process_google_slides(
-                    record_id, record_version, org_id, file_content
+                    record_id, record_version, org_id, file_content, virtual_record_id
                 )
                 return result
 
@@ -294,7 +314,7 @@ class EventProcessor:
                         )
                         raise
                 result = await self.processor.process_google_docs(
-                    record_id, record_version, org_id, file_content
+                    record_id, record_version, org_id, file_content, virtual_record_id
                 )
                 return result
 
@@ -310,7 +330,7 @@ class EventProcessor:
                         )
                         raise
                 result = await self.processor.process_google_sheets(
-                    record_id, record_version, org_id, file_content
+                    record_id, record_version, org_id, file_content, virtual_record_id
                 )
                 return result
 
@@ -322,6 +342,7 @@ class EventProcessor:
                     source=connector,
                     orgId=org_id,
                     pdf_binary=file_content,
+                    virtual_record_id = virtual_record_id
                 )
 
             elif extension == ExtensionTypes.DOCX.value:
@@ -332,6 +353,7 @@ class EventProcessor:
                     source=connector,
                     orgId=org_id,
                     docx_binary=BytesIO(file_content),
+                    virtual_record_id = virtual_record_id
                 )
 
             elif extension == ExtensionTypes.DOC.value:
@@ -342,6 +364,7 @@ class EventProcessor:
                     source=connector,
                     orgId=org_id,
                     doc_binary=file_content,
+                    virtual_record_id = virtual_record_id
                 )
             elif extension == ExtensionTypes.XLSX.value:
                 result = await self.processor.process_excel_document(
@@ -351,6 +374,7 @@ class EventProcessor:
                     source=connector,
                     orgId=org_id,
                     excel_binary=file_content,
+                    virtual_record_id = virtual_record_id
                 )
             elif extension == ExtensionTypes.XLS.value:
                 result = await self.processor.process_xls_document(
@@ -360,6 +384,7 @@ class EventProcessor:
                     source=connector,
                     orgId=org_id,
                     xls_binary=file_content,
+                    virtual_record_id = virtual_record_id
                 )
             elif extension == ExtensionTypes.CSV.value:
                 result = await self.processor.process_csv_document(
@@ -369,6 +394,7 @@ class EventProcessor:
                     source=connector,
                     orgId=org_id,
                     csv_binary=file_content,
+                    virtual_record_id = virtual_record_id
                 )
 
             elif extension == ExtensionTypes.HTML.value:
@@ -379,6 +405,7 @@ class EventProcessor:
                     source=connector,
                     orgId=org_id,
                     html_content=file_content,
+                    virtual_record_id = virtual_record_id
                 )
 
             elif extension == ExtensionTypes.PPTX.value:
@@ -389,6 +416,7 @@ class EventProcessor:
                     source=connector,
                     orgId=org_id,
                     pptx_binary=file_content,
+                    virtual_record_id = virtual_record_id
                 )
 
             elif extension == ExtensionTypes.PPT.value:
@@ -399,6 +427,7 @@ class EventProcessor:
                     source=connector,
                     orgId=org_id,
                     ppt_binary=file_content,
+                    virtual_record_id = virtual_record_id
                 )
 
             elif extension == ExtensionTypes.MD.value:
@@ -409,7 +438,20 @@ class EventProcessor:
                     source=connector,
                     orgId=org_id,
                     md_binary=file_content,
+                    virtual_record_id = virtual_record_id
                 )
+
+            elif extension == ExtensionTypes.MDX.value:
+                result = await self.processor.process_mdx_document(
+                    recordName=f"Record-{record_id}",
+                    recordId=record_id,
+                    version=record_version,
+                    source=connector,
+                    orgId=org_id,
+                    mdx_content=file_content,
+                    virtual_record_id = virtual_record_id
+                )
+
             elif extension == ExtensionTypes.TXT.value:
                 result = await self.processor.process_txt_document(
                     recordName=f"Record-{record_id}",
@@ -418,26 +460,11 @@ class EventProcessor:
                     source=connector,
                     orgId=org_id,
                     txt_binary=file_content,
+                    virtual_record_id = virtual_record_id
                 )
 
             else:
-                self.logger.info(
-                    f"""🔴🔴🔴 Unsupported file extension: {
-                               extension} 🔴🔴🔴"""
-                )
-                doc = docs[0]
-                doc.update(
-                    {
-                        "indexingStatus": ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
-                        "extractionStatus": ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
-                    }
-                )
-                docs = [doc]
-                await self.arango_service.batch_upsert_nodes(
-                    docs, CollectionNames.RECORDS.value
-                )
-
-                return
+                raise Exception(f"Unsupported file extension: {extension}")
 
             self.logger.info(
                 f"✅ Successfully processed document for record {record_id}"

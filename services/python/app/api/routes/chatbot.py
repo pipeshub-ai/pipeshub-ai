@@ -8,7 +8,10 @@ from jinja2 import Template
 from pydantic import BaseModel
 
 from app.config.configuration_service import ConfigurationService
-from app.config.utils.named_constants.arangodb_constants import CollectionNames
+from app.config.utils.named_constants.arangodb_constants import (
+    AccountType,
+    CollectionNames,
+)
 from app.modules.qna.prompt_templates import qna_prompt
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_arango import ArangoService
@@ -197,8 +200,8 @@ async def askAI(
                 org_id, CollectionNames.ORGS.value
             )
             if (
-                org_info.get("accountType") == "enterprise"
-                or org_info.get("accountType") == "business"
+                org_info.get("accountType") == AccountType.ENTERPRISE.value
+                or org_info.get("accountType") == AccountType.BUSINESS.value
             ):
                 user_data = (
                     "I am the user of the organization. "
