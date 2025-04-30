@@ -329,32 +329,6 @@ export default function PersonalProfile() {
                 {...({ noValidate: true } as any)}
               >
                 <Grid container spacing={3}>
-                  <Grid item xs={12} sm={6}>
-                    <Field.Text
-                      name="firstName"
-                      label="First name"
-                      fullWidth
-                      variant="outlined"
-                      sx={{
-                        '& .MuiOutlinedInput-root': {
-                          height: 50,
-                        },
-                      }}
-                    />
-                  </Grid>
-                  <Grid item xs={12} sm={6}>
-                    <Field.Text
-                      name="lastName"
-                      label="Last name"
-                      fullWidth
-                      variant="outlined"
-                      sx={{
-                        '& .MuiOutlinedInput-root': {
-                          height: 50,
-                        },
-                      }}
-                    />
-                  </Grid>
                   <Grid item xs={12}>
                     <Field.Text
                       name="fullName"

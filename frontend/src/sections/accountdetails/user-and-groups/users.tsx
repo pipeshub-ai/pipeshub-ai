@@ -5,7 +5,7 @@ import closeIcon from '@iconify-icons/eva/close-fill';
 import peopleIcon from '@iconify-icons/eva/people-fill';
 import searchIcon from '@iconify-icons/eva/search-fill';
 import emailIcon from '@iconify-icons/eva/email-outline';
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect, KeyboardEvent } from 'react';
 import trashIcon from '@iconify-icons/eva/trash-2-outline';
 import personIcon from '@iconify-icons/eva/person-add-fill';
 import alertIcon from '@iconify-icons/eva/alert-triangle-fill';
@@ -769,7 +769,9 @@ const Users = () => {
 
 function AddUserModal({ open, onClose, groups, onUsersAdded }: AddUserModalProps) {
   const theme = useTheme();
-  const [emails, setEmails] = useState<string>('');
+  const [emails, setEmails] = useState<string[]>([]);
+  const [inputValue, setInputValue] = useState<string>('');
+  const [error, setError] = useState<string>('');
   const [selectedGroups, setSelectedGroups] = useState<AppUserGroup[]>([]);
   const [snackbarState, setSnackbarState] = useState<SnackbarState>({
     open: false,
@@ -778,23 +780,74 @@ function AddUserModal({ open, onClose, groups, onUsersAdded }: AddUserModalProps
   });
   const dispatch = useDispatch();
 
+  // Function to validate email format
+  const validateEmail = (email: string): boolean => {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return emailRegex.test(email);
+  };
+
   const handleSnackbarClose = () => {
     setSnackbarState({ ...snackbarState, open: false });
   };
 
+  const handleRemoveEmail = (emailToRemove: string) => {
+    setEmails(emails.filter((email) => email !== emailToRemove));
+  };
+
+  // Modified to be a standalone function that can be called by button or keyboard
+  const handleAddEmail = (): void => {
+    if (inputValue.trim() === '') return;
+
+    setError('');
+    const emailToAdd = inputValue.trim();
+
+    if (validateEmail(emailToAdd)) {
+      // Add email if it's not already in the list
+      if (!emails.includes(emailToAdd)) {
+        setEmails([...emails, emailToAdd]);
+        setInputValue('');
+      } else {
+        setError('This email has already been added');
+        setTimeout(() => setError(''), 3000);
+      }
+    } else {
+      setError('Please enter a valid email address');
+      setTimeout(() => setError(''), 3000);
+    }
+  };
+
+  // Keyboard handler for Enter key
+  const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>): void => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleAddEmail();
+    }
+  };
   const handleAddUsers = async (): Promise<void> => {
     try {
-      const emailList = emails.split(',').map((email) => email.trim());
+      if (emails.length === 0) {
+        setError('Please add at least one email address');
+        setTimeout(() => setError(''), 3000);
+        return;
+      }
 
       const groupIds = selectedGroups.map((group) => group._id);
-      await inviteUsers({ emails: emailList, groupIds });
-      dispatch(updateInvitesCount(emailList.length));
+      await inviteUsers({ emails, groupIds });
+      dispatch(updateInvitesCount(emails.length));
       setSnackbarState({ open: true, message: 'Users added successfully', severity: 'success' });
+
+      // Clear emails after successful submission
+      setEmails([]);
+      setSelectedGroups([]);
 
       onUsersAdded();
       onClose();
-    } catch (error) {
-      // setSnackbarState({ open: true, message: error.errorMessage, severity: 'error' });
+    } catch (err: any) {
+      setSnackbarState({
+        open: true,
+        message: err.errorMessage || 'Failed to add users',
+        severity: 'error',
+      });
     }
   };
 
@@ -824,16 +877,92 @@ function AddUserModal({ open, onClose, groups, onUsersAdded }: AddUserModalProps
       </DialogTitle>
       <DialogContent>
         <Box sx={{ mt: 2 }}>
-          <TextField
-            fullWidth
-            label="Email addresses*"
-            value={emails}
-            onChange={(e) => setEmails(e.target.value)}
-            placeholder="name@example.com, name2@example.com"
-            multiline
-            rows={2}
-            sx={{ mb: 2 }}
-          />
+          <Box
+            sx={{
+              border: error
+                ? `1px solid ${theme.palette.error.main}`
+                : '1px solid rgba(0, 0, 0, 0.23)',
+              borderRadius: 1,
+              p: 1,
+              mb: error ? 0.5 : 2,
+              minHeight: '100px',
+              display: 'flex',
+              flexWrap: 'wrap',
+              alignItems: 'flex-start',
+              gap: 1,
+              '&:focus-within': {
+                borderColor: error ? theme.palette.error.main : theme.palette.primary.main,
+                boxShadow: error
+                  ? `0 0 0 2px ${theme.palette.error.main}14`
+                  : `0 0 0 2px ${theme.palette.primary.main}14`,
+              },
+            }}
+          >
+            {/* Email chips */}
+            {emails.map((email, index) => (
+              <Chip
+                key={index}
+                label={email}
+                onDelete={() => handleRemoveEmail(email)}
+                deleteIcon={<Iconify icon={closeIcon} />}
+                sx={{
+                  m: 0.5,
+                  bgcolor: theme.palette.primary.main,
+                  color: theme.palette.primary.contrastText,
+                  '& .MuiChip-deleteIcon': {
+                    color: theme.palette.primary.contrastText,
+                    '&:hover': {
+                      color: theme.palette.primary.light,
+                    },
+                  },
+                }}
+              />
+            ))}
+
+            {/* Input field and Add button in a row */}
+            <Box sx={{ display: 'flex', flexGrow: 1, alignItems: 'center', gap: 1 }}>
+              <TextField
+                value={inputValue}
+                onChange={(e) => setInputValue(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder={emails.length === 0 ? 'name@example.com' : ''}
+                variant="standard"
+                error={!!error}
+                aria-invalid={!!error}
+                inputProps={{
+                  'aria-label': 'Add email addresses',
+                }}
+                sx={{
+                  flexGrow: 1,
+                  m: 0.5,
+                  '& .MuiInput-underline:before': { borderBottom: 'none' },
+                  '& .MuiInput-underline:hover:before': { borderBottom: 'none' },
+                  '& .MuiInput-underline:after': { borderBottom: 'none' },
+                }}
+              />
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={handleAddEmail}
+                sx={{
+                  minWidth: 'auto',
+                  height: 32,
+                  borderRadius: 1,
+                  ml: 1,
+                }}
+              >
+                Add
+              </Button>
+            </Box>
+          </Box>
+
+          {/* Error message */}
+          {error && (
+            <Typography variant="caption" color="error" sx={{ ml: 1, display: 'block', mb: 1 }}>
+              {error}
+            </Typography>
+          )}
+
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
             Your team members will receive an email with instructions to access the system.
           </Typography>
@@ -862,8 +991,9 @@ function AddUserModal({ open, onClose, groups, onUsersAdded }: AddUserModalProps
           onClick={handleAddUsers}
           variant="contained"
           color="primary"
-          startIcon={<Iconify icon={emailIcon} />}
+          startIcon={<Iconify icon={closeIcon} />}
           sx={{ borderRadius: 1 }}
+          disabled={emails.length === 0}
         >
           Send Invites
         </Button>
