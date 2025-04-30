@@ -6,6 +6,7 @@ import peopleIcon from '@iconify-icons/eva/people-fill';
 import searchIcon from '@iconify-icons/eva/search-fill';
 import emailIcon from '@iconify-icons/eva/email-outline';
 import React, { useRef, useState, useEffect, KeyboardEvent } from 'react';
+import React, { useRef, useState, useEffect, KeyboardEvent } from 'react';
 import trashIcon from '@iconify-icons/eva/trash-2-outline';
 import personIcon from '@iconify-icons/eva/person-add-fill';
 import alertIcon from '@iconify-icons/eva/alert-triangle-fill';
@@ -120,7 +121,7 @@ const Users = () => {
         const loggedInUsers = response.filter(
           (user) => user?.email !== null && user?.fullName && user.hasLoggedIn === true
         );
-        console.log(users)
+        console.log(users);
         setUsers(loggedInUsers);
         setGroups(groupsData);
       } catch (error) {
@@ -131,7 +132,7 @@ const Users = () => {
     };
 
     fetchUsersAndGroups();
-     // eslint-disable-next-line
+    // eslint-disable-next-line
   }, []);
 
   const filteredUsers = users.filter(
@@ -1015,7 +1016,7 @@ function AddUserModal({ open, onClose, groups, onUsersAdded }: AddUserModalProps
           onClick={handleAddUsers}
           variant="contained"
           color="primary"
-          startIcon={<Iconify icon={emailIcon} />}
+          startIcon={<Iconify icon={closeIcon} />}
           sx={{ borderRadius: 1 }}
           disabled={emails.length === 0}
         >

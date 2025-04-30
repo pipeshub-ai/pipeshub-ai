@@ -726,7 +726,9 @@ export class UserController {
       if (!emails) {
         throw new BadRequestError('emails are required');
       }
-
+      if (!req.user) {
+        throw new NotFoundError('User not found');
+      }
       const orgId = req.user?.orgId;
       const org = await Org.findOne({ _id: req.user.orgId, isDeleted: false });
       // Check if emails array is provided
