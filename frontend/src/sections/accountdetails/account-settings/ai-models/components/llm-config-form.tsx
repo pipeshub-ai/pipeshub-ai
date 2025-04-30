@@ -365,33 +365,98 @@ const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
           setSaveError(null);
           setFormSubmitSuccess(false);
 
-          if (modelType === 'openAI') {
-            // This executes the form submission
-            handleOpenAISubmit(onOpenAISubmit)();
-          } else if (modelType === 'azureOpenAI') {
-            // This executes the form submission
-            handleAzureSubmit(onAzureSubmit)();
-          } else if (modelType === 'gemini') {
-            handleGeminiSubmit(onGeminiSubmit)();
-          } else if (modelType === 'anthropic') {
-            handleAnthropicSubmit(onAnthropicSubmit)();
-          }
-
-          // Wait for a short time to allow the form submission to complete
-          await new Promise((resolve) => setTimeout(resolve, 100));
-
-          // Check if there was an error during submission
-          if (saveError) {
-            setIsSaving(false);
-            return {
-              success: false,
-              error: saveError,
-            };
-          }
-
-          // If we got here, the submission was successful
-          setIsSaving(false);
-          return { success: true };
+          // Create a promise that will resolve with the result of the form submission
+          return await new Promise<SaveResult>((resolve) => {
+            if (modelType === 'openAI') {
+              // Execute the OpenAI form submission
+              handleOpenAISubmit(async (data) => {
+                try {
+                  await updateLlmConfig(data, 'openAI');
+                  if (onSaveSuccess) {
+                    onSaveSuccess();
+                  }
+                  setIsEditing(false);
+                  setFormSubmitSuccess(true);
+                  resolve({ success: true });
+                } catch (error) {
+                  const errorMessage =
+                    error.response?.data?.message || 'Failed to save OpenAI configuration';
+                  setSaveError(errorMessage);
+                  console.error('Error saving OpenAI configuration:', error);
+                  setFormSubmitSuccess(false);
+                  resolve({ success: false, error: errorMessage });
+                } finally {
+                  setIsSaving(false);
+                }
+              })();
+            } else if (modelType === 'azureOpenAI') {
+              // Execute the Azure form submission
+              handleAzureSubmit(async (data) => {
+                try {
+                  await updateLlmConfig(data, 'azureOpenAI');
+                  if (onSaveSuccess) {
+                    onSaveSuccess();
+                  }
+                  setIsEditing(false);
+                  setFormSubmitSuccess(true);
+                  resolve({ success: true });
+                } catch (error) {
+                  const errorMessage =
+                    error.response?.data?.message || 'Failed to save Azure OpenAI configuration';
+                  setSaveError(errorMessage);
+                  console.error('Error saving Azure OpenAI configuration:', error);
+                  setFormSubmitSuccess(false);
+                  resolve({ success: false, error: errorMessage });
+                } finally {
+                  setIsSaving(false);
+                }
+              })();
+            } else if (modelType === 'gemini') {
+              // Execute the Gemini form submission
+              handleGeminiSubmit(async (data) => {
+                try {
+                  await updateLlmConfig(data, 'gemini');
+                  if (onSaveSuccess) {
+                    onSaveSuccess();
+                  }
+                  setIsEditing(false);
+                  setFormSubmitSuccess(true);
+                  resolve({ success: true });
+                } catch (error) {
+                  const errorMessage =
+                    error.response?.data?.message || 'Failed to save Gemini configuration';
+                  setSaveError(errorMessage);
+                  console.error('Error saving Gemini configuration:', error);
+                  setFormSubmitSuccess(false);
+                  resolve({ success: false, error: errorMessage });
+                } finally {
+                  setIsSaving(false);
+                }
+              })();
+            } else if (modelType === 'anthropic') {
+              // Execute the Anthropic form submission
+              handleAnthropicSubmit(async (data) => {
+                try {
+                  await updateLlmConfig(data, 'anthropic');
+                  if (onSaveSuccess) {
+                    onSaveSuccess();
+                  }
+                  setIsEditing(false);
+                  setFormSubmitSuccess(true);
+                  resolve({ success: true });
+                } catch (error) {
+                  const errorMessage =
+                    error.response?.data?.message || 'Failed to save Anthropic configuration';
+                  setSaveError(errorMessage);
+                  console.error('Error saving Anthropic configuration:', error);
+                  setFormSubmitSuccess(false);
+                  resolve({ success: false, error: errorMessage });
+                } finally {
+                  setIsSaving(false);
+                }
+              })();
+            }
+          });
         } catch (error) {
           setIsSaving(false);
           console.error('Error in handleSave:', error);
@@ -402,7 +467,6 @@ const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
         }
       },
     }));
-
     // Load existing configuration on mount
     useEffect(() => {
       const fetchConfig = async () => {

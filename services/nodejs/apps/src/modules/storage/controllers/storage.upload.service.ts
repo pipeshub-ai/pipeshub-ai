@@ -93,7 +93,7 @@ export class UploadDocumentService {
         req,
         next,
         size,
-        extension
+        extension,
       );
       if (!placeholderDocument || !placeholderDocument.document) {
         throw new InternalServerError('Failed to create placeholder document');
@@ -105,7 +105,11 @@ export class UploadDocumentService {
         this.storageServiceWrapper,
         documentPath,
       );
-      logger.info('Presigned url generated for direct upload', { storageURL });
+      if (process.env.NODE_ENV == 'development') {
+        logger.info('Presigned url generated for direct upload', {
+          storageURL,
+        });
+      }
 
       // set location header to the s3URL
       if (storageURL) {

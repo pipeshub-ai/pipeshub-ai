@@ -21,28 +21,30 @@ import {
 } from '../../../libs/errors/storage.errors';
 import { LocalStorageConfig } from '../config/storage.config';
 
-
 @injectable()
 class LocalStorageAdapter implements StorageServiceInterface {
   private readonly mountPath: string;
   private readonly baseUrl: string;
   private readonly mountName: string;
-  private readonly logger = Logger.getInstance({service: 'LocalStorageAdapter'});
+  private readonly logger = Logger.getInstance({
+    service: 'LocalStorageAdapter',
+  });
 
-  constructor(
-    credentials: LocalStorageConfig,
-  ) {
+  constructor(credentials: LocalStorageConfig) {
     try {
       const { mountName, baseUrl } = credentials;
 
       // Validate required credentials
       if (!mountName || !baseUrl) {
-        throw new StorageConfigurationError('Missing required local storage configuration', {
-          missingFields: {
-            mountName: !mountName,
-            baseUrl: !baseUrl,
+        throw new StorageConfigurationError(
+          'Missing required local storage configuration',
+          {
+            missingFields: {
+              mountName: !mountName,
+              baseUrl: !baseUrl,
+            },
           },
-        });
+        );
       }
 
       this.mountName = mountName;
@@ -54,19 +56,24 @@ class LocalStorageAdapter implements StorageServiceInterface {
 
       // Ensure mount directory exists
       this.ensureMountExists();
-
-      this.logger.info('Local storage adapter initialized', {
-        mountPath: this.mountPath,
-        baseUrl: this.baseUrl,
-        mountName: this.mountName,
-      });
+      if (process.env.NODE_ENV == 'development') {
+        this.logger.info('Local storage adapter initialized', {
+          mountPath: this.mountPath,
+          baseUrl: this.baseUrl,
+          mountName: this.mountName,
+        });
+      }
     } catch (error) {
       if (error instanceof StorageError) {
         throw error;
       }
-      throw new StorageConfigurationError('Failed to initialize local storage adapter', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
-      });
+      throw new StorageConfigurationError(
+        'Failed to initialize local storage adapter',
+        {
+          originalError:
+            error instanceof Error ? error.message : 'Unknown error',
+        },
+      );
     }
   }
 
@@ -75,15 +82,15 @@ class LocalStorageAdapter implements StorageServiceInterface {
    */
   private createMountPath(): string {
     const homeDir = os.homedir();
-    
+
     // Handle different OS conventions
     switch (process.platform) {
       case 'darwin': // macOS
-        return path.join(homeDir, 'Library',  this.mountName);
+        return path.join(homeDir, 'Library', this.mountName);
       case 'win32': // Windows
         return path.join(homeDir, 'AppData', this.mountName);
       default: // Linux and others
-        return path.join(homeDir, '.local',  this.mountName);
+        return path.join(homeDir, '.local', this.mountName);
     }
   }
 
@@ -93,8 +100,9 @@ class LocalStorageAdapter implements StorageServiceInterface {
   private async ensureMountExists(): Promise<void> {
     try {
       await fs.mkdir(this.mountPath, { recursive: true, mode: 0o700 });
-
-      this.logger.info(`Mount point "${this.mountPath}" initialized`);
+      if (process.env.NODE_ENV == 'development') {
+        this.logger.info(`Mount point "${this.mountPath}" initialized`);
+      }
     } catch (error) {
       throw new StorageConfigurationError('Failed to initialize mount point', {
         mountPath: this.mountPath,
@@ -114,12 +122,13 @@ class LocalStorageAdapter implements StorageServiceInterface {
       const relativePath = this.sanitizePath(documentInPayload.documentPath);
       const fullPath = path.join(this.mountPath, relativePath);
       const dirPath = path.dirname(fullPath);
-
-      this.logger.info('Uploading document to local storage', {
-        path: fullPath,
-        relativePath: relativePath,
-        dirPath: dirPath,
-      });
+      if (process.env.NODE_ENV == 'development') {
+        this.logger.info('Uploading document to local storage', {
+          path: fullPath,
+          relativePath: relativePath,
+          dirPath: dirPath,
+        });
+      }
 
       // Ensure directory exists
       await fs.mkdir(dirPath, { recursive: true });
@@ -139,9 +148,13 @@ class LocalStorageAdapter implements StorageServiceInterface {
       if (error instanceof StorageError) {
         throw error;
       }
-      throw new StorageUploadError('Failed to upload document to local storage', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
-      });
+      throw new StorageUploadError(
+        'Failed to upload document to local storage',
+        {
+          originalError:
+            error instanceof Error ? error.message : 'Unknown error',
+        },
+      );
     }
   }
 
@@ -164,11 +177,12 @@ class LocalStorageAdapter implements StorageServiceInterface {
       await fs.writeFile(fullPath, bufferDataInPayLoad, { mode: 0o600 });
 
       const fileUrl = this.getFileUrl(localPath);
-
-      this.logger.info('Local storage update successful', {
-        path: localPath,
-        url: fileUrl,
-      });
+      if (process.env.NODE_ENV == 'development') {
+        this.logger.info('Local storage update successful', {
+          path: localPath,
+          url: fileUrl,
+        });
+      }
 
       return {
         statusCode: 200,
@@ -178,9 +192,13 @@ class LocalStorageAdapter implements StorageServiceInterface {
       if (error instanceof StorageError) {
         throw error;
       }
-      throw new StorageUploadError('Failed to update document in local storage', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
-      });
+      throw new StorageUploadError(
+        'Failed to update document in local storage',
+        {
+          originalError:
+            error instanceof Error ? error.message : 'Unknown error',
+        },
+      );
     }
   }
 
@@ -192,11 +210,14 @@ class LocalStorageAdapter implements StorageServiceInterface {
     version?: number,
   ): Promise<StorageServiceResponse<Buffer>> {
     try {
-      const fileUrl = (version === undefined || version === 0)
-        ? document.local?.localPath
-        : document.versionHistory?.[version]?.local?.localPath;
+      const fileUrl =
+        version === undefined || version === 0
+          ? document.local?.localPath
+          : document.versionHistory?.[version]?.local?.localPath;
       if (!fileUrl) {
-        throw new StorageNotFoundError('File URL not found for requested version');
+        throw new StorageNotFoundError(
+          'File URL not found for requested version',
+        );
       }
 
       const localPath = this.getLocalPathFromUrl(fileUrl);
@@ -207,16 +228,16 @@ class LocalStorageAdapter implements StorageServiceInterface {
       const fullPath = path.join(
         this.mountPath,
         version === undefined ? 'current' : 'versions',
-        localPath
+        localPath,
       );
 
       // Read file content
       const buffer = await fs.readFile(fullPath);
-
-      this.logger.info('Local storage fetch successful', {
-        path: localPath,
-      });
-
+      if (process.env.NODE_ENV == 'development') {
+        this.logger.info('Local storage fetch successful', {
+          path: localPath,
+        });
+      }
       return {
         statusCode: 200,
         data: buffer,
@@ -225,9 +246,13 @@ class LocalStorageAdapter implements StorageServiceInterface {
       if (error instanceof StorageError) {
         throw error;
       }
-      throw new StorageDownloadError('Failed to get document from local storage', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
-      });
+      throw new StorageDownloadError(
+        'Failed to get document from local storage',
+        {
+          originalError:
+            error instanceof Error ? error.message : 'Unknown error',
+        },
+      );
     }
   }
 
@@ -241,12 +266,15 @@ class LocalStorageAdapter implements StorageServiceInterface {
     _expirationTimeInSeconds: number = 3600,
   ): Promise<StorageServiceResponse<string>> {
     try {
-      const fileUrl = version === undefined
-        ? document.local?.url
-        : document.versionHistory?.[version]?.local?.url;
+      const fileUrl =
+        version === undefined
+          ? document.local?.url
+          : document.versionHistory?.[version]?.local?.url;
 
       if (!fileUrl) {
-        throw new StorageNotFoundError('File URL not found for requested version');
+        throw new StorageNotFoundError(
+          'File URL not found for requested version',
+        );
       }
 
       // For local storage, we just return the direct file path
@@ -266,22 +294,37 @@ class LocalStorageAdapter implements StorageServiceInterface {
   }
 
   // These methods are not implemented for local storage
-  async getMultipartUploadId(): Promise<StorageServiceResponse<{ uploadId: string }>> {
-    throw new MultipartUploadError('Multipart upload not implemented for local storage', {
-      suggestion: 'Use direct upload instead',
-    });
+  async getMultipartUploadId(): Promise<
+    StorageServiceResponse<{ uploadId: string }>
+  > {
+    throw new MultipartUploadError(
+      'Multipart upload not implemented for local storage',
+      {
+        suggestion: 'Use direct upload instead',
+      },
+    );
   }
 
-  async generatePresignedUrlForPart(): Promise<StorageServiceResponse<{ url: string; partNumber: number }>> {
-    throw new MultipartUploadError('Multipart upload not implemented for local storage', {
-      suggestion: 'Use direct upload instead',
-    });
+  async generatePresignedUrlForPart(): Promise<
+    StorageServiceResponse<{ url: string; partNumber: number }>
+  > {
+    throw new MultipartUploadError(
+      'Multipart upload not implemented for local storage',
+      {
+        suggestion: 'Use direct upload instead',
+      },
+    );
   }
 
-  async completeMultipartUpload(): Promise<StorageServiceResponse<{ url: string }>> {
-    throw new MultipartUploadError('Multipart upload not implemented for local storage', {
-      suggestion: 'Use direct upload instead',
-    });
+  async completeMultipartUpload(): Promise<
+    StorageServiceResponse<{ url: string }>
+  > {
+    throw new MultipartUploadError(
+      'Multipart upload not implemented for local storage',
+      {
+        suggestion: 'Use direct upload instead',
+      },
+    );
   }
 
   async generatePresignedUrlForDirectUpload(
@@ -295,9 +338,13 @@ class LocalStorageAdapter implements StorageServiceInterface {
         data: { url: fileUrl },
       };
     } catch (error) {
-      throw new PresignedUrlError('Failed to generate direct upload URL for local storage', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
-      });
+      throw new PresignedUrlError(
+        'Failed to generate direct upload URL for local storage',
+        {
+          originalError:
+            error instanceof Error ? error.message : 'Unknown error',
+        },
+      );
     }
   }
 
@@ -319,13 +366,13 @@ class LocalStorageAdapter implements StorageServiceInterface {
   private getFileUrl(filePath: string): string {
     // Build the full local filesystem path
     const fullPath = path.join(this.mountPath, filePath);
-    
+
     // Handle Windows paths specially
     if (process.platform === 'win32') {
       // Windows paths need an extra / after file:// and forward slashes
       return `file:///${fullPath.replace(/\\/g, '/')}`;
     }
-    
+
     // Unix-like systems (macOS, Linux)
     return `file://${fullPath}`;
   }
@@ -350,7 +397,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       // Get the relative path by removing the mount path and 'current' or 'versions' directory
       const relativePath = path.relative(
         path.join(this.mountPath, 'current'),
-        localPath
+        localPath,
       );
 
       return relativePath;
@@ -361,7 +408,9 @@ class LocalStorageAdapter implements StorageServiceInterface {
 
   private sanitizePath(filePath: string): string {
     // Remove any parent directory references for security
-    const normalizedPath = path.normalize(filePath).replace(/^(\.\.[\/\\])+/, '');
+    const normalizedPath = path
+      .normalize(filePath)
+      .replace(/^(\.\.[\/\\])+/, '');
     return normalizedPath;
   }
 }

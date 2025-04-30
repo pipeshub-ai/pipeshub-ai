@@ -124,7 +124,7 @@ const getEmbeddingConfig = async (): Promise<EmbeddingFormValues | null> => {
       } else {
         modelType = 'openAI';
       }
-      
+
       // Return the configuration with the correct modelType
       return {
         ...config,
@@ -263,7 +263,8 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
         setIsEditing(false);
         setFormSubmitSuccess(true);
       } catch (error) {
-        const errorMessage = error.response?.data?.message || 'Failed to save OpenAI embedding configuration';
+        const errorMessage =
+          error.response?.data?.message || 'Failed to save OpenAI embedding configuration';
         setSaveError(errorMessage);
         console.error('Error saving OpenAI embedding configuration:', error);
         setFormSubmitSuccess(false);
@@ -314,32 +315,79 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
           setSaveError(null);
           setFormSubmitSuccess(false);
 
-          if (modelType === 'openAI') {
-            // This executes the form submission
-            handleOpenAISubmit(onOpenAISubmit)();
-          } else if (modelType === 'azureOpenAI') {
-            // This executes the form submission
-            handleAzureSubmit(onAzureSubmit)();
-          } else if (modelType === 'default') {
-            // This executes the form submission for default
-            handleDefaultSubmit(onDefaultSubmit)();
-          }
-
-          // Wait for a short time to allow the form submission to complete
-          await new Promise((resolve) => setTimeout(resolve, 100));
-
-          // Check if there was an error during submission
-          if (saveError) {
-            setIsSaving(false);
-            return {
-              success: false,
-              error: saveError,
-            };
-          }
-
-          // If we got here, the submission was successful
-          setIsSaving(false);
-          return { success: true };
+          // Create a promise that will resolve with the result of the form submission
+          return await new Promise<SaveResult>((resolve) => {
+            if (modelType === 'openAI') {
+              // Execute the OpenAI form submission
+              handleOpenAISubmit(async (data) => {
+                try {
+                  await updateEmbeddingConfig(data, 'openAI');
+                  if (onSaveSuccess) {
+                    onSaveSuccess();
+                  }
+                  setIsEditing(false);
+                  setFormSubmitSuccess(true);
+                  resolve({ success: true });
+                } catch (error) {
+                  const errorMessage =
+                    error.response?.data?.message ||
+                    'Failed to save OpenAI embedding configuration';
+                  setSaveError(errorMessage);
+                  console.error('Error saving OpenAI embedding configuration:', error);
+                  setFormSubmitSuccess(false);
+                  resolve({ success: false, error: errorMessage });
+                } finally {
+                  setIsSaving(false);
+                }
+              })();
+            } else if (modelType === 'azureOpenAI') {
+              // Execute the Azure form submission
+              handleAzureSubmit(async (data) => {
+                try {
+                  await updateEmbeddingConfig(data, 'azureOpenAI');
+                  if (onSaveSuccess) {
+                    onSaveSuccess();
+                  }
+                  setIsEditing(false);
+                  setFormSubmitSuccess(true);
+                  resolve({ success: true });
+                } catch (error) {
+                  const errorMessage =
+                    error.response?.data?.message ||
+                    'Failed to save Azure OpenAI embedding configuration';
+                  setSaveError(errorMessage);
+                  console.error('Error saving Azure OpenAI embedding configuration:', error);
+                  setFormSubmitSuccess(false);
+                  resolve({ success: false, error: errorMessage });
+                } finally {
+                  setIsSaving(false);
+                }
+              })();
+            } else if (modelType === 'default') {
+              // Execute the default form submission
+              handleDefaultSubmit(async (data) => {
+                try {
+                  await updateEmbeddingConfig(data, 'default');
+                  if (onSaveSuccess) {
+                    onSaveSuccess();
+                  }
+                  setIsEditing(false);
+                  setFormSubmitSuccess(true);
+                  resolve({ success: true });
+                } catch (error) {
+                  const errorMessage =
+                    error.response?.data?.message ||
+                    'Failed to save default embedding configuration';
+                  setSaveError(errorMessage);
+                  console.error('Error saving default embedding configuration:', error);
+                  setFormSubmitSuccess(false);
+                  resolve({ success: false, error: errorMessage });
+                } finally {
+                  setIsSaving(false);
+                }
+              })();
+            }
+          });
         } catch (error) {
           setIsSaving(false);
           console.error('Error in handleSave:', error);
@@ -539,12 +587,13 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
           />
           <Box>
             <Typography variant="body2" color="text.secondary">
-              Configure your Embedding model to enable semantic search and document retrieval in your application.
+              Configure your Embedding model to enable semantic search and document retrieval in
+              your application.
               {modelType === 'azureOpenAI'
                 ? ' You need an active Azure subscription with Azure OpenAI Service enabled.'
                 : modelType === 'default'
-                ? ' Using the default embedding model provided by the system.'
-                : ' Enter your OpenAI API credentials to get started.'}
+                  ? ' Using the default embedding model provided by the system.'
+                  : ' Enter your OpenAI API credentials to get started.'}
               {fetchError && ' (View-only mode due to connection error)'}
             </Typography>
           </Box>
@@ -650,7 +699,8 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
                       size="small"
                       error={!!fieldState.error}
                       helperText={
-                        fieldState.error?.message || 'e.g., text-embedding-3-small, text-embedding-3-large'
+                        fieldState.error?.message ||
+                        'e.g., text-embedding-3-small, text-embedding-3-large'
                       }
                       required
                       disabled={!isEditing || fetchError}
@@ -774,7 +824,10 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
                       fullWidth
                       size="small"
                       error={!!fieldState.error}
-                      helperText={fieldState.error?.message || 'e.g., text-embedding-3-small, text-embedding-3-large'}
+                      helperText={
+                        fieldState.error?.message ||
+                        'e.g., text-embedding-3-small, text-embedding-3-large'
+                      }
                       required
                       disabled={!isEditing || fetchError}
                       InputProps={{
@@ -802,7 +855,8 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
           {modelType === 'default' && (
             <Grid item xs={12}>
               <Alert severity="info" sx={{ mt: 1 }}>
-                Using the default embedding model provided by the system. No additional configuration required.
+                Using the default embedding model provided by the system. No additional
+                configuration required.
               </Alert>
             </Grid>
           )}

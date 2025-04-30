@@ -50,3 +50,9 @@ export const dbTypes = {
 };
 
 export const aiModelRoute = `api/v1/configurationManager/internal/aiModelsConfig`;
+
+export interface AIServiceResponse {
+  statusCode: number;
+  data?: any;
+  msg?: string;
+}

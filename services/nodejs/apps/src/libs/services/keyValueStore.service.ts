@@ -1,12 +1,12 @@
 import { Logger } from './logger.service';
-import {
-  IKVStoreConnection,
-} from '../types/keyValueStore.types';
+import { IKVStoreConnection } from '../types/keyValueStore.types';
 import { DistributedKeyValueStore } from '../keyValueStore/keyValueStore';
 import { KeyValueStoreFactory } from '../keyValueStore/keyValueStoreFactory';
-import { KeyValueStoreType, StoreType } from '../keyValueStore/constants/KeyValueStoreType';
+import {
+  KeyValueStoreType,
+  StoreType,
+} from '../keyValueStore/constants/KeyValueStoreType';
 import { ConfigurationManagerConfig } from '../../modules/configuration_manager/config/config';
-
 
 export class KeyValueStoreService implements IKVStoreConnection {
   private static instance: KeyValueStoreService;
@@ -17,15 +17,14 @@ export class KeyValueStoreService implements IKVStoreConnection {
   });
   private config: ConfigurationManagerConfig;
 
-  private constructor(
-    config: ConfigurationManagerConfig,
-  ) {
+  private constructor(config: ConfigurationManagerConfig) {
     this.config = config;
   }
 
-
-   // Returns the single instance; initializes it if not already created.
-   public static getInstance(config: ConfigurationManagerConfig): KeyValueStoreService {
+  // Returns the single instance; initializes it if not already created.
+  public static getInstance(
+    config: ConfigurationManagerConfig,
+  ): KeyValueStoreService {
     if (!KeyValueStoreService.instance) {
       KeyValueStoreService.instance = new KeyValueStoreService(config);
     }
@@ -37,8 +36,10 @@ export class KeyValueStoreService implements IKVStoreConnection {
    * Creates a new store instance using the factory with default serialization/deserialization
    */
   async connect(): Promise<void> {
-    this.logger.info('Connecting to key-value store', { config: this.config });
-    const storeType: StoreType = KeyValueStoreType.fromString(this.config.storeType);
+    this.logger.info('Connecting to key-value store');
+    const storeType: StoreType = KeyValueStoreType.fromString(
+      this.config.storeType,
+    );
     try {
       if (!this.isInitialized) {
         this.store = KeyValueStoreFactory.createStore(
@@ -46,13 +47,13 @@ export class KeyValueStoreService implements IKVStoreConnection {
           this.config.storeConfig,
           // (value: any) => Buffer.from(JSON.stringify(value)),
           // (buffer: Buffer) => JSON.parse(buffer.toString()),
-          (value: any) => Buffer.from((value)),
-          (buffer: Buffer) => (buffer.toString()),
+          (value: any) => Buffer.from(value),
+          (buffer: Buffer) => buffer.toString(),
         );
         this.isInitialized = true;
         this.logger.info('Successfully connected to key-value store');
       }
-  } catch (error : any) {
+    } catch (error: any) {
       this.isInitialized = false;
       this.logger.error('Failed to connect to key-value store', { error });
       throw error;

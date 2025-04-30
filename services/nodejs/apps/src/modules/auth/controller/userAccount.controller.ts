@@ -108,7 +108,7 @@ export class UserAccountController {
     if (Date.now() > userCredentials.otpValidity) {
       throw new GoneError('OTP has expired. Please request a new one.');
     }
-    this.logger.info(inputOTP, 'inputOtp');
+
     const isMatching = await bcrypt.compare(
       inputOTP,
       userCredentials.hashedOTP,
@@ -288,7 +288,7 @@ export class UserAccountController {
           this.config.scopedJwtSecret,
         );
       const resetPasswordLink = `${this.config.frontendUrl}/reset-password#token=${passwordResetToken}`;
-      this.logger.info('resetPasswordLink>>', resetPasswordLink);
+
       await this.mailService.sendMail({
         emailTemplateType: 'resetPassword',
         initiator: { jwtAuthToken: mailAuthToken },
@@ -317,7 +317,7 @@ export class UserAccountController {
     }
     // Use bcrypt.compare to check if the new password matches the current hash
     const isSame = await bcrypt.compare(newPassword, currentHashedPassword);
-    this.logger.debug(newPassword, isSame);
+
     return isSame;
   }
 
@@ -362,7 +362,6 @@ export class UserAccountController {
       }
 
       const hashedPassword = await bcrypt.hash(newPassword, SALT_ROUNDS);
-      this.logger.info('hashedPassword', userCredentialData.hashedPassword);
 
       userCredentialData.hashedPassword = hashedPassword;
       if (ipAddress) {
@@ -671,7 +670,7 @@ export class UserAccountController {
 
     const otpValidity = Date.now() + 10 * 60 * 1000;
     const { otp, hashedOTP } = await this.generateHashedOTP();
-    this.logger.info('generated otp', hashedOTP);
+
     if (!userCredentialData) {
       await UserCredentials.create({
         orgId: orgId,
@@ -1040,7 +1039,6 @@ export class UserAccountController {
         throw new NotFoundError('SessionInfo not found');
       }
 
-      this.logger.info('sessionInfo', sessionInfo);
       const currentStepConfig = sessionInfo.authConfig[sessionInfo.currentStep];
       this.logger.info('currentStepConfig', currentStepConfig);
 

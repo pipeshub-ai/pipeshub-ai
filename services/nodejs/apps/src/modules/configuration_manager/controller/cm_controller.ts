@@ -8,6 +8,7 @@ import { Logger } from '../../../libs/services/logger.service';
 import { configPaths } from '../paths/paths';
 import {
   BadRequestError,
+  InternalServerError,
   NotFoundError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
@@ -18,6 +19,7 @@ import {
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import {
   aiModelRoute,
+  AIServiceResponse,
   googleWorkspaceTypes,
   storageTypes,
 } from '../constants/constants';
@@ -41,6 +43,11 @@ import {
   LLMConfiguredEvent,
   SyncEventProducer,
 } from '../services/kafka_events.service';
+import {
+  AICommandOptions,
+  AIServiceCommand,
+} from '../../../libs/commands/ai_service/ai.service.command';
+import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 
 const logger = Logger.getInstance({
   service: 'ConfigurationManagerController',
@@ -718,7 +725,7 @@ export const createGoogleWorkspaceCredentials =
         case googleWorkspaceTypes.INDIVIDUAL.toLowerCase():
           {
             configData = req.body;
-            logger.debug('configData:', configData);
+
             // validate config schema
 
             const validationResult =
@@ -880,7 +887,6 @@ export const createGoogleWorkspaceCredentials =
           if (fileChanged) {
             // Only validate the file if it's changed
             configData = req.body.fileContent;
-            logger.debug('configData (new file):', configData);
 
             const validationResult =
               googleWorkspaceBusinessCredentialsSchema.safeParse(configData);
@@ -1237,6 +1243,56 @@ export const createAIModelsConfig =
       if (!aiConfig) {
         throw new BadRequestError('Invalid configuration passed');
       }
+
+      // Handle LLM health check
+      if (aiConfig.llm) {
+        const aiCommandOptions: AICommandOptions = {
+          uri: `${appConfig.aiBackend}/api/v1/llm-health-check`,
+          method: HttpMethod.POST,
+          headers: req.headers as Record<string, string>,
+          body: aiConfig.llm,
+        };
+
+        logger.debug('Health Check for AI llm Config API calling');
+
+        // Don't use nested try/catch with next() inside
+        const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
+        const aiResponseData =
+          (await aiServiceCommand.execute()) as AIServiceResponse;
+
+        if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
+          throw new InternalServerError(
+            'Failed to do health check of llm configuration, check credentials again',
+            aiResponseData?.data,
+          );
+        }
+      }
+
+      // Handle embedding health check
+      if (aiConfig.embedding) {
+        const aiCommandOptions: AICommandOptions = {
+          uri: `${appConfig.aiBackend}/api/v1/embedding-health-check`,
+          method: HttpMethod.POST,
+          headers: req.headers as Record<string, string>,
+          body: aiConfig.embedding,
+        };
+
+        logger.debug('Health Check for AI embedding Config API calling');
+
+        // Don't use nested try/catch with next() inside
+        const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
+        const aiResponseData =
+          (await aiServiceCommand.execute()) as AIServiceResponse;
+
+        if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
+          throw new InternalServerError(
+            'Failed to do health check of embedding configuration, check credentials again',
+            aiResponseData?.data,
+          );
+        }
+      }
+
+      // Encrypt and store configuration
       const configManagerConfig = loadConfigurationManagerConfig();
       const encryptedAIConfig = EncryptionService.getInstance(
         configManagerConfig.algorithm,
@@ -1247,12 +1303,14 @@ export const createAIModelsConfig =
         configPaths.aiModels,
         encryptedAIConfig,
       );
+
+      // Handle event publication
       await eventService.start();
       const event: Event = {
         eventType: EventType.LLMConfiguredEvent,
         timestamp: Date.now(),
         payload: {
-          credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`, // change it with backendUrl
+          credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
         } as LLMConfiguredEvent,
       };
       await eventService.publishEvent(event);

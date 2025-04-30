@@ -52,7 +52,9 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
             },
           );
         }
-        this.blobServiceClient = BlobServiceClient.fromConnectionString(azureBlobConnectionString);
+        this.blobServiceClient = BlobServiceClient.fromConnectionString(
+          azureBlobConnectionString,
+        );
       } else {
         if (!accountName || !accountKey || !containerName) {
           throw new StorageConfigurationError(
@@ -77,7 +79,6 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
           `${endpointProtocol}://${accountName}.blob.${endpointSuffix}`,
           sharedKeyCredential,
         );
-        
       }
       // Initialize container client
       this.containerName = containerName;
@@ -153,11 +154,12 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
       };
 
       await blobClient.uploadData(documentInPayload.buffer, uploadOptions);
-
-      this.logger.info('Azure Blob Storage upload successful', {
-        path: documentInPayload.documentPath,
-        url: blobClient.url,
-      });
+      if (process.env.NODE_ENV == 'development') {
+        this.logger.info('Azure Blob Storage upload successful', {
+          path: documentInPayload.documentPath,
+          url: blobClient.url,
+        });
+      }
 
       return {
         statusCode: 200,
@@ -203,11 +205,12 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
       };
 
       await blobClient.uploadData(bufferDataInPayLoad, uploadOptions);
-
-      this.logger.info('Azure Blob Storage update successful', {
-        path: blobPath,
-        url: blobClient.url,
-      });
+      if (process.env.NODE_ENV == 'development') {
+        this.logger.info('Azure Blob Storage update successful', {
+          path: blobPath,
+          url: blobClient.url,
+        });
+      }
 
       return {
         statusCode: 200,
@@ -241,7 +244,7 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
   ): Promise<StorageServiceResponse<Buffer>> {
     try {
       const blobUrl =
-        (version === undefined || version === 0)
+        version === undefined || version === 0
           ? document.azureBlob?.url
           : document.versionHistory?.[version]?.azureBlob?.url;
 
@@ -263,11 +266,11 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
       const buffer = await this.streamToBuffer(
         downloadResponse.readableStreamBody,
       );
-
-      this.logger.info('Azure Blob Storage fetch successful', {
-        path: blobPath,
-      });
-
+      if (process.env.NODE_ENV == 'development') {
+        this.logger.info('Azure Blob Storage fetch successful', {
+          path: blobPath,
+        });
+      }
       return {
         statusCode: 200,
         data: buffer,

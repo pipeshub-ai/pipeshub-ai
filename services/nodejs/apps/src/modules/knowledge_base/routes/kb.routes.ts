@@ -51,7 +51,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
   const recordsEventProducer = container.get<RecordsEventProducer>(
     'RecordsEventProducer',
   );
-  
+
   const recordRelationService = new RecordRelationService(
     arangoService,
     recordsEventProducer,
@@ -133,8 +133,8 @@ export function createKnowledgeBaseRouter(container: Container): Router {
     authMiddleware.authenticate,
     metricsMiddleware(container),
     ValidationMiddleware.validate(getRecordByIdSchema),
-    getRecordBuffer()
-  )
+    getRecordBuffer(appConfig.connectorBackend),
+  );
 
   // Archive a record
   router.patch(
@@ -163,13 +163,13 @@ export function createKnowledgeBaseRouter(container: Container): Router {
     //restoreRecord(arangoService),
   );
 
-  // reindex a record 
+  // reindex a record
   router.post(
     '/reindex/record/:recordId',
     authMiddleware.authenticate,
     metricsMiddleware(container),
     ValidationMiddleware.validate(unarchiveRecordSchema),
-    reindexRecord(recordRelationService,keyValueStoreService, appConfig),
+    reindexRecord(recordRelationService, keyValueStoreService, appConfig),
   );
 
   // Set expiration time for a record

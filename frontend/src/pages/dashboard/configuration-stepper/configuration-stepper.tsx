@@ -1391,17 +1391,29 @@ const ConfigurationStepper: React.FC<ConfigurationStepperProps> = ({ open, onClo
               <StepLabel>
                 {label}
                 {/* No "Skipped" label for LLM anymore since it's required */}
-                {skipSteps.storage && index === 1 && (
+                {skipSteps.embedding && index === 1 && (
                   <Typography variant="caption" color="text.secondary" sx={{ ml: 0.5 }}>
                     (Skipped)
                   </Typography>
                 )}
-                {skipSteps.connector && index === 2 && (
+
+                {skipSteps.storage && index === 2 && (
                   <Typography variant="caption" color="text.secondary" sx={{ ml: 0.5 }}>
                     (Skipped)
                   </Typography>
                 )}
-                {skipSteps.smtp && index === 3 && (
+                {skipSteps.publicUrls && index === 3 && (
+                  <Typography variant="caption" color="text.secondary" sx={{ ml: 0.5 }}>
+                    (Skipped)
+                  </Typography>
+                )}
+
+                {skipSteps.connector && index === 4 && (
+                  <Typography variant="caption" color="text.secondary" sx={{ ml: 0.5 }}>
+                    (Skipped)
+                  </Typography>
+                )}
+                {skipSteps.smtp && index === 5 && (
                   <Typography variant="caption" color="text.secondary" sx={{ ml: 0.5 }}>
                     (Skipped)
                   </Typography>

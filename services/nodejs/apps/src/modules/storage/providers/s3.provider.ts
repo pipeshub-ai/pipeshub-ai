@@ -25,16 +25,14 @@ class AmazonS3Adapter implements StorageServiceInterface {
   private readonly s3: S3;
   private readonly bucketName: string;
   private readonly region: string;
-  private readonly logger =  Logger.getInstance({service: 'AmazonS3Adapter'});
+  private readonly logger = Logger.getInstance({ service: 'AmazonS3Adapter' });
 
-  constructor(
-    credentials: {
-      accessKeyId: string;
-      secretAccessKey: string;
-      region: string;
-      bucket: string;
-    },
-  ) {
+  constructor(credentials: {
+    accessKeyId: string;
+    secretAccessKey: string;
+    region: string;
+    bucket: string;
+  }) {
     try {
       const { accessKeyId, secretAccessKey, region, bucket } = credentials;
 
@@ -59,11 +57,12 @@ class AmazonS3Adapter implements StorageServiceInterface {
 
       this.bucketName = bucket;
       this.region = region;
-
-      this.logger.info('S3 adapter initialized', {
-        bucket: this.bucketName,
-        region: this.region,
-      });
+      if (process.env.NODE_ENV == 'development') {
+        this.logger.info('S3 adapter initialized', {
+          bucket: this.bucketName,
+          region: this.region,
+        });
+      }
     } catch (error) {
       if (error instanceof StorageError) {
         throw error;
@@ -93,11 +92,12 @@ class AmazonS3Adapter implements StorageServiceInterface {
         Body: documentInPayload.buffer,
         ContentType: documentInPayload.mimeType,
       };
-
-      this.logger.info('Starting S3 upload', {
-        path: documentInPayload.documentPath,
-        size: documentInPayload.buffer.length,
-      });
+      if (process.env.NODE_ENV == 'development') {
+        this.logger.info('Starting S3 upload', {
+          path: documentInPayload.documentPath,
+          size: documentInPayload.buffer.length,
+        });
+      }
 
       const result = await this.s3.upload(uploadParams).promise();
 
@@ -106,11 +106,12 @@ class AmazonS3Adapter implements StorageServiceInterface {
       }
 
       const fileUrl = this.getS3Url(result.Key);
-
-      this.logger.info('S3 upload successful', {
-        path: documentInPayload.documentPath,
-        url: fileUrl,
-      });
+      if (process.env.NODE_ENV == 'development') {
+        this.logger.info('S3 upload successful', {
+          path: documentInPayload.documentPath,
+          url: fileUrl,
+        });
+      }
 
       return {
         statusCode: 200,
@@ -159,8 +160,9 @@ class AmazonS3Adapter implements StorageServiceInterface {
       }
 
       const updatedUrl = this.getS3Url(result.Key);
-
-      this.logger.info('S3 update successful', { key, updatedUrl });
+      if (process.env.NODE_ENV == 'development') {
+        this.logger.info('S3 update successful', { key, updatedUrl });
+      }
       return { statusCode: 200, data: updatedUrl };
     } catch (error) {
       if (error instanceof StorageError) {
@@ -186,7 +188,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
   ): Promise<StorageServiceResponse<Buffer>> {
     try {
       const s3Url =
-        (version === undefined || version === 0)
+        version === undefined || version === 0
           ? document.s3?.url
           : document.versionHistory?.[version]?.s3?.url;
 
@@ -208,8 +210,9 @@ class AmazonS3Adapter implements StorageServiceInterface {
       if (!response.Body) {
         throw new StorageDownloadError('Retrieved object has no content');
       }
-
-      this.logger.info('S3 object fetched successfully', { key });
+      if (process.env.NODE_ENV == 'development') {
+        this.logger.info('S3 object fetched successfully', { key });
+      }
       return {
         statusCode: 200,
         data: response.Body as Buffer,

@@ -82,7 +82,9 @@ export const saveFileToStorageAndGetDocumentId = async (
   } catch (error: any) {
     if (error.response.status === HTTP_STATUS.PERMANENT_REDIRECT) {
       const redirectUrl = error.response.headers.location;
-      logger.info('Redirecting to storage url', { redirectUrl });
+      if (process.env.NODE_ENV == 'development') {
+        logger.info('Redirecting to storage url', { redirectUrl });
+      }
 
       // Extract document information from headers
       const documentId = error.response.headers['x-document-id'];
@@ -146,7 +148,7 @@ function runInBackGround(
             documentId,
             documentName,
             status: response.status,
-            record: record._key
+            record: record._key,
           });
 
           record.externalRecordId = documentId;
@@ -155,10 +157,16 @@ function runInBackGround(
 
           if (response.status === 200) {
             try {
-              const recordExists = await recordRelationService.checkRecordExists(record._key);
-              logger.info('Record exists, key', { recordExists, recordKey: record._key });
+              const recordExists =
+                await recordRelationService.checkRecordExists(record._key);
+              logger.info('Record exists, key', {
+                recordExists,
+                recordKey: record._key,
+              });
               if (!recordExists) {
-                throw new InternalServerError(`Record ${record._key} not found in database`);
+                throw new InternalServerError(
+                  `Record ${record._key} not found in database`,
+                );
               }
               // Create the payload using the separate function
               const newRecordPayload =

@@ -287,14 +287,16 @@ export class PrometheusService {
   }
 
   private logConfig(): void {
-    logger.debug('Prometheus Configuration', {
-      metricsServerUrl: this.metricsServerUrl,
-      apiKey: this.apiKey,
-      instanceId: this.instanceId,
-      appVersion: this.appVersion,
-      pushIntervalMs: this.pushIntervalMs,
-      enableMetricCollection: this.enableMetricCollection,
-    });
+    if (process.env.NODE_ENV == 'development') {
+      logger.debug('Prometheus Configuration', {
+        metricsServerUrl: this.metricsServerUrl,
+        apiKey: this.apiKey,
+        instanceId: this.instanceId,
+        appVersion: this.appVersion,
+        pushIntervalMs: this.pushIntervalMs,
+        enableMetricCollection: this.enableMetricCollection,
+      });
+    }
   }
 
   public async getMetrics(): Promise<string> {

@@ -3,14 +3,16 @@ import type { Theme, SxProps, Breakpoint } from '@mui/material/styles';
 
 import { useNavigate } from 'react-router';
 import { useState, useEffect } from 'react';
+import githubIcon from '@iconify-icons/mdi/github';
 
 import Box from '@mui/material/Box';
 import Alert from '@mui/material/Alert';
 import { useTheme } from '@mui/material/styles';
-import { iconButtonClasses } from '@mui/material/IconButton';
+import IconButton, { iconButtonClasses } from '@mui/material/IconButton';
 
 import { useBoolean } from 'src/hooks/use-boolean';
 
+import { Iconify } from 'src/components/iconify';
 import { useSettingsContext } from 'src/components/settings';
 
 import { getOrgLogo, getOrgIdFromToken } from 'src/sections/accountdetails/utils';
@@ -22,6 +24,7 @@ import { NavMobile } from './nav-mobile';
 import { layoutClasses } from '../classes';
 import { NavHorizontal } from './nav-horizontal';
 import { useAccountMenu } from '../config-nav-account'; // Import the hook instead of the static array
+
 import { MenuButton } from '../components/menu-button';
 import { LayoutSection } from '../core/layout-section';
 import { HeaderSection } from '../core/header-section';
@@ -184,6 +187,16 @@ export function DashboardLayout({ sx, children, header, data }: DashboardLayoutP
             ),
             rightArea: (
               <Box display="flex" alignItems="center" gap={{ xs: 0, sm: 0.75 }}>
+                <IconButton
+                  component="a"
+                  href="https://github.com/pipeshub-ai/pipeshub-ai"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label="GitHub Repository"
+                  size="large"
+                >
+                  <Iconify icon={githubIcon} color="black" width={30} height={30} />
+                </IconButton>
                 {/* task center remaining  */}
                 <SettingsButton />
                 {/* Pass the dynamic account menu items instead of static _account */}
