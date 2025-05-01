@@ -1,8 +1,5 @@
 import { NextFunction, Response } from 'express';
-import {
-  AuthenticatedServiceRequest,
-  AuthenticatedUserRequest,
-} from '../../../libs/middlewares/types';
+import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { UserGroups } from '../schema/userGroup.schema';
 import {
   BadRequestError,
@@ -17,35 +14,6 @@ export const userAdminCheck = async (
   try {
     const userId = req.user?.userId;
     const orgId = req.user?.orgId;
-    if (!userId || !orgId) {
-      throw new NotFoundError('Account not found');
-    }
-
-    const groups = await UserGroups.find({
-      orgId,
-      users: { $in: [userId] },
-      isDeleted: false,
-    }).select('type');
-
-    const isAdmin = groups.find((userGroup: any) => userGroup.type === 'admin');
-
-    if (!isAdmin) {
-      throw new BadRequestError('Admin access required');
-    }
-    next();
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const scopedUserAdminCheck = async (
-  req: AuthenticatedServiceRequest,
-  _res: Response,
-  next: NextFunction,
-): Promise<void> => {
-  try {
-    const userId = req.tokenPayload?.userId;
-    const orgId = req.tokenPayload?.orgId;
     if (!userId || !orgId) {
       throw new NotFoundError('Account not found');
     }

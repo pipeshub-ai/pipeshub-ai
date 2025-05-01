@@ -6,7 +6,6 @@ import peopleIcon from '@iconify-icons/eva/people-fill';
 import searchIcon from '@iconify-icons/eva/search-fill';
 import emailIcon from '@iconify-icons/eva/email-outline';
 import React, { useRef, useState, useEffect, KeyboardEvent } from 'react';
-import React, { useRef, useState, useEffect, KeyboardEvent } from 'react';
 import trashIcon from '@iconify-icons/eva/trash-2-outline';
 import personIcon from '@iconify-icons/eva/person-add-fill';
 import alertIcon from '@iconify-icons/eva/alert-triangle-fill';
