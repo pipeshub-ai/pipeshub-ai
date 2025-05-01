@@ -1016,7 +1016,7 @@ function AddUserModal({ open, onClose, groups, onUsersAdded }: AddUserModalProps
           onClick={handleAddUsers}
           variant="contained"
           color="primary"
-          startIcon={<Iconify icon={closeIcon} />}
+          startIcon={<Iconify icon={emailIcon} />}
           sx={{ borderRadius: 1 }}
           disabled={emails.length === 0}
         >
