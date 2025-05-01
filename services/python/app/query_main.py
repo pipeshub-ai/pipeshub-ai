@@ -104,7 +104,7 @@ app = FastAPI(
     dependencies=[Depends(get_initialized_container)],
 )
 
-EXCLUDE_PATHS = []
+EXCLUDE_PATHS = ["/health"]
 
 
 @app.middleware("http")
