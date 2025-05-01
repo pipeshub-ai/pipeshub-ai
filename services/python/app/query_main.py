@@ -104,7 +104,7 @@ app = FastAPI(
     dependencies=[Depends(get_initialized_container)],
 )
 
-EXCLUDE_PATHS = ["/health"]
+EXCLUDE_PATHS = ["/health"]  # Exclude health endpoint from authentication for monitoring purposes
 
 
 @app.middleware("http")
