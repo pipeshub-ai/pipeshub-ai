@@ -354,6 +354,7 @@ export const AccountSetupForm: React.FC<AccountSetupFormProps> = ({ accountType 
         flexDirection: 'column',
         mt: accountType === 'individual' ? 16 : 0,
         backgroundColor: theme.palette.background.default,
+        zIndex: 2,
       }}
     >
       <StyledContainer>

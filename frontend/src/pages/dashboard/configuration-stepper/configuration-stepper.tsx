@@ -65,13 +65,14 @@ const ConfigurationStepper: React.FC<ConfigurationStepperProps> = ({ open, onClo
   const accountType = user?.accountType || 'individual';
 
   const [activeStep, setActiveStep] = useState<number>(0);
+  const [isLlmConfigured, setLLmConfigured] = useState<boolean>(false);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [submissionError, setSubmissionError] = useState<string>('');
   const [submissionSuccess, setSubmissionSuccess] = useState<boolean>(false);
   const [snackbar, setSnackbar] = useState({
     open: false,
     message: '',
-    severity: 'success' as 'success' | 'error',
+    severity: 'success' as 'success' | 'error' | 'info',
   });
   // Use a ref to track if onboarding status has been updated
   // This prevents redundant API calls
@@ -141,6 +142,16 @@ const ConfigurationStepper: React.FC<ConfigurationStepperProps> = ({ open, onClo
       setIsSubmitting(true);
       // Only update status to 'skipped' when explicitly clicking Cancel
       await submitAllConfigurations();
+      setSnackbar({
+        open: true,
+        message: 'Finalizing configuration , this might take few seconds.',
+        severity: 'info',
+      });
+      if (!isLlmConfigured) {
+        setIsSubmitting(false);
+        setSubmissionError('LLM configuration is required. Please complete the LLM configuration.');
+        return;
+      }
       await updateOnboardingStatus('skipped');
     } catch (error) {
       console.error('Error updating onboarding status:', error);
@@ -577,17 +588,25 @@ const ConfigurationStepper: React.FC<ConfigurationStepperProps> = ({ open, onClo
       setSubmissionError('');
       setSubmissionSuccess(false);
 
+      setSnackbar({
+        open: true,
+        message: 'Saving configuration, this may take few seconds.',
+        severity: 'info',
+      });
+
       // Make sure we have LLM values (required)
       if (!llmValues) {
         // Try to submit the LLM form
         const llmFormSubmitted = await submitLlmForm();
         if (!llmFormSubmitted) {
+          setLLmConfigured(false);
           setSubmissionError(
             'LLM configuration is required. Please complete the LLM configuration.'
           );
           setIsSubmitting(false);
           return;
         }
+        setIsSubmitting(false);
       }
 
       // If storage is skipped and no storage values, set default local storage
@@ -946,6 +965,11 @@ const ConfigurationStepper: React.FC<ConfigurationStepperProps> = ({ open, onClo
     try {
       setIsSubmitting(true);
 
+      if (!isLlmConfigured) {
+        setSubmissionError('LLm configuration is mandatory');
+        setIsSubmitting(false);
+        return;
+      }
       // Update onboarding status to 'skipped' - explicitly calling when user clicks Skip Configuration
       await updateOnboardingStatus('skipped');
 

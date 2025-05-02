@@ -3,8 +3,8 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import lockIcon from '@iconify-icons/mdi/lock-outline';
 import visibilityIcon from '@iconify-icons/mdi/eye-outline';
-import visibilityOffIcon from '@iconify-icons/mdi/eye-off-outline';
 import React, { useState, useEffect, useCallback } from 'react';
+import visibilityOffIcon from '@iconify-icons/mdi/eye-off-outline';
 
 import { LoadingButton } from '@mui/lab';
 import {
@@ -20,12 +20,12 @@ import {
   useTheme,
   Container,
   Typography,
+  IconButton,
   DialogTitle,
   DialogContent,
   DialogActions,
-  CircularProgress,
   InputAdornment,
-  IconButton,
+  CircularProgress,
 } from '@mui/material';
 
 import { useAdmin } from 'src/context/AdminContext';
