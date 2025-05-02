@@ -681,6 +681,7 @@ export class UserController {
           subject: `You are invited to join ${org?.registeredName} `,
           templateData: {
             invitee: user?.fullName,
+            orgName: org?.shortName || org?.registeredName,
             link: `${this.config.frontendUrl}/reset-password?token=${passwordResetToken}`,
           },
         });
@@ -697,6 +698,7 @@ export class UserController {
           subject: `You are invited to join ${org?.registeredName} `,
           templateData: {
             invitee: user?.fullName,
+            orgName: org?.shortName || org?.registeredName,
             link: `${this.config.frontendUrl}/sign-in`,
           },
         });
@@ -867,6 +869,7 @@ export class UserController {
             subject: `You are invited to join ${org?.registeredName} `,
             templateData: {
               invitee: req.user?.fullName,
+              orgName: org?.shortName || org?.registeredName,
               link: `${this.config.frontendUrl}/reset-password?token=${passwordResetToken}`,
             },
           });
@@ -886,6 +889,7 @@ export class UserController {
             subject: `You are invited to join ${org?.registeredName} `,
             templateData: {
               invitee: req.user?.fullName,
+              orgName: org?.shortName || org?.registeredName,
               link: `${this.config.frontendUrl}/sign-in`,
             },
           });
@@ -951,6 +955,7 @@ export class UserController {
             subject: `You are invited to re-join ${org?.registeredName} `,
             templateData: {
               invitee: req.user?.fullName,
+              orgName: org?.shortName || org?.registeredName,
               link: `${this.config.frontendUrl}/reset-password?token=${passwordResetToken}`,
             },
           });
@@ -970,6 +975,7 @@ export class UserController {
             subject: `You are invited to re-join ${org?.registeredName} `,
             templateData: {
               invitee: req.user?.fullName,
+              orgName: org?.shortName || org?.registeredName,
               link: `${this.config.frontendUrl}/sign-in`,
             },
           });

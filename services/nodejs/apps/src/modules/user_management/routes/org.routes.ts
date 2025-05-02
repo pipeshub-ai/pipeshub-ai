@@ -15,6 +15,7 @@ import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.
 const OrgCreationBody = z
   .object({
     accountType: z.enum(['individual', 'business']),
+    shortName: z.string().optional(),
     contactEmail: z.string().email('Invalid email format'),
     registeredName: z.string().optional(), // Will be enforced conditionally
     adminFullName: z.string().min(1, 'Admin full name required'),

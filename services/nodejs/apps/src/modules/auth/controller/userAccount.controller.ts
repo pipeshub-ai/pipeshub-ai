@@ -53,6 +53,7 @@ import {
   MICROSOFT_AUTH_CONFIG_PATH,
 } from '../services/cm.service';
 import { AppConfig } from '../../tokens_manager/config/config';
+import { Org } from '../../user_management/schema/org.schema';
 
 const {
   LOGIN,
@@ -130,6 +131,8 @@ export class UserAccountController {
         userCredentials.isBlocked = true;
         await userCredentials.save();
 
+        const org = await Org.findOne({ _id: orgId, isDeleted: false });
+
         await this.mailService.sendMail({
           emailTemplateType: 'suspiciousLoginAttempt',
           initiator: {
@@ -137,7 +140,10 @@ export class UserAccountController {
           },
           usersMails: [email],
           subject: 'Alert : Suspicious Login Attempt Detected',
-          templateData: { link: this.config.frontendUrl },
+          templateData: {
+            link: this.config.frontendUrl,
+            orgName: org?.shortName || org?.registeredName,
+          },
         });
         throw new UnauthorizedError(
           'Too many login attempts. Account Blocked.',
@@ -288,13 +294,14 @@ export class UserAccountController {
           this.config.scopedJwtSecret,
         );
       const resetPasswordLink = `${this.config.frontendUrl}/reset-password#token=${passwordResetToken}`;
-
+      const org = await Org.findOne({ _id: user.orgId, isDeleted: false });
       await this.mailService.sendMail({
         emailTemplateType: 'resetPassword',
         initiator: { jwtAuthToken: mailAuthToken },
         usersMails: [user.email],
         subject: 'PipesHub | Reset your password!',
         templateData: {
+          orgName: org?.shortName || org?.registeredName,
           name: user.fullName,
           link: resetPasswordLink,
         },
@@ -661,6 +668,7 @@ export class UserAccountController {
       userId: userId,
       isDeleted: false,
     });
+    const org = await Org.findOne({ _id: orgId, isDeleted: false });
 
     if (userCredentialData?.isBlocked) {
       throw new ForbiddenError(
@@ -690,10 +698,12 @@ export class UserAccountController {
         initiator: {
           jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
         },
+
         usersMails: [email],
         subject: 'OTP for Login',
         templateData: {
           name: userFullName,
+          orgName: org?.shortName || org?.registeredName,
           otp: otp,
         },
       });
@@ -834,6 +844,7 @@ export class UserAccountController {
     const userId = user._id;
     const orgId = user.orgId;
     const email = user.email;
+    const org = await Org.findOne({ _id: user.orgId, isDeleted: false });
 
     let userCredentials = await UserCredentials.findOne({
       orgId,
@@ -879,7 +890,10 @@ export class UserAccountController {
           },
           usersMails: [email],
           subject: 'Alert : Suspicious Login Attempt Detected',
-          templateData: { link: this.config.frontendUrl },
+          templateData: {
+            link: this.config.frontendUrl,
+            orgName: org?.shortName || org?.registeredName,
+          },
         });
       }
 

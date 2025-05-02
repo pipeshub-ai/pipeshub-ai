@@ -1245,7 +1245,7 @@ export const createAIModelsConfig =
       }
 
       // Handle LLM health check
-      if (aiConfig.llm) {
+      if (aiConfig.llm.length > 0) {
         const aiCommandOptions: AICommandOptions = {
           uri: `${appConfig.aiBackend}/api/v1/llm-health-check`,
           method: HttpMethod.POST,
@@ -1269,7 +1269,7 @@ export const createAIModelsConfig =
       }
 
       // Handle embedding health check
-      if (aiConfig.embedding) {
+      if (aiConfig.embedding.length > 0) {
         const aiCommandOptions: AICommandOptions = {
           uri: `${appConfig.aiBackend}/api/v1/embedding-health-check`,
           method: HttpMethod.POST,

@@ -235,7 +235,7 @@ export class OrgController {
           templateData: {
             invitee: 'PipesHub',
             name: 'User',
-            orgname: org.registeredName,
+            orgName: org.registeredName,
             link: `${this.config.frontendUrl}`,
           },
         });
