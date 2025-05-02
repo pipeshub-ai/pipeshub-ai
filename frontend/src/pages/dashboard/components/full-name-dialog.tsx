@@ -15,6 +15,7 @@ import {
   DialogContent,
   DialogActions,
   CircularProgress,
+  Snackbar,
 } from '@mui/material';
 
 import { Iconify } from 'src/components/iconify';
@@ -22,6 +23,7 @@ import { Iconify } from 'src/components/iconify';
 import { updateUser, getUserIdFromToken } from 'src/sections/accountdetails/utils';
 
 import { useAuthContext } from 'src/auth/hooks';
+import axios from 'src/utils/axios';
 import { STORAGE_KEY, STORAGE_KEY_REFRESH } from 'src/auth/context/jwt/constant';
 
 // Schema for validation
@@ -39,8 +41,10 @@ interface FullNameDialogProps {
 export default function FullNameDialog({ open, onClose, onSuccess, onError }: FullNameDialogProps) {
   const { user } = useAuthContext();
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
-  const [showLogoutMessage, setShowLogoutMessage] = useState<boolean>(false);
-  const [logoutCountdown, setLogoutCountdown] = useState<number>(5);
+  const [showRefreshMessage, setShowRefreshMessage] = useState<boolean>(false);
+  const [refreshCountdown, setRefreshCountdown] = useState<number>(5);
+  const [snackbarOpen, setSnackbarOpen] = useState<boolean>(false);
+  const [snackbarMessage, setSnackbarMessage] = useState<string>('');
 
   // Form setup
   const {
@@ -61,19 +65,19 @@ export default function FullNameDialog({ open, onClose, onSuccess, onError }: Fu
       reset({ fullName: user.fullName });
     }
   }, [user, reset]);
-  
+
   // Disable the beforeunload warning when submitting the form
   useEffect(() => {
     // Function to remove any existing beforeunload handlers
     const removeBeforeUnloadWarning = () => {
       window.onbeforeunload = null;
     };
-    
+
     // If submitting, remove the warning
     if (isSubmitting) {
       removeBeforeUnloadWarning();
     }
-    
+
     return () => {
       // Cleanup
       if (isSubmitting) {
@@ -82,41 +86,80 @@ export default function FullNameDialog({ open, onClose, onSuccess, onError }: Fu
     };
   }, [isSubmitting]);
 
-  // Countdown effect for logout message
+  // Handle snackbar close
+  const handleSnackbarClose = () => {
+    setSnackbarOpen(false);
+  };
+
+  // Countdown effect for refresh message
   useEffect(() => {
     let timer: NodeJS.Timeout;
-    
-    if (showLogoutMessage && logoutCountdown > 0) {
+
+    if (showRefreshMessage && refreshCountdown > 0) {
       timer = setTimeout(() => {
-        setLogoutCountdown(prev => prev - 1);
+        setRefreshCountdown((prev) => prev - 1);
       }, 1000);
-    } else if (showLogoutMessage && logoutCountdown === 0) {
-      // When countdown reaches 0, perform the logout
-      const refreshToken = localStorage.getItem(STORAGE_KEY_REFRESH);
-      localStorage.removeItem(STORAGE_KEY);
-      
-      // Make sure refresh token is still available
-      if (refreshToken) {
-        localStorage.setItem(STORAGE_KEY_REFRESH, refreshToken);
-      }
-      
-      // Finally reload the page
-      window.location.reload();
+    } else if (showRefreshMessage && refreshCountdown === 0) {
+      // When countdown reaches 0, refresh the access token and reload
+      refreshAndReload();
     }
-    
+
     return () => {
       if (timer) clearTimeout(timer);
     };
-  }, [showLogoutMessage, logoutCountdown]);
+  }, [showRefreshMessage, refreshCountdown]);
+
+  // Function to refresh the token and reload the page
+  const refreshAndReload = async () => {
+    try {
+      const refreshToken = localStorage.getItem(STORAGE_KEY_REFRESH);
+
+      if (!refreshToken) {
+        // If no refresh token, show error and don't proceed
+        setSnackbarMessage('Session information missing. Please log in again.');
+        setSnackbarOpen(true);
+        return;
+      }
+
+      // Get a new access token using the refresh token
+      const response = await axios.post(
+        `/api/v1/userAccount/refresh/token`,
+        {},
+        {
+          headers: {
+            Authorization: `Bearer ${refreshToken}`,
+          },
+        }
+      );
+
+      // Update the access token in localStorage
+      if (response.data && response.data.accessToken) {
+        localStorage.setItem(STORAGE_KEY, response.data.accessToken);
+        // Keep the same refresh token
+
+        // Update axios default headers
+        axios.defaults.headers.common.Authorization = `Bearer ${response.data.accessToken}`;
+
+        // Reload the page to refresh the application state
+        window.location.reload();
+      } else {
+        throw new Error('Invalid response from server');
+      }
+    } catch (error) {
+      console.error('Error refreshing token:', error);
+      setSnackbarMessage('Failed to refresh your session. Please log in again.');
+      setSnackbarOpen(true);
+    }
+  };
 
   // Handle form submission
   const onSubmitFullName = async (data: { fullName: string }) => {
     try {
       setIsSubmitting(true);
-      
+
       // Remove beforeunload event handler immediately
       window.onbeforeunload = null;
-      
+
       const userId = await getUserIdFromToken();
 
       const userData = {
@@ -126,18 +169,17 @@ export default function FullNameDialog({ open, onClose, onSuccess, onError }: Fu
 
       // Update user with both fullName and email
       await updateUser(userId, userData);
-      
-      // Notify success before removing token
+
+      // Notify success
       if (onSuccess) {
         onSuccess('Your full name has been updated successfully!');
       }
-      
+
       // Close dialog
       onClose();
-      
-      // Show the logout message with countdown
-      setShowLogoutMessage(true);
-      
+
+      // Show the refresh message with countdown
+      setShowRefreshMessage(true);
     } catch (error) {
       console.error('Error updating full name:', error);
       if (onError) {
@@ -209,9 +251,9 @@ export default function FullNameDialog({ open, onClose, onSuccess, onError }: Fu
         </form>
       </Dialog>
 
-      {/* Logout message dialog */}
+      {/* Session refresh message dialog */}
       <Dialog
-        open={showLogoutMessage}
+        open={showRefreshMessage}
         PaperProps={{
           sx: {
             borderRadius: 2,
@@ -229,21 +271,21 @@ export default function FullNameDialog({ open, onClose, onSuccess, onError }: Fu
               height={24}
               sx={{ color: 'info.main' }}
             />
-            <Typography variant="h6">Session Update Required</Typography>
+            <Typography variant="h6">Profile Updated Successfully</Typography>
           </Stack>
         </DialogTitle>
         <DialogContent>
-          <Alert severity="info" variant="outlined" sx={{ mb: 2 }}>
+          <Alert severity="success" variant="outlined" sx={{ mb: 2 }}>
             Your profile has been updated successfully!
           </Alert>
           <Typography variant="body2" sx={{ mt: 1, mb: 1 }}>
-            To apply these changes, your session needs to be refreshed. 
-            You will be automatically redirected in {logoutCountdown} seconds.
+            To see your changes, your session needs to be refreshed. The page will automatically
+            refresh in {refreshCountdown} seconds.
           </Typography>
           <Box sx={{ mt: 2, bgcolor: 'background.neutral', p: 2, borderRadius: 1 }}>
             <Typography variant="body2" color="text.secondary">
-              <strong>Note:</strong> Your changes are saved and you won&apos;t be logged out.
-              The application will simply refresh to update your session.
+              <strong>Note:</strong> You will remain logged in. The application will simply refresh
+              to update your profile information.
             </Typography>
           </Box>
         </DialogContent>
@@ -253,7 +295,7 @@ export default function FullNameDialog({ open, onClose, onSuccess, onError }: Fu
             color="primary"
             onClick={() => {
               // Skip countdown and proceed immediately
-              setLogoutCountdown(0);
+              setRefreshCountdown(0);
             }}
             sx={{ borderRadius: 1 }}
           >
@@ -261,6 +303,15 @@ export default function FullNameDialog({ open, onClose, onSuccess, onError }: Fu
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Snackbar for notifications */}
+      <Snackbar
+        open={snackbarOpen}
+        autoHideDuration={6000}
+        onClose={handleSnackbarClose}
+        message={snackbarMessage}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      />
     </>
   );
 }

@@ -143,20 +143,20 @@ export default function UserProfile() {
     fetchUserData();
   }, [reset, userId]);
 
-  useEffect(() => {
-    const fetchLogo = async (): Promise<void> => {
-      try {
-        if (!userId) return;
-        const logoUrl = await getUserLogo(userId);
-        setLogo(logoUrl);
-      } catch (err) {
-        setError('Failed to fetch user photo');
-        // setSnackbar({ open: true, message: err.errorMessage, severity: 'error' });
-      }
-    };
+  // useEffect(() => {
+  //   const fetchLogo = async (): Promise<void> => {
+  //     try {
+  //       if (!userId) return;
+  //       const logoUrl = await getUserLogo(userId);
+  //       setLogo(logoUrl);
+  //     } catch (err) {
+  //       setError('Failed to fetch user photo');
+  //       // setSnackbar({ open: true, message: err.errorMessage, severity: 'error' });
+  //     }
+  //   };
 
-    fetchLogo();
-  }, [userId]);
+  //   fetchLogo();
+  // }, [userId]);
 
   const onSubmit = async (data: ProfileFormData): Promise<void> => {
     try {
@@ -295,7 +295,7 @@ export default function UserProfile() {
         <Box sx={{ p: { xs: 3, md: 4 } }}>
           <Grid container spacing={{ xs: 3, md: 5 }}>
             {/* Avatar Section */}
-            <Grid item xs={12} md={4}>
+            {/* <Grid item xs={12} md={4}>
               <Box
                 sx={{
                   display: 'flex',
@@ -342,10 +342,10 @@ export default function UserProfile() {
                         type="file"
                         accept="image/*"
                         onChange={handleUpload}
-                      />
+                      /> */}
 
-                      {/* Upload button positioned directly on the avatar */}
-                      <Box
+            {/* Upload button positioned directly on the avatar */}
+            {/* <Box
                         sx={{
                           position: 'absolute',
                           bottom: -5,
@@ -409,9 +409,9 @@ export default function UserProfile() {
                       </Box>
                     </>
                   )}
-                </Box>
+                </Box> */}
 
-                {!logo && isAdmin && (
+            {/* {!logo && isAdmin && (
                   <Typography
                     variant="caption"
                     color="text.secondary"
@@ -422,7 +422,7 @@ export default function UserProfile() {
                   </Typography>
                 )}
               </Box>
-            </Grid>
+            </Grid> */}
 
             {/* Form Section */}
             <Grid item xs={12} md={8}>
@@ -432,7 +432,7 @@ export default function UserProfile() {
                 {...({ noValidate: true } as any)}
               >
                 <Grid container spacing={3}>
-                  <Grid item xs={12} sm={6}>
+                  {/* <Grid item xs={12} sm={6}>
                     <Field.Text
                       name="firstName"
                       label="First name"
@@ -469,7 +469,7 @@ export default function UserProfile() {
                         },
                       }}
                     />
-                  </Grid>
+                  </Grid> */}
                   <Grid item xs={12}>
                     <Field.Text
                       name="fullName"
@@ -678,8 +678,8 @@ export default function UserProfile() {
         open={snackbar.open}
         autoHideDuration={4000}
         onClose={handleCloseSnackbar}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
-        sx={{mt:6}}
+        anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
+        sx={{ mt: 6 }}
       >
         <Alert
           onClose={handleCloseSnackbar}

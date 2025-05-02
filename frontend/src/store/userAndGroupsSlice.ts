@@ -40,6 +40,9 @@ const countsSlice = createSlice({
     incrementUserCount: (state) => {
       state.usersCount += 1;
     },
+    decrementUserCount: (state) => {
+      state.usersCount -= 1;
+    },
     decrementInvitesCount: (state) => {
       state.invitesCount -= 1;
     },
@@ -59,6 +62,7 @@ export const {
   setCounts,
   setLoading,
   incrementUserCount,
+  decrementUserCount,
   decrementInvitesCount,
   updateInvitesCount,
   decrementGroupCount,

@@ -52,7 +52,7 @@ import { useAdmin } from 'src/context/AdminContext';
 
 import { Iconify } from 'src/components/iconify';
 
-import { updateInvitesCount } from '../../../store/userAndGroupsSlice';
+import { decrementUserCount, setCounts, updateInvitesCount } from '../../../store/userAndGroupsSlice';
 import {
   allGroups,
   removeUser,
@@ -120,9 +120,17 @@ const Users = () => {
         const response = await getAllUsersWithGroups();
         const groupsData = await allGroups();
         const loggedInUsers = response.filter(
-          (user) => user?.email !== null && user?.fullName && user.hasLoggedIn === true
+          (user) => user?.email !== null && user.fullName && user.hasLoggedIn === true
         );
-        console.log(users);
+        const pendingUsers = response.filter((user) => user.hasLoggedIn === false);
+
+        dispatch(
+          setCounts({
+            usersCount: loggedInUsers.length,
+            groupsCount: groups.length,
+            invitesCount: pendingUsers.length,
+          })
+        );
         setUsers(loggedInUsers);
         setGroups(groupsData);
       } catch (error) {
@@ -174,6 +182,8 @@ const Users = () => {
 
       const loggedInUsers = updatedUsers.filter((user) => user.email !== null && user.fullName);
       setUsers(loggedInUsers);
+      dispatch(decrementUserCount());
+
       setSnackbarState({ open: true, message: 'User removed successfully', severity: 'success' });
     } catch (error) {
       // setSnackbarState({ open: true, message: error.errorMessage, severity: 'error' });

@@ -154,7 +154,7 @@ export class UserGroupController {
       throw new NotFoundError('User group not found');
     }
 
-    if (group && group.type !== 'custom') {
+    if (group.type !== 'custom') {
       throw new ForbiddenError('Only custom groups can be deleted');
     }
 
