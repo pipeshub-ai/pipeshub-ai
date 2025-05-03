@@ -12,7 +12,7 @@ import { Icon } from '@iconify/react';
 import menuIcon from '@iconify-icons/mdi/menu';
 import closeIcon from '@iconify-icons/mdi/close';
 import { useParams, useNavigate } from 'react-router';
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 
 import {
   Box,
@@ -128,6 +128,15 @@ const ChatInterface = () => {
   const [pendingResponseConversationId, setPendingResponseConversationId] = useState<string | null>(
     null
   );
+
+  const [activeRequestTracker, setActiveRequestTracker] = useState<{
+    current: string | null;
+    type: 'create' | 'continue' | null;
+  }>({
+    current: null,
+    type: null,
+  });
+  const currentConversationIdRef = useRef<string | null>(null);
 
   const isCurrentConversationThinking = useCallback(() => {
     const conversationKey = currentConversationId || 'new';
@@ -517,6 +526,18 @@ const ChatInterface = () => {
   const handleNewChat = useCallback((): void => {
     setPendingResponseConversationId(null);
 
+    setActiveRequestTracker({
+      current: null,
+      type: null,
+    });
+
+    // Clear all loading states and pending responses
+    setLoadingConversations({});
+    setPendingResponseConversationId(null);
+    setOpenPdfView(false);
+
+    currentConversationIdRef.current = null;
+
     setIsLoadingConversation(false);
     setCurrentConversationId(null);
     setSelectedChat(null);
@@ -534,7 +555,15 @@ const ChatInterface = () => {
     if (!trimmedInput) return;
 
     const conversationKey = currentConversationId || 'new';
-    setPendingResponseConversationId(conversationKey);
+    const requestConversationId = currentConversationId;
+    const wasCreatingNewConversation = currentConversationId === null;
+
+    // Track this request as active
+    const requestId = `${Date.now()}-${Math.random()}`;
+    setActiveRequestTracker({
+      current: requestId,
+      type: currentConversationId ? 'continue' : 'create',
+    });
 
     setLoadingConversations((prev) => ({
       ...prev,
@@ -556,11 +585,12 @@ const ChatInterface = () => {
     };
 
     try {
-      // setIsLoading(true);
       setInputValue('');
       setMessages((prev) => [...prev, tempUserMessage]);
 
       let response;
+      let conversation: any;
+
       if (!currentConversationId) {
         // Create new conversation
         response = await axios.post<{ conversation: Conversation }>(
@@ -574,112 +604,110 @@ const ChatInterface = () => {
           throw new Error('Invalid response format');
         }
 
-        const { conversation } = response.data;
-        if (pendingResponseConversationId === conversationKey) {
+        conversation = response.data.conversation;
+        const convId = conversation._id;
+
+        // FIXED: Remove the confusing duplicate checks and set state immediately
+        if (wasCreatingNewConversation) {
+          setSelectedChat(conversation);
+          setCurrentConversationId(convId);
+          currentConversationIdRef.current = convId;
+          setShouldRefreshSidebar(true);
+          navigate(`/${convId}`);
+
           if (conversation.status) {
             setConversationStatus((prev) => ({
               ...prev,
-              [conversation._id]: conversation.status,
+              [convId]: conversation.status,
             }));
           }
 
-          setSelectedChat(conversation);
-          setCurrentConversationId(conversation._id);
-          setShouldRefreshSidebar(true);
-          navigate(`/${conversation._id}`);
+          // If conversation is already complete, update messages immediately
+          if (conversation.status === 'Complete') {
+            const allMessages = conversation.messages
+              .map(formatMessage)
+              .filter(Boolean) as FormattedMessage[];
 
-          // For new conversation, get all messages in order
-          const botMessage = conversation.messages
-            .filter((msg) => msg.messageType === 'bot_response')
-            .map(formatMessage)
-            .pop();
-
-          if (botMessage) {
-            setMessages((prev) => [...prev, botMessage]);
+            setMessages(allMessages);
           }
         }
       } else {
-        // For existing conversation, append messages in order
-        // setMessages((prev) => [...prev, tempUserMessage]);
-
         // Continue existing conversation
+        console.log(currentConversationId) 
+        console.log(activeRequestTracker) 
+        console.log(currentConversationIdRef) 
         response = await axios.post<{ conversation: Conversation }>(
           `/api/v1/conversations/${currentConversationId}/messages`,
           { query: trimmedInput }
         );
 
+
         if (!response?.data?.conversation?.messages) {
           throw new Error('Invalid response format');
         }
 
-        const { conversation } = response.data;
+        conversation = response.data.conversation;
+        const responseConversationId = conversation._id;
 
-        if (pendingResponseConversationId === conversationKey) {
+        // FIXED: Simplified condition - just check if we're still on the same conversation
+        if (
+          currentConversationIdRef.current === responseConversationId &&
+          currentConversationId === responseConversationId 
+        ) {
           if (conversation.status) {
             setConversationStatus((prev) => ({
               ...prev,
-              [currentConversationId]: conversation.status,
+              [responseConversationId]: conversation.status,
             }));
           }
 
-          // Get the bot response and append it
-          const botMessage = conversation.messages
-            .filter((msg) => msg.messageType === 'bot_response')
-            .map(formatMessage)
-            .pop();
+          // If conversation is complete, update messages immediately
+          if (conversation.status === 'Complete') {
+            const allMessages = conversation.messages
+              .map(formatMessage)
+              .filter(Boolean) as FormattedMessage[];
 
-          if (botMessage) {
-            setMessages((prev) => [...prev, botMessage]);
+            setMessages(allMessages);
           }
         }
       }
-
-      // Update citation states
-      if (pendingResponseConversationId === conversationKey) {
-        const lastMessage =
-          response.data.conversation.messages[response.data.conversation.messages.length - 1];
-        if (lastMessage?.citations?.length > 0) {
-          setExpandedCitations((prev) => ({
-            ...prev,
-            [messages.length]: false,
-          }));
-        }
-      }
     } catch (error) {
-      const errorMessage: FormattedMessage = {
-        type: 'bot',
-        content: 'Sorry, I encountered an error processing your request.',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        id: `error-${Date.now()}`,
-        contentFormat: 'MARKDOWN',
-        followUpQuestions: [],
-        citations: [],
-        confidence: '',
-        messageType: 'bot_response',
-        timestamp: new Date(),
-      };
-      if (pendingResponseConversationId === conversationKey) {
+      console.error('Error:', error);
+
+      // Only show error if this request is still active
+      if (activeRequestTracker?.current === requestId) {
+        const errorMessage: FormattedMessage = {
+          type: 'bot',
+          content: 'Sorry, I encountered an error processing your request.',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          id: `error-${Date.now()}`,
+          contentFormat: 'MARKDOWN',
+          followUpQuestions: [],
+          citations: [],
+          confidence: '',
+          messageType: 'bot_response',
+          timestamp: new Date(),
+        };
+
         setMessages((prev) => [...prev, errorMessage]);
       }
     } finally {
-      // setIsLoading(false);
-      if (pendingResponseConversationId === conversationKey) {
-        setPendingResponseConversationId(null);
-      }
+      // Clear loading states
       setLoadingConversations((prev) => ({
         ...prev,
         [conversationKey]: false,
       }));
+
+      // Clear active request tracker if this was the active request
+      if (activeRequestTracker?.current === requestId) {
+        setActiveRequestTracker({
+          current: null,
+          type: null,
+        });
+      }
     }
-  }, [
-    inputValue,
-    currentConversationId,
-    formatMessage,
-    navigate,
-    messages,
-    pendingResponseConversationId,
-  ]);
+  }, [inputValue, currentConversationId, formatMessage, navigate, activeRequestTracker]);
 
   // Update handleRegenerateMessage
   const handleRegenerateMessage = useCallback(
@@ -762,12 +790,28 @@ const ChatInterface = () => {
       if (!chat?._id) return;
 
       try {
+        // Cancel any active requests
+        setActiveRequestTracker({
+          current: null,
+          type: null,
+        });
+
+        // Clear all loading states and pending responses
+        setLoadingConversations({});
+        setConversationStatus({});
         setPendingResponseConversationId(null);
         setIsLoadingConversation(true);
         setMessages([]);
         setExpandedCitations({});
         setOpenPdfView(false);
+
+        // Update the conversation ID immediately
+        setCurrentConversationId(chat._id);
+        currentConversationIdRef.current = chat._id;
+
         navigate(`/${chat._id}`);
+
+        // Get conversation details
         const response = await axios.get(`/api/v1/conversations/${chat._id}`);
         const { conversation } = response.data;
 
@@ -775,36 +819,39 @@ const ChatInterface = () => {
           throw new Error('Invalid conversation data');
         }
 
-        if (conversation.status) {
-          setConversationStatus((prev) => ({
-            ...prev,
-            [chat._id]: conversation.status,
-          }));
-        }
-
-        // Set complete conversation data
-        setSelectedChat(conversation);
-
-        setCurrentConversationId(conversation.id);
-
-        // Format messages and preserve full data structure
-        const formattedMessages = conversation.messages
-          .map(formatMessage)
-          .filter(Boolean) as FormattedMessage[];
-
-        // Initialize citation states for all bot messages with citations
-        const citationStates: ExpandedCitationsState = {};
-        formattedMessages.forEach((msg, idx) => {
-          if (msg.type === 'bot' && msg.citations && msg.citations.length > 0) {
-            citationStates[idx] = false;
+        // Only proceed if we're still viewing this conversation
+        if (currentConversationIdRef.current === chat._id) {
+          if (conversation.status) {
+            setConversationStatus((prev) => ({
+              ...prev,
+              [chat._id]: conversation.status,
+            }));
           }
-        });
 
-        setMessages(formattedMessages);
-        setExpandedCitations(citationStates);
+          // Set complete conversation data
+          setSelectedChat(conversation);
+
+          // Format messages and preserve full data structure
+          const formattedMessages = conversation.messages
+            .map(formatMessage)
+            .filter(Boolean) as FormattedMessage[];
+
+          // Initialize citation states for all bot messages with citations
+          const citationStates: ExpandedCitationsState = {};
+          formattedMessages.forEach((msg, idx) => {
+            if (msg.type === 'bot' && msg.citations && msg.citations.length > 0) {
+              citationStates[idx] = false;
+            }
+          });
+
+          setMessages(formattedMessages);
+          setExpandedCitations(citationStates);
+        }
       } catch (error) {
+        console.error('Error loading conversation:', error);
         setSelectedChat(null);
         setCurrentConversationId(null);
+        currentConversationIdRef.current = null;
         setMessages([]);
         setExpandedCitations({});
       } finally {
@@ -855,8 +902,11 @@ const ChatInterface = () => {
         .map(([id]) => id);
 
       if (inProgressConversations.length > 0) {
-        inProgressConversations.forEach(async (convId) => {
+        const promises = inProgressConversations.map(async (convId) => {
           try {
+            // Capture the current conversation ID at the start of this request
+            const currentId = currentConversationIdRef.current;
+
             const response = await axios.get(`/api/v1/conversations/${convId}`);
             const { conversation } = response.data;
 
@@ -866,19 +916,30 @@ const ChatInterface = () => {
                 [convId]: conversation.status,
               }));
 
-              // Only update messages if this is the current conversation
-              if (convId === currentConversationId) {
-                const formattedMessages = conversation.messages
-                  .map(formatMessage)
-                  .filter(Boolean) as FormattedMessage[];
+              // Handle when conversation becomes complete
+              if (conversation.status === 'Complete') {
+                // Triple check: the conversation ID must match what we captured initially,
+                // what's currently in the ref, and the state
+                if (
+                  convId === currentId &&
+                  convId === currentConversationIdRef.current &&
+                  convId === currentConversationId
+                ) {
+                  const formattedMessages = conversation.messages
+                    .map(formatMessage)
+                    .filter(Boolean) as FormattedMessage[];
 
-                setMessages(formattedMessages);
+                  setMessages(formattedMessages);
+                }
               }
             }
           } catch (error) {
             console.error(`Failed to check status for conversation ${convId}:`, error);
           }
         });
+
+        // Wait for all checks to complete
+        await Promise.all(promises);
       }
     };
 
@@ -893,6 +954,7 @@ const ChatInterface = () => {
       }
     };
   }, [conversationStatus, currentConversationId, formatMessage]);
+
   return (
     <Box
       sx={{
