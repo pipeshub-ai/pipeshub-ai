@@ -191,12 +191,12 @@ class GoogleAdminService:
                                     "createdAtTimestamp": int(
                                         parse_timestamp(
                                             user.get("creationTime")
-                                        ).timestamp()
+                                        )
                                     ),
                                     "updatedAtTimestamp": int(
                                         parse_timestamp(
                                             user.get("creationTime")
-                                        ).timestamp()
+                                        )
                                     ),
                                 }
                             )
@@ -648,10 +648,10 @@ class GoogleAdminService:
                     "businessPhones": user_info.get("phones", []),
                     "isActive": False,  # New users start as inactive
                     "createdAtTimestamp": int(
-                        parse_timestamp(user_info.get("creationTime")).timestamp()
+                        parse_timestamp(user_info.get("creationTime"))
                     ),
                     "updatedAtTimestamp": int(
-                        parse_timestamp(user_info.get("creationTime")).timestamp()
+                        parse_timestamp(user_info.get("creationTime"))
                     ),
                 }
 

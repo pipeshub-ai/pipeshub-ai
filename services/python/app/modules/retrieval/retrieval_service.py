@@ -457,20 +457,24 @@ class RetrievalService:
                         files = await arango_service.get_document(
                             record_id, CollectionNames.FILES.value
                         )
+                        if record["connectorName"] == "GMAIL":
+                            weburl = files.get("webUrl")
+                            weburl = weburl.replace("{user.email}", user["email"])
+                            files["webUrl"] = weburl
                         record = {**record, **files}
                     if record["recordType"] == RecordTypes.MAIL.value:
                         mail = await arango_service.get_document(
                             record_id, CollectionNames.MAILS.value
                         )
-                        message_id = record["externalRecordId"]
-                        # Format the webUrl with the user's email
-                        mail["webUrl"] = (
-                            f"https://mail.google.com/mail?authuser={user['email']}#all/{message_id}"
-                        )
+                        weburl = mail.get("webUrl")
+                        weburl = weburl.replace("{user.email}", user["email"])
+                        mail["webUrl"] = weburl
                         record = {**record, **mail}
                     records.append(record)
 
             if search_results or records:
+                self.logger.info(f"Search results: {search_results}")
+                self.logger.info(f"Records: {records}")
                 return {
                     "searchResults": search_results,
                     "records": records,

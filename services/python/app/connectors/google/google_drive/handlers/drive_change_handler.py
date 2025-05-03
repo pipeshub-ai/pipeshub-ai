@@ -205,10 +205,10 @@ class DriveChangeHandler:
                     "extension": extension,
                     "mimeType": mime_type,
                     "createdAtSourceTimestamp": int(
-                        parse_timestamp(new_file.get("createdTime")).timestamp()
+                        parse_timestamp(new_file.get("createdTime"))
                     ),
                     "modifiedAtSourceTimestamp": int(
-                        parse_timestamp(new_file.get("modifiedTime")).timestamp()
+                        parse_timestamp(new_file.get("modifiedTime"))
                     ),
                 }
 
@@ -228,10 +228,10 @@ class DriveChangeHandler:
                     "extension": new_file.get("extension"),
                     "mimeType": new_file.get("mimeType"),
                     "createdAtSourceTimestamp": int(
-                        parse_timestamp(new_file.get("createdTime")).timestamp()
+                        parse_timestamp(new_file.get("createdTime"))
                     ),
                     "modifiedAtSourceTimestamp": int(
-                        parse_timestamp(new_file.get("modifiedTime")).timestamp()
+                        parse_timestamp(new_file.get("modifiedTime"))
                     ),
                 }
 
@@ -251,10 +251,10 @@ class DriveChangeHandler:
                     "extension": extension,
                     "mimeType": mime_type,
                     "createdAtSourceTimestamp": int(
-                        parse_timestamp(new_file.get("createdTime")).timestamp()
+                        parse_timestamp(new_file.get("createdTime"))
                     ),
                     "modifiedAtSourceTimestamp": int(
-                        parse_timestamp(new_file.get("modifiedTime")).timestamp()
+                        parse_timestamp(new_file.get("modifiedTime"))
                     ),
                 }
 
@@ -305,7 +305,7 @@ class DriveChangeHandler:
             latest_file_name = updated_file.get("name")
             latest_parents = updated_file.get("parents", [])
             latest_modified_at = int(
-                parse_timestamp(updated_file.get("modifiedTime")).timestamp()
+                parse_timestamp(updated_file.get("modifiedTime"))
             )
             db_revision_id = existing_record.get("externalRevisionId")
             db_file_name = existing_file.get("name")
@@ -519,10 +519,10 @@ class DriveChangeHandler:
                     "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                     "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                     "sourceCreatedAtTimestamp": int(
-                        parse_timestamp(file_metadata.get("createdTime")).timestamp()
+                        parse_timestamp(file_metadata.get("createdTime"))
                     ),
                     "sourceLastModifiedTimestamp": int(
-                        parse_timestamp(file_metadata.get("modifiedTime")).timestamp()
+                        parse_timestamp(file_metadata.get("modifiedTime"))
                     ),
                     "origin": OriginTypes.CONNECTOR.value,
                     "connectorName": Connectors.GOOGLE_DRIVE.value,
@@ -646,11 +646,11 @@ class DriveChangeHandler:
                 "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                 "sourceCreatedAtTimestamp": existing_record.get(
                     "sourceCreatedAtTimestamp",
-                    int(parse_timestamp(updated_file.get("createdTime")).timestamp()),
+                    int(parse_timestamp(updated_file.get("createdTime"))),
                 ),
                 "sourceLastModifiedTimestamp": existing_record.get(
                     "sourceLastModifiedTimestamp",
-                    int(parse_timestamp(updated_file.get("modifiedTime")).timestamp()),
+                    int(parse_timestamp(updated_file.get("modifiedTime"))),
                 ),
                 "origin": OriginTypes.CONNECTOR.value,
                 "connectorName": Connectors.GOOGLE_DRIVE.value,

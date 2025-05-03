@@ -68,7 +68,6 @@ class RedisScheduler:
                 "-inf",
                 current_time
             )
-            print("Events: ", events)
 
             # Extract the actual event data from the stored format
             return [json.loads(event)['event_data'] for event in events]

@@ -453,12 +453,10 @@ class BaseDriveSyncService(ABC):
                             "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                             "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                             "sourceCreatedAtTimestamp": int(
-                                parse_timestamp(metadata.get("createdTime")).timestamp()
+                                parse_timestamp(metadata.get("createdTime"))
                             ),
                             "sourceLastModifiedTimestamp": int(
-                                parse_timestamp(
-                                    metadata.get("modifiedTime")
-                                ).timestamp()
+                                parse_timestamp(metadata.get("modifiedTime"))
                             ),
                             "origin": OriginTypes.CONNECTOR.value,
                             "connectorName": Connectors.GOOGLE_DRIVE.value,
@@ -1176,12 +1174,12 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                                         "createdAtSourceTimestamp": int(
                                             parse_timestamp(
                                                 file_metadata.get("createdTime")
-                                            ).timestamp()
+                                            )
                                         ),
                                         "modifiedAtSourceTimestamp": int(
                                             parse_timestamp(
                                                 file_metadata.get("modifiedTime")
-                                            ).timestamp()
+                                            )
                                         ),
                                         "extension": extension,
                                         "mimeType": mime_type,
@@ -1452,12 +1450,12 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                                     "createdAtSourceTimestamp": int(
                                         parse_timestamp(
                                             file_metadata.get("createdTime")
-                                        ).timestamp()
+                                        )
                                     ),
                                     "modifiedAtSourceTimestamp": int(
                                         parse_timestamp(
                                             file_metadata.get("modifiedTime")
-                                        ).timestamp()
+                                        )
                                     ),
                                     "extension": extension,
                                     "mimeType": mime_type,
@@ -2058,12 +2056,12 @@ class DriveSyncIndividualService(BaseDriveSyncService):
                                     "createdAtSourceTimestamp": int(
                                         parse_timestamp(
                                             file_metadata.get("createdTime")
-                                        ).timestamp()
+                                        )
                                     ),
                                     "modifiedAtSourceTimestamp": int(
                                         parse_timestamp(
                                             file_metadata.get("modifiedTime")
-                                        ).timestamp()
+                                        )
                                     ),
                                     "extension": extension,
                                     "mimeType": mime_type,
