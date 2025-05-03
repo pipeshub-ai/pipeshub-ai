@@ -48,7 +48,7 @@ import type {
 } from './types';
 
 // Updated steps to include Storage
-const steps: string[] = ['LLM', 'Embeddings', 'Storage', 'PublicUrls', 'Connector', 'SMTP'];
+const steps: string[] = ['LLM', 'Embeddings', 'Storage', 'Public URLs', 'Connector', 'SMTP'];
 
 // API base URLs
 const API_BASE_URL = '/api/v1/configurationManager';

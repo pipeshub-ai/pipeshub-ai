@@ -9,7 +9,7 @@ import ConnectorSettings from 'src/sections/accountdetails/account-settings/conn
 
 // ----------------------------------------------------------------------
 
-const metadata = { title: `ConnectorConfig  - ${CONFIG.appName}` };
+const metadata = { title: `Connector Settings  - ${CONFIG.appName}` };
 
 export default function Page() {
   return (

@@ -276,7 +276,7 @@ const EmbeddingConfigStep: React.FC<EmbeddingConfigStepProps> = ({
                     handleModelTypeChange(newType);
                   }}
                 >
-                  <MenuItem value="default">Default (System Embeddings)</MenuItem>
+                  <MenuItem value="default">Default</MenuItem>
                   <MenuItem value="sentenceTransformers">Sentence Transformer</MenuItem>
                   <MenuItem value="openai">OpenAI</MenuItem>
                   <MenuItem value="azureOpenAI">Azure OpenAI</MenuItem>
