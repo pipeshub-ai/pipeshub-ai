@@ -64,7 +64,7 @@ qna_prompt = """
 
         Output format:
         {
-            "answer": "<Provide the answer to the query with relevant chunk index citations>e.g. Security checks are performed at regular intervals. [2][4]. Keep count to atmost 4-5 highly relevant citations or mention 'User Information' for user-specific details>",
+            "answer": "<Provide the answer(in markdown format) to the query with relevant chunk index citations>e.g. Security checks are performed at regular intervals. [2][4]. Keep count to atmost 4-5 highly relevant citations or mention 'User Information' for user-specific details>",
             "reason": "<Explain how the answer was derived using the chunks/user information and reasoning>",
             "confidence": "<Choose one: Very High, High, Medium, Low>",
             "answerMatchType": "<Choose one: Exact Match, Derived From Chunks, Derived from User Info>",
