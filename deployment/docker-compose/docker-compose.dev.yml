@@ -181,7 +181,7 @@ services:
       - "6333:6333"
       - "6334:6334"
     environment:
-      - QDRANT_API_KEY=${QDRANT_API_KEY:-your_qdrant_secret_api_key}
+      - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:-your_qdrant_secret_api_key}
     volumes:
       - qdrant_storage:/qdrant/storage
     ulimits:
