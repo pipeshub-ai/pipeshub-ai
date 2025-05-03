@@ -18,6 +18,7 @@ import { useSettingsContext } from 'src/components/settings';
 import { getOrgLogo, getOrgIdFromToken } from 'src/sections/accountdetails/utils';
 
 import { useAuthContext } from 'src/auth/hooks';
+import { useAdmin } from 'src/context/AdminContext';
 
 import { Main } from './main';
 import { NavMobile } from './nav-mobile';
@@ -31,7 +32,7 @@ import { HeaderSection } from '../core/header-section';
 import { StyledDivider, useNavColorVars } from './styles';
 import { AccountDrawer } from '../components/account-drawer';
 import { SettingsButton } from '../components/settings-button';
-import { navData as dashboardNavData } from '../config-nav-dashboard';
+import { getDashboardNavData } from '../config-nav-dashboard';
 
 // ----------------------------------------------------------------------
 
@@ -50,10 +51,13 @@ export function DashboardLayout({ sx, children, header, data }: DashboardLayoutP
   const theme = useTheme();
   const mobileNavOpen = useBoolean();
   const { user } = useAuthContext();
+  const { isAdmin } = useAdmin();
   const settings = useSettingsContext();
   const navColorVars = useNavColorVars(theme, settings);
   const layoutQuery: Breakpoint = 'sm';
-  const navData = data?.nav ?? dashboardNavData;
+  const dynamicNavData = getDashboardNavData(user?.accountType, isAdmin);
+
+  const navData = data?.nav ?? dynamicNavData;
   const navigate = useNavigate();
 
   // Get dynamic account menu items

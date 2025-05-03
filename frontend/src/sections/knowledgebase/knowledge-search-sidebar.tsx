@@ -24,6 +24,8 @@ import microsoftTeamsIcon from '@iconify-icons/mdi/microsoft-teams';
 import formatListIcon from '@iconify-icons/mdi/format-list-bulleted';
 import closeCircleIcon from '@iconify-icons/mdi/close-circle-outline';
 import microsoftOnedriveIcon from '@iconify-icons/mdi/microsoft-onedrive';
+import cloudUploadIcon from '@iconify-icons/mdi/cloud-upload';
+
 
 import { alpha, styled, useTheme } from '@mui/material/styles';
 import {
@@ -54,14 +56,15 @@ import type { Filters, KnowledgeSearchSideBarProps } from './types/knowledge-bas
 
 // Connector definitions for app sources
 const apps = [
+  { id: 'local', name: 'Local KB', icon: cloudUploadIcon, color: '#34A853' },
   { id: 'drive', name: 'Google Drive', icon: googleDriveIcon, color: '#4285F4' },
   { id: 'gmail', name: 'Gmail', icon: gmailIcon, color: '#EA4335' },
-  { id: 'slack', name: 'Slack', icon: slackIcon, color: '#4A154B' },
-  { id: 'jira', name: 'Jira', icon: jiraIcon, color: '#0052CC' },
-  { id: 'salesforce', name: 'Salesforce', icon: salesforceIcon, color: '#00A1E0' },
-  { id: 'dropbox', name: 'Dropbox', icon: dropboxIcon, color: '#0061FF' },
-  { id: 'teams', name: 'Microsoft Teams', icon: microsoftTeamsIcon, color: '#6264A7' },
-  { id: 'onedrive', name: 'OneDrive', icon: microsoftOnedriveIcon, color: '#0078D4' },
+  // { id: 'slack', name: 'Slack', icon: slackIcon, color: '#4A154B' },
+  // { id: 'jira', name: 'Jira', icon: jiraIcon, color: '#0052CC' },
+  // { id: 'salesforce', name: 'Salesforce', icon: salesforceIcon, color: '#00A1E0' },
+  // { id: 'dropbox', name: 'Dropbox', icon: dropboxIcon, color: '#0061FF' },
+  // { id: 'teams', name: 'Microsoft Teams', icon: microsoftTeamsIcon, color: '#6264A7' },
+  // { id: 'onedrive', name: 'OneDrive', icon: microsoftOnedriveIcon, color: '#0078D4' },
 ];
 
 // Constants

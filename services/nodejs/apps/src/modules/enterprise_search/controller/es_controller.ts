@@ -51,6 +51,7 @@ import Citation, {
   AiSearchResponse,
   ICitation,
 } from '../schema/citation.schema';
+import { CONVERSATION_STATUS } from '../constants/constants';
 
 const logger = Logger.getInstance({ service: 'Enterprise Search Service' });
 const rsAvailable = process.env.REPLICA_SET_AVAILABLE === 'true';
@@ -81,6 +82,7 @@ export const createConversation =
         title: req.body.query.slice(0, 100),
         messages: [userQueryMessage] as IMessageDocument[],
         lastActivityAt: Date.now(),
+        status: CONVERSATION_STATUS.INPROGRESS,
       };
 
       const conversation = new Conversation(userConversationData);
@@ -114,6 +116,19 @@ export const createConversation =
         const aiResponseData =
           (await aiServiceCommand.execute()) as AIServiceResponse<IAIResponse>;
         if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
+          savedConversation.status = CONVERSATION_STATUS.FAILED;
+          savedConversation.failReason = `AI service error: ${aiResponseData?.msg || 'Unknown error'} (Status: ${aiResponseData?.statusCode})`;
+
+          const updatedWithError = session
+            ? await savedConversation.save({ session })
+            : await savedConversation.save();
+
+          if (!updatedWithError) {
+            throw new InternalServerError(
+              'Failed to update conversation status',
+            );
+          }
+
           throw new InternalServerError(
             'Failed to get AI response',
             aiResponseData?.data,
@@ -143,6 +158,7 @@ export const createConversation =
         // Add the AI message to the conversation
         savedConversation.messages.push(aiResponseMessage);
         savedConversation.lastActivityAt = Date.now();
+        savedConversation.status = CONVERSATION_STATUS.COMPLETE; // Successful conversation
 
         const updatedConversation = session
           ? await savedConversation.save({ session })
@@ -173,14 +189,30 @@ export const createConversation =
         // TODO: Add support for retry mechanism and generate response from retry
         // and append the response to the correct messageId
 
+        savedConversation.status = CONVERSATION_STATUS.FAILED;
+        if (error.cause?.code === 'ECONNREFUSED') {
+          savedConversation.failReason = `AI service connection error: ${AI_SERVICE_UNAVAILABLE_MESSAGE}`;
+        } else {
+          savedConversation.failReason =
+            error.message || 'Unknown error occurred';
+        }
         // persist and serve the error message to the user.
         const failedMessage =
           buildAIFailureResponseMessage() as IMessageDocument;
         savedConversation.messages.push(failedMessage);
         savedConversation.lastActivityAt = Date.now();
-        session
+
+        const savedWithError = session
           ? await savedConversation.save({ session })
           : await savedConversation.save();
+
+        if (!savedWithError) {
+          logger.error('Failed to save conversation error state', {
+            requestId,
+            conversationId: savedConversation._id,
+            error: error.message,
+          });
+        }
         if (error.cause && error.cause.code === 'ECONNREFUSED') {
           throw new InternalServerError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
         }
@@ -279,6 +311,10 @@ export const addMessage =
           throw new NotFoundError('Conversation not found');
         }
 
+        // Update status to processing when adding a new message
+        conversation.status = CONVERSATION_STATUS.INPROGRESS;
+        conversation.failReason = undefined; // Clear previous error if any
+
         // add previous conversations to the conversation
         // in case of bot_response message
         // Format previous conversations for context
@@ -330,6 +366,25 @@ export const addMessage =
             aiResponseData =
               (await aiServiceCommand.execute()) as AIServiceResponse<IAIResponse>;
           } catch (error: any) {
+            // Update conversation status for AI service connection errors
+            conversation.status = CONVERSATION_STATUS.FAILED;
+            if (error.cause?.code === 'ECONNREFUSED') {
+              conversation.failReason = `AI service connection error: ${AI_SERVICE_UNAVAILABLE_MESSAGE}`;
+            } else {
+              conversation.failReason =
+                error.message || 'Unknown connection error';
+            }
+
+            const saveErrorStatus = session
+              ? await conversation.save({ session })
+              : await conversation.save();
+
+            if (!saveErrorStatus) {
+              logger.error('Failed to save conversation error status', {
+                requestId,
+                conversationId: conversation._id,
+              });
+            }
             if (error.cause && error.cause.code === 'ECONNREFUSED') {
               throw new InternalServerError(
                 AI_SERVICE_UNAVAILABLE_MESSAGE,
@@ -341,6 +396,21 @@ export const addMessage =
           }
 
           if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
+            // Update conversation status for API errors
+            conversation.status = CONVERSATION_STATUS.FAILED;
+            conversation.failReason = `AI service API error: ${aiResponseData?.msg || 'Unknown error'} (Status: ${aiResponseData?.statusCode})`;
+
+            const saveApiError = session
+              ? await conversation.save({ session })
+              : await conversation.save();
+
+            if (!saveApiError) {
+              logger.error('Failed to save conversation API error status', {
+                requestId,
+                conversationId: conversation._id,
+              });
+            }
+
             throw new InternalServerError(
               'Failed to get AI response',
               aiResponseData?.data,
@@ -370,6 +440,7 @@ export const addMessage =
           // Add the AI message to the existing conversation
           savedConversation.messages.push(aiResponseMessage);
           savedConversation.lastActivityAt = Date.now();
+          savedConversation.status = CONVERSATION_STATUS.COMPLETE;
 
           // Save the updated conversation with AI response
           const updatedConversation = session
@@ -406,14 +477,25 @@ export const addMessage =
           // TODO: Add support for retry mechanism and generate response from retry
           // and append the response to the correct messageId
 
+          // Update conversation status for general errors
+          conversation.status = CONVERSATION_STATUS.FAILED;
+          conversation.failReason = error.message || 'Unknown error occurred';
+
           // persist and serve the error message to the user.
           const failedMessage =
             buildAIFailureResponseMessage() as IMessageDocument;
           conversation.messages.push(failedMessage);
           conversation.lastActivityAt = Date.now();
-          session
+          const saveGeneralError = session
             ? await conversation.save({ session })
             : await conversation.save();
+
+          if (!saveGeneralError) {
+            logger.error('Failed to save conversation general error status', {
+              requestId,
+              conversationId: conversation._id,
+            });
+          }
           if (error.cause && error.cause.code === 'ECONNREFUSED') {
             throw new InternalServerError(
               AI_SERVICE_UNAVAILABLE_MESSAGE,
@@ -632,6 +714,8 @@ export const getConversationById = async (
         createdAt: 1,
         isShared: 1,
         sharedWith: 1,
+        status: 1, 
+        failReason: 1,
       })
       .populate({
         path: 'messages.citations.citationId',

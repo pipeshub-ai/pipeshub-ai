@@ -121,6 +121,19 @@ const ChatInterface = () => {
         : loadingConversations.new,
     [currentConversationId, loadingConversations]
   );
+
+  const [conversationStatus, setConversationStatus] = useState<{
+    [key: string]: string | undefined;
+  }>({});
+  const [pendingResponseConversationId, setPendingResponseConversationId] = useState<string | null>(
+    null
+  );
+
+  const isCurrentConversationThinking = useCallback(() => {
+    const conversationKey = currentConversationId || 'new';
+    return conversationStatus[conversationKey] === 'Inprogress';
+  }, [currentConversationId, conversationStatus]);
+
   const [snackbar, setSnackbar] = useState({
     open: false,
     message: '',
@@ -152,7 +165,7 @@ const ChatInterface = () => {
         feedback: apiMessage.feedback || [],
       };
     }
-    
+
     // For bot messages
     if (apiMessage.messageType === 'bot_response') {
       return {
@@ -173,12 +186,12 @@ const ChatInterface = () => {
         })),
       };
     }
-  
+
     if (apiMessage.messageType === 'error') {
       return {
         ...baseMessage,
         type: 'bot',
-        messageType:'error',
+        messageType: 'error',
         confidence: apiMessage.confidence || '',
         citations: (apiMessage?.citations || []).map((citation: Citation) => ({
           id: citation.citationId,
@@ -502,6 +515,8 @@ const ChatInterface = () => {
 
   // Handle new chat creation
   const handleNewChat = useCallback((): void => {
+    setPendingResponseConversationId(null);
+
     setIsLoadingConversation(false);
     setCurrentConversationId(null);
     setSelectedChat(null);
@@ -509,6 +524,7 @@ const ChatInterface = () => {
     setExpandedCitations({});
     setInputValue('');
     setShouldRefreshSidebar(true);
+    setConversationStatus({});
     navigate(`/`); // Navigate to base chat route
     setFileBuffer(null);
   }, [navigate]);
@@ -518,6 +534,8 @@ const ChatInterface = () => {
     if (!trimmedInput) return;
 
     const conversationKey = currentConversationId || 'new';
+    setPendingResponseConversationId(conversationKey);
+
     setLoadingConversations((prev) => ({
       ...prev,
       [conversationKey]: true,
@@ -557,21 +575,28 @@ const ChatInterface = () => {
         }
 
         const { conversation } = response.data;
-        setSelectedChat(conversation);
-        setCurrentConversationId(conversation._id);
-        setShouldRefreshSidebar(true);
-        navigate(`/${conversation._id}`);
+        if (pendingResponseConversationId === conversationKey) {
+          if (conversation.status) {
+            setConversationStatus((prev) => ({
+              ...prev,
+              [conversation._id]: conversation.status,
+            }));
+          }
 
-        // For new conversation, get all messages in order
-        // Get the bot response from the conversation
-        const botMessage = conversation.messages
-          .filter((msg) => msg.messageType === 'bot_response')
-          .map(formatMessage)
-          .pop();
+          setSelectedChat(conversation);
+          setCurrentConversationId(conversation._id);
+          setShouldRefreshSidebar(true);
+          navigate(`/${conversation._id}`);
 
-        if (botMessage) {
-          // Update messages by keeping the temp user message and adding the bot response
-          setMessages((prev) => [...prev, botMessage]);
+          // For new conversation, get all messages in order
+          const botMessage = conversation.messages
+            .filter((msg) => msg.messageType === 'bot_response')
+            .map(formatMessage)
+            .pop();
+
+          if (botMessage) {
+            setMessages((prev) => [...prev, botMessage]);
+          }
         }
       } else {
         // For existing conversation, append messages in order
@@ -587,25 +612,38 @@ const ChatInterface = () => {
           throw new Error('Invalid response format');
         }
 
-        // Get the bot response and append it
-        const botMessage = response.data.conversation.messages
-          .filter((msg) => msg.messageType === 'bot_response')
-          .map(formatMessage)
-          .pop();
+        const { conversation } = response.data;
 
-        if (botMessage) {
-          setMessages((prev) => [...prev, botMessage]);
+        if (pendingResponseConversationId === conversationKey) {
+          if (conversation.status) {
+            setConversationStatus((prev) => ({
+              ...prev,
+              [currentConversationId]: conversation.status,
+            }));
+          }
+
+          // Get the bot response and append it
+          const botMessage = conversation.messages
+            .filter((msg) => msg.messageType === 'bot_response')
+            .map(formatMessage)
+            .pop();
+
+          if (botMessage) {
+            setMessages((prev) => [...prev, botMessage]);
+          }
         }
       }
 
       // Update citation states
-      const lastMessage =
-        response.data.conversation.messages[response.data.conversation.messages.length - 1];
-      if (lastMessage?.citations?.length > 0) {
-        setExpandedCitations((prev) => ({
-          ...prev,
-          [messages.length]: false,
-        }));
+      if (pendingResponseConversationId === conversationKey) {
+        const lastMessage =
+          response.data.conversation.messages[response.data.conversation.messages.length - 1];
+        if (lastMessage?.citations?.length > 0) {
+          setExpandedCitations((prev) => ({
+            ...prev,
+            [messages.length]: false,
+          }));
+        }
       }
     } catch (error) {
       const errorMessage: FormattedMessage = {
@@ -621,15 +659,27 @@ const ChatInterface = () => {
         messageType: 'bot_response',
         timestamp: new Date(),
       };
-      setMessages((prev) => [...prev, errorMessage]);
+      if (pendingResponseConversationId === conversationKey) {
+        setMessages((prev) => [...prev, errorMessage]);
+      }
     } finally {
       // setIsLoading(false);
+      if (pendingResponseConversationId === conversationKey) {
+        setPendingResponseConversationId(null);
+      }
       setLoadingConversations((prev) => ({
         ...prev,
         [conversationKey]: false,
       }));
     }
-  }, [inputValue, currentConversationId, formatMessage, navigate, messages]);
+  }, [
+    inputValue,
+    currentConversationId,
+    formatMessage,
+    navigate,
+    messages,
+    pendingResponseConversationId,
+  ]);
 
   // Update handleRegenerateMessage
   const handleRegenerateMessage = useCallback(
@@ -712,6 +762,7 @@ const ChatInterface = () => {
       if (!chat?._id) return;
 
       try {
+        setPendingResponseConversationId(null);
         setIsLoadingConversation(true);
         setMessages([]);
         setExpandedCitations({});
@@ -722,6 +773,13 @@ const ChatInterface = () => {
 
         if (!conversation || !Array.isArray(conversation.messages)) {
           throw new Error('Invalid conversation data');
+        }
+
+        if (conversation.status) {
+          setConversationStatus((prev) => ({
+            ...prev,
+            [chat._id]: conversation.status,
+          }));
         }
 
         // Set complete conversation data
@@ -787,6 +845,54 @@ const ChatInterface = () => {
     }
   }, [conversationId, handleChatSelect, currentConversationId]);
 
+  // Add this useEffect to check conversation status periodically
+  useEffect(() => {
+    let intervalId: NodeJS.Timeout | null = null;
+
+    const checkConversationStatus = async () => {
+      const inProgressConversations = Object.entries(conversationStatus)
+        .filter(([_, status]) => status === 'Inprogress')
+        .map(([id]) => id);
+
+      if (inProgressConversations.length > 0) {
+        inProgressConversations.forEach(async (convId) => {
+          try {
+            const response = await axios.get(`/api/v1/conversations/${convId}`);
+            const { conversation } = response.data;
+
+            if (conversation?.status) {
+              setConversationStatus((prev) => ({
+                ...prev,
+                [convId]: conversation.status,
+              }));
+
+              // Only update messages if this is the current conversation
+              if (convId === currentConversationId) {
+                const formattedMessages = conversation.messages
+                  .map(formatMessage)
+                  .filter(Boolean) as FormattedMessage[];
+
+                setMessages(formattedMessages);
+              }
+            }
+          } catch (error) {
+            console.error(`Failed to check status for conversation ${convId}:`, error);
+          }
+        });
+      }
+    };
+
+    // Check every 3 seconds if there are any 'Inprogress' conversations
+    if (Object.values(conversationStatus).includes('Inprogress')) {
+      intervalId = setInterval(checkConversationStatus, 3000);
+    }
+
+    return () => {
+      if (intervalId) {
+        clearInterval(intervalId);
+      }
+    };
+  }, [conversationStatus, currentConversationId, formatMessage]);
   return (
     <Box
       sx={{
@@ -860,7 +966,7 @@ const ChatInterface = () => {
 
           <ChatMessagesArea
             messages={messages}
-            isLoading={isCurrentConversationLoading()}
+            isLoading={isCurrentConversationLoading() || isCurrentConversationThinking()}
             expandedCitations={expandedCitations}
             onToggleCitations={toggleCitations}
             onRegenerateMessage={handleRegenerateMessage}

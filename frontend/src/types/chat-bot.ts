@@ -178,6 +178,8 @@ export interface Conversation {
   pagination?: ConversationPagination;
   access?: ConversationAccess;
   filters?: ConversationFilters;
+  status?: string;
+  failReason?: string;
 }
 
 export interface ApiResponse {

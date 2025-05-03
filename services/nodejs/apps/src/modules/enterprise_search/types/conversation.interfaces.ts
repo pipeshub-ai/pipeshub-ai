@@ -104,6 +104,8 @@ export interface IConversation {
   conversationSourceRecordType?: string;
   createdAt?: Date;
   updatedAt?: Date;
+  failReason?: String;
+  status?: String;
 }
 
 export interface IMessageDocument extends Document, IMessage {

@@ -129,6 +129,9 @@ const ChatMessagesArea = ({
     scrollToBottom();
   }, [messages, scrollToBottom]);
 
+  const shouldShowLoadingIndicator = (isLoading || isLoadingConversation) && messages.length > 0;
+
+
   return (
     <Box
       sx={{
@@ -141,7 +144,7 @@ const ChatMessagesArea = ({
         // ...scrollableContainerStyle,
       }}
     >
-      {isLoadingConversation ? (
+      {isLoadingConversation && conversationId && messages.length === 0 ? (
         // Centered loading indicator
         <Box
           sx={{
@@ -166,7 +169,7 @@ const ChatMessagesArea = ({
             justifyContent: 'flex-start',
           }}
         >
-          {displayMessages.length === 0 && !isLoading ? (
+          {messages.length === 0  ? (
             <WelcomeMessage />
           ) : (
             <>
@@ -184,7 +187,7 @@ const ChatMessagesArea = ({
                   onViewPdf={onViewPdf}
                 />
               ))}
-              {isLoading && (
+               {shouldShowLoadingIndicator && (
                 <Box sx={{ mt: 2, display: 'flex', justifyContent: 'flex-start' }}>
                   <ProcessingIndicator isLoadingConversation={false} />
                 </Box>

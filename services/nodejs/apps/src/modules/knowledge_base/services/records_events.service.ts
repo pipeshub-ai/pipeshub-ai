@@ -8,7 +8,8 @@ export enum EventType {
   NewRecordEvent = 'newRecord',
   UpdateRecordEvent = 'updateRecord',
   DeletedRecordEvent = 'deleteRecord',
-  ReindexRecordEvent = 'reindexRecord'
+  ReindexRecordEvent = 'reindexRecord',
+  ReindexAllRecordEvent = 'reindexFailed'
 }
 
 export interface Event {
@@ -18,7 +19,8 @@ export interface Event {
     | NewRecordEvent
     | UpdateRecordEvent
     | DeletedRecordEvent
-    | ReindexRecordEvent;
+    | ReindexRecordEvent 
+    | ReindexAllRecordEvent;
 }
 
 export interface NewRecordEvent {
@@ -43,6 +45,7 @@ export interface UpdateRecordEvent {
     updatedAtTimestamp : string;
     sourceLastModifiedTimestamp : string;
 }
+
 export interface ReindexRecordEvent {
   orgId: string;
   recordId : string;
@@ -52,6 +55,15 @@ export interface ReindexRecordEvent {
   signedUrlRoute : string;
   origin : string;
   extension : string;
+  createdAtTimestamp : string;
+  updatedAtTimestamp : string;
+  sourceCreatedAtTimestamp : string;
+}
+
+export interface ReindexAllRecordEvent {
+  orgId: string;
+  app : string;
+  origin : string;
   createdAtTimestamp : string;
   updatedAtTimestamp : string;
   sourceCreatedAtTimestamp : string;

@@ -1,20 +1,7 @@
 import { paths } from 'src/routes/paths';
 
-
-// ----------------------------------------------------------------------
-
-// const icon = (name: string) => (
-//   <SvgColor src={`${CONFIG.assetsDir}/assets/icons/navbar/${name}.svg`} />
-// );
-
-
-
-// ----------------------------------------------------------------------
-
-export const navData = [
-  /**
-   * Overview
-   */
+// Base navigation data that's common for all users
+const baseNavData = [
   {
     subheader: 'Overview',
     items: [
@@ -30,3 +17,37 @@ export const navData = [
     ],
   },
 ];
+
+// Function to get navigation data based on user role
+export const getDashboardNavData = (accountType: string | undefined, isAdmin: boolean) => {
+  const isBusiness = accountType === 'business' || accountType === 'organization';
+  
+  const navigationData = [...baseNavData];
+  
+  if (isBusiness && isAdmin) {
+    navigationData.push({
+      subheader: 'Administration',
+      items: [
+        {
+          title: 'Connector Settings',
+          path: '/account/company-settings/settings/connector',
+        },
+      ],
+    });
+  } else if (!isBusiness) {
+    navigationData.push({
+      subheader: 'Settings',
+      items: [
+        {
+          title: 'Connector Settings',
+          path: '/account/individual/settings/connector',
+        },
+      ],
+    });
+  }
+  
+  return navigationData;
+};
+
+// Default export for backward compatibility
+export const navData = baseNavData;

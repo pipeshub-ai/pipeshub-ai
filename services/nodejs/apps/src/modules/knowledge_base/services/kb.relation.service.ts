@@ -24,6 +24,7 @@ import {
   EventType,
   NewRecordEvent,
   RecordsEventProducer,
+  ReindexAllRecordEvent,
   UpdateRecordEvent,
 } from './records_events.service';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
@@ -308,7 +309,9 @@ export class RecordRelationService {
       const existingKBs = await cursor.all();
 
       if (existingKBs.length > 0) {
-        logger.info(`Found existing knowledge base for user ${userId} in organization ${orgId}`);
+        logger.info(
+          `Found existing knowledge base for user ${userId} in organization ${orgId}`,
+        );
         return existingKBs[0];
       }
 
@@ -368,7 +371,9 @@ export class RecordRelationService {
       const existingKBs = await cursor.all();
 
       if (existingKBs.length > 0) {
-        logger.info(`Found existing knowledge base for user ${userId} in organization ${orgId}`);
+        logger.info(
+          `Found existing knowledge base for user ${userId} in organization ${orgId}`,
+        );
         return {
           exists: true,
           knowledgeBase: existingKBs[0],
@@ -376,7 +381,9 @@ export class RecordRelationService {
       }
 
       // No knowledge base found
-      logger.info(`No knowledge base found for user ${userId} in organization ${orgId}`);
+      logger.info(
+        `No knowledge base found for user ${userId} in organization ${orgId}`,
+      );
       return { exists: false };
     } catch (error) {
       logger.error('Failed to check if knowledge base exists', {
@@ -1866,6 +1873,49 @@ export class RecordRelationService {
       recordType: record.recordType,
       origin: record.origin,
       extension: record.fileRecord.extension,
+      createdAtTimestamp: Date.now().toString(),
+      updatedAtTimestamp: Date.now().toString(),
+      sourceCreatedAtTimestamp: Date.now().toString(),
+    };
+  }
+
+  async reindexAllRecords(
+    reindexPayload: any,
+  ): Promise<any> {
+    try {
+      const reindexAllRecordEventPayload =
+        await this.createReindexAllRecordEventPayload(
+          reindexPayload,
+        );
+
+      const event: Event = {
+        eventType: EventType.ReindexAllRecordEvent,
+        timestamp: Date.now(),
+        payload: reindexAllRecordEventPayload,
+      };
+
+      await this.eventProducer.publishEvent(event);
+      logger.info(
+        `Published reindex all record for app ${reindexPayload.app}`,
+      );
+
+      return { success: true };
+    } catch (eventError: any) {
+      logger.error('Failed to publish reindex record event', {
+        error: eventError,
+      });
+      // Don't throw the error to avoid affecting the main operation
+      return { success: false, error: eventError.message };
+    }
+  }
+
+  async createReindexAllRecordEventPayload(
+    reindexPayload: any,
+  ): Promise<ReindexAllRecordEvent> {
+    return {
+      orgId: reindexPayload.orgId,
+      origin: reindexPayload.origin,
+      app: reindexPayload.app,
       createdAtTimestamp: Date.now().toString(),
       updatedAtTimestamp: Date.now().toString(),
       sourceCreatedAtTimestamp: Date.now().toString(),

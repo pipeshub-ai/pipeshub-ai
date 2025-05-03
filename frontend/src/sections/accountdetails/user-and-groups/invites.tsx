@@ -39,7 +39,7 @@ import { useAdmin } from 'src/context/AdminContext';
 
 import { Iconify } from 'src/components/iconify';
 
-import { decrementInvitesCount } from '../../../store/userAndGroupsSlice';
+import { decrementInvitesCount, setInviteCount } from '../../../store/userAndGroupsSlice';
 import { removeUser, resendInvite, getAllUsersWithGroups } from '../utils';
 
 import type { GroupUser } from '../types/group-details';
@@ -80,6 +80,7 @@ export default function Invites() {
         const response: GroupUser[] = await getAllUsersWithGroups();
         // Filter for pending invitations based on hasLoggedIn field
         const pendingUsers = response.filter((user) => user.hasLoggedIn === false);
+        dispatch(setInviteCount(pendingUsers.length));
         setUsers(pendingUsers);
       } catch (error) {
         // setSnackbar({ open: true, message: error.errorMessage, severity: 'error' });
@@ -88,7 +89,7 @@ export default function Invites() {
       }
     };
     fetchUsers();
-  }, []);
+  }, [dispatch]);
 
   const filteredUsers = users.filter((user) =>
     user?.email.toLowerCase().includes(searchTerm.toLowerCase())
@@ -494,7 +495,7 @@ export default function Invites() {
         autoHideDuration={6000}
         onClose={handleCloseSnackbar}
         anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
-        sx={{mt:6}}
+        sx={{ mt: 6 }}
       >
         <Alert
           onClose={handleCloseSnackbar}

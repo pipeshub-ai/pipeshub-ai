@@ -30,6 +30,7 @@ import { AIServiceCommand } from '../../../libs/commands/ai_service/ai.service.c
 import { AIServiceResponse } from '../../enterprise_search/types/conversation.interfaces';
 import { IServiceRecordsResponse } from '../types/service.records.response';
 import axios from 'axios';
+import { ArangoService } from '../../../libs/services/arango.service';
 
 const logger = Logger.getInstance({
   service: 'Knowledge Base Controller',
@@ -1130,6 +1131,316 @@ export const reindexRecord =
     } catch (error: any) {
       logger.error('Error getting record by id', {
         recordId: req.params.recordId,
+        error,
+      });
+      next(error);
+      return; // Added return statement
+    }
+  };
+
+/**
+ * Retrieves complete statistics for all connectors from ArangoDB
+ * @param {ArangoService} arangoService - The ArangoDB service instance
+ * @returns {Function} Express middleware function
+ */
+export const getConnectorStats =
+  (arangoService: ArangoService) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const orgId = req.user?.orgId;
+
+      if (!orgId) {
+        res.status(400).json({
+          success: false,
+          message: 'Organization ID is required',
+        });
+        return;
+      }
+
+      // Get database connection
+      const db = arangoService.getConnection();
+
+      // Base filter for organization
+      const baseFilter = `doc.orgId == "${orgId}"`;
+
+      // AQL query with enhanced connector statistics
+      const query = `
+        // Overall stats (across all records)
+        LET total_stats = (
+          FOR doc IN records
+            FILTER ${baseFilter}
+            COLLECT AGGREGATE
+              total        = COUNT(1),
+              not_started  = SUM(doc.indexingStatus == "NOT_STARTED" ? 1 : 0),
+              in_progress  = SUM(doc.indexingStatus == "IN_PROGRESS" ? 1 : 0),
+              completed    = SUM(doc.indexingStatus == "COMPLETED" ? 1 : 0),
+              failed       = SUM(doc.indexingStatus == "FAILED" ? 1 : 0),
+              not_supported= SUM(doc.indexingStatus == "FILE_TYPE_NOT_SUPPORTED" ? 1 : 0)
+            RETURN {
+              total,
+              indexing_status: {
+                NOT_STARTED: not_started,
+                IN_PROGRESS: in_progress,
+                COMPLETED: completed,
+                FAILED: failed,
+                FILE_TYPE_NOT_SUPPORTED: not_supported
+              }
+            }
+        )[0]
+        
+        // Overall stats for connectors only
+        LET overall_connector_stats = (
+          FOR doc IN records
+            FILTER ${baseFilter} AND doc.origin == "CONNECTOR"
+            COLLECT AGGREGATE
+              total        = COUNT(1),
+              not_started  = SUM(doc.indexingStatus == "NOT_STARTED" ? 1 : 0),
+              in_progress  = SUM(doc.indexingStatus == "IN_PROGRESS" ? 1 : 0),
+              completed    = SUM(doc.indexingStatus == "COMPLETED" ? 1 : 0),
+              failed       = SUM(doc.indexingStatus == "FAILED" ? 1 : 0),
+              not_supported= SUM(doc.indexingStatus == "FILE_TYPE_NOT_SUPPORTED" ? 1 : 0)
+            RETURN {
+              total,
+              indexing_status: {
+                NOT_STARTED: not_started,
+                IN_PROGRESS: in_progress,
+                COMPLETED: completed,
+                FAILED: failed,
+                FILE_TYPE_NOT_SUPPORTED: not_supported
+              }
+            }
+        )[0]
+
+        // Upload stats
+        LET upload_stats = (
+          FOR doc IN records
+            FILTER ${baseFilter} AND doc.origin == "UPLOAD"
+            COLLECT AGGREGATE
+              total        = COUNT(1),
+              not_started  = SUM(doc.indexingStatus == "NOT_STARTED" ? 1 : 0),
+              in_progress  = SUM(doc.indexingStatus == "IN_PROGRESS" ? 1 : 0),
+              completed    = SUM(doc.indexingStatus == "COMPLETED" ? 1 : 0),
+              failed       = SUM(doc.indexingStatus == "FAILED" ? 1 : 0),
+              not_supported= SUM(doc.indexingStatus == "FILE_TYPE_NOT_SUPPORTED" ? 1 : 0)
+            RETURN {
+              total,
+              indexing_status: {
+                NOT_STARTED: not_started,
+                IN_PROGRESS: in_progress,
+                COMPLETED: completed,
+                FAILED: failed,
+                FILE_TYPE_NOT_SUPPORTED: not_supported
+              }
+            }
+        )[0]
+
+        // Enhanced connector stats with record type breakdowns
+        LET connector_data = (
+          FOR doc IN records
+            FILTER ${baseFilter} AND doc.origin == "CONNECTOR"
+            COLLECT connector = doc.connectorName INTO groupDocs = doc
+            
+            // Basic stats for this connector
+            LET basic_stats = (
+              FOR d IN groupDocs
+                COLLECT AGGREGATE
+                  total         = COUNT(1),
+                  not_started   = SUM(d.indexingStatus == "NOT_STARTED" ? 1 : 0),
+                  in_progress   = SUM(d.indexingStatus == "IN_PROGRESS" ? 1 : 0),
+                  completed     = SUM(d.indexingStatus == "COMPLETED" ? 1 : 0),
+                  failed        = SUM(d.indexingStatus == "FAILED" ? 1 : 0),
+                  not_supported = SUM(d.indexingStatus == "FILE_TYPE_NOT_SUPPORTED" ? 1 : 0)
+                RETURN {
+                  total,
+                  indexing_status: {
+                    NOT_STARTED: not_started,
+                    IN_PROGRESS: in_progress,
+                    COMPLETED: completed,
+                    FAILED: failed,
+                    FILE_TYPE_NOT_SUPPORTED: not_supported
+                  }
+                }
+            )[0]
+            
+            // Record type breakdown for this connector
+            LET record_types = (
+              FOR d IN groupDocs
+                COLLECT record_type = d.recordType INTO typeGroupDocs = d
+                LET type_stats = (
+                  FOR td IN typeGroupDocs
+                    COLLECT AGGREGATE
+                      total         = COUNT(1),
+                      not_started   = SUM(td.indexingStatus == "NOT_STARTED" ? 1 : 0),
+                      in_progress   = SUM(td.indexingStatus == "IN_PROGRESS" ? 1 : 0),
+                      completed     = SUM(td.indexingStatus == "COMPLETED" ? 1 : 0),
+                      failed        = SUM(td.indexingStatus == "FAILED" ? 1 : 0),
+                      not_supported = SUM(td.indexingStatus == "FILE_TYPE_NOT_SUPPORTED" ? 1 : 0)
+                    RETURN {
+                      total,
+                      indexing_status: {
+                        NOT_STARTED: not_started,
+                        IN_PROGRESS: in_progress,
+                        COMPLETED: completed,
+                        FAILED: failed,
+                        FILE_TYPE_NOT_SUPPORTED: not_supported
+                      }
+                    }
+                )[0]
+                RETURN {
+                  record_type,
+                  total: type_stats.total,
+                  indexing_status: type_stats.indexing_status
+                }
+            )
+            
+            RETURN {
+              connector,
+              total: basic_stats.total,
+              indexing_status: basic_stats.indexing_status,
+              by_record_type: record_types
+            }
+        )
+
+        // Stats by record type across all connectors
+        LET record_type_stats = (
+          FOR doc IN records
+            FILTER ${baseFilter} AND doc.origin == "CONNECTOR"
+            COLLECT record_type = doc.recordType INTO groupDocs = doc
+            
+            // Basic stats for this record type
+            LET basic_stats = (
+              FOR d IN groupDocs
+                COLLECT AGGREGATE
+                  total         = COUNT(1),
+                  not_started   = SUM(d.indexingStatus == "NOT_STARTED" ? 1 : 0),
+                  in_progress   = SUM(d.indexingStatus == "IN_PROGRESS" ? 1 : 0),
+                  completed     = SUM(d.indexingStatus == "COMPLETED" ? 1 : 0),
+                  failed        = SUM(d.indexingStatus == "FAILED" ? 1 : 0),
+                  not_supported = SUM(d.indexingStatus == "FILE_TYPE_NOT_SUPPORTED" ? 1 : 0)
+                RETURN {
+                  total,
+                  indexing_status: {
+                    NOT_STARTED: not_started,
+                    IN_PROGRESS: in_progress,
+                    COMPLETED: completed,
+                    FAILED: failed,
+                    FILE_TYPE_NOT_SUPPORTED: not_supported
+                  }
+                }
+            )[0]
+            
+            // Connector breakdown for this record type
+            LET connectors_for_type = (
+              FOR d IN groupDocs
+                COLLECT connector = d.connectorName INTO connectorGroupDocs = d
+                LET connector_type_stats = (
+                  FOR cd IN connectorGroupDocs
+                    COLLECT AGGREGATE
+                      total         = COUNT(1),
+                      not_started   = SUM(cd.indexingStatus == "NOT_STARTED" ? 1 : 0),
+                      in_progress   = SUM(cd.indexingStatus == "IN_PROGRESS" ? 1 : 0),
+                      completed     = SUM(cd.indexingStatus == "COMPLETED" ? 1 : 0),
+                      failed        = SUM(cd.indexingStatus == "FAILED" ? 1 : 0),
+                      not_supported = SUM(cd.indexingStatus == "FILE_TYPE_NOT_SUPPORTED" ? 1 : 0)
+                    RETURN {
+                      total,
+                      indexing_status: {
+                        NOT_STARTED: not_started,
+                        IN_PROGRESS: in_progress,
+                        COMPLETED: completed,
+                        FAILED: failed,
+                        FILE_TYPE_NOT_SUPPORTED: not_supported
+                      }
+                    }
+                )[0]
+                RETURN {
+                  connector,
+                  total: connector_type_stats.total,
+                  indexing_status: connector_type_stats.indexing_status
+                }
+            )
+            
+            RETURN {
+              record_type,
+              total: basic_stats.total,
+              indexing_status: basic_stats.indexing_status,
+              by_connector: connectors_for_type
+            }
+        )
+
+        // Return all stats
+        RETURN {
+          org_id: "${orgId}",
+          total: total_stats,
+          overall_connector: overall_connector_stats,
+          upload: upload_stats,
+          by_connector: connector_data,
+          by_record_type: record_type_stats
+        }
+      `;
+
+      // Execute the query
+      const cursor = await db.query(query);
+      const result = await cursor.all();
+
+      // Return the first item if it's an array
+      const data =
+        Array.isArray(result) && result.length === 1 ? result[0] : result;
+
+      logger.info(
+        `Retrieved enhanced connector stats for organization: ${orgId}`,
+      );
+
+      res.status(200).json({
+        success: true,
+        data,
+      });
+      return;
+    } catch (error) {
+      const err =
+        error instanceof Error ? error : new Error('Unknown error occurred');
+      logger.error(`Error getting connector stats: ${err.message}`);
+      next(err);
+    }
+  };
+
+export const reindexAllRecords =
+  (
+    recordRelationService: RecordRelationService,
+  ) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const userId = req.user?.userId;
+      const orgId = req.user?.orgId;
+      const app = req.body.app;
+      if (!userId || !orgId) {
+        throw new BadRequestError('User not authenticated');
+      }
+
+      const allowedApps = ["ONEDRIVE", "DRIVE", "GMAIL", "CONFLUENCE", "SLACK"]
+      if(!allowedApps.includes(app)){
+        throw new BadRequestError('APP not allowed')
+      }
+
+      const reindexPayload = {
+        userId, orgId, app
+      }
+
+      const reindexResponse = await recordRelationService.reindexAllRecords(
+        reindexPayload,
+      );
+
+      res.status(200).json({
+        reindexResponse,
+      });
+
+      return; // Added return statement
+    } catch (error: any) {
+      logger.error('Error re indexing all records', {
         error,
       });
       next(error);

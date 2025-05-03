@@ -202,3 +202,9 @@ export const searchInKBSchema = z.object({
 export const answerQueryFromKBSchema = z.object({
   query: z.string().min(1),
 });
+
+export const reindexAllRecordSchema = z.object({
+  body: z.object({
+    app : z.string().min(1),
+  }),
+})

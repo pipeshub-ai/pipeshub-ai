@@ -455,6 +455,8 @@ export const buildConversationResponse = (
     createdAt: conversation.createdAt,
     isShared: conversation.isShared,
     sharedWith: conversation.sharedWith,
+    status: conversation.status,
+    failReason : conversation.failReason,
     messages: messages.map((message) => ({
       ...message,
       citations:

@@ -141,6 +141,11 @@ const conversationSchema = new Schema<IConversation>(
     isArchived: { type: Boolean, default: false },
     archivedBy: { type: Schema.Types.ObjectId },
     lastActivityAt: { type: Number, default: Date.now },
+    status: {
+      type: String,
+      enum: ['None', 'Inprogress', 'Complete', 'Failed'],
+    },
+    failReason: { type: String },
   },
   { timestamps: true },
 );

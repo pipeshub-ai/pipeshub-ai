@@ -17,6 +17,8 @@ import {
   updateRecord,
   getRecordBuffer,
   reindexRecord,
+  getConnectorStats,
+  reindexAllRecords,
 } from '../controllers/kb_controllers';
 import { ArangoService } from '../../../libs/services/arango.service';
 import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
@@ -35,6 +37,7 @@ import {
   searchInKBSchema,
   answerQueryFromKBSchema,
   getRecordsSchema,
+  reindexAllRecordSchema,
 } from '../validators/validators';
 import { FileProcessorFactory } from '../../../libs/middlewares/file_processor/fp.factory';
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
@@ -225,6 +228,24 @@ export function createKnowledgeBaseRouter(container: Container): Router {
     ValidationMiddleware.validate(answerQueryFromKBSchema),
     //answerQueryFromKB(arangoService),
   );
+
+  // connector stats
+  router.get(
+    '/stats/connector',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    // ValidationMiddleware.validate(getRecordsSchema),
+    getConnectorStats(arangoService),
+  );
+
+  // reindex all failed records per connector
+  router.post(
+    '/reindex-all/connector',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(reindexAllRecordSchema),
+    reindexAllRecords(recordRelationService)
+  )
 
   return router;
 }

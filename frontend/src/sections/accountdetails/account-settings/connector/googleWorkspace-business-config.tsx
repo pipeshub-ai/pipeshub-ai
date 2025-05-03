@@ -29,6 +29,7 @@ import { CONNECTORS_LIST } from './components/connectors-list';
 import ConfigureConnectorDialog from './components/configure-connector-company-dialog';
 
 import type { ConnectorConfig } from './components/connectors-list';
+import ConnectorStatistics from './connector-stats';
 
 // Define connector types and interfaces
 interface ConnectorStatusMap {
@@ -52,6 +53,7 @@ const GoogleWorkspaceBusinessPage = () => {
   const [lastConfigured, setLastConfigured] = useState<string | null>(null);
   const [connectorStatus, setConnectorStatus] = useState<ConnectorStatusMap>({});
   const [configuredStatus, setConfiguredStatus] = useState<ConnectorStatusMap>({});
+  const connectorNames = ['DRIVE','GMAIL'];
 
   // Fetch connector config
   const fetchConnectorConfig = useCallback(async (connectorId: string) => {
@@ -548,7 +550,9 @@ const GoogleWorkspaceBusinessPage = () => {
             </Typography>
           </Box>
         </Box>
+        <ConnectorStatistics connectorNames={connectorNames}/>
       </Paper>
+
 
       {/* Configure Connector Dialog */}
       <ConfigureConnectorDialog
