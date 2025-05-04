@@ -13,7 +13,7 @@ echo "Ollama server is up and running!"
 
 # Pull the model you want to use
 echo "Pulling the phi4 model..."
-ollama pull phi4
+ollama pull ${OLLAMA_MODEL:-phi4} # Use environment variable for model name, default to phi4
 
 # Keep the container running
 echo "Model downloaded. Ollama is ready for use!"
