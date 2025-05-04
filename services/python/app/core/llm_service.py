@@ -152,7 +152,7 @@ class LLMFactory:
                 callbacks=[cost_callback]
             )
         elif isinstance(config, OllamaConfig):
-            base_url = os.getenv("OLLAMA_API_URL", "http://localhost:11434")
+            base_url = os.getenv("OLLAMA_API_URL", "http://localhost:11434") # Set default value directly in getenv
 
             return OllamaLLM(
                 model=config.model,
