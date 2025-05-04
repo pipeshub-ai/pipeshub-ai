@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Dict, Optional
 
+import os
 from langchain.callbacks.base import BaseCallbackHandler
 from langchain.chat_models.base import BaseChatModel
 from langchain_anthropic import ChatAnthropic
@@ -151,10 +152,13 @@ class LLMFactory:
                 callbacks=[cost_callback]
             )
         elif isinstance(config, OllamaConfig):
-           return OllamaLLM(
+            base_url = os.getenv("OLLAMA_API_URL", "http://localhost:11434")
+
+            return OllamaLLM(
                 model=config.model,
                 temperature=0.2,
-                callbacks=[cost_callback]
+                callbacks=[cost_callback],
+                base_url=base_url
             )
 
         raise ValueError(f"Unsupported config type: {type(config)}")
