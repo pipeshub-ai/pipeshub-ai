@@ -829,12 +829,6 @@ class DriveUserService:
                         "isDeleted": False,
                         "isDirty": True,
                         "virtualRecordId": None,
-                        "indexingStatus": "NOT_STARTED",
-                        "extractionStatus": "NOT_STARTED",
-                        "lastIndexTimestamp": None,
-                        "lastExtractionTimestamp": None,
-                        "isLatestVersion": False,
-                        "reason": None,
                     },
                 }
             else:
@@ -889,11 +883,7 @@ class DriveUserService:
                         "sourceLastModifiedTimestamp": current_time,
                         "isArchived": False,
                         "isDeleted": False,
-                        "isDirty": True,
                         "virtualRecordId": None,
-                        "isLatestVersion": False,
-                        "indexingStatus": "NOT_STARTED",
-                        "extractionStatus": "NOT_STARTED",
                     },
                 }
 

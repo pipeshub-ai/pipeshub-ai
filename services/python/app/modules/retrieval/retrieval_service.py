@@ -333,7 +333,7 @@ class RetrievalService:
                     "searchResults": [],
                     "records": [],
                     "status": Status.ACCESSIBLE_RECORDS_NOT_FOUND.value,
-                    "status_code": 202,
+                    "status_code": 200,
                     "message": "No accessible records found for this user with provided filters.",
                 }
 
@@ -367,7 +367,7 @@ class RetrievalService:
                         "searchResults": [],
                         "records": [],
                         "status": Status.VECTOR_DB_NOT_READY.value,
-                        "status_code": 202,
+                        "status_code": 200,
                         "message": "Vector DB is empty. No records available for retrieval.",
                     }
 
@@ -379,7 +379,7 @@ class RetrievalService:
                         "searchResults": [],
                         "records": [],
                         "status": Status.VECTOR_DB_EMPTY.value,
-                        "status_code": 202,
+                        "status_code": 200,
                         "message": "Vector DB is empty. No records available for retrieval.",
                     }
 
@@ -486,7 +486,7 @@ class RetrievalService:
                     "searchResults": [],
                     "records": [],
                     "status": Status.EMPTY_RESPONSE.value,
-                    "status_code": 202,
+                    "status_code": 200,
                     "message": "Query processed, but no relevant results were found.",
                 }
 

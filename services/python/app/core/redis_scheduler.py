@@ -1,7 +1,7 @@
 import json
 from datetime import datetime, timedelta
 
-import aioredis
+from redis import asyncio as aioredis
 
 
 class RedisScheduler:
