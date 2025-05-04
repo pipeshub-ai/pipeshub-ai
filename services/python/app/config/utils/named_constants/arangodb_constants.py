@@ -168,8 +168,3 @@ class AccountType(Enum):
     ENTERPRISE = "enterprise"
     BUSINESS = "business"
     ADMIN = "admin"
-
-class Apps(Enum):
-    GMAIL = "GMAIL"
-    DRIVE = "DRIVE"
-    CALENDAR = "CALENDAR"

@@ -9,7 +9,6 @@ from typing import Dict, Optional
 
 from app.config.configuration_service import ConfigurationService, config_node_constants
 from app.config.utils.named_constants.arangodb_constants import (
-    Apps,
     CollectionNames,
     Connectors,
     EventTypes,
@@ -965,7 +964,7 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                 if sync_state is None:
                     apps = await self.arango_service.get_org_apps(org_id)
                     for app in apps:
-                        if app["name"] == Apps.DRIVE.value:
+                        if app["name"] == Connectors.GOOGLE_DRIVE.value:
                             app_key = app["_key"]
                             break
                     # Create edge between user and app
@@ -1862,7 +1861,7 @@ class DriveSyncIndividualService(BaseDriveSyncService):
             if sync_state is None:
                 apps = await self.arango_service.get_org_apps(org_id)
                 for app in apps:
-                    if app["name"] == Apps.DRIVE.value:
+                    if app["name"] == Connectors.GOOGLE_DRIVE.value:
                         app_key = app["_key"]
                         break
                 # Create edge between user and app

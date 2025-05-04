@@ -14,6 +14,7 @@ from app.config.utils.named_constants.ai_models_named_constants import (
 )
 from app.config.utils.named_constants.arangodb_constants import (
     CollectionNames,
+    Connectors,
     RecordTypes,
 )
 from app.core.embedding_service import (
@@ -453,16 +454,16 @@ class RetrievalService:
                     record = await arango_service.get_document(
                         record_id, CollectionNames.RECORDS.value
                     )
-                    if record["recordType"] == RecordTypes.FILE.value:
+                    if record.get("recordType", "") == RecordTypes.FILE.value:
                         files = await arango_service.get_document(
                             record_id, CollectionNames.FILES.value
                         )
-                        if record["connectorName"] == "GMAIL":
+                        if record.get("connectorName", "") == Connectors.GOOGLE_MAIL.value:
                             weburl = files.get("webUrl")
                             weburl = weburl.replace("{user.email}", user["email"])
                             files["webUrl"] = weburl
                         record = {**record, **files}
-                    if record["recordType"] == RecordTypes.MAIL.value:
+                    if record.get("recordType", "") == RecordTypes.MAIL.value:
                         mail = await arango_service.get_document(
                             record_id, CollectionNames.MAILS.value
                         )
@@ -473,8 +474,6 @@ class RetrievalService:
                     records.append(record)
 
             if search_results or records:
-                self.logger.info(f"Search results: {search_results}")
-                self.logger.info(f"Records: {records}")
                 return {
                     "searchResults": search_results,
                     "records": records,
