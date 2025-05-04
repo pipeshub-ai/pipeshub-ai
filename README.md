@@ -34,6 +34,7 @@ Beyond search, our platform allows enterprises to create custom apps and AI agen
 <h2>Spotlight Features</h2>
 
 #### Your Workplace, Our AI.
+
 <p align="center">
   <a href="https://www.youtube.com/watch?v=czDNbS_OEDQ">
     <img src="https://img.youtube.com/vi/czDNbS_OEDQ/maxresdefault.jpg" alt="PipesHub Workplace AI" width="600" style="border-radius:10px"/>
@@ -155,3 +156,19 @@ docker compose -f docker-compose.prod.yml -p pipeshub-ai down
 ## 👥 Contributing
 
 Want to join our community of developers? Please check out our [Contributing Guide](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/CONTRIBUTING.md) for more details on how to set up the development environment, our coding standards, and the contribution workflow.
+
+## 🧪 Onboarding & Sample API Key Setup
+
+To get started with Gemini models, follow these steps to set up your API key during onboarding:
+
+1. **Go to [Google AI Studio](https://aistudio.google.com/)**
+2. Click on the **“Get API Key”** button in the top-right corner.
+3. **Copy the API Key** from the popup.
+4. Visit the **PipesHub Frontend** (local or deployed URL).
+5. **Create an account** through the login page.
+6. During the onboarding process, On the AI model configuration step:
+   - Select **“Gemini”** as your AI Model Provider
+   - Paste your copied **API Key**
+   - Provide the **model name** (e.g., `gemini-pro` or `gemini-pro-vision`)
+
+You're now ready to start using Gemini-powered Workplace AI features within PipesHub!
