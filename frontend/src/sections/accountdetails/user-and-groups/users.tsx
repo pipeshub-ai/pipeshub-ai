@@ -789,6 +789,7 @@ function AddUserModal({ open, onClose, groups, onUsersAdded }: AddUserModalProps
   const [inputValue, setInputValue] = useState<string>('');
   const [error, setError] = useState<string>('');
   const [selectedGroups, setSelectedGroups] = useState<AppUserGroup[]>([]);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
   const [snackbarState, setSnackbarState] = useState<SnackbarState>({
     open: false,
     message: '',
@@ -846,6 +847,7 @@ function AddUserModal({ open, onClose, groups, onUsersAdded }: AddUserModalProps
         setTimeout(() => setError(''), 3000);
         return;
       }
+      setIsLoading(true);
 
       const groupIds = selectedGroups.map((group) => group._id);
 
@@ -884,6 +886,9 @@ function AddUserModal({ open, onClose, groups, onUsersAdded }: AddUserModalProps
 
       // Log error for debugging
       console.error('Error inviting users:', err);
+    } finally {
+      // Reset loading state whether the operation succeeded or failed
+      setIsLoading(false);
     }
   };
 
@@ -1027,11 +1032,17 @@ function AddUserModal({ open, onClose, groups, onUsersAdded }: AddUserModalProps
           onClick={handleAddUsers}
           variant="contained"
           color="primary"
-          startIcon={<Iconify icon={emailIcon} />}
+          startIcon={
+            isLoading ? (
+              <CircularProgress size={16} color="inherit" />
+            ) : (
+              <Iconify icon={emailIcon} />
+            )
+          }
           sx={{ borderRadius: 1 }}
-          disabled={emails.length === 0}
+          disabled={emails.length === 0 || isLoading}
         >
-          Send Invites
+          {isLoading ? 'Sending...' : 'Send Invites'}
         </Button>
       </DialogActions>
       <Snackbar
