@@ -12,13 +12,14 @@ import IconButton, { iconButtonClasses } from '@mui/material/IconButton';
 
 import { useBoolean } from 'src/hooks/use-boolean';
 
+import { useAdmin } from 'src/context/AdminContext';
+
 import { Iconify } from 'src/components/iconify';
 import { useSettingsContext } from 'src/components/settings';
 
 import { getOrgLogo, getOrgIdFromToken } from 'src/sections/accountdetails/utils';
 
 import { useAuthContext } from 'src/auth/hooks';
-import { useAdmin } from 'src/context/AdminContext';
 
 import { Main } from './main';
 import { NavMobile } from './nav-mobile';
@@ -31,8 +32,8 @@ import { LayoutSection } from '../core/layout-section';
 import { HeaderSection } from '../core/header-section';
 import { StyledDivider, useNavColorVars } from './styles';
 import { AccountDrawer } from '../components/account-drawer';
-import { SettingsButton } from '../components/settings-button';
 import { getDashboardNavData } from '../config-nav-dashboard';
+import { SettingsButton } from '../components/settings-button';
 
 // ----------------------------------------------------------------------
 

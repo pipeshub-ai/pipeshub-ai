@@ -1,42 +1,43 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import type { IconifyIcon } from '@iconify/react';
+
+import boxIcon from '@iconify-icons/mdi/box';
+import jiraIcon from '@iconify-icons/mdi/jira';
+import gmailIcon from '@iconify-icons/mdi/gmail';
+import slackIcon from '@iconify-icons/mdi/slack';
+import dropboxIcon from '@iconify-icons/mdi/dropbox';
+import databaseIcon from '@iconify-icons/mdi/database';
+import googleDriveIcon from '@iconify-icons/mdi/google-drive';
+import cloudUploadIcon from '@iconify-icons/mdi/cloud-upload';
+import clockOutlineIcon from '@iconify-icons/mdi/clock-outline';
+import { useRef, useState, useEffect, useCallback } from 'react';
+import progressClockIcon from '@iconify-icons/mdi/progress-clock';
+import microsoftTeamsIcon from '@iconify-icons/mdi/microsoft-teams';
+import microsoftOutlookIcon from '@iconify-icons/mdi/microsoft-outlook';
+import microsoftOnedriveIcon from '@iconify-icons/mdi/microsoft-onedrive';
+import fileCancelOutlineIcon from '@iconify-icons/mdi/file-cancel-outline';
+import checkCircleOutlineIcon from '@iconify-icons/mdi/check-circle-outline';
+import alertCircleOutlineIcon from '@iconify-icons/mdi/alert-circle-outline';
+import microsoftSharepointIcon from '@iconify-icons/mdi/microsoft-sharepoint';
+
 import { alpha, useTheme } from '@mui/material/styles';
-import axios from 'src/utils/axios';
 import {
   Box,
   Card,
   Grid,
   Paper,
+  Alert,
   Avatar,
+  Tooltip,
+  Snackbar,
   Typography,
+  AlertTitle,
   CardContent,
   CircularProgress,
-  Tooltip,
-  Alert,
-  AlertTitle,
-  Button,
-  Snackbar,
 } from '@mui/material';
+
+import axios from 'src/utils/axios';
+
 import { Iconify } from 'src/components/iconify';
-import googleDriveIcon from '@iconify-icons/mdi/google-drive';
-import gmailIcon from '@iconify-icons/mdi/gmail';
-import slackIcon from '@iconify-icons/mdi/slack';
-import jiraIcon from '@iconify-icons/mdi/jira';
-import microsoftTeamsIcon from '@iconify-icons/mdi/microsoft-teams';
-import microsoftOnedriveIcon from '@iconify-icons/mdi/microsoft-onedrive';
-import microsoftSharepointIcon from '@iconify-icons/mdi/microsoft-sharepoint';
-import microsoftOutlookIcon from '@iconify-icons/mdi/microsoft-outlook';
-import dropboxIcon from '@iconify-icons/mdi/dropbox';
-import boxIcon from '@iconify-icons/mdi/box';
-import cloudUploadIcon from '@iconify-icons/mdi/cloud-upload';
-import fileDocumentIcon from '@iconify-icons/mdi/file-document';
-import checkCircleOutlineIcon from '@iconify-icons/mdi/check-circle-outline';
-import alertCircleOutlineIcon from '@iconify-icons/mdi/alert-circle-outline';
-import progressClockIcon from '@iconify-icons/mdi/progress-clock';
-import clockOutlineIcon from '@iconify-icons/mdi/clock-outline';
-import fileCancelOutlineIcon from '@iconify-icons/mdi/file-cancel-outline';
-import refreshIcon from '@iconify-icons/mdi/refresh';
-import databaseIcon from '@iconify-icons/mdi/database';
-import { IconifyIcon } from '@iconify/react';
 
 // Enhanced types to match backend response structure
 interface IndexingStatusStats {
@@ -515,7 +516,7 @@ const ConnectorStatistics = ({
         throw new Error('Failed to fetch connector statistics');
       }
 
-      const data = response.data.data;
+      const {data} = response.data;
 
       // Set overall stats
       setOverallStats(data.total);

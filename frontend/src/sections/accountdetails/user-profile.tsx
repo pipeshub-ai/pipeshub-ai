@@ -1,10 +1,7 @@
 import { z as zod } from 'zod';
 import { useForm } from 'react-hook-form';
 import { useLocation } from 'react-router';
-import accountIcon from '@iconify-icons/mdi/account';
 import { zodResolver } from '@hookform/resolvers/zod';
-import uploadIcon from '@iconify-icons/ep/upload-filled';
-import deleteIcon from '@iconify-icons/ic/baseline-delete';
 import React, { useState, useEffect, useCallback } from 'react';
 
 import { LoadingButton } from '@mui/lab';
@@ -14,26 +11,21 @@ import {
   Alert,
   Paper,
   alpha,
-  Avatar,
   Divider,
-  Tooltip,
   Snackbar,
   useTheme,
   Container,
   Typography,
-  IconButton,
   CircularProgress,
 } from '@mui/material';
 
 import { useAdmin } from 'src/context/AdminContext';
 
-import { Iconify } from 'src/components/iconify';
 import { Form, Field } from 'src/components/hook-form';
 
 import {
   updateUser,
   getUserById,
-  getUserLogo,
   deleteUserLogo,
   uploadUserLogo,
   changePassword,

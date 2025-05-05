@@ -3,29 +3,22 @@ import type { Icon as IconifyIcon } from '@iconify/react';
 import { Icon } from '@iconify/react';
 import appIcon from '@iconify-icons/mdi/apps';
 import { useNavigate } from 'react-router-dom';
-import jiraIcon from '@iconify-icons/mdi/jira';
 import closeIcon from '@iconify-icons/mdi/close';
 import gmailIcon from '@iconify-icons/mdi/gmail';
-import slackIcon from '@iconify-icons/mdi/slack';
 import upIcon from '@iconify-icons/mdi/chevron-up';
 import magnifyIcon from '@iconify-icons/mdi/magnify';
-import dropboxIcon from '@iconify-icons/mdi/dropbox';
 import leftIcon from '@iconify-icons/mdi/chevron-left';
 import downIcon from '@iconify-icons/mdi/chevron-down';
 import rightIcon from '@iconify-icons/mdi/chevron-right';
 import React, { useRef, useState, useEffect } from 'react';
-import salesforceIcon from '@iconify-icons/mdi/salesforce';
 import viewModuleIcon from '@iconify-icons/mdi/view-module';
 import filterMenuIcon from '@iconify-icons/mdi/filter-menu';
 import googleDriveIcon from '@iconify-icons/mdi/google-drive';
+import cloudUploadIcon from '@iconify-icons/mdi/cloud-upload';
 import filterRemoveIcon from '@iconify-icons/mdi/filter-remove';
 import officeBuildingIcon from '@iconify-icons/mdi/office-building';
-import microsoftTeamsIcon from '@iconify-icons/mdi/microsoft-teams';
 import formatListIcon from '@iconify-icons/mdi/format-list-bulleted';
 import closeCircleIcon from '@iconify-icons/mdi/close-circle-outline';
-import microsoftOnedriveIcon from '@iconify-icons/mdi/microsoft-onedrive';
-import cloudUploadIcon from '@iconify-icons/mdi/cloud-upload';
-
 
 import { alpha, styled, useTheme } from '@mui/material/styles';
 import {

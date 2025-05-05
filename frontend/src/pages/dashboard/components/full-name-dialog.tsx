@@ -9,21 +9,22 @@ import {
   Alert,
   Dialog,
   Button,
+  Snackbar,
   TextField,
   Typography,
   DialogTitle,
   DialogContent,
   DialogActions,
   CircularProgress,
-  Snackbar,
 } from '@mui/material';
+
+import axios from 'src/utils/axios';
 
 import { Iconify } from 'src/components/iconify';
 
 import { updateUser, getUserIdFromToken } from 'src/sections/accountdetails/utils';
 
 import { useAuthContext } from 'src/auth/hooks';
-import axios from 'src/utils/axios';
 import { STORAGE_KEY, STORAGE_KEY_REFRESH } from 'src/auth/context/jwt/constant';
 
 // Schema for validation

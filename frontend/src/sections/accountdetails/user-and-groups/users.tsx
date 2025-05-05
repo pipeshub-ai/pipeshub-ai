@@ -52,7 +52,7 @@ import { useAdmin } from 'src/context/AdminContext';
 
 import { Iconify } from 'src/components/iconify';
 
-import { decrementUserCount, setCounts, updateInvitesCount } from '../../../store/userAndGroupsSlice';
+import { setCounts, decrementUserCount, updateInvitesCount } from '../../../store/userAndGroupsSlice';
 import {
   allGroups,
   removeUser,
