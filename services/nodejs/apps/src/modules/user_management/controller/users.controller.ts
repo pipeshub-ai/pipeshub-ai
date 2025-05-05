@@ -290,21 +290,20 @@ export class UserController {
         eventType: EventType.UpdateUserEvent,
         timestamp: Date.now(),
         payload: {
-          orgId: req.user.orgId,
-          userId: req.user._id,
-          fullName: req.user.fullName,
-          ...(req.user.firstName && { firstName: req.user.firstName }),
-          ...(req.user.lastName && { lastName: req.user.lastName }),
-          ...(req.user.designation && { designation: req.user.designation }),
-          email: req.user.email,
+          orgId: user.orgId.toString(),
+          userId: user._id,
+          fullName: user.fullName,
+          ...(user.firstName && { firstName: user.firstName }),
+          ...(user.lastName && { lastName: user.lastName }),
+          ...(user.designation && { designation: user.designation }),
+          email: user.email,
         } as UserUpdatedEvent,
       };
 
       await this.eventService.publishEvent(event);
       await this.eventService.stop();
-
-      await req.user.save(); // Save the updated user
-      res.json(req.user.toObject());
+      // Save the updated user
+      res.json(user.toObject());
     } catch (error) {
       next(error);
     }
@@ -318,26 +317,39 @@ export class UserController {
       if (!req.user) {
         throw new UnauthorizedError('Unauthorized to update the user');
       }
-      req.user.fullName = req.body.fullName;
+
+      const { id } = req.params;
+      const user = await Users.findOne({
+        orgId: req.user.orgId,
+        _id: id,
+        isDeleted: false,
+      });
+
+      if (!user) {
+        throw new NotFoundError('User not found');
+      }
+
+      user.fullName = req.body.fullName;
+      await user.save();
+
       await this.eventService.start();
       const event: Event = {
         eventType: EventType.UpdateUserEvent,
         timestamp: Date.now(),
         payload: {
-          orgId: req.user.orgId,
-          userId: req.user._id,
-          fullName: req.user.fullName,
-          ...(req.user.firstName && { firstName: req.user.firstName }),
-          ...(req.user.lastName && { lastName: req.user.lastName }),
-          ...(req.user.designation && { designation: req.user.designation }),
-          email: req.user.email,
+          orgId: user.orgId.toString(),
+          userId: user._id,
+          fullName: user.fullName,
+          ...(user.firstName && { firstName: user.firstName }),
+          ...(user.lastName && { lastName: user.lastName }),
+          ...(user.designation && { designation: user.designation }),
+          email: user.email,
         } as UserUpdatedEvent,
       };
 
       await this.eventService.publishEvent(event);
       await this.eventService.stop();
-      await req.user.save();
-      res.json(req.user);
+      res.json(user.toObject());
     } catch (error) {
       next(error);
     }
@@ -352,27 +364,39 @@ export class UserController {
       if (!req.user) {
         throw new UnauthorizedError('Unauthorized to update the user');
       }
-      const { firstName } = req.body;
-      req.user.firstName = firstName;
+
+      const { id } = req.params;
+      const user = await Users.findOne({
+        orgId: req.user.orgId,
+        _id: id,
+        isDeleted: false,
+      });
+
+      if (!user) {
+        throw new NotFoundError('User not found');
+      }
+
+      user.firstName = req.body.firstName;
+      await user.save();
+
       await this.eventService.start();
       const event: Event = {
         eventType: EventType.UpdateUserEvent,
         timestamp: Date.now(),
         payload: {
-          orgId: req.user.orgId,
-          userId: req.user._id,
-          fullName: req.user.fullName,
-          ...(req.user.firstName && { firstName: req.user.firstName }),
-          ...(req.user.lastName && { lastName: req.user.lastName }),
-          ...(req.user.designation && { designation: req.user.designation }),
-          email: req.user.email,
+          orgId: user.orgId.toString(),
+          userId: user._id,
+          fullName: user.fullName,
+          ...(user.firstName && { firstName: user.firstName }),
+          ...(user.lastName && { lastName: user.lastName }),
+          ...(user.designation && { designation: user.designation }),
+          email: user.email,
         } as UserUpdatedEvent,
       };
 
       await this.eventService.publishEvent(event);
       await this.eventService.stop();
-      await req.user.save();
-      res.json(req.user);
+      res.json(user.toObject());
     } catch (error) {
       next(error);
     }
@@ -387,27 +411,39 @@ export class UserController {
       if (!req.user) {
         throw new UnauthorizedError('Unauthorized to update the user');
       }
-      const { lastName } = req.body;
-      req.user.lastName = lastName;
+
+      const { id } = req.params;
+      const user = await Users.findOne({
+        orgId: req.user.orgId,
+        _id: id,
+        isDeleted: false,
+      });
+
+      if (!user) {
+        throw new NotFoundError('User not found');
+      }
+
+      user.lastName = req.body.lastName;
+      await user.save();
+
       await this.eventService.start();
       const event: Event = {
         eventType: EventType.UpdateUserEvent,
         timestamp: Date.now(),
         payload: {
-          orgId: req.user.orgId,
-          userId: req.user._id,
-          fullName: req.user.fullName,
-          ...(req.user.firstName && { firstName: req.user.firstName }),
-          ...(req.user.lastName && { lastName: req.user.lastName }),
-          ...(req.user.designation && { designation: req.user.designation }),
-          email: req.user.email,
+          orgId: user.orgId.toString(),
+          userId: user._id,
+          fullName: user.fullName,
+          ...(user.firstName && { firstName: user.firstName }),
+          ...(user.lastName && { lastName: user.lastName }),
+          ...(user.designation && { designation: user.designation }),
+          email: user.email,
         } as UserUpdatedEvent,
       };
 
       await this.eventService.publishEvent(event);
       await this.eventService.stop();
-      await req.user.save();
-      res.json(req.user);
+      res.json(user.toObject());
     } catch (error) {
       next(error);
     }
@@ -422,28 +458,39 @@ export class UserController {
       if (!req.user) {
         throw new UnauthorizedError('Unauthorized to update the user');
       }
-      const { designation } = req.body;
 
-      req.user.designation = designation;
+      const { id } = req.params;
+      const user = await Users.findOne({
+        orgId: req.user.orgId,
+        _id: id,
+        isDeleted: false,
+      });
+
+      if (!user) {
+        throw new NotFoundError('User not found');
+      }
+
+      user.designation = req.body.designation;
+      await user.save();
+
       await this.eventService.start();
       const event: Event = {
         eventType: EventType.UpdateUserEvent,
         timestamp: Date.now(),
         payload: {
-          orgId: req.user.orgId,
-          userId: req.user._id,
-          fullName: req.user.fullName,
-          ...(req.user.firstName && { firstName: req.user.firstName }),
-          ...(req.user.lastName && { lastName: req.user.lastName }),
-          ...(req.user.designation && { designation: req.user.designation }),
-          email: req.user.email,
+          orgId: user.orgId.toString(),
+          userId: user._id,
+          fullName: user.fullName,
+          ...(user.firstName && { firstName: user.firstName }),
+          ...(user.lastName && { lastName: user.lastName }),
+          ...(user.designation && { designation: user.designation }),
+          email: user.email,
         } as UserUpdatedEvent,
       };
 
       await this.eventService.publishEvent(event);
       await this.eventService.stop();
-      await req.user.save();
-      res.json(req.user);
+      res.json(user.toObject());
     } catch (error) {
       next(error);
     }
@@ -458,27 +505,39 @@ export class UserController {
       if (!req.user) {
         throw new UnauthorizedError('Unauthorized to update the user');
       }
-      const { email } = req.body;
-      req.user.email = email;
+
+      const { id } = req.params;
+      const user = await Users.findOne({
+        orgId: req.user.orgId,
+        _id: id,
+        isDeleted: false,
+      });
+
+      if (!user) {
+        throw new NotFoundError('User not found');
+      }
+
+      user.email = req.body.email;
+      await user.save();
+
       await this.eventService.start();
       const event: Event = {
         eventType: EventType.UpdateUserEvent,
         timestamp: Date.now(),
         payload: {
-          orgId: req.user.orgId,
-          userId: req.user._id,
-          fullName: req.user.fullName,
-          ...(req.user.firstName && { firstName: req.user.firstName }),
-          ...(req.user.lastName && { lastName: req.user.lastName }),
-          ...(req.user.designation && { designation: req.user.designation }),
-          email: req.user.email,
+          orgId: user.orgId.toString(),
+          userId: user._id,
+          fullName: user.fullName,
+          ...(user.firstName && { firstName: user.firstName }),
+          ...(user.lastName && { lastName: user.lastName }),
+          ...(user.designation && { designation: user.designation }),
+          email: user.email,
         } as UserUpdatedEvent,
       };
 
       await this.eventService.publishEvent(event);
       await this.eventService.stop();
-      await req.user.save();
-      res.json({ message: 'User Email updated successfully' });
+      res.json(user.toObject());
     } catch (error) {
       next(error);
     }
@@ -493,8 +552,21 @@ export class UserController {
       if (!req.user) {
         throw new UnauthorizedError('Unauthorized to delete the user');
       }
-      req.user.isDeleted = true;
-      req.user.deletedBy = req.user._id;
+      const { id } = req.params;
+
+      const user = await Users.findOne({
+        orgId: req.user.orgId,
+        _id: id,
+      });
+
+      if (!user) {
+        throw new NotFoundError('User not found');
+      }
+
+      user.isDeleted = true;
+      user.deletedBy = req.user._id;
+
+      await user.save();
 
       await this.eventService.start();
       const event: Event = {
@@ -509,7 +581,6 @@ export class UserController {
       await this.eventService.publishEvent(event);
       await this.eventService.stop();
 
-      await req.user.save();
       res.json({ message: 'User deleted successfully' });
     } catch (error) {
       next(error);
