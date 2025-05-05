@@ -39,8 +39,8 @@ import { useAdmin } from 'src/context/AdminContext';
 
 import { Iconify } from 'src/components/iconify';
 
-import { decrementInvitesCount, setInviteCount } from '../../../store/userAndGroupsSlice';
 import { removeUser, resendInvite, getAllUsersWithGroups } from '../utils';
+import { setInviteCount, decrementInvitesCount } from '../../../store/userAndGroupsSlice';
 
 import type { GroupUser } from '../types/group-details';
 import type { SnackbarState } from '../types/organization-data';

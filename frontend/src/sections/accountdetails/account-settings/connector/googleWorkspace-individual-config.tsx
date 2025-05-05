@@ -24,11 +24,11 @@ import axios from 'src/utils/axios';
 
 import { Iconify } from 'src/components/iconify';
 
+import ConnectorStatistics from './connector-stats';
 import { CONNECTORS_LIST, GOOGLE_WORKSPACE_SCOPE } from './components/connectors-list';
 import ConfigureConnectorDialog from './components/configure-connector-individual-dialog';
 
 import type { ConnectorConfig } from './components/connectors-list';
-import ConnectorStatistics from './connector-stats';
 
 // Define connector types and interfaces
 interface ConnectorStatusMap {
