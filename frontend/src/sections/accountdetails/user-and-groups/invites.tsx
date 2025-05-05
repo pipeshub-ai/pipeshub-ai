@@ -52,6 +52,7 @@ export default function Invites() {
   const [rowsPerPage, setRowsPerPage] = useState<number>(10);
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [isActionLoading, setIsActionLoading] = useState<boolean>(false);
   const [confirmDialog, setConfirmDialog] = useState<{
     open: boolean;
     userId: string | null;
@@ -127,7 +128,7 @@ export default function Invites() {
     const { userId, action } = confirmDialog;
 
     if (!userId) return;
-
+    setIsActionLoading(true);
     try {
       if (action === 'resend') {
         await resendInvite(userId);
@@ -145,6 +146,7 @@ export default function Invites() {
     } catch (error) {
       // setSnackbar({ open: true, message: error.errorMessage, severity: 'error' });
     } finally {
+      setIsActionLoading(false);
       setConfirmDialog({ ...confirmDialog, open: false });
     }
   };
@@ -483,8 +485,16 @@ export default function Invites() {
             variant="contained"
             color={confirmDialog.action === 'resend' ? 'primary' : 'error'}
             sx={{ borderRadius: 1 }}
+            disabled={isActionLoading}
+            startIcon={isActionLoading ? <CircularProgress size={16} color="inherit" /> : null}
           >
-            {confirmDialog.action === 'resend' ? 'Resend' : 'Remove'}
+            {isActionLoading
+              ? confirmDialog.action === 'resend'
+                ? 'Resending...'
+                : 'Removing...'
+              : confirmDialog.action === 'resend'
+                ? 'Resend'
+                : 'Remove'}
           </Button>
         </DialogActions>
       </Dialog>
