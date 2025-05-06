@@ -12,7 +12,7 @@ import { Icon } from '@iconify/react';
 import menuIcon from '@iconify-icons/mdi/menu';
 import closeIcon from '@iconify-icons/mdi/close';
 import { useParams, useNavigate } from 'react-router';
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useRef, useState, useEffect, useCallback } from 'react';
 
 import {
   Box,

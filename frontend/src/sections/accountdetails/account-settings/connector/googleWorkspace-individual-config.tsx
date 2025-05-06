@@ -90,20 +90,20 @@ const GoogleWorkspaceIndividualPage = () => {
         results[0].status === 'fulfilled' && results[0].value && !!results[0].value.googleClientId;
 
       // Update the configuredStatus while preserving lastConfigured state
-      setConfiguredStatus((prev) => {
+      setConfiguredStatus((prev) =>
         // Get the current connector that was just configured (if any)
 
-        return {
+        ({
           ...prev,
           googleWorkspace: googleConfigured,
-        };
-      });
+        })
+      );
     } catch (err) {
       console.error('Error checking connector configurations:', err);
     } finally {
       setCheckingConfigs(false);
     }
-  }, [fetchConnectorConfig, lastConfigured]);
+  }, [fetchConnectorConfig]);
 
   // Fetch connectors from API
   const fetchConnectorStatuses = useCallback(async () => {

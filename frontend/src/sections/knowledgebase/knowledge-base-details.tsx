@@ -72,9 +72,9 @@ import {
   ListItemText,
   DialogContent,
   DialogActions,
+  LinearProgress,
   FormControlLabel,
   CircularProgress,
-  LinearProgress,
 } from '@mui/material';
 
 import axios from 'src/utils/axios';

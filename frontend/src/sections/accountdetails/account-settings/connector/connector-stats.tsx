@@ -5,6 +5,7 @@ import jiraIcon from '@iconify-icons/mdi/jira';
 import gmailIcon from '@iconify-icons/mdi/gmail';
 import slackIcon from '@iconify-icons/mdi/slack';
 import dropboxIcon from '@iconify-icons/mdi/dropbox';
+import refreshIcon from '@iconify-icons/mdi/refresh';
 import databaseIcon from '@iconify-icons/mdi/database';
 import googleDriveIcon from '@iconify-icons/mdi/google-drive';
 import cloudUploadIcon from '@iconify-icons/mdi/cloud-upload';
@@ -18,7 +19,6 @@ import fileCancelOutlineIcon from '@iconify-icons/mdi/file-cancel-outline';
 import checkCircleOutlineIcon from '@iconify-icons/mdi/check-circle-outline';
 import alertCircleOutlineIcon from '@iconify-icons/mdi/alert-circle-outline';
 import microsoftSharepointIcon from '@iconify-icons/mdi/microsoft-sharepoint';
-import refreshIcon from '@iconify-icons/mdi/refresh';
 
 import { alpha, useTheme } from '@mui/material/styles';
 import {
@@ -28,13 +28,13 @@ import {
   Paper,
   Alert,
   Avatar,
+  Button,
   Tooltip,
   Snackbar,
   Typography,
   AlertTitle,
   CardContent,
   CircularProgress,
-  Button,
 } from '@mui/material';
 
 import axios from 'src/utils/axios';
