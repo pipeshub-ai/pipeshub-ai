@@ -88,6 +88,7 @@ const GoogleWorkspaceIndividualPage = () => {
       // Check if each configuration has required fields
       const googleConfigured =
         results[0].status === 'fulfilled' && results[0].value && !!results[0].value.googleClientId;
+
       // Update the configuredStatus while preserving lastConfigured state
       setConfiguredStatus((prev) => {
         // Get the current connector that was just configured (if any)
@@ -95,7 +96,7 @@ const GoogleWorkspaceIndividualPage = () => {
 
         return {
           ...prev,
-          googleWorkspace: justConfigured === 'googleWorkspace' ? true && googleConfigured : false,
+          googleWorkspace: justConfigured === 'googleWorkspace' ? true : googleConfigured,
         };
       });
     } catch (err) {
