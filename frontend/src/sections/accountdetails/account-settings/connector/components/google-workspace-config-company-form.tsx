@@ -526,6 +526,7 @@ export const GoogleWorkspaceConfigForm = forwardRef<
           setHasExistingFile(false);
           setFileName(null);
           setAdminEmail('');
+          setEnableRealTimeUpdates(false);
           setFormEditMode(false); // Exit edit mode after successful deletion
           validateForm(false, adminEmail, enableRealTimeUpdates, topicName);
           if (onFileRemoved) {

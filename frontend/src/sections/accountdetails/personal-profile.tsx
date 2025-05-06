@@ -34,7 +34,7 @@ import { Iconify } from 'src/components/iconify';
 import { Form, Field } from 'src/components/hook-form';
 
 import {
-  logout, // Import the logout function
+  logout,
   updateUser,
   getUserById,
   deleteUserLogo,
@@ -87,7 +87,9 @@ export default function PersonalProfile() {
   });
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState<boolean>(false);
   const [saveChanges, setSaveChanges] = useState<boolean>(false);
-  const [currentEmail, setCurrentEmail] = useState<string>(''); // Store the current email
+  const [currentEmail, setCurrentEmail] = useState<string>('');
+  const [isEmailConfirmOpen, setIsEmailConfirmOpen] = useState<boolean>(false);
+  const [pendingFormData, setPendingFormData] = useState<ProfileFormData | null>(null);
   const { isAdmin } = useAdmin();
   const [passwordVisibility, setPasswordVisibility] = useState({
     current: false,
@@ -107,8 +109,12 @@ export default function PersonalProfile() {
   const {
     handleSubmit,
     reset,
+    watch,
     formState: { isValid, isDirty },
   } = methods;
+
+  // Watch for email changes
+  const watchEmail = watch('email');
 
   const handleCloseSnackbar = useCallback(() => {
     setSnackbar({ open: false, message: '', severity: undefined });
@@ -136,11 +142,6 @@ export default function PersonalProfile() {
         setLoading(false);
       } catch (err) {
         setError('Failed to fetch organization data');
-        // setSnackbar({
-        //   open: true,
-        //   message: err.errorMessage,
-        //   severity: 'error',
-        // });
         setLoading(false);
       }
     };
@@ -148,22 +149,20 @@ export default function PersonalProfile() {
     fetchUserData();
   }, [reset]);
 
-  // useEffect(() => {
-  //   const fetchLogo = async (): Promise<void> => {
-  //     try {
-  //       const userId = await getUserIdFromToken();
-  //       const logoUrl = await getUserLogo(userId);
-  //       setLogo(logoUrl);
-  //     } catch (err) {
-  //       setError('Failed to fetch User logo');
-  //       setSnackbar({ open: true, message: err.errorMessage, severity: 'error' });
-  //     }
-  //   };
+  const handleFormSubmit = (data: ProfileFormData): void => {
+    const emailChanged = data.email !== currentEmail;
 
-  //   fetchLogo();
-  // }, []);
+    if (emailChanged) {
+      // Store form data and show confirmation dialog
+      setPendingFormData(data);
+      setIsEmailConfirmOpen(true);
+    } else {
+      // Process the form directly if email hasn't changed
+      processFormSubmission(data);
+    }
+  };
 
-  const onSubmit = async (data: ProfileFormData): Promise<void> => {
+  const processFormSubmission = async (data: ProfileFormData): Promise<void> => {
     try {
       setSaveChanges(true);
       const userId = await getUserIdFromToken();
@@ -195,11 +194,25 @@ export default function PersonalProfile() {
       setLoading(false);
     } catch (err) {
       setError('Failed to update user');
-      // setSnackbar({ open: true, message: err.errorMessage, severity: 'error' });
       setLoading(false);
     } finally {
       setSaveChanges(false);
+      setPendingFormData(null);
     }
+  };
+
+  const handleConfirmEmailChange = () => {
+    if (pendingFormData) {
+      processFormSubmission(pendingFormData);
+    }
+    setIsEmailConfirmOpen(false);
+  };
+
+  const handleCancelEmailChange = () => {
+    setIsEmailConfirmOpen(false);
+    setPendingFormData(null);
+    // Optionally reset the email field back to current email
+    methods.setValue('email', currentEmail);
   };
 
   const handleDelete = async (): Promise<void> => {
@@ -211,7 +224,6 @@ export default function PersonalProfile() {
       setDeleting(false);
       setLogo(null);
     } catch (err) {
-      // setSnackbar({ open: true, message: err.errorMessage, severity: 'error' });
       setDeleting(false);
     }
   };
@@ -232,7 +244,6 @@ export default function PersonalProfile() {
       setLogo(URL.createObjectURL(file));
     } catch (err) {
       setError('Failed to upload photo');
-      // setSnackbar({ open: true, message: 'Failed to upload photo', severity: 'error' });
       setUploading(false);
     }
   };
@@ -251,7 +262,7 @@ export default function PersonalProfile() {
       setIsChangePasswordOpen(false);
       passwordMethods.reset();
     } catch (err) {
-      // setSnackbar({ open: true, message: err.errorMessage, severity: 'error' });
+      // Error handling
     }
   };
 
@@ -269,8 +280,8 @@ export default function PersonalProfile() {
           justifyContent: 'center',
           alignItems: 'center',
           minHeight: '80vh',
-          mx:'auto',
-          my:'auto'
+          mx: 'auto',
+          my: 'auto',
         }}
       >
         <Paper
@@ -351,7 +362,7 @@ export default function PersonalProfile() {
             <Grid item xs={12} md={8}>
               <Form
                 methods={methods}
-                onSubmit={handleSubmit(onSubmit)}
+                onSubmit={handleSubmit(handleFormSubmit)}
                 {...({ noValidate: true } as any)}
               >
                 <Grid container spacing={3}>
@@ -396,7 +407,7 @@ export default function PersonalProfile() {
                         },
                       }}
                     />
-                    {methods.getValues('email') !== currentEmail && (
+                    {watchEmail !== currentEmail && (
                       <Alert severity="warning" sx={{ mt: 1, borderRadius: 1 }}>
                         Changing your email will log you out of the system
                       </Alert>
@@ -435,6 +446,89 @@ export default function PersonalProfile() {
           </Grid>
         </Box>
       </Paper>
+
+      {/* Email Change Confirmation Dialog */}
+      <Dialog
+        open={isEmailConfirmOpen}
+        onClose={handleCancelEmailChange}
+        PaperProps={{
+          sx: {
+            borderRadius: 1,
+            maxWidth: 450,
+          },
+        }}
+      >
+        <DialogTitle sx={{ pb: 1, pt: 2.5 }}>
+          <Typography variant="h6" fontWeight={600}>
+            Confirm Email Change
+          </Typography>
+        </DialogTitle>
+        <DialogContent sx={{ pt: 1, pb: 1 }}>
+          <Alert severity="warning" sx={{ mb: 2, borderRadius: 1 }}>
+            Changing your email will log you out of the system
+          </Alert>
+
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+            Your email will be changed from:
+          </Typography>
+
+          <Box
+            sx={{
+              bgcolor: alpha(theme.palette.background.default, 0.5),
+              p: 1.5,
+              borderRadius: 1,
+              mb: 2,
+              fontFamily: "'SF Mono', 'Roboto Mono', monospace",
+            }}
+          >
+            <Typography variant="body2" fontWeight={500} color="text.primary" gutterBottom>
+              <span style={{ color: theme.palette.warning.main }}>- </span>
+              {currentEmail}
+            </Typography>
+            <Typography variant="body2" fontWeight={500} color="text.primary">
+              <span style={{ color: theme.palette.success.main }}>+ </span>
+              {watchEmail}
+            </Typography>
+          </Box>
+
+          <Typography variant="body2" color="text.secondary">
+            You will need to log in again with your new email address. All your data and settings
+            will remain intact.
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 2.5, pb: 2.5, pt: 1 }}>
+          <Button
+            onClick={handleCancelEmailChange}
+            size="medium"
+            sx={{
+              textTransform: 'none',
+              color: 'text.secondary',
+              fontWeight: 500,
+            }}
+          >
+            Cancel
+          </Button>
+          <Button
+            onClick={handleConfirmEmailChange}
+            variant="contained"
+            color="primary"
+            size="medium"
+            sx={{
+              textTransform: 'none',
+              borderRadius: 1,
+              px: 2,
+              height: 38,
+              fontWeight: 500,
+              boxShadow: theme.shadows[1],
+              '&:hover': {
+                boxShadow: theme.shadows[2],
+              },
+            }}
+          >
+            Confirm & Log Out
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       {/* Password Dialog */}
       <Dialog

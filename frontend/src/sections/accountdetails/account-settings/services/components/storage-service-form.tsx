@@ -24,6 +24,7 @@ import {
   Alert,
   Select,
   Button,
+  Tooltip,
   MenuItem,
   TextField,
   Typography,
@@ -416,20 +417,25 @@ const StorageServiceForm = forwardRef<StorageServiceFormRef, StorageServiceFormP
         </Box>
 
         <Box sx={{ display: 'flex', justifyContent: 'flex-end', mb: 2 }}>
-          <Button
-            onClick={handleToggleEdit}
-            startIcon={<Iconify icon={isEditing ? closeIcon : pencilIcon} />}
-            color={isEditing ? 'error' : 'primary'}
-            size="small"
-          >
-            {isEditing ? 'Cancel' : 'Edit'}
-          </Button>
+          <Tooltip title="Editing external services is not allowed" arrow>
+            <span>
+              <Button
+                onClick={handleToggleEdit}
+                startIcon={<Iconify icon={isEditing ? closeIcon : pencilIcon} />}
+                color={isEditing ? 'error' : 'primary'}
+                size="small"
+                disabled
+              >
+                {isEditing ? 'Cancel' : 'Edit'}
+              </Button>
+            </span>
+          </Tooltip>
         </Box>
 
         {showStorageTypeWarning && (
-          <Alert 
-            severity="warning" 
-            sx={{ 
+          <Alert
+            severity="warning"
+            sx={{
               mb: 3,
               borderRadius: 1,
               display: 'flex',
@@ -440,7 +446,14 @@ const StorageServiceForm = forwardRef<StorageServiceFormRef, StorageServiceFormP
             icon={<Iconify icon={warningIcon} width={24} height={24} />}
           >
             <Typography variant="body2">
-              <strong>Warning:</strong> Changing the storage type will prevent access to data stored using the current storage type ({originalData.storageType === 'local' ? 'Local Storage' : originalData.storageType === 's3' ? 'Amazon S3' : 'Azure Blob Storage'}).
+              <strong>Warning:</strong> Changing the storage type will prevent access to data stored
+              using the current storage type (
+              {originalData.storageType === 'local'
+                ? 'Local Storage'
+                : originalData.storageType === 's3'
+                  ? 'Amazon S3'
+                  : 'Azure Blob Storage'}
+              ).
             </Typography>
           </Alert>
         )}

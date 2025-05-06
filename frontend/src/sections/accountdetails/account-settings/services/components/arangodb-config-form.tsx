@@ -11,6 +11,7 @@ import {
   Box,
   Grid,
   Button,
+  Tooltip,
   TextField,
   Typography,
   InputAdornment,
@@ -232,14 +233,19 @@ const ArangoDBConfigForm = forwardRef<ArangoDBConfigFormRef, ArangoDBConfigFormP
         </Box>
 
         <Box sx={{ display: 'flex', justifyContent: 'flex-end', mb: 2 }}>
-          <Button
-            onClick={handleToggleEdit}
-            startIcon={<Iconify icon={isEditing ? closeIcon : pencilIcon} />}
-            color={isEditing ? 'error' : 'primary'}
-            size="small"
-          >
-            {isEditing ? 'Cancel' : 'Edit'}
-          </Button>
+          <Tooltip title="Editing external services is not allowed" arrow>
+            <span>
+              <Button
+                onClick={handleToggleEdit}
+                startIcon={<Iconify icon={isEditing ? closeIcon : pencilIcon} />}
+                color={isEditing ? 'error' : 'primary'}
+                size="small"
+                disabled
+              >
+                {isEditing ? 'Cancel' : 'Edit'}
+              </Button>
+            </span>
+          </Tooltip>
         </Box>
 
         <Grid container spacing={2.5}>
