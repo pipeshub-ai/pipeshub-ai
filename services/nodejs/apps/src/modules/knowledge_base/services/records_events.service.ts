@@ -3,13 +3,12 @@ import { Logger } from '../../../libs/services/logger.service';
 import { BaseKafkaProducerConnection } from '../../../libs/services/kafka.service';
 import { KafkaConfig, KafkaMessage } from '../../../libs/types/kafka.types';
 
-
 export enum EventType {
   NewRecordEvent = 'newRecord',
   UpdateRecordEvent = 'updateRecord',
   DeletedRecordEvent = 'deleteRecord',
   ReindexRecordEvent = 'reindexRecord',
-  ReindexAllRecordEvent = 'reindexFailed'
+  ReindexAllRecordEvent = 'reindexFailed',
 }
 
 export interface Event {
@@ -19,68 +18,68 @@ export interface Event {
     | NewRecordEvent
     | UpdateRecordEvent
     | DeletedRecordEvent
-    | ReindexRecordEvent 
+    | ReindexRecordEvent
     | ReindexAllRecordEvent;
 }
 
 export interface NewRecordEvent {
   orgId: string;
-  recordId : string;
-  recordName : string;
-  recordType : string;
-  version : number;
-  signedUrlRoute : string;
-  origin : string;
-  extension : string;
-  createdAtTimestamp : string;
-  updatedAtTimestamp : string;
-  sourceCreatedAtTimestamp : string;
+  recordId: string;
+  recordName: string;
+  recordType: string;
+  version: number;
+  signedUrlRoute: string;
+  origin: string;
+  extension: string;
+  createdAtTimestamp: string;
+  updatedAtTimestamp: string;
+  sourceCreatedAtTimestamp: string;
 }
 
 export interface UpdateRecordEvent {
-    orgId: string;
-    recordId : string;
-    version : number;
-    signedUrlRoute : string;
-    updatedAtTimestamp : string;
-    sourceLastModifiedTimestamp : string;
+  orgId: string;
+  recordId: string;
+  version: number;
+  signedUrlRoute: string;
+  updatedAtTimestamp: string;
+  sourceLastModifiedTimestamp: string;
+  virtualRecordId?: string;
 }
 
 export interface ReindexRecordEvent {
   orgId: string;
-  recordId : string;
-  recordName : string;
-  recordType : string;
-  version : number;
-  signedUrlRoute : string;
-  origin : string;
-  extension : string;
-  createdAtTimestamp : string;
-  updatedAtTimestamp : string;
-  sourceCreatedAtTimestamp : string;
+  recordId: string;
+  recordName: string;
+  recordType: string;
+  version: number;
+  signedUrlRoute: string;
+  origin: string;
+  extension: string;
+  createdAtTimestamp: string;
+  updatedAtTimestamp: string;
+  sourceCreatedAtTimestamp: string;
 }
 
 export interface ReindexAllRecordEvent {
   orgId: string;
-  app : string;
-  origin : string;
-  createdAtTimestamp : string;
-  updatedAtTimestamp : string;
-  sourceCreatedAtTimestamp : string;
+  connector: string;
+  origin: string;
+  createdAtTimestamp: string;
+  updatedAtTimestamp: string;
+  sourceCreatedAtTimestamp: string;
 }
-
 
 export interface DeletedRecordEvent {
   orgId: string;
-  recordId : string;
-  version : number;
+  recordId: string;
+  version: number;
+  virtualRecordId?: string;
 }
-
-
 
 @injectable()
 export class RecordsEventProducer extends BaseKafkaProducerConnection {
-  private readonly topic = 'record-events';
+  private readonly recordsTopic = 'record-events';
+  private readonly syncTopic = 'sync-events';
 
   constructor(
     @inject('KafkaConfig') config: KafkaConfig,
@@ -101,8 +100,6 @@ export class RecordsEventProducer extends BaseKafkaProducerConnection {
     }
   }
 
-
-
   async publishEvent(event: Event): Promise<void> {
     const message: KafkaMessage<string> = {
       key: event.eventType,
@@ -113,10 +110,16 @@ export class RecordsEventProducer extends BaseKafkaProducerConnection {
       },
     };
 
+    // Choose the topic based on the event type
+    const topic =
+      event.eventType === EventType.ReindexAllRecordEvent
+        ? this.syncTopic
+        : this.recordsTopic;
+
     try {
-      await this.publish(this.topic, message);
+      await this.publish(topic, message);
       this.logger.info(
-        `Published event: ${event.eventType} to topic ${this.topic}`,
+        `Published event: ${event.eventType} to topic ${topic}`,
       );
     } catch (error) {
       this.logger.error(`Failed to publish event: ${event.eventType}`, error);
@@ -124,11 +127,4 @@ export class RecordsEventProducer extends BaseKafkaProducerConnection {
   }
 }
 
-
-
-
-
 ///////
-
-
-

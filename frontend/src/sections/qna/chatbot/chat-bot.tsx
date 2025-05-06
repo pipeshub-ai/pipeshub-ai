@@ -12,7 +12,7 @@ import { Icon } from '@iconify/react';
 import menuIcon from '@iconify-icons/mdi/menu';
 import closeIcon from '@iconify-icons/mdi/close';
 import { useParams, useNavigate } from 'react-router';
-import React, { useRef, useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 
 import {
   Box,
@@ -613,7 +613,7 @@ const ChatInterface = () => {
           setCurrentConversationId(convId);
           currentConversationIdRef.current = convId;
           setShouldRefreshSidebar(true);
-          navigate(`/${convId}`);
+          // navigate(`/${convId}`);
 
           if (conversation.status) {
             setConversationStatus((prev) => ({
@@ -633,9 +633,6 @@ const ChatInterface = () => {
         }
       } else {
         // Continue existing conversation
-        console.log(currentConversationId) 
-        console.log(activeRequestTracker) 
-        console.log(currentConversationIdRef) 
         response = await axios.post<{ conversation: Conversation }>(
           `/api/v1/conversations/${currentConversationId}/messages`,
           { query: trimmedInput }
@@ -707,7 +704,7 @@ const ChatInterface = () => {
         });
       }
     }
-  }, [inputValue, currentConversationId, formatMessage, navigate, activeRequestTracker]);
+  }, [inputValue, currentConversationId, formatMessage, activeRequestTracker]);
 
   // Update handleRegenerateMessage
   const handleRegenerateMessage = useCallback(

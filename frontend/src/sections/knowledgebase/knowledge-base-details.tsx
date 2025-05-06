@@ -74,6 +74,7 @@ import {
   DialogActions,
   FormControlLabel,
   CircularProgress,
+  LinearProgress,
 } from '@mui/material';
 
 import axios from 'src/utils/axios';
@@ -154,6 +155,7 @@ export default function KnowledgeBaseDetails({
   const [menuItems, setMenuItems] = useState<ActionMenuItem[]>([]);
 
   const [uploadError, setUploadError] = useState<UploadErrorState>({ show: false, message: '' });
+  const [uploadProgress, setUploadProgress] = useState<number>(0);
 
   const navigate = useNavigate();
 
@@ -188,6 +190,9 @@ export default function KnowledgeBaseDetails({
     // Check for files exceeding size limit
     const { valid, oversizedFiles } = validateFileSize(acceptedFiles);
 
+    const validFiles = acceptedFiles.filter((file) => file.size <= MAX_FILE_SIZE);
+    setFiles((prevFiles) => [...prevFiles, ...validFiles]);
+
     if (!valid) {
       // Show error for oversized files
       setFileSizeError({
@@ -195,21 +200,22 @@ export default function KnowledgeBaseDetails({
         files: oversizedFiles,
       });
 
-      // Only keep files that are within the size limit
-      const validFiles = acceptedFiles.filter((file) => file.size <= MAX_FILE_SIZE);
-      setFiles(validFiles);
-    } else {
-      // All files are valid
-      setFileSizeError({ show: false, files: [] });
-      setFiles(acceptedFiles);
+      // // Only keep files that are within the size limit
+      // const validFiles = acceptedFiles.filter((file) => file.size <= MAX_FILE_SIZE);
+      // setFiles(validFiles);
     }
+    // else {
+    //   // All files are valid
+    //   setFileSizeError({ show: false, files: [] });
+    //   setFiles(acceptedFiles);
+    // }
   };
 
   // Enhanced dropzone with file size validation
   const { getRootProps, getInputProps, isDragActive, fileRejections } = useDropzone({
     onDrop,
     multiple: true,
-    maxSize: MAX_FILE_SIZE,
+    // maxSize: MAX_FILE_SIZE,
     onDropRejected: (rejectedFiles) => {
       const oversizedFiles = rejectedFiles
         .filter((file) => file.errors.some((error) => error.code === 'file-too-large'))
@@ -826,10 +832,13 @@ export default function KnowledgeBaseDetails({
   };
 
   const handleUploadDialogClose = () => {
-    setOpenUploadDialog(false);
-    setFiles([]);
-    setFileSizeError({ show: false, files: [] });
-    setUploadError({ show: false, message: '' });
+    if (!uploading) {
+      setOpenUploadDialog(false);
+      setFiles([]);
+      setFileSizeError({ show: false, files: [] });
+      setUploadError({ show: false, message: '' });
+      setUploadProgress(0);
+    }
   };
 
   // File size error alert component
@@ -887,10 +896,221 @@ export default function KnowledgeBaseDetails({
     );
   };
 
+  const UploadProgressBar = () => {
+    if (!uploading) return null;
+
+    return (
+      <Box sx={{ width: '100%', mb: 2 }}>
+        <Typography variant="body2" sx={{ mb: 1 }}>
+          Uploading files... {Math.round(uploadProgress)}%
+        </Typography>
+        <LinearProgress
+          variant="determinate"
+          value={uploadProgress}
+          sx={{
+            height: 8,
+            borderRadius: 4,
+            '& .MuiLinearProgress-bar': {
+              borderRadius: 4,
+            },
+          }}
+        />
+      </Box>
+    );
+  };
+
+  const renderUploadDialogContent = () => {
+    if (uploading) {
+      return (
+        <DialogContent
+          sx={{
+            display: 'flex',
+            flexDirection: 'column',
+            justifyContent: 'center',
+            alignItems: 'center',
+            minHeight: '250px',
+            py: 4,
+          }}
+        >
+          <UploadProgressBar />
+          <CircularProgress size={40} thickness={4} sx={{ mb: 3 }} />
+          <Typography variant="subtitle1" fontWeight={500}>
+            Uploading your files...
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+            Please wait while your files are being processed
+          </Typography>
+        </DialogContent>
+      );
+    }
+
+    return (
+      <DialogContent sx={{ px: 3, py: 3 }}>
+        {/* File Size Error Alert */}
+        <FileSizeErrorAlert />
+
+        {/* Upload Error Alert */}
+        <UploadErrorAlert />
+
+        <Box
+          {...getRootProps()}
+          sx={{
+            border: '2px dashed',
+            borderColor: isDragActive ? 'primary.main' : alpha('#000', 0.15),
+            borderRadius: '12px',
+            p: 4,
+            textAlign: 'center',
+            cursor: 'pointer',
+            mb: 3,
+            transition: 'all 0.2s ease-in-out',
+            bgcolor: isDragActive ? alpha('#1976d2', 0.04) : 'transparent',
+            '&:hover': {
+              borderColor: 'primary.main',
+              bgcolor: alpha('#1976d2', 0.04),
+            },
+          }}
+        >
+          <input {...getInputProps()} />
+          <Icon
+            icon={cloudIcon}
+            style={{
+              fontSize: '48px',
+              marginBottom: '16px',
+              color: isDragActive ? '#1976d2' : '#757575',
+            }}
+          />
+          <Typography variant="h6" sx={{ mb: 1, fontWeight: 500 }}>
+            {isDragActive ? 'Drop the files here...' : 'Drag and drop files here'}
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            or click to browse from your computer
+          </Typography>
+          <Button
+            variant="outlined"
+            size="small"
+            startIcon={<Icon icon={filePlusIcon} />}
+            sx={{ borderRadius: '8px' }}
+          >
+            Select Files
+          </Button>
+          <Typography variant="caption" display="block" sx={{ mt: 2, color: 'text.secondary' }}>
+            Maximum file size: 30MB per file
+          </Typography>
+        </Box>
+
+        {files.length > 0 && (
+          <Paper
+            variant="outlined"
+            sx={{
+              mt: 3,
+              p: 2,
+              borderRadius: '12px',
+              bgcolor: alpha('#000', 0.01),
+              border: `1px solid ${alpha('#000', 0.08)}`,
+            }}
+          >
+            <Stack direction="row" justifyContent="space-between" alignItems="center" mb={2}>
+              <Typography variant="subtitle1" fontWeight={500}>
+                Selected Files ({files.length})
+              </Typography>
+              <Button
+                size="small"
+                color="error"
+                variant="text"
+                onClick={() => setFiles([])}
+                startIcon={<Icon icon={trashCanIcon} />}
+                sx={{ borderRadius: '8px' }}
+              >
+                Clear All
+              </Button>
+            </Stack>
+
+            <Box
+              sx={{
+                maxHeight: '200px',
+                overflow: 'auto',
+                '&::-webkit-scrollbar': {
+                  width: '4px',
+                },
+                '&::-webkit-scrollbar-thumb': {
+                  backgroundColor: 'rgba(0,0,0,.2)',
+                  borderRadius: '4px',
+                },
+              }}
+            >
+              {files.map((file, index) => {
+                const extension = file.name.split('.').pop() || '';
+                return (
+                  <Stack
+                    key={file.name + index}
+                    direction="row"
+                    alignItems="center"
+                    spacing={1.5}
+                    sx={{
+                      mb: 1,
+                      p: 1.5,
+                      borderRadius: '8px',
+                      '&:hover': {
+                        bgcolor: 'background.paper',
+                      },
+                    }}
+                  >
+                    <Icon
+                      icon={getFileIcon(extension)}
+                      style={{
+                        fontSize: '24px',
+                        color: getFileIconColor(extension),
+                        flexShrink: 0,
+                      }}
+                    />
+                    <Box sx={{ flexGrow: 1, minWidth: 0 }}>
+                      <Typography variant="body2" noWrap title={file.name} fontWeight={500}>
+                        {file.name}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        {formatFileSize(file.size)}
+                      </Typography>
+                    </Box>
+                    <IconButton
+                      size="small"
+                      color="error"
+                      onClick={() => setFiles((prev) => prev.filter((_, i) => i !== index))}
+                      sx={{ p: 0.5, flexShrink: 0 }}
+                    >
+                      <Icon icon={closeIcon} fontSize={18} />
+                    </IconButton>
+                  </Stack>
+                );
+              })}
+            </Box>
+          </Paper>
+        )}
+      </DialogContent>
+    );
+  };
+
+  // Upload files in batches to avoid overwhelming the server
+  const uploadFilesBatched = async (formData: FormData): Promise<boolean> => {
+    try {
+      await uploadKnowledgeBaseFiles(formData);
+      return true;
+    } catch (error: any) {
+      console.error('Error uploading files batch:', error);
+      setUploadError({
+        show: true,
+        message: error.message || 'Failed to upload files. Please try again.',
+      });
+      return false;
+    }
+  };
+
   // Modified handleUpload function with file size validation
   const handleUpload = async () => {
     if (files.length === 0) {
-      console.error('No files selected for upload.');
+      setUploadError({
+        show: true,
+        message: 'Please select at least one file to upload.',
+      });
       return;
     }
 
@@ -905,23 +1125,98 @@ export default function KnowledgeBaseDetails({
     }
 
     try {
-      const formData = new FormData();
-      files.forEach((file) => {
-        formData.append('files', file);
+      setUploading(true);
+      setUploadError({ show: false, message: '' });
+      setUploadProgress(0);
+
+      // Process files in batches of 5 to avoid overwhelming the server
+      const BATCH_SIZE = 5;
+      let successfulUploads = 0;
+      let hasErrors = false;
+
+      // Split files into batches
+      const batches = [];
+      for (let i = 0; i < files.length; i += BATCH_SIZE) {
+        const currentBatch = files.slice(i, i + BATCH_SIZE);
+        const batchFormData = new FormData();
+
+        // Add current batch of files to FormData
+        currentBatch.forEach((file) => {
+          batchFormData.append('files', file);
+        });
+
+        batches.push({
+          formData: batchFormData,
+          size: currentBatch.length,
+        });
+      }
+
+      // Process all batches concurrently, but update progress sequentially
+      const totalBatches = batches.length;
+      let completedBatches = 0;
+
+      // Process batches sequentially to maintain reliable progress updates
+      // but without using await in loop which triggers the linting error
+      const results = await Promise.all(
+        batches.map(async (batch) => {
+          try {
+            const success = await uploadFilesBatched(batch.formData);
+            completedBatches+=1;
+
+            // Update progress
+            setUploadProgress((completedBatches / totalBatches) * 100);
+
+            return {
+              success,
+              count: batch.size,
+            };
+          } catch (error) {
+            completedBatches+=1;
+            setUploadProgress((completedBatches / totalBatches) * 100);
+            return {
+              success: false,
+              count: 0,
+              error,
+            };
+          }
+        })
+      );
+
+      // Count successful uploads and check for errors
+      results.forEach((result) => {
+        if (result.success) {
+          successfulUploads += result.count;
+        } else {
+          hasErrors = true;
+        }
       });
 
-      setUploading(true);
-      await uploadKnowledgeBaseFiles(formData);
+      // Show appropriate message based on upload results
+      if (successfulUploads > 0) {
+        setSnackbar({
+          open: true,
+          message: hasErrors
+            ? `Uploaded ${successfulUploads} of ${files.length} files successfully. Some files failed.`
+            : `Successfully uploaded ${files.length} files.`,
+          severity: hasErrors ? 'warning' : 'success',
+        });
 
-      handleUploadDialogClose();
-      // Trigger a refresh of the knowledge base data
-      onSearchChange('');
+        // Close dialog and refresh data only if at least some files were uploaded
+        handleUploadDialogClose();
+        onSearchChange(''); // Refresh the knowledge base data
+      } else if (hasErrors) {
+        // Keep dialog open but show error
+        setUploadError({
+          show: true,
+          message: 'Failed to upload any files. Please try again.',
+        });
+      }
     } catch (error: any) {
-      console.error('Error uploading files:', error);
-      // setUploadError({
-      //   show: true,
-      //   message: error.message || 'Failed to upload files. Please try again.',
-      // });
+      console.error('Error in upload process:', error);
+      setUploadError({
+        show: true,
+        message: error.message || 'Failed to upload files. Please try again.',
+      });
     } finally {
       setUploading(false);
     }
@@ -1309,14 +1604,16 @@ export default function KnowledgeBaseDetails({
             </Typography>
           </DialogContent>
         ) : (
-          <DialogContent sx={{ px: 3, py: 3 }}>
-            {/* File Size Error Alert */}
-            <FileSizeErrorAlert />
+          renderUploadDialogContent()
+        )}
+        {/* <DialogContent sx={{ px: 3, py: 3 }}> */}
+        {/* File Size Error Alert */}
+        {/* <FileSizeErrorAlert /> */}
 
-            {/* Upload Error Alert */}
-            <UploadErrorAlert />
+        {/* Upload Error Alert */}
+        {/* <UploadErrorAlert /> */}
 
-            <Box
+        {/* <Box
               {...getRootProps()}
               sx={{
                 border: '2px dashed',
@@ -1360,9 +1657,9 @@ export default function KnowledgeBaseDetails({
               <Typography variant="caption" display="block" sx={{ mt: 2, color: 'text.secondary' }}>
                 Maximum file size: 30MB
               </Typography>
-            </Box>
+            </Box> */}
 
-            {files.length > 0 && (
+        {/* {files.length > 0 && (
               <Paper
                 variant="outlined"
                 sx={{
@@ -1451,7 +1748,7 @@ export default function KnowledgeBaseDetails({
             )}
           </DialogContent>
         )}
-
+          */}
         <DialogActions
           sx={{ px: 3, py: 2.5, borderTop: '1px solid', borderColor: alpha('#000', 0.08) }}
         >

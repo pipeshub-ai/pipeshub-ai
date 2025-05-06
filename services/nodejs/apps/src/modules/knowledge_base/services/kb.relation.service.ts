@@ -264,6 +264,7 @@ export class RecordRelationService {
         record.updatedAtTimestamp ||
         Date.now()
       ).toString(),
+      virtualRecordId : record.virtualRecordId,
     };
   }
 
@@ -278,6 +279,7 @@ export class RecordRelationService {
       orgId: record.orgId,
       recordId: record._key,
       version: record.version || 1,
+      virtualRecordId : record.virtualRecordId,
     };
   }
 
@@ -1915,7 +1917,7 @@ export class RecordRelationService {
     return {
       orgId: reindexPayload.orgId,
       origin: reindexPayload.origin,
-      app: reindexPayload.app,
+      connector: reindexPayload.app,
       createdAtTimestamp: Date.now().toString(),
       updatedAtTimestamp: Date.now().toString(),
       sourceCreatedAtTimestamp: Date.now().toString(),

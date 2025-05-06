@@ -18,6 +18,7 @@ import fileCancelOutlineIcon from '@iconify-icons/mdi/file-cancel-outline';
 import checkCircleOutlineIcon from '@iconify-icons/mdi/check-circle-outline';
 import alertCircleOutlineIcon from '@iconify-icons/mdi/alert-circle-outline';
 import microsoftSharepointIcon from '@iconify-icons/mdi/microsoft-sharepoint';
+import refreshIcon from '@iconify-icons/mdi/refresh';
 
 import { alpha, useTheme } from '@mui/material/styles';
 import {
@@ -33,6 +34,7 @@ import {
   AlertTitle,
   CardContent,
   CircularProgress,
+  Button,
 } from '@mui/material';
 
 import axios from 'src/utils/axios';
@@ -403,9 +405,9 @@ const ConnectorCard = ({ connector }: { connector: ConnectorData }): JSX.Element
           </Grid>
 
           {/* Action Buttons */}
-          {/* <Box sx={{ mt: 0.5, display: 'flex', justifyContent: 'center', width: '100%' }}> */}
-          {/* Reindex button for failed documents */}
-          {/* {indexing_status.FAILED > 0 && (
+          <Box sx={{ mt: 0.5, display: 'flex', justifyContent: 'center', width: '100%' }}>
+            {/* Reindex button for failed documents */}
+            {indexing_status.FAILED > 0 && (
               <Button
                 size="small"
                 color="error"
@@ -434,8 +436,8 @@ const ConnectorCard = ({ connector }: { connector: ConnectorData }): JSX.Element
                   'Reindex failed'
                 )}
               </Button>
-            )} */}
-          {/* </Box> */}
+            )}
+          </Box>
         </Box>
       </Paper>
       <Snackbar
@@ -516,7 +518,7 @@ const ConnectorStatistics = ({
         throw new Error('Failed to fetch connector statistics');
       }
 
-      const {data} = response.data;
+      const { data } = response.data;
 
       // Set overall stats
       setOverallStats(data.total);
