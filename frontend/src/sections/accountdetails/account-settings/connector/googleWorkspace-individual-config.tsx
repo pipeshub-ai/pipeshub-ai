@@ -92,11 +92,10 @@ const GoogleWorkspaceIndividualPage = () => {
       // Update the configuredStatus while preserving lastConfigured state
       setConfiguredStatus((prev) => {
         // Get the current connector that was just configured (if any)
-        const justConfigured = lastConfigured;
 
         return {
           ...prev,
-          googleWorkspace: justConfigured === 'googleWorkspace' ? true : googleConfigured,
+          googleWorkspace: googleConfigured,
         };
       });
     } catch (err) {
