@@ -141,7 +141,7 @@ services:
       - etcd_data:/etcd-data
 
   zookeeper:
-    image: confluentinc/cp-zookeeper:7.0.1
+    image: confluentinc/cp-zookeeper:7.9.0
     container_name: zookeeper
     restart: always
     ports:
