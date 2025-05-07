@@ -52,7 +52,11 @@ import { useAdmin } from 'src/context/AdminContext';
 
 import { Iconify } from 'src/components/iconify';
 
-import { setCounts, decrementUserCount, updateInvitesCount } from '../../../store/userAndGroupsSlice';
+import {
+  setCounts,
+  decrementUserCount,
+  updateInvitesCount,
+} from '../../../store/userAndGroupsSlice';
 import {
   allGroups,
   removeUser,
@@ -1086,9 +1090,10 @@ function AddUsersToGroupsModal({
   const handleAddUsersToGroups = async () => {
     try {
       const userIds = selectedUsers
-        .filter((user): user is GroupUser & { iamUser: AppUser } => user._id !== null)
-        .map((user) => user.iamUser._id);
+        .filter((user): user is GroupUser => user._id !== null)
+        .map((user) => user._id);
       const groupIds = selectedGroups.map((group) => group._id);
+
       await addUsersToGroups({ userIds, groupIds });
       setSnackbarState({
         open: true,

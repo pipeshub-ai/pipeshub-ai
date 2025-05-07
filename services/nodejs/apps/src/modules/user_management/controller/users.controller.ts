@@ -31,6 +31,7 @@ import { AppConfig } from '../../tokens_manager/config/config';
 import { UserGroups } from '../schema/userGroup.schema';
 import { AuthService } from '../services/auth.service';
 import { Org } from '../schema/org.schema';
+import { UserCredentials } from '../../auth/schema/userCredentials.schema';
 @injectable()
 export class UserController {
   constructor(
@@ -583,8 +584,19 @@ export class UserController {
         throw new BadRequestError('Admin User deletion is not allowed');
       }
 
+      await UserGroups.updateMany(
+        { orgId, users: userId },
+        { $pull: { users: userId } },
+      );
+
       user.isDeleted = true;
+      user.hasLoggedIn = false;
       user.deletedBy = req.user._id;
+
+      await UserCredentials.updateOne(
+        { userId },
+        { $unset: { hashedPassword: '' } },
+      );
 
       await user.save();
 
