@@ -34,7 +34,7 @@ sudo apt install ocrmypdf tesseract-ocr ghostscript unpaper qpdf
 # Install required packages
 brew install python@3.10
 brew install libreoffice
-brew install ocrmypdf tesseract ghostscript unpaper qpdf
+brew install ocrmypdf ghostscript unpaper qpdf
 
 # Install optional packages
 brew install tesseract
@@ -50,8 +50,9 @@ brew install tesseract
 ### Application Dependencies
 ```bash
 1. **Docker** - Install Docker for your platform
-2. **Python 3.10** - Install as shown above
-3. **Optional debugging tools:**
+2. **Node.js** - Install Node.js(v22.15.0)
+3. **Python 3.10** - Install as shown above
+4. **Optional debugging tools:**
    - MongoDB Compass or Studio 3T
    - etcd-manager
 ```
@@ -96,7 +97,7 @@ docker run -d --name mongodb --restart always -p 27017:27017 \
 docker run -d --name zookeeper --restart always -p 2181:2181 \
   -e ZOOKEEPER_CLIENT_PORT=2181 \
   -e ZOOKEEPER_TICK_TIME=2000 \
-  confluentinc/cp-zookeeper:7.0.1
+  confluentinc/cp-zookeeper:7.9.0
 ```
 
 **Apache Kafka:**
@@ -124,7 +125,7 @@ npm run dev
 cd services/python
 cp ../env.template .env
 # Create and activate virtual environment
-python3 -m venv venv
+python3.10 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 # Install dependencies
