@@ -1135,7 +1135,7 @@ export default function KnowledgeBaseDetails({
       let hasErrors = false;
 
       // Split files into batches
-      const batches:any = [];
+      const batches: { formData: FormData; size: number }[] = [];
       for (let i = 0; i < files.length; i += BATCH_SIZE) {
         const currentBatch = files.slice(i, i + BATCH_SIZE);
         const batchFormData = new FormData();
@@ -1157,7 +1157,7 @@ export default function KnowledgeBaseDetails({
       const batchResults = []; // Store results from each batch
 
       // Use recursive function instead of for loop to process batches sequentially
-      const processBatchSequentially = async (batchIndex:any) => {
+      const processBatchSequentially = async (batchIndex: number) => {
         // Base case: all batches processed
         if (batchIndex >= batches.length) {
           return;
