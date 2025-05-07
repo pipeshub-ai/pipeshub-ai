@@ -7,7 +7,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-from app.config.configuration_service import config_node_constants
+from app.config.configuration_service import DefaultEndpoints, config_node_constants
 from app.setups.indexing_setup import AppContainer, initialize_container
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -65,7 +65,7 @@ async def health_check():
         endpoints = await app.container.config_service().get_config(
             config_node_constants.ENDPOINTS.value
         )
-        connector_endpoint = endpoints.get("connectors").get("endpoint")
+        connector_endpoint = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
         connector_url = f"{connector_endpoint}/health"
         async with httpx.AsyncClient() as client:
             connector_response = await client.get(connector_url, timeout=5.0)

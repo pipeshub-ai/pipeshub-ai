@@ -5,3 +5,4 @@ credentials.json
 token.pickle
 tests/*
 google_test
+celerybeat-schedule.*

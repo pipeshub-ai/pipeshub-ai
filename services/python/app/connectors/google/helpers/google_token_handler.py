@@ -7,7 +7,12 @@ from tenacity import (
     wait_exponential,
 )
 
-from app.config.configuration_service import Routes, TokenScopes, config_node_constants
+from app.config.configuration_service import (
+    DefaultEndpoints,
+    Routes,
+    TokenScopes,
+    config_node_constants,
+)
 
 
 class GoogleTokenHandler:
@@ -44,7 +49,7 @@ class GoogleTokenHandler:
         endpoints = await self.config_service.get_config(
             config_node_constants.ENDPOINTS.value
         )
-        nodejs_endpoint = endpoints.get("cm").get("endpoint")
+        nodejs_endpoint = endpoints.get("cm").get("endpoint", DefaultEndpoints.NODEJS_ENDPOINT.value)
 
         # Fetch credentials from API
         async with aiohttp.ClientSession() as session:
@@ -92,7 +97,7 @@ class GoogleTokenHandler:
             endpoints = await self.config_service.get_config(
                 config_node_constants.ENDPOINTS.value
             )
-            nodejs_endpoint = endpoints.get("cm").get("endpoint")
+            nodejs_endpoint = endpoints.get("cm").get("endpoint", DefaultEndpoints.NODEJS_ENDPOINT.value)
 
             async with aiohttp.ClientSession() as session:
                 async with session.post(
@@ -135,7 +140,7 @@ class GoogleTokenHandler:
         endpoints = await self.config_service.get_config(
             config_node_constants.ENDPOINTS.value
         )
-        nodejs_endpoint = endpoints.get("cm").get("endpoint")
+        nodejs_endpoint = endpoints.get("cm").get("endpoint", DefaultEndpoints.NODEJS_ENDPOINT.value)
 
         # Call credentials API
         async with aiohttp.ClientSession() as session:

@@ -554,7 +554,9 @@ async def download_file(
                             message_id = message["messageId"]
                             logger.info(f"Found message ID: {message_id}")
                         else:
-                            raise Exception("Related message not found")
+                            logger.warning("Related message not found, returning empty buffer")
+                            yield b""
+                            return
 
                         try:
                             attachment = (

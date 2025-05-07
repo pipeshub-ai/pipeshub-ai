@@ -151,6 +151,7 @@ async def initialize_individual_account_services_fn(org_id, container):
                 celery_app=container.celery_app,
                 drive_sync_service=container.drive_sync_service(),
                 gmail_sync_service=container.gmail_sync_service(),
+                arango_service=await container.arango_service(),
             )
         )
         sync_tasks = container.sync_tasks()
@@ -325,6 +326,7 @@ async def initialize_enterprise_account_services_fn(org_id, container):
                 celery_app=container.celery_app,
                 drive_sync_service=container.drive_sync_service(),
                 gmail_sync_service=container.gmail_sync_service(),
+                arango_service=await container.arango_service(),
             )
         )
         sync_tasks = container.sync_tasks()

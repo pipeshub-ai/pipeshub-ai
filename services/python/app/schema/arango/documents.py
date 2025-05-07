@@ -161,6 +161,7 @@ record_schema = {
                     "FAILED",
                     "COMPLETED",
                     "FILE_TYPE_NOT_SUPPORTED",
+                    "AUTO_INDEX_OFF"
                 ],
             },
             "extractionStatus": {
@@ -171,6 +172,7 @@ record_schema = {
                     "FAILED",
                     "COMPLETED",
                     "FILE_TYPE_NOT_SUPPORTED",
+                    "AUTO_INDEX_OFF"
                 ],
             },
             "isLatestVersion": {"type": "boolean", "default": True},

@@ -7,7 +7,11 @@ from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import Dict, Optional
 
-from app.config.configuration_service import ConfigurationService, config_node_constants
+from app.config.configuration_service import (
+    ConfigurationService,
+    DefaultEndpoints,
+    config_node_constants,
+)
 from app.config.utils.named_constants.arangodb_constants import (
     AccountType,
     CollectionNames,
@@ -914,7 +918,9 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
             expiration_timestamp = channel_history.get("expiration", 0)
             self.logger.info("Current time: %s", current_timestamp)
             self.logger.info("Page token expiration: %s", expiration_timestamp)
-            if expiration_timestamp is None or expiration_timestamp < current_timestamp:
+            if expiration_timestamp is None or expiration_timestamp == 0:
+                return channel_history
+            if expiration_timestamp < current_timestamp:
                 self.logger.info("⚠️ Page token expired for user %s", user_email)
                 await user_service.stop_gmail_user_watch()
 
@@ -1403,7 +1409,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                     endpoints = await self.config_service.get_config(
                         config_node_constants.ENDPOINTS.value
                     )
-                    connector_endpoint = endpoints.get("connectors").get("endpoint")
+                    connector_endpoint = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
 
                     # Send events to Kafka for the batch
                     for metadata in batch_metadata:
@@ -1729,7 +1735,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                 endpoints = await self.config_service.get_config(
                     config_node_constants.ENDPOINTS.value
                 )
-                connector_endpoint = endpoints.get("connectors").get("endpoint")
+                connector_endpoint = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
 
                 # Send events to Kafka
                 for metadata in batch_metadata:
@@ -1916,7 +1922,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
             endpoints = await self.config_service.get_config(
                 config_node_constants.ENDPOINTS.value
             )
-            connector_endpoint = endpoints.get("connectors").get("endpoint")
+            connector_endpoint = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
 
             count = 0
             failed_records_with_users = list(failed_records_with_users)
@@ -2047,7 +2053,9 @@ class GmailSyncIndividualService(BaseGmailSyncService):
             expiration_timestamp = channel_history.get("expiration", 0)
             self.logger.info("Current time: %s", current_timestamp)
             self.logger.info("Page token expiration: %s", expiration_timestamp)
-            if expiration_timestamp is None or expiration_timestamp < current_timestamp:
+            if expiration_timestamp is None or expiration_timestamp == 0:
+                return channel_history
+            if expiration_timestamp < current_timestamp:
                 self.logger.info("⚠️ Page token expired for user %s", user_email)
                 await user_service.stop_gmail_user_watch()
                 watch = await user_service.create_gmail_user_watch(accountType=AccountType.INDIVIDUAL.value)
@@ -2359,7 +2367,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                 endpoints = await self.config_service.get_config(
                     config_node_constants.ENDPOINTS.value
                 )
-                connector_endpoint = endpoints.get("connectors").get("endpoint")
+                connector_endpoint = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
 
                 for metadata in batch_metadata:
                     # Message events
@@ -2518,7 +2526,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
             endpoints = await self.config_service.get_config(
                 config_node_constants.ENDPOINTS.value
             )
-            connector_endpoint = endpoints.get("connectors").get("endpoint")
+            connector_endpoint = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
 
             user = await self.arango_service.get_users(org_id)
             if not user:

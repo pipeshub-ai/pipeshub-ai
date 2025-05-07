@@ -7,6 +7,7 @@ from googleapiclient.errors import HttpError
 
 from app.config.configuration_service import (
     ConfigurationService,
+    DefaultEndpoints,
     config_node_constants,
 )
 from app.config.utils.named_constants.arangodb_constants import CollectionNames
@@ -712,10 +713,12 @@ class GoogleAdminService:
                 )
                 webhook_endpoint = endpoints.get("connectors", {}).get("publicEndpoint")
                 if not webhook_endpoint:
-                    raise AdminServiceError(
-                        "Missing webhook endpoint configuration",
-                        details={"endpoints": endpoints},
-                    )
+                    webhook_endpoint = endpoints.get("connectors", {}).get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
+                    if not webhook_endpoint:
+                        raise AdminServiceError(
+                            "Missing webhook endpoint configuration",
+                            details={"endpoints": endpoints},
+                        )
                 # Return None if webhook uses HTTP or localhost
                 if (
                     webhook_endpoint.startswith("http://")

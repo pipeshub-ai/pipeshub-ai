@@ -12,6 +12,7 @@ from googleapiclient.http import BatchHttpRequest
 
 from app.config.configuration_service import (
     ConfigurationService,
+    DefaultEndpoints,
     WebhookConfig,
     config_node_constants,
 )
@@ -380,10 +381,12 @@ class DriveUserService:
                         "publicEndpoint"
                     )
                     if not webhook_endpoint:
-                        raise DriveOperationError(
-                            "Missing webhook endpoint configuration",
-                            details={"endpoints": endpoints},
-                        )
+                        webhook_endpoint = endpoints.get("connectors", {}).get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
+                        if not webhook_endpoint:
+                            raise DriveOperationError(
+                                "Missing webhook endpoint configuration",
+                                details={"endpoints": endpoints},
+                            )
 
                     # Return None if webhook uses HTTP or localhost
                     if (
@@ -586,6 +589,7 @@ class DriveUserService:
                     )
 
                 self.logger.info("✅ Fetched start page token %s", token)
+                self.logger.debug("Token type: %s", type(token))
                 return token
 
         except (DrivePermissionError, DriveOperationError):

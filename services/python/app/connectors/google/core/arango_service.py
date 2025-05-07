@@ -1069,6 +1069,16 @@ class ArangoService(BaseArangoService):
                 raise
             return False
 
+    async def get_orgs(self) -> List[Dict]:
+        """Get all organizations"""
+        try:
+            query = "FOR org IN organizations RETURN org"
+            cursor = self.db.aql.execute(query)
+            return list(cursor)
+        except Exception as e:
+            self.logger.error("❌ Failed to get organizations: %s", str(e))
+            return []
+
     async def get_users(self, org_id, active=True) -> List[Dict]:
         """
         Fetch all active users from the database who belong to the organization.
@@ -1632,3 +1642,4 @@ class ArangoService(BaseArangoService):
         except Exception as e:
             self.logger.error("❌ Error checking edge existence: %s", str(e))
             return False
+

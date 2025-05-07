@@ -1,6 +1,6 @@
 import uuid
 
-from app.config.configuration_service import config_node_constants
+from app.config.configuration_service import DefaultEndpoints, config_node_constants
 from app.config.utils.named_constants.arangodb_constants import (
     CollectionNames,
     Connectors,
@@ -25,7 +25,7 @@ class GmailChangeHandler:
             endpoints = await self.config_service.get_config(
                 config_node_constants.ENDPOINTS.value
             )
-            connector_endpoint = endpoints.get("connectors").get("endpoint")
+            connector_endpoint = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
 
             user_id = user.get("userId")
             for change in changes.get("history", []):

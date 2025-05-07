@@ -49,6 +49,16 @@ class TokenScopes(Enum):
     STORAGE_TOKEN = "storage:token"
 
 
+class DefaultEndpoints(Enum):
+    """Constants for default endpoints"""
+
+    CONNECTOR_ENDPOINT = "http://localhost:8088"
+    INDEXING_ENDPOINT = "http://localhost:8091"
+    QUERY_ENDPOINT = "http://localhost:8000"
+    NODEJS_ENDPOINT = "http://localhost:3000"
+    FRONTEND_ENDPOINT = "http://localhost:3001"
+
+
 class Routes(Enum):
     """Constants for routes"""
 

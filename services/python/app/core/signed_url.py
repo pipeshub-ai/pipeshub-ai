@@ -6,7 +6,11 @@ from fastapi import HTTPException
 from jose import JWTError
 from pydantic import BaseModel, ValidationError
 
-from app.config.configuration_service import ConfigurationService, config_node_constants
+from app.config.configuration_service import (
+    ConfigurationService,
+    DefaultEndpoints,
+    config_node_constants,
+)
 
 
 class SignedUrlConfig(BaseModel):
@@ -89,7 +93,7 @@ class SignedUrlHandler:
             endpoints = await self.config_service.get_config(
                 config_node_constants.ENDPOINTS.value
             )
-            connector_endpoint = endpoints.get("connectors").get("endpoint")
+            connector_endpoint = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
 
             self.logger.info(f"user_id: {user_id}")
 

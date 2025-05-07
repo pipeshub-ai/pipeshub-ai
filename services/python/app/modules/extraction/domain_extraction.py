@@ -18,7 +18,12 @@ from tenacity import (
     wait_exponential,
 )
 
-from app.config.configuration_service import Routes, TokenScopes, config_node_constants
+from app.config.configuration_service import (
+    DefaultEndpoints,
+    Routes,
+    TokenScopes,
+    config_node_constants,
+)
 from app.config.utils.named_constants.arangodb_constants import (
     CollectionNames,
     DepartmentNames,
@@ -745,7 +750,7 @@ class DomainExtractor:
                 endpoints = await self.config_service.get_config(
                     config_node_constants.ENDPOINTS.value
                 )
-                nodejs_endpoint = endpoints.get("cm", {}).get("endpoint")
+                nodejs_endpoint = endpoints.get("cm", {}).get("endpoint", DefaultEndpoints.NODEJS_ENDPOINT.value)
                 if not nodejs_endpoint:
                     raise ValueError("Missing CM endpoint configuration")
 

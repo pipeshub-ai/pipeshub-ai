@@ -7,8 +7,8 @@ from abc import ABC, abstractmethod
 from app.config.configuration_service import ConfigurationService
 from app.config.utils.named_constants.arangodb_constants import CollectionNames
 from app.connectors.core.kafka_service import KafkaService
+from app.connectors.google.admin.google_admin_service import GoogleAdminService
 from app.connectors.google.core.arango_service import ArangoService
-from app.connectors.google.gcal.core.gcal_admin_service import GCalAdminService
 from app.connectors.google.gcal.core.gcal_user_service import GCalUserService
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -102,7 +102,7 @@ class GCalSyncEnterpriseService(BaseGCalSyncService):
     def __init__(
         self,
         config: ConfigurationService,
-        gcal_admin_service: GCalAdminService,
+        gcal_admin_service: GoogleAdminService,
         arango_service: ArangoService,
         kafka_service: KafkaService,
         celery_app,

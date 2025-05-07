@@ -157,10 +157,12 @@ class MimeTypes(Enum):
 
 class ProgressStatus(Enum):
     NOT_STARTED = "NOT_STARTED"
+    PAUSED = "PAUSED"
     IN_PROGRESS = "IN_PROGRESS"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     FILE_TYPE_NOT_SUPPORTED = "FILE_TYPE_NOT_SUPPORTED"
+    AUTO_INDEX_OFF = "AUTO_INDEX_OFF"
 
 
 class AccountType(Enum):

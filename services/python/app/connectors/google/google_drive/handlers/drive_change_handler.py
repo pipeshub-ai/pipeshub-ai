@@ -2,7 +2,7 @@ import traceback
 import uuid
 from typing import Dict
 
-from app.config.configuration_service import config_node_constants
+from app.config.configuration_service import DefaultEndpoints, config_node_constants
 from app.config.utils.named_constants.arangodb_constants import (
     CollectionNames,
     Connectors,
@@ -186,7 +186,7 @@ class DriveChangeHandler:
             endpoints = await self.config_service.get_config(
                 config_node_constants.ENDPOINTS.value
             )
-            connector_endpoint = endpoints.get("connectors").get("endpoint")
+            connector_endpoint = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
 
             reindex_event = None
 
