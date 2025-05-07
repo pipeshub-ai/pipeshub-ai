@@ -783,7 +783,7 @@ const ConnectorStatistics = ({
             borderRadius: 2,
           }}
         >
-          <AlertTitle>No Connectors Enabled in Google Workspace</AlertTitle>
+          <AlertTitle>No records of Google Workspace indexed yet</AlertTitle>
           <Typography variant="body2">
             {normalizedConnectorNames.length > 0
               ? `No data found for the specified connector${normalizedConnectorNames.length > 1 ? 's' : ''}: ${normalizedConnectorNames.join(', ')}`
