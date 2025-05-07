@@ -1135,7 +1135,7 @@ export default function KnowledgeBaseDetails({
       let hasErrors = false;
 
       // Split files into batches
-      const batches = [];
+      const batches:any = [];
       for (let i = 0; i < files.length; i += BATCH_SIZE) {
         const currentBatch = files.slice(i, i + BATCH_SIZE);
         const batchFormData = new FormData();
@@ -1151,45 +1151,54 @@ export default function KnowledgeBaseDetails({
         });
       }
 
-      // Process all batches concurrently, but update progress sequentially
+      // Process all batches sequentially to maintain reliable progress updates
       const totalBatches = batches.length;
       let completedBatches = 0;
+      const batchResults = []; // Store results from each batch
 
-      // Process batches sequentially to maintain reliable progress updates
-      // but without using await in loop which triggers the linting error
-      const results = await Promise.all(
-        batches.map(async (batch) => {
-          try {
-            const success = await uploadFilesBatched(batch.formData);
-            completedBatches+=1;
-
-            // Update progress
-            setUploadProgress((completedBatches / totalBatches) * 100);
-
-            return {
-              success,
-              count: batch.size,
-            };
-          } catch (error) {
-            completedBatches+=1;
-            setUploadProgress((completedBatches / totalBatches) * 100);
-            return {
-              success: false,
-              count: 0,
-              error,
-            };
-          }
-        })
-      );
-
-      // Count successful uploads and check for errors
-      results.forEach((result) => {
-        if (result.success) {
-          successfulUploads += result.count;
-        } else {
-          hasErrors = true;
+      // Use recursive function instead of for loop to process batches sequentially
+      const processBatchSequentially = async (batchIndex:any) => {
+        // Base case: all batches processed
+        if (batchIndex >= batches.length) {
+          return;
         }
-      });
+
+        const batch = batches[batchIndex];
+
+        try {
+          const result = await uploadFilesBatched(batch.formData);
+          completedBatches += 1;
+          setUploadProgress((completedBatches / totalBatches) * 100);
+
+          // Store the batch result
+          batchResults.push({
+            success: result,
+            count: result ? batch.size : 0,
+          });
+
+          if (result) {
+            successfulUploads += batch.size;
+          } else {
+            hasErrors = true;
+          }
+        } catch (error) {
+          completedBatches += 1;
+          setUploadProgress((completedBatches / totalBatches) * 100);
+          hasErrors = true;
+
+          // Store failed batch result
+          batchResults.push({
+            success: false,
+            count: 0,
+          });
+        }
+
+        // Process next batch
+        await processBatchSequentially(batchIndex + 1);
+      };
+
+      // Start processing from the first batch
+      await processBatchSequentially(0);
 
       // Show appropriate message based on upload results
       if (successfulUploads > 0) {
