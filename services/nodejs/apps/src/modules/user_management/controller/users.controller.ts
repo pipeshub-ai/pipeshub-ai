@@ -563,6 +563,26 @@ export class UserController {
         throw new NotFoundError('User not found');
       }
 
+      const userId = user?._id;
+      const orgId = user?.orgId;
+      if (!userId || !orgId) {
+        throw new NotFoundError('Account not found');
+      }
+
+      const groups = await UserGroups.find({
+        orgId,
+        users: { $in: [userId] },
+        isDeleted: false,
+      }).select('type');
+
+      const isAdmin = groups.find(
+        (userGroup: any) => userGroup.type === 'admin',
+      );
+
+      if (isAdmin) {
+        throw new BadRequestError('Admin User deletion is not allowed');
+      }
+
       user.isDeleted = true;
       user.deletedBy = req.user._id;
 
@@ -573,9 +593,9 @@ export class UserController {
         eventType: EventType.DeleteUserEvent,
         timestamp: Date.now(),
         payload: {
-          orgId: req.user.orgId.toString(),
-          userId: req.user._id,
-          email: req.user.email,
+          orgId: user.orgId.toString(),
+          userId: user._id,
+          email: user.email,
         } as UserDeletedEvent,
       };
       await this.eventService.publishEvent(event);
