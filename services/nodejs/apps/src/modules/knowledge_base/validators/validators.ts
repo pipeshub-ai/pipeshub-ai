@@ -105,12 +105,30 @@ export const getRecordsSchema = z.object({
           : undefined,
       ),
 
+    connectors: z
+      .string()
+      .optional()
+      .transform((val) =>
+        val
+          ? val.split(',').filter((connector) => connector.trim() !== '')
+          : undefined,
+      ),
+
     indexingStatus: z
       .string()
       .optional()
       .transform((val) =>
         val
           ? val.split(',').filter((status) => status.trim() !== '')
+          : undefined,
+      ),
+
+    permissions: z
+      .string()
+      .optional()
+      .transform((val) =>
+        val
+          ? val.split(',').filter((permission) => permission.trim() !== '')
           : undefined,
       ),
 
@@ -148,6 +166,8 @@ export const getRecordsSchema = z.object({
             'updatedAtTimestamp',
             'recordName',
             'recordType',
+            'origin',
+            'indexingStatus',
           ];
           return !val || allowedSortFields.includes(val);
         },
@@ -155,6 +175,8 @@ export const getRecordsSchema = z.object({
       ),
 
     sortOrder: z.enum(['asc', 'desc']).optional(),
+
+    source: z.enum(['all', 'local', 'connector']).optional().default('all'),
   }),
 });
 

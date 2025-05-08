@@ -16,19 +16,30 @@ import KnowledgeBaseDetails from './knowledge-base-details';
 
 import type { Filters, KnowledgeBaseResponse } from './types/knowledge-base';
 
-// Constants for sidebar widths - must match the ones in KnowledgeBaseSideBar
+// Constants for sidebar widths
 const SIDEBAR_EXPANDED_WIDTH = 320;
 const SIDEBAR_COLLAPSED_WIDTH = 64;
 
+// Create a function to initialize empty filters
+const createEmptyFilters = (): Filters => ({
+  indexingStatus: [],
+  department: [],
+  moduleId: [],
+  searchTags: [],
+  appSpecificRecordType: [],
+  recordTypes: [],
+  origin: [],
+  status: [],
+  connectors: [],
+  app: [],
+  permissions: [],
+});
+
 export default function KnowledgeBase() {
   const theme = useTheme();
-  const [filters, setFilters] = useState<Filters>({
-    indexingStatus: [],
-    department: [],
-    moduleId: [],
-    searchTags: [],
-    appSpecificRecordType: [],
-  });
+  
+  // Initialize all filter arrays properly
+  const [filters, setFilters] = useState<Filters>(createEmptyFilters());
 
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [knowledgeBaseData, setKnowledgeBaseData] = useState<KnowledgeBaseResponse | null>(null);
@@ -44,14 +55,16 @@ export default function KnowledgeBase() {
   // Add a ref to track filter changes
   const isFilterChanging = useRef(false);
   // Add a ref to store previous filter state for comparison
-  const prevFiltersRef = useRef(filters);
+  const prevFiltersRef = useRef<Filters>(createEmptyFilters());
 
   const toggleSidebar = useCallback(() => {
     setOpenSidebar((prev) => !prev);
   }, []);
 
-  const debouncedFetchData = useCallback(
+  // This function directly handles the API call with the provided filters
+  const handleFetchData = useCallback(
     (filter: Filters, searchQueryContent: string) => {
+      
       // Show different loading indicators based on what changed
       if (JSON.stringify(prevFiltersRef.current) !== JSON.stringify(filter)) {
         setFilterLoading(true);
@@ -65,19 +78,29 @@ export default function KnowledgeBase() {
       try {
         const queryParams = new URLSearchParams();
 
-        // Handle all possible filter arrays
-        Object.entries(filter).forEach(([key, value]) => {
-          if (Array.isArray(value) && value.length > 0) {
-            value.forEach((item) => queryParams.append(key, item));
+        // Process each filter - convert arrays to comma-separated strings
+        Object.entries(filter).forEach(([key, values]) => {
+          if (Array.isArray(values) && values.length > 0) {
+            // Key mapping - some keys need to be renamed to match backend schema
+            const paramKey = key === 'origin' ? 'origins' : key;
+            
+            // Join array values with commas
+            const valueString = values.join(',');
+            
+            // Add as a single parameter
+            queryParams.append(paramKey, valueString);
           }
         });
 
+        // Add pagination and search parameters
         if (searchQueryContent) {
           queryParams.append('search', searchQueryContent);
         }
-
         queryParams.append('page', pagination.page.toString());
         queryParams.append('limit', pagination.limit.toString());
+
+        // Log the final URL for debugging
+        const url = `/api/v1/knowledgebase?${queryParams.toString()}`;
 
         fetchKnowledgeBaseDetails(queryParams)
           .then((data) => {
@@ -87,7 +110,6 @@ export default function KnowledgeBase() {
             console.error('Error fetching knowledge base details:', error);
           })
           .finally(() => {
-            // Use a brief delay before hiding loading indicators to prevent UI flickering
             setTimeout(() => {
               setLoading(false);
               setFilterLoading(false);
@@ -102,31 +124,51 @@ export default function KnowledgeBase() {
     [pagination.page, pagination.limit]
   );
 
-  // Increase debounce time for smoother UI
+  // Create the debounced version of the fetch function
   const debouncedFetch = useMemo(
-    () => debounce((filter: Filters, query: string) => debouncedFetchData(filter, query), 400),
-    [debouncedFetchData]
+    () => debounce((filter: Filters, query: string) => {
+      handleFetchData(filter, query);
+    }, 400),
+    [handleFetchData]
   );
 
+  // Effect to trigger fetch when filters or pagination changes
   useEffect(() => {
     debouncedFetch(filters, searchQuery);
-
-    // Clean up the debounced function on unmount
+    
     return () => {
       debouncedFetch.cancel();
     };
   }, [filters, searchQuery, pagination, debouncedFetch]);
 
+  // Handler for filter changes from sidebar
   const handleFilterChange = (newFilters: Filters): void => {
     // If a filter operation is already in progress, return
     if (isFilterChanging.current) return;
     
     isFilterChanging.current = true;
     
+    // Create a base empty filters object
+    const normalizedFilters = { ...createEmptyFilters() };
+    
+    // Copy values from newFilters, ensuring all are arrays
+    Object.keys(normalizedFilters).forEach((key) => {
+      const filterKey = key as keyof Filters;
+      
+      // If the property exists in newFilters and is an array, use it
+      // Otherwise use an empty array
+      if (newFilters[filterKey] !== undefined && Array.isArray(newFilters[filterKey])) {
+        normalizedFilters[filterKey] = [...newFilters[filterKey]!];
+      }
+    });
+    
+    
     // Use requestAnimationFrame to batch UI updates
     requestAnimationFrame(() => {
-      setFilters(newFilters);
-      setPagination((prev) => ({ ...prev, page: 1 })); // Reset to first page on filter change
+      // Update the filters state
+      setFilters(normalizedFilters);
+      // Reset to first page on filter change
+      setPagination((prev) => ({ ...prev, page: 1 }));
       
       // Reset the flag after a short delay
       setTimeout(() => {
@@ -137,7 +179,7 @@ export default function KnowledgeBase() {
 
   const handleSearchChange = (query: string): void => {
     setSearchQuery(query);
-    setPagination((prev) => ({ ...prev, page: 1 })); // Reset to first page on search change
+    setPagination((prev) => ({ ...prev, page: 1 }));
   };
 
   const handlePageChange = (newPage: number): void => {
@@ -171,7 +213,7 @@ export default function KnowledgeBase() {
         onToggleSidebar={toggleSidebar}
       />
 
-      {/* Filter Loading Indicator - Shows only when filters change */}
+      {/* Filter Loading Indicator */}
       {filterLoading && (
         <Box
           sx={{
@@ -204,17 +246,17 @@ export default function KnowledgeBase() {
           flexGrow: 1,
           overflow: 'auto',
           width: `calc(100% - ${openSidebar ? SIDEBAR_EXPANDED_WIDTH : SIDEBAR_COLLAPSED_WIDTH}px)`,
-          transition: theme.transitions.create(['width'], { // Removed 'margin-left' for better performance
-            easing: theme.transitions.easing.sharp, // Changed from easeInOut to sharp
-            duration: '0.25s', // Reduced from 0.3s
+          transition: theme.transitions.create(['width'], {
+            easing: theme.transitions.easing.sharp,
+            duration: '0.25s',
           }),
           marginLeft: 0,
           px: 3,
           py: 2.5,
-          position: 'relative', // Added for the content loading overlay
+          position: 'relative',
         }}
       >
-        {/* Content Loading Overlay - Only shows when filters change */}
+        {/* Content Loading Overlay */}
         <Fade in={filterLoading} timeout={150}>
           <Box
             sx={{
@@ -228,7 +270,7 @@ export default function KnowledgeBase() {
               justifyContent: 'center',
               backgroundColor: alpha(theme.palette.background.paper, 0.6),
               zIndex: 10,
-              backdropFilter: 'blur(1px)', // Slight blur for better UX
+              backdropFilter: 'blur(1px)',
             }}
           >
             <CircularProgress size={40} />
@@ -238,7 +280,7 @@ export default function KnowledgeBase() {
         <KnowledgeBaseDetails
           knowledgeBaseData={knowledgeBaseData}
           onSearchChange={handleSearchChange}
-          loading={loading && !filterLoading} // Only show regular loading when not filter loading
+          loading={loading && !filterLoading}
           pagination={pagination}
           onPageChange={handlePageChange}
           onLimitChange={handleLimitChange}
