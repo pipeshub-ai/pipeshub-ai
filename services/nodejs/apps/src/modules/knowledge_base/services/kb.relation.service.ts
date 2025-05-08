@@ -1223,43 +1223,9 @@ export class RecordRelationService {
     };
   }> {
     try {
+      // Extract and normalize options
+      const normalizedOptions = this.normalizeRecordOptions(options);
       const {
-        orgId,
-        userId,
-        page = 1,
-        limit = 20,
-        search,
-        recordTypes,
-        origins,
-        connectors,
-        indexingStatus,
-        permissions,
-        dateFrom,
-        dateTo,
-        sortBy = 'createdAtTimestamp',
-        sortOrder = 'desc',
-        source: explicitSource = 'all', // Default to all sources
-      } = options;
-
-      // Determine the effective source - if connectors are specified without an explicit source,
-      // we should default to connector source only
-      let source = explicitSource;
-      if (connectors && connectors.length > 0 && explicitSource === 'all') {
-        // If user specified connectors but no explicit source, default to connector source
-        source = 'connector';
-        logger.debug(
-          'Automatically setting source to "connector" because connectors were specified',
-          {
-            connectors,
-            explicitSource,
-            effectiveSource: source,
-          },
-        );
-      }
-
-      const skip = (page - 1) * limit;
-
-      logger.debug('Getting records with options', {
         orgId,
         userId,
         page,
@@ -1268,439 +1234,84 @@ export class RecordRelationService {
         recordTypes,
         origins,
         connectors,
-        permissions,
         indexingStatus,
+        permissions,
         dateFrom,
         dateTo,
         sortBy,
-        sortOrder,
-        explicitSource,
-        effectiveSource: source,
+        sortDirection,
+        source,
+        skip,
+      } = normalizedOptions;
+
+      logger.debug('Getting records with options', normalizedOptions);
+
+      // Get user and knowledge base
+      const { user, kb } = await this.getUserAndKnowledgeBase(userId, orgId);
+
+      // Build filter queries
+      const filterQueries = this.buildFilterQueries({
+        orgId,
+        search,
+        recordTypes,
+        origins,
+        indexingStatus,
+        dateFrom,
+        dateTo,
+        connectors,
       });
 
-      // Get the user document
-      const userCursor = await this.db.query(aql`
-        FOR user IN ${this.userCollection}
-          FILTER user.userId == ${userId} AND user.orgId == ${orgId} AND user.isActive == true
-          RETURN user
-      `);
+      // Build permission filter
+      const permissionFilter = this.buildPermissionFilter(permissions);
 
-      const users = await userCursor.all();
-      if (users.length === 0) {
-        throw new NotFoundError(
-          `User with ID ${userId} in organization ${orgId} not found`,
-        );
-      }
-      const user = users[0];
+      // Get records using the built queries
+      const records = await this.executeRecordsQuery({
+        user,
+        kb,
+        filters: filterQueries,
+        permissionFilter,
+        source,
+        skip,
+        limit,
+        sortBy,
+        sortDirection,
+      });
 
-      // Validate user has access to the knowledge base
-      const { knowledgeBase: kb } = await this.validateUserKbAccess(
-        userId,
+      // Get total count for pagination
+      const totalCount = await this.getRecordsCount({
+        user,
+        kb,
+        filters: filterQueries,
+        permissionFilter,
+        source,
+      });
+
+      // Get available filter options
+      const filterOptions = await this.getFilterOptions({
+        user,
+        kb,
         orgId,
-        [
-          'OWNER',
-          'READER',
-          'FILEORGANIZER',
-          'WRITER',
-          'COMMENTER',
-          'ORGANIZER',
-        ],
-      );
+        source,
+      });
 
-      // Build the filter conditions
-      let filterQuery = aql`FILTER record.isDeleted != true`;
-      filterQuery = aql`${filterQuery} AND record.orgId == ${orgId}`;
+      // Process filter options into usable format
+      const availableFilters = this.processFilterOptions(filterOptions);
 
-      // Add search filter if provided
-      if (search) {
-        filterQuery = aql`
-        ${filterQuery} AND (
-          LIKE(LOWER(record.recordName), ${'%' + search.toLowerCase() + '%'}) OR 
-          LIKE(LOWER(record.externalRecordId), ${'%' + search.toLowerCase() + '%'})
-        )
-      `;
-      }
-
-      // Add record type filter if provided
-      if (recordTypes && recordTypes.length > 0) {
-        filterQuery = aql`${filterQuery} AND record.recordType IN ${recordTypes}`;
-      }
-
-      // Add origin filter if provided
-      if (origins && origins.length > 0) {
-        filterQuery = aql`${filterQuery} AND record.origin IN ${origins}`;
-      }
-
-      // Source-specific filters for local vs connector collections
-      let localFilterQuery = aql`${filterQuery}`;
-      let connectorFilterQuery = aql`${filterQuery}`;
-
-      // Add connector filter - only applies to connector records
-      if (connectors && connectors.length > 0) {
-        // Apply this filter only to connector records
-        connectorFilterQuery = aql`${connectorFilterQuery} AND record.connectorName IN ${connectors}`;
-      }
-
-      // Add indexing status filter if provided
-      if (indexingStatus && indexingStatus.length > 0) {
-        filterQuery = aql`${filterQuery} AND record.indexingStatus IN ${indexingStatus}`;
-        localFilterQuery = aql`${localFilterQuery} AND record.indexingStatus IN ${indexingStatus}`;
-        connectorFilterQuery = aql`${connectorFilterQuery} AND record.indexingStatus IN ${indexingStatus}`;
-      }
-
-      // Add date range filter if provided
-      if (dateFrom) {
-        filterQuery = aql`${filterQuery} AND record.createdAtTimestamp >= ${dateFrom}`;
-        localFilterQuery = aql`${localFilterQuery} AND record.createdAtTimestamp >= ${dateFrom}`;
-        connectorFilterQuery = aql`${connectorFilterQuery} AND record.createdAtTimestamp >= ${dateFrom}`;
-      }
-
-      if (dateTo) {
-        filterQuery = aql`${filterQuery} AND record.createdAtTimestamp <= ${dateTo}`;
-        localFilterQuery = aql`${localFilterQuery} AND record.createdAtTimestamp <= ${dateTo}`;
-        connectorFilterQuery = aql`${connectorFilterQuery} AND record.createdAtTimestamp <= ${dateTo}`;
-      }
-
-      // Add permissions filter if provided - only applies to direct permissions
-      let permissionFilterQuery = aql``;
-      if (permissions && permissions.length > 0) {
-        permissionFilterQuery = aql`FILTER permissionEdge.role IN ${permissions}`;
-      }
-
-      // Generate sort field and direction for use in our query
-      const sortDirection = sortOrder === 'asc' ? 'ASC' : 'DESC';
-      let sortField = 'createdAtTimestamp'; // Default sort field
-
-      // Validate sortBy to prevent injection
-      const allowedSortFields = [
-        'recordName',
-        'createdAtTimestamp',
-        'updatedAtTimestamp',
-        'recordType',
-        'origin',
-        'indexingStatus',
-      ];
-
-      if (allowedSortFields.includes(sortBy)) {
-        sortField = sortBy;
-      }
-
-      // Additional filter for local records - origin must be UPLOAD
-      const localOriginFilter = aql`AND record.origin == "UPLOAD"`;
-
-      // Additional filter for connector records - origin must be CONNECTOR
-      const connectorOriginFilter = aql`AND record.origin == "CONNECTOR"`;
-
-      // Main query to get records from both sources with conditional inclusion
-      const query = aql`
-      // Define both record sets based on source
-      LET kbRecords = ${
-        source === 'all' || source === 'local'
-          ? aql`(
-          FOR edge IN ${this.kbToRecordEdges}
-            FILTER edge._to == ${COLLECTIONS.KNOWLEDGE_BASE + '/' + kb._key}
-            LET record = DOCUMENT(PARSE_IDENTIFIER(edge._from).collection, PARSE_IDENTIFIER(edge._from).key)
-            FILTER record != null
-            ${localFilterQuery}
-            ${localOriginFilter}
-            RETURN {
-              record: record,
-              source: "local",
-              permission: null
-            }
-        )`
-          : aql`[]`
-      }
-      
-      LET directPermissionRecords = ${
-        source === 'all' || source === 'connector'
-          ? aql`(
-          FOR permissionEdge IN ${this.userToRecordEdges}
-            FILTER permissionEdge._to == ${user._id}
-            ${permissionFilterQuery}
-            
-            LET record = DOCUMENT(PARSE_IDENTIFIER(permissionEdge._from).collection, PARSE_IDENTIFIER(permissionEdge._from).key)
-            FILTER record != null
-            ${connectorFilterQuery}
-            ${connectorOriginFilter}
-            
-            // Include only records not already in KB records to avoid duplicates
-            FILTER record NOT IN kbRecords[*].record
-            
-            RETURN {
-              record: record,
-              source: "connector",
-              permission: {
-                role: permissionEdge.role,
-                type: permissionEdge.type,
-                createdAtTimestamp: permissionEdge.createdAtTimestamp,
-                updatedAtTimestamp: permissionEdge.updatedAtTimestamp
-              }
-            }
-        )`
-          : aql`[]`
-      }
-      
-      // Combine both record sets
-      LET allRecords = APPEND(kbRecords, directPermissionRecords)
-      
-      // Apply sorting and pagination on the combined set
-      FOR item IN allRecords
-        // Dynamic sort based on the selected field and direction
-        SORT item.record[${sortField}] ${sortDirection === 'ASC' ? 'ASC' : 'DESC'}
-        
-        LIMIT ${skip}, ${limit}
-        
-        // Get associated file record
-        LET fileRecord = (
-          FOR fileEdge IN ${this.isOfTypeEdges}
-            FILTER fileEdge._from == item.record._id
-            RETURN DOCUMENT(PARSE_IDENTIFIER(fileEdge._to).collection, PARSE_IDENTIFIER(fileEdge._to).key)
-        )[0]
-        
-        // Return formatted result with all necessary information
-        RETURN {
-          id: item.record._key,
-          externalRecordId: item.record.externalRecordId,
-          externalRevisionId: item.record.externalRevisionId,
-          recordName: item.record.recordName,
-          recordType: item.record.recordType,
-          origin: item.record.origin,
-          connectorName: item.record.connectorName,
-          indexingStatus: item.record.indexingStatus,
-          createdAtTimestamp: item.record.createdAtTimestamp,
-          updatedAtTimestamp: item.record.updatedAtTimestamp,
-          orgId: item.record.orgId,
-          version: item.record.version,
-          isDeleted: item.record.isDeleted,
-          deletedByUserId: item.record.deletedByUserId,
-          isLatestVersion: item.record.isLatestVersion,
-          source: item.source,
-          permission: item.permission,
-          fileRecord: fileRecord ? {
-            name: fileRecord.name,
-            extension: fileRecord.extension,
-            mimeType: fileRecord.mimeType,
-            sizeInBytes: fileRecord.sizeInBytes,
-            isFile: fileRecord.isFile,
-            webUrl: fileRecord.webUrl
-          } : null
-        }
-      `;
-
-      // Execute the query to get the records
-      const cursor = await this.db.query(query);
-      const records = await cursor.all();
-
-      // Count query for pagination
-      const countQuery = aql`
-      // Define both record sets for counting
-      LET kbRecords = ${
-        source === 'all' || source === 'local'
-          ? aql`(
-          FOR edge IN ${this.kbToRecordEdges}
-            FILTER edge._to == ${COLLECTIONS.KNOWLEDGE_BASE + '/' + kb._key}
-            LET record = DOCUMENT(PARSE_IDENTIFIER(edge._from).collection, PARSE_IDENTIFIER(edge._from).key)
-            FILTER record != null
-            ${localFilterQuery}
-            ${localOriginFilter}
-            RETURN record
-        )`
-          : aql`[]`
-      }
-      
-      LET directPermissionRecords = ${
-        source === 'all' || source === 'connector'
-          ? aql`(
-          FOR permissionEdge IN ${this.userToRecordEdges}
-            FILTER permissionEdge._to == ${user._id}
-            ${permissionFilterQuery}
-            
-            LET record = DOCUMENT(PARSE_IDENTIFIER(permissionEdge._from).collection, PARSE_IDENTIFIER(permissionEdge._from).key)
-            FILTER record != null
-            ${connectorFilterQuery}
-            ${connectorOriginFilter}
-            
-            // Don't count records already in KB
-            FILTER record NOT IN kbRecords
-            
-            RETURN record
-        )`
-          : aql`[]`
-      }
-      
-      // Combine both sets and count
-      LET allRecords = APPEND(kbRecords, directPermissionRecords)
-      
-      RETURN LENGTH(allRecords)
-      `;
-
-      const countCursor = await this.db.query(countQuery);
-      const countResult = await countCursor.all();
-      const totalCount = countResult[0] || 0;
+      // Prepare applied filters for response
+      const appliedFilters = this.buildAppliedFilters({
+        search,
+        recordTypes,
+        origins,
+        connectors,
+        indexingStatus,
+        permissions,
+        source,
+        dateFrom,
+        dateTo,
+      });
 
       // Calculate total pages
       const totalPages = Math.ceil(totalCount / limit);
-
-      // Prepare filter metadata
-      const appliedFilters: Record<string, any> = {};
-      if (search) appliedFilters.search = search;
-      if (recordTypes) appliedFilters.recordTypes = recordTypes;
-      if (origins) appliedFilters.origins = origins;
-      if (connectors) appliedFilters.connectors = connectors;
-      if (indexingStatus) appliedFilters.indexingStatus = indexingStatus;
-      if (permissions) appliedFilters.permissions = permissions;
-      if (source !== 'all') appliedFilters.source = source;
-      if (dateFrom || dateTo) {
-        appliedFilters.dateRange = {
-          from: dateFrom,
-          to: dateTo,
-        };
-      }
-
-      // Query to get available filter options
-      const filterOptionsQuery = aql`
-      // Get filter options from knowledge base records
-      LET kbRecordsOptions = ${
-        source === 'all' || source === 'local'
-          ? aql`(
-          FOR edge IN ${this.kbToRecordEdges}
-            FILTER edge._to == ${COLLECTIONS.KNOWLEDGE_BASE + '/' + kb._key}
-            LET record = DOCUMENT(PARSE_IDENTIFIER(edge._from).collection, PARSE_IDENTIFIER(edge._from).key)
-            FILTER record != null AND record.isDeleted != true AND record.orgId == ${orgId}
-            FILTER record.origin == "UPLOAD"
-            RETURN {
-              recordType: record.recordType,
-              origin: record.origin,
-              connectorName: record.connectorName,
-              indexingStatus: record.indexingStatus,
-              source: "local",
-              permission: null
-            }
-        )`
-          : aql`[]`
-      }
-      
-      // Get filter options from direct permission records
-      LET directOptionsOptions = ${
-        source === 'all' || source === 'connector'
-          ? aql`(
-          FOR permissionEdge IN ${this.userToRecordEdges}
-            FILTER permissionEdge._to == ${user._id}
-            
-            LET record = DOCUMENT(PARSE_IDENTIFIER(permissionEdge._from).collection, PARSE_IDENTIFIER(permissionEdge._from).key)
-            FILTER record != null AND record.isDeleted != true AND record.orgId == ${orgId}
-            FILTER record.origin == "CONNECTOR"
-            
-            RETURN {
-              recordType: record.recordType,
-              origin: record.origin,
-              connectorName: record.connectorName,
-              indexingStatus: record.indexingStatus,
-              source: "connector",
-              permission: permissionEdge.role
-            }
-        )`
-          : aql`[]`
-      }
-      
-      // Combine and return all options
-      RETURN APPEND(kbRecordsOptions, directOptionsOptions)
-      `;
-
-      // Execute the query for filter options
-      const filterOptionsCursor = await this.db.query(filterOptionsQuery);
-      const allFilterOptions = await filterOptionsCursor.all();
-
-      // Flatten the result array if needed
-      const filterOptions = Array.isArray(allFilterOptions[0])
-        ? allFilterOptions[0].concat(allFilterOptions[1] || [])
-        : allFilterOptions;
-
-      // Extract available filter options
-      const recordTypesSet = new Set<string>();
-      const originsSet = new Set<string>();
-      const connectorsSet = new Set<string>();
-      const statusSet = new Set<string>();
-      const permissionSet = new Set<string>();
-      const sourceSet = new Set<string>();
-
-      const recordTypeCount: Record<string, number> = {};
-      const originCount: Record<string, number> = {};
-      const connectorCount: Record<string, number> = {};
-      const statusCount: Record<string, number> = {};
-      const permissionCount: Record<string, number> = {};
-      const sourceCount: Record<string, number> = {};
-
-      filterOptions.forEach((item: any) => {
-        if (item.recordType) {
-          recordTypesSet.add(item.recordType);
-          recordTypeCount[item.recordType] =
-            (recordTypeCount[item.recordType] || 0) + 1;
-        }
-
-        if (item.origin) {
-          originsSet.add(item.origin);
-          originCount[item.origin] = (originCount[item.origin] || 0) + 1;
-        }
-
-        if (item.connectorName) {
-          connectorsSet.add(item.connectorName);
-          connectorCount[item.connectorName] =
-            (connectorCount[item.connectorName] || 0) + 1;
-        }
-
-        if (item.indexingStatus) {
-          statusSet.add(item.indexingStatus);
-          statusCount[item.indexingStatus] =
-            (statusCount[item.indexingStatus] || 0) + 1;
-        }
-
-        if (item.permission) {
-          permissionSet.add(item.permission);
-          permissionCount[item.permission] =
-            (permissionCount[item.permission] || 0) + 1;
-        }
-
-        if (item.source) {
-          sourceSet.add(item.source);
-          sourceCount[item.source] = (sourceCount[item.source] || 0) + 1;
-        }
-      });
-
-      const availableRecordTypes = Array.from(recordTypesSet).map((type) => ({
-        value: type,
-        count: recordTypeCount[type],
-      }));
-
-      const availableOrigins = Array.from(originsSet).map((origin) => ({
-        value: origin,
-        count: originCount[origin],
-      }));
-
-      const availableConnectors = Array.from(connectorsSet).map(
-        (connector) => ({
-          value: connector,
-          count: connectorCount[connector],
-        }),
-      );
-
-      const availableStatuses = Array.from(statusSet).map((status) => ({
-        value: status,
-        count: statusCount[status],
-      }));
-
-      const availablePermissions = Array.from(permissionSet).map(
-        (permission) => ({
-          value: permission,
-          count: permissionCount[permission],
-        }),
-      );
-
-      const availableSources = Array.from(sourceSet).map((source) => ({
-        value: source,
-        count: sourceCount[source],
-      }));
 
       logger.info(`Found ${records.length} records (total: ${totalCount})`, {
         orgId,
@@ -1720,19 +1331,772 @@ export class RecordRelationService {
         },
         filters: {
           applied: appliedFilters,
-          available: {
-            recordTypes: availableRecordTypes,
-            origins: availableOrigins,
-            connectors: availableConnectors,
-            indexingStatus: availableStatuses,
-            permissions: availablePermissions,
-            sources: availableSources,
-          },
+          available: availableFilters,
         },
       };
     } catch (error) {
-      logger.error('Error in getRecords', { options, error });
+      this.handleGetRecordsError(error, options);
+    }
+  }
+
+  /**
+   * Normalizes and defaults record query options
+   */
+  private normalizeRecordOptions(options: any): {
+    orgId: string;
+    userId: string;
+    page: number;
+    limit: number;
+    skip: number;
+    search?: string;
+    recordTypes?: string[];
+    origins?: string[];
+    connectors?: string[];
+    indexingStatus?: string[];
+    permissions?: string[];
+    dateFrom?: number;
+    dateTo?: number;
+    sortBy: string;
+    sortDirection: string;
+    source: 'all' | 'local' | 'connector';
+  } {
+    const {
+      orgId,
+      userId,
+      page = 1,
+      limit = 20,
+      search,
+      recordTypes,
+      origins,
+      connectors,
+      indexingStatus,
+      permissions,
+      dateFrom,
+      dateTo,
+      sortBy = 'createdAtTimestamp',
+      sortOrder = 'desc',
+      source: explicitSource = 'all',
+    } = options;
+
+    // Calculate skip value for pagination
+    const skip = (page - 1) * limit;
+
+    // Determine the effective source - if connectors are specified without an explicit source,
+    // we should default to connector source only
+    let source = explicitSource;
+    if (connectors && connectors.length > 0 && explicitSource === 'all') {
+      // If user specified connectors but no explicit source, default to connector source
+      source = 'connector';
+      logger.debug(
+        'Automatically setting source to "connector" because connectors were specified',
+        {
+          connectors,
+          explicitSource,
+          effectiveSource: source,
+        },
+      );
+    }
+
+    // Validate and normalize sortBy
+    const allowedSortFields = [
+      'recordName',
+      'createdAtTimestamp',
+      'updatedAtTimestamp',
+      'recordType',
+      'origin',
+      'indexingStatus',
+    ];
+
+    const normalizedSortBy = allowedSortFields.includes(sortBy)
+      ? sortBy
+      : 'createdAtTimestamp';
+
+    // Convert sort order to direction
+    const sortDirection = sortOrder === 'asc' ? 'ASC' : 'DESC';
+
+    return {
+      orgId,
+      userId,
+      page,
+      limit,
+      skip,
+      search,
+      recordTypes,
+      origins,
+      connectors,
+      indexingStatus,
+      permissions,
+      dateFrom,
+      dateTo,
+      sortBy: normalizedSortBy,
+      sortDirection,
+      source,
+    };
+  }
+
+  /**
+   * Gets user and knowledge base documents for the request
+   */
+  private async getUserAndKnowledgeBase(
+    userId: string,
+    orgId: string,
+  ): Promise<{
+    user: any;
+    kb: any;
+  }> {
+    // Get the user document
+    const userCursor = await this.db.query(aql`
+    FOR user IN ${this.userCollection}
+      FILTER user.userId == ${userId} AND user.orgId == ${orgId} AND user.isActive == true
+      RETURN user
+  `);
+
+    const users = await userCursor.all();
+    if (users.length === 0) {
+      throw new NotFoundError(
+        `User with ID ${userId} in organization ${orgId} not found`,
+      );
+    }
+    const user = users[0];
+
+    // Validate user has access to the knowledge base
+    const { knowledgeBase: kb } = await this.validateUserKbAccess(
+      userId,
+      orgId,
+      ['OWNER', 'READER', 'FILEORGANIZER', 'WRITER', 'COMMENTER', 'ORGANIZER'],
+    );
+
+    return { user, kb };
+  }
+
+  /**
+   * Builds filter queries for record fetching
+   */
+  private buildFilterQueries(params: {
+    orgId: string;
+    search?: string;
+    recordTypes?: string[];
+    origins?: string[];
+    indexingStatus?: string[];
+    dateFrom?: number;
+    dateTo?: number;
+    connectors?: string[];
+  }): {
+    baseFilter: any;
+    localFilter: any;
+    connectorFilter: any;
+    localOriginFilter: any;
+    connectorOriginFilter: any;
+  } {
+    const {
+      orgId,
+      search,
+      recordTypes,
+      origins,
+      indexingStatus,
+      dateFrom,
+      dateTo,
+      connectors,
+    } = params;
+
+    // Base filter for all records
+    let baseFilter = aql`FILTER record.isDeleted != true`;
+    baseFilter = aql`${baseFilter} AND record.orgId == ${orgId}`;
+
+    // Add search filter if provided
+    if (search) {
+      baseFilter = aql`
+      ${baseFilter} AND (
+        LIKE(LOWER(record.recordName), ${'%' + search.toLowerCase() + '%'}) OR 
+        LIKE(LOWER(record.externalRecordId), ${'%' + search.toLowerCase() + '%'})
+      )
+    `;
+    }
+
+    // Add record type filter if provided
+    if (recordTypes && recordTypes.length > 0) {
+      baseFilter = aql`${baseFilter} AND record.recordType IN ${recordTypes}`;
+    }
+
+    // Add origin filter if provided
+    if (origins && origins.length > 0) {
+      baseFilter = aql`${baseFilter} AND record.origin IN ${origins}`;
+    }
+
+    // Create copies for local and connector specific filters
+    let localFilter = aql`${baseFilter}`;
+    let connectorFilter = aql`${baseFilter}`;
+
+    // Add connector filter - only applies to connector records
+    if (connectors && connectors.length > 0) {
+      // Apply this filter only to connector records
+      connectorFilter = aql`${connectorFilter} AND record.connectorName IN ${connectors}`;
+    }
+
+    // Add indexing status filter if provided
+    if (indexingStatus && indexingStatus.length > 0) {
+      baseFilter = aql`${baseFilter} AND record.indexingStatus IN ${indexingStatus}`;
+      localFilter = aql`${localFilter} AND record.indexingStatus IN ${indexingStatus}`;
+      connectorFilter = aql`${connectorFilter} AND record.indexingStatus IN ${indexingStatus}`;
+    }
+
+    // Add date range filter if provided
+    if (dateFrom) {
+      baseFilter = aql`${baseFilter} AND record.createdAtTimestamp >= ${dateFrom}`;
+      localFilter = aql`${localFilter} AND record.createdAtTimestamp >= ${dateFrom}`;
+      connectorFilter = aql`${connectorFilter} AND record.createdAtTimestamp >= ${dateFrom}`;
+    }
+
+    if (dateTo) {
+      baseFilter = aql`${baseFilter} AND record.createdAtTimestamp <= ${dateTo}`;
+      localFilter = aql`${localFilter} AND record.createdAtTimestamp <= ${dateTo}`;
+      connectorFilter = aql`${connectorFilter} AND record.createdAtTimestamp <= ${dateTo}`;
+    }
+
+    // Fixed origin filters
+    const localOriginFilter = aql`AND record.origin == "UPLOAD"`;
+    const connectorOriginFilter = aql`AND record.origin == "CONNECTOR"`;
+
+    return {
+      baseFilter,
+      localFilter,
+      connectorFilter,
+      localOriginFilter,
+      connectorOriginFilter,
+    };
+  }
+
+  /**
+   * Builds permission filter for direct record access
+   */
+  private buildPermissionFilter(permissions?: string[]): any {
+    // Add permissions filter if provided - only applies to direct permissions
+    let permissionFilter = aql``;
+    if (permissions && permissions.length > 0) {
+      permissionFilter = aql`FILTER permissionEdge.role IN ${permissions}`;
+    }
+    return permissionFilter;
+  }
+
+  /**
+   * Executes the main query to fetch records
+   */
+  private async executeRecordsQuery(params: {
+    user: any;
+    kb: any;
+    filters: any;
+    permissionFilter: any;
+    source: 'all' | 'local' | 'connector';
+    skip: number;
+    limit: number;
+    sortBy: string;
+    sortDirection: string;
+  }): Promise<any[]> {
+    const {
+      user,
+      kb,
+      filters,
+      permissionFilter,
+      source,
+      skip,
+      limit,
+      sortBy,
+      sortDirection,
+    } = params;
+
+    const {
+      localFilter,
+      connectorFilter,
+      localOriginFilter,
+      connectorOriginFilter,
+    } = filters;
+
+    // Main query to get records from both sources with conditional inclusion
+    const query = aql`
+    // Define both record sets based on source
+    LET kbRecords = ${
+      source === 'all' || source === 'local'
+        ? aql`(
+        FOR edge IN ${this.kbToRecordEdges}
+          FILTER edge._to == ${COLLECTIONS.KNOWLEDGE_BASE + '/' + kb._key}
+          LET record = DOCUMENT(PARSE_IDENTIFIER(edge._from).collection, PARSE_IDENTIFIER(edge._from).key)
+          FILTER record != null
+          ${localFilter}
+          ${localOriginFilter}
+          RETURN {
+            record: record,
+            source: "local",
+            permission: null
+          }
+      )`
+        : aql`[]`
+    }
+    
+    LET directPermissionRecords = ${
+      source === 'all' || source === 'connector'
+        ? aql`(
+        FOR permissionEdge IN ${this.userToRecordEdges}
+          FILTER permissionEdge._to == ${user._id}
+          ${permissionFilter}
+          
+          LET record = DOCUMENT(PARSE_IDENTIFIER(permissionEdge._from).collection, PARSE_IDENTIFIER(permissionEdge._from).key)
+          FILTER record != null
+          ${connectorFilter}
+          ${connectorOriginFilter}
+          
+          // Include only records not already in KB records to avoid duplicates
+          FILTER record NOT IN kbRecords[*].record
+          
+          RETURN {
+            record: record,
+            source: "connector",
+            permission: {
+              role: permissionEdge.role,
+              type: permissionEdge.type,
+              createdAtTimestamp: permissionEdge.createdAtTimestamp,
+              updatedAtTimestamp: permissionEdge.updatedAtTimestamp
+            }
+          }
+      )`
+        : aql`[]`
+    }
+    
+    // Combine both record sets
+    LET allRecords = APPEND(kbRecords, directPermissionRecords)
+    
+    // Apply sorting and pagination on the combined set
+    FOR item IN allRecords
+      // Dynamic sort based on the selected field and direction
+      SORT item.record[${sortBy}] ${sortDirection}
+      
+      LIMIT ${skip}, ${limit}
+      
+      // Get associated file record
+      LET fileRecord = (
+        FOR fileEdge IN ${this.isOfTypeEdges}
+          FILTER fileEdge._from == item.record._id
+          RETURN DOCUMENT(PARSE_IDENTIFIER(fileEdge._to).collection, PARSE_IDENTIFIER(fileEdge._to).key)
+      )[0]
+      
+      // Return formatted result with all necessary information
+      RETURN {
+        id: item.record._key,
+        externalRecordId: item.record.externalRecordId,
+        externalRevisionId: item.record.externalRevisionId,
+        recordName: item.record.recordName,
+        recordType: item.record.recordType,
+        origin: item.record.origin,
+        connectorName: item.record.connectorName,
+        indexingStatus: item.record.indexingStatus,
+        createdAtTimestamp: item.record.createdAtTimestamp,
+        updatedAtTimestamp: item.record.updatedAtTimestamp,
+        orgId: item.record.orgId,
+        version: item.record.version,
+        isDeleted: item.record.isDeleted,
+        deletedByUserId: item.record.deletedByUserId,
+        isLatestVersion: item.record.isLatestVersion,
+        source: item.source,
+        permission: item.permission,
+        fileRecord: fileRecord ? {
+          name: fileRecord.name,
+          extension: fileRecord.extension,
+          mimeType: fileRecord.mimeType,
+          sizeInBytes: fileRecord.sizeInBytes,
+          isFile: fileRecord.isFile,
+          webUrl: fileRecord.webUrl
+        } : null
+      }
+  `;
+
+    // Execute the query to get the records
+    const cursor = await this.db.query(query);
+    return await cursor.all();
+  }
+
+  /**
+   * Gets the total count of records matching the filters
+   */
+  private async getRecordsCount(params: {
+    user: any;
+    kb: any;
+    filters: any;
+    permissionFilter: any;
+    source: 'all' | 'local' | 'connector';
+  }): Promise<number> {
+    const { user, kb, filters, permissionFilter, source } = params;
+    const {
+      localFilter,
+      connectorFilter,
+      localOriginFilter,
+      connectorOriginFilter,
+    } = filters;
+
+    // Optimized count query
+    const countQuery = aql`
+    // Define both record sets for counting using a more efficient approach
+    LET kbRecordsCount = ${
+      source === 'all' || source === 'local'
+        ? aql`LENGTH(
+          FOR edge IN ${this.kbToRecordEdges}
+            FILTER edge._to == ${COLLECTIONS.KNOWLEDGE_BASE + '/' + kb._key}
+            LET record = DOCUMENT(PARSE_IDENTIFIER(edge._from).collection, PARSE_IDENTIFIER(edge._from).key)
+            FILTER record != null
+            ${localFilter}
+            ${localOriginFilter}
+            RETURN 1
+        )`
+        : aql`0`
+    }
+    
+    LET kbRecords = ${
+      source === 'all' || source === 'local'
+        ? aql`(
+          FOR edge IN ${this.kbToRecordEdges}
+            FILTER edge._to == ${COLLECTIONS.KNOWLEDGE_BASE + '/' + kb._key}
+            LET record = DOCUMENT(PARSE_IDENTIFIER(edge._from).collection, PARSE_IDENTIFIER(edge._from).key)
+            FILTER record != null
+            ${localFilter}
+            ${localOriginFilter}
+            RETURN record
+        )`
+        : aql`[]`
+    }
+    
+    LET directPermissionCount = ${
+      source === 'all' || source === 'connector'
+        ? aql`LENGTH(
+          FOR permissionEdge IN ${this.userToRecordEdges}
+            FILTER permissionEdge._to == ${user._id}
+            ${permissionFilter}
+            
+            LET record = DOCUMENT(PARSE_IDENTIFIER(permissionEdge._from).collection, PARSE_IDENTIFIER(permissionEdge._from).key)
+            FILTER record != null
+            ${connectorFilter}
+            ${connectorOriginFilter}
+            
+            // Don't count records already in KB
+            FILTER record NOT IN kbRecords
+            
+            RETURN 1
+        )`
+        : aql`0`
+    }
+    
+    // Return total count
+    RETURN kbRecordsCount + directPermissionCount
+  `;
+
+    const countCursor = await this.db.query(countQuery);
+    const countResult = await countCursor.all();
+    return countResult[0] || 0;
+  }
+
+  /**
+   * Gets available filter options based on existing records
+   */
+  private async getFilterOptions(params: {
+    user: any;
+    kb: any;
+    orgId: string;
+    source: 'all' | 'local' | 'connector';
+  }): Promise<any[]> {
+    const { user, kb, orgId, source } = params;
+
+    // Query to get available filter options
+    const filterOptionsQuery = aql`
+    // Get filter options from knowledge base records
+    LET kbRecordsOptions = ${
+      source === 'all' || source === 'local'
+        ? aql`(
+        FOR edge IN ${this.kbToRecordEdges}
+          FILTER edge._to == ${COLLECTIONS.KNOWLEDGE_BASE + '/' + kb._key}
+          LET record = DOCUMENT(PARSE_IDENTIFIER(edge._from).collection, PARSE_IDENTIFIER(edge._from).key)
+          FILTER record != null AND record.isDeleted != true AND record.orgId == ${orgId}
+          FILTER record.origin == "UPLOAD"
+          RETURN {
+            recordType: record.recordType,
+            origin: record.origin,
+            connectorName: record.connectorName,
+            indexingStatus: record.indexingStatus,
+            source: "local",
+            permission: null
+          }
+      )`
+        : aql`[]`
+    }
+    
+    // Get filter options from direct permission records
+    LET directOptionsOptions = ${
+      source === 'all' || source === 'connector'
+        ? aql`(
+        FOR permissionEdge IN ${this.userToRecordEdges}
+          FILTER permissionEdge._to == ${user._id}
+          
+          LET record = DOCUMENT(PARSE_IDENTIFIER(permissionEdge._from).collection, PARSE_IDENTIFIER(permissionEdge._from).key)
+          FILTER record != null AND record.isDeleted != true AND record.orgId == ${orgId}
+          FILTER record.origin == "CONNECTOR"
+          
+          RETURN {
+            recordType: record.recordType,
+            origin: record.origin,
+            connectorName: record.connectorName,
+            indexingStatus: record.indexingStatus,
+            source: "connector",
+            permission: permissionEdge.role
+          }
+      )`
+        : aql`[]`
+    }
+    
+    // Combine and return all options
+    RETURN APPEND(kbRecordsOptions, directOptionsOptions)
+  `;
+
+    // Execute the query for filter options
+    const filterOptionsCursor = await this.db.query(filterOptionsQuery);
+    const allFilterOptions = await filterOptionsCursor.all();
+
+    // Flatten the result array if needed
+    return Array.isArray(allFilterOptions[0])
+      ? allFilterOptions[0].concat(allFilterOptions[1] || [])
+      : allFilterOptions;
+  }
+
+  /**
+   * Processes raw filter options into formatted filter groups
+   */
+  private processFilterOptions(filterOptions: any[]): {
+    recordTypes: Array<{ value: string; count: number | undefined }>;
+    origins: Array<{ value: string; count: number | undefined }>;
+    connectors: Array<{ value: string; count: number | undefined }>;
+    indexingStatus: Array<{ value: string; count: number | undefined }>;
+    permissions: Array<{ value: string; count: number | undefined }>;
+    sources: Array<{ value: string; count: number | undefined }>;
+  } {
+    // Extract available filter options
+    const recordTypesSet = new Set<string>();
+    const originsSet = new Set<string>();
+    const connectorsSet = new Set<string>();
+    const statusSet = new Set<string>();
+    const permissionSet = new Set<string>();
+    const sourceSet = new Set<string>();
+
+    const recordTypeCount: Record<string, number> = {};
+    const originCount: Record<string, number> = {};
+    const connectorCount: Record<string, number> = {};
+    const statusCount: Record<string, number> = {};
+    const permissionCount: Record<string, number> = {};
+    const sourceCount: Record<string, number> = {};
+
+    filterOptions.forEach((item: any) => {
+      if (item.recordType) {
+        recordTypesSet.add(item.recordType);
+        recordTypeCount[item.recordType] =
+          (recordTypeCount[item.recordType] || 0) + 1;
+      }
+
+      if (item.origin) {
+        originsSet.add(item.origin);
+        originCount[item.origin] = (originCount[item.origin] || 0) + 1;
+      }
+
+      if (item.connectorName) {
+        connectorsSet.add(item.connectorName);
+        connectorCount[item.connectorName] =
+          (connectorCount[item.connectorName] || 0) + 1;
+      }
+
+      if (item.indexingStatus) {
+        statusSet.add(item.indexingStatus);
+        statusCount[item.indexingStatus] =
+          (statusCount[item.indexingStatus] || 0) + 1;
+      }
+
+      if (item.permission) {
+        permissionSet.add(item.permission);
+        permissionCount[item.permission] =
+          (permissionCount[item.permission] || 0) + 1;
+      }
+
+      if (item.source) {
+        sourceSet.add(item.source);
+        sourceCount[item.source] = (sourceCount[item.source] || 0) + 1;
+      }
+    });
+
+    return {
+      recordTypes: Array.from(recordTypesSet).map((type) => ({
+        value: type,
+        count: recordTypeCount[type],
+      })),
+      origins: Array.from(originsSet).map((origin) => ({
+        value: origin,
+        count: originCount[origin],
+      })),
+      connectors: Array.from(connectorsSet).map((connector) => ({
+        value: connector,
+        count: connectorCount[connector],
+      })),
+      indexingStatus: Array.from(statusSet).map((status) => ({
+        value: status,
+        count: statusCount[status],
+      })),
+      permissions: Array.from(permissionSet).map((permission) => ({
+        value: permission,
+        count: permissionCount[permission],
+      })),
+      sources: Array.from(sourceSet).map((source) => ({
+        value: source,
+        count: sourceCount[source],
+      })),
+    };
+  }
+
+  /**
+   * Builds the applied filters object for the response
+   */
+  private buildAppliedFilters(params: {
+    search?: string;
+    recordTypes?: string[];
+    origins?: string[];
+    connectors?: string[];
+    indexingStatus?: string[];
+    permissions?: string[];
+    source: 'all' | 'local' | 'connector';
+    dateFrom?: number;
+    dateTo?: number;
+  }): Record<string, any> {
+    const {
+      search,
+      recordTypes,
+      origins,
+      connectors,
+      indexingStatus,
+      permissions,
+      source,
+      dateFrom,
+      dateTo,
+    } = params;
+
+    const appliedFilters: Record<string, any> = {};
+
+    if (search) appliedFilters.search = search;
+    if (recordTypes) appliedFilters.recordTypes = recordTypes;
+    if (origins) appliedFilters.origins = origins;
+    if (connectors) appliedFilters.connectors = connectors;
+    if (indexingStatus) appliedFilters.indexingStatus = indexingStatus;
+    if (permissions) appliedFilters.permissions = permissions;
+    if (source !== 'all') appliedFilters.source = source;
+
+    if (dateFrom || dateTo) {
+      appliedFilters.dateRange = {
+        from: dateFrom,
+        to: dateTo,
+      };
+    }
+
+    return appliedFilters;
+  }
+
+  /**
+   * Handles errors in the getRecords method
+   */
+  private handleGetRecordsError(error: any, options: any): never {
+    if (error) {
+      // Handle database-specific errors
+      logger.error('ArangoDB error in getRecords', {
+        code: error.code,
+        errorNum: error.errorNum,
+        options,
+        error,
+      });
+
+      if (error.errorNum === 1203) {
+        // Collection not found
+        throw new InternalServerError('Database configuration error');
+      }
+    } else if (
+      error instanceof NotFoundError ||
+      error instanceof UnauthorizedError
+    ) {
+      // Pass through specific error types
+      logger.error(`${error.constructor.name} in getRecords`, {
+        options,
+        error,
+      });
       throw error;
+    } else {
+      // General error handling
+      logger.error('Error in getRecords', { options, error });
+    }
+    throw error;
+  }
+
+  /**
+   * Ensures that all necessary indexes exist for optimal query performance
+   */
+  async ensureRecordIndexes(): Promise<void> {
+    try {
+      // Create index on records collection
+      await this.recordCollection.ensureIndex({
+        type: 'persistent',
+        fields: ['orgId', 'isDeleted'],
+        name: 'idx_records_org_deleted',
+      });
+
+      await this.recordCollection.ensureIndex({
+        type: 'persistent',
+        fields: ['recordName'],
+        name: 'idx_records_name',
+      });
+
+      await this.recordCollection.ensureIndex({
+        type: 'persistent',
+        fields: ['recordType'],
+        name: 'idx_records_type',
+      });
+
+      await this.recordCollection.ensureIndex({
+        type: 'persistent',
+        fields: ['origin', 'connectorName'],
+        name: 'idx_records_origin_connector',
+      });
+
+      await this.recordCollection.ensureIndex({
+        type: 'persistent',
+        fields: ['indexingStatus'],
+        name: 'idx_records_indexing_status',
+      });
+
+      await this.recordCollection.ensureIndex({
+        type: 'persistent',
+        fields: ['createdAtTimestamp'],
+        name: 'idx_records_created_at',
+      });
+
+      // Create indexes on edge collections
+      await this.kbToRecordEdges.ensureIndex({
+        type: 'persistent',
+        fields: ['_to'],
+        name: 'idx_kb_edges_to',
+      });
+
+      await this.userToRecordEdges.ensureIndex({
+        type: 'persistent',
+        fields: ['_to', 'role'],
+        name: 'idx_user_record_edges_to_role',
+      });
+
+      await this.isOfTypeEdges.ensureIndex({
+        type: 'persistent',
+        fields: ['_from'],
+        name: 'idx_is_of_type_from',
+      });
+
+      logger.info('Record indexes created successfully');
+    } catch (error) {
+      logger.error('Failed to create record indexes', { error });
+      throw new InternalServerError('Failed to initialize database indexes');
     }
   }
 
