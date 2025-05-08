@@ -214,46 +214,46 @@ export default function CompanyProfile() {
     }
   };
 
-    if (loading) {
-      return (
-        <Box
+  if (loading) {
+    return (
+      <Box
+        sx={{
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          minHeight: '80vh',
+          mx: 'auto',
+          my: 'auto',
+        }}
+      >
+        <Paper
           sx={{
+            p: 4,
+            borderRadius: 2,
             display: 'flex',
-            justifyContent: 'center',
+            flexDirection: 'column',
             alignItems: 'center',
-            minHeight: '80vh',
-            mx:'auto',
-            my:'auto'
+            maxWidth: '300px',
+            width: '100%',
           }}
         >
-          <Paper
-            sx={{
-              p: 4,
-              borderRadius: 2,
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              maxWidth: '300px',
-              width: '100%',
-            }}
-          >
-            <CircularProgress size={40} thickness={4} color="primary" />
-            <Box sx={{ mt: 2, display: 'flex', alignItems: 'center' }}>
-              <Typography
-                variant="body1"
-                sx={{
-                  ml: 1,
-                  color: 'text.secondary',
-                  fontWeight: 500,
-                }}
-              >
-                Loading company profile...
-              </Typography>
-            </Box>
-          </Paper>
-        </Box>
-      );
-    }
+          <CircularProgress size={40} thickness={4} color="primary" />
+          <Box sx={{ mt: 2, display: 'flex', alignItems: 'center' }}>
+            <Typography
+              variant="body1"
+              sx={{
+                ml: 1,
+                color: 'text.secondary',
+                fontWeight: 500,
+              }}
+            >
+              Loading company profile...
+            </Typography>
+          </Box>
+        </Paper>
+      </Box>
+    );
+  }
 
   return (
     <Container maxWidth="lg" sx={{ py: 4 }}>
@@ -482,7 +482,7 @@ export default function CompanyProfile() {
                         }}
                       >
                         {countries.map((country) => (
-                          <MenuItem key={country.code} value={country.code}>
+                          <MenuItem key={country.label} value={country.label}>
                             {country.label}
                           </MenuItem>
                         ))}

@@ -24,11 +24,11 @@ const OrgCreationBody = z
     dataCollectionConsent: z.boolean().optional(),
     permanentAddress: z
       .object({
-        street: z.string().optional(),
+        addressLine1: z.string().optional(),
         city: z.string().optional(),
         state: z.string().optional(),
         country: z.string().optional(),
-        postalCode: z.string().optional(),
+        postCode: z.string().optional(),
       })
       .optional(),
   })
