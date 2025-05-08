@@ -49,7 +49,7 @@ export const COLLECTIONS = {
   // Edge collections
   RECORD_TO_RECORD: 'recordRelations',
   IS_OF_TYPE: 'isOfType',
-  PERMISSION: 'permission',
+  PERMISSIONS: 'permissions',
   BELONGS_TO: 'belongsTo',
 } as const;
 

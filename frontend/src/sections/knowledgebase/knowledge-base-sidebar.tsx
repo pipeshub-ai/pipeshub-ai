@@ -7,6 +7,8 @@ import upIcon from '@iconify-icons/mdi/chevron-up';
 import leftIcon from '@iconify-icons/mdi/chevron-left';
 import downIcon from '@iconify-icons/mdi/chevron-down';
 import rightIcon from '@iconify-icons/mdi/chevron-right';
+import fileIcon from '@iconify-icons/mdi/file-outline';
+import emailIcon from '@iconify-icons/mdi/email-outline';
 import { useLocation, useNavigate } from 'react-router-dom';
 import viewModuleIcon from '@iconify-icons/mdi/view-module';
 import filterMenuIcon from '@iconify-icons/mdi/filter-menu';
@@ -19,6 +21,11 @@ import officeBuildingIcon from '@iconify-icons/mdi/office-building';
 import formatListIcon from '@iconify-icons/mdi/format-list-bulleted';
 import closeCircleIcon from '@iconify-icons/mdi/close-circle-outline';
 import alertCircleOutlineIcon from '@iconify-icons/mdi/alert-circle-outline';
+import cloudUploadIcon from '@iconify-icons/mdi/cloud-upload-outline';
+import cloudConnectorIcon from '@iconify-icons/mdi/cloud-sync-outline';
+import gmailIcon from '@iconify-icons/mdi/gmail';
+import googleDriveIcon from '@iconify-icons/mdi/google-drive';
+import userCheckIcon from '@iconify-icons/mdi/account-check-outline';
 import checkCircleOutlineIcon from '@iconify-icons/mdi/check-circle-outline';
 
 import { alpha, styled, useTheme, keyframes } from '@mui/material/styles';
@@ -44,11 +51,7 @@ import type { Modules } from './types/modules';
 import type { Departments } from './types/departments';
 import type { SearchTagsRecords } from './types/search-tags';
 import type { RecordCategories } from './types/record-categories';
-import type {
-  Filters,
-  FilterHeaderProps,
-  KnowledgeBaseSideBarProps,
-} from './types/knowledge-base';
+import type { Filters, FilterHeaderProps, KnowledgeBaseSideBarProps } from './types/knowledge-base';
 
 // Constants
 const DRAWER_EXPANDED_WIDTH = 320;
@@ -345,6 +348,21 @@ const formatLabel = (label: string): string => {
     .replace(/\b\w/g, (l: string) => l.toUpperCase());
 };
 
+// Helper function to create empty filters object
+const createEmptyFilters = (): Filters => ({
+  indexingStatus: [],
+  department: [],
+  moduleId: [],
+  searchTags: [],
+  appSpecificRecordType: [],
+  recordTypes: [],
+  origin: [],
+  status: [],
+  connectors: [],
+  app: [],
+  permissions: [],
+});
+
 export default function KnowledgeBaseSideBar({
   filters,
   onFilterChange,
@@ -360,8 +378,18 @@ export default function KnowledgeBaseSideBar({
   const [recordCategories, setRecordCategories] = useState<RecordCategories[]>([]);
   const [modules, setModules] = useState<Modules[]>([]);
   const [tags, setTags] = useState<SearchTagsRecords[]>([]);
+
+  // Initialize expanded sections with all sections collapsed except status
   const [expandedSections, setExpandedSections] = useState<{ [key: string]: boolean }>({
     status: true,
+    recordType: false,
+    origin: false,
+    connector: false,
+    permissions: false,
+    departments: false,
+    modules: false,
+    tags: false,
+    categories: false,
   });
 
   // Add a ref to track if filter operation is in progress
@@ -369,7 +397,7 @@ export default function KnowledgeBaseSideBar({
   // Add a loading state for filter changes
   const [isLoading, setIsLoading] = useState(false);
   // Keep local copy of filters to prevent UI flicker during updates
-  const [localFilters, setLocalFilters] = useState(filters);
+  const [localFilters, setLocalFilters] = useState<Filters>(filters || createEmptyFilters());
 
   // Store previous filters for comparison
   const prevFiltersRef = useRef<Filters | null>(null);
@@ -379,12 +407,89 @@ export default function KnowledgeBaseSideBar({
   const [showExpandedContent, setShowExpandedContent] = useState(openSidebar);
 
   // Status color mapping using theme colors
-  const statusColors: Record<string, string> = {
-    NOT_STARTED: theme.palette.grey[500],
-    IN_PROGRESS: theme.palette.info.main,
-    FAILED: theme.palette.error.main,
-    COMPLETED: theme.palette.success.main,
-  };
+  const statusColors: Record<string, string> = React.useMemo(
+    () => ({
+      NOT_STARTED: theme.palette.grey[500],
+      IN_PROGRESS: theme.palette.info.main,
+      FAILED: theme.palette.error.main,
+      COMPLETED: theme.palette.success.main,
+    }),
+    [
+      theme.palette.grey,
+      theme.palette.info.main,
+      theme.palette.error.main,
+      theme.palette.success.main,
+    ]
+  );
+
+  // Record type icon mapping
+  const recordTypeIcons = React.useMemo<
+    Record<string, React.ComponentProps<typeof IconifyIcon>['icon']>
+  >(
+    () => ({
+      FILE: fileIcon,
+      MAIL: emailIcon,
+    }),
+    []
+  );
+
+  // Origin icon mapping
+  const originIcons = React.useMemo<
+    Record<string, React.ComponentProps<typeof IconifyIcon>['icon']>
+  >(
+    () => ({
+      UPLOAD: cloudUploadIcon,
+      CONNECTOR: cloudConnectorIcon,
+    }),
+    []
+  );
+
+  // Connector icon mapping
+  const connectorIcons = React.useMemo<
+    Record<string, React.ComponentProps<typeof IconifyIcon>['icon']>
+  >(
+    () => ({
+      GMAIL: gmailIcon,
+      DRIVE: googleDriveIcon,
+    }),
+    []
+  );
+
+  // Permission icon mapping
+  const permissionIcons = React.useMemo<
+    Record<string, React.ComponentProps<typeof IconifyIcon>['icon']>
+  >(
+    () => ({
+      READER: userCheckIcon,
+      OWNER: userCheckIcon,
+      WRITER: userCheckIcon,
+      COMMENTER: userCheckIcon,
+      FILEORGANIZER: userCheckIcon,
+      ORGANIZER: userCheckIcon,
+    }),
+    []
+  );
+
+  const toggleInProgress = useRef(false);
+
+  // Ensure filters have arrays for all properties
+  useEffect(() => {
+    // Initialize filters with empty arrays for all properties if they don't exist
+    const normalizedFilters: Filters = { ...createEmptyFilters() };
+
+    // Copy values from props if they exist and are arrays
+    if (filters) {
+      Object.keys(normalizedFilters).forEach((key) => {
+        const filterKey = key as keyof Filters;
+        if (filters[filterKey] && Array.isArray(filters[filterKey])) {
+          normalizedFilters[filterKey] = [...filters[filterKey]!];
+        }
+      });
+    }
+
+    setLocalFilters(normalizedFilters);
+    prevFiltersRef.current = JSON.parse(JSON.stringify(normalizedFilters));
+  }, [filters]);
 
   // Use memo to cache active filter counts
   const activeCounts = useMemo(() => {
@@ -394,11 +499,12 @@ export default function KnowledgeBaseSideBar({
       moduleId: 0,
       searchTags: 0,
       appSpecificRecordType: 0,
-      recordType: 0,
+      recordTypes: 0,
       origin: 0,
       status: 0,
-      connector: 0,
+      connectors: 0,
       app: 0,
+      permissions: 0,
     };
 
     // Calculate counts from local filters to prevent UI flicker
@@ -417,14 +523,27 @@ export default function KnowledgeBaseSideBar({
 
   // Update local filters when props change, with added stability mechanism
   useEffect(() => {
+    if (!filters) return;
+
+    // Create a normalized version of the incoming filters
+    const normalizedFilters: Filters = { ...createEmptyFilters() };
+
+    // Copy all filter values, ensuring they are arrays
+    Object.keys(normalizedFilters).forEach((key) => {
+      const filterKey = key as keyof Filters;
+      if (filters[filterKey] && Array.isArray(filters[filterKey])) {
+        normalizedFilters[filterKey] = [...filters[filterKey]!];
+      }
+    });
+
     // Compare with prev filters to avoid unnecessary updates
     if (
       !prevFiltersRef.current ||
-      JSON.stringify(prevFiltersRef.current) !== JSON.stringify(filters)
+      JSON.stringify(prevFiltersRef.current) !== JSON.stringify(normalizedFilters)
     ) {
       // Only update if there's a real change
-      setLocalFilters(filters);
-      prevFiltersRef.current = filters;
+      setLocalFilters(normalizedFilters);
+      prevFiltersRef.current = JSON.parse(JSON.stringify(normalizedFilters));
     }
   }, [filters]);
 
@@ -435,11 +554,9 @@ export default function KnowledgeBaseSideBar({
     // Manage content visibility with a slight delay for smooth transitions
     if (openSidebar) {
       setShowCollapsedContent(false);
-      // Shorter delay
       setTimeout(() => setShowExpandedContent(true), 100);
     } else {
       setShowExpandedContent(false);
-      // Shorter delay
       setTimeout(() => setShowCollapsedContent(true), 100);
     }
   }, [openSidebar]);
@@ -453,73 +570,98 @@ export default function KnowledgeBaseSideBar({
     }
   };
 
-  const toggleSection = (section: string) => {
-    setExpandedSections({
-      ...expandedSections,
-      [section]: !expandedSections[section],
+  const toggleSection = React.useCallback((section: string) => {
+    // Prevent multiple toggles from happening simultaneously
+    if (toggleInProgress.current) return;
+
+    // Set flag to indicate toggle is in progress
+    toggleInProgress.current = true;
+
+    // Use functional state update to get the most current state
+    setExpandedSections((prevSections) => {
+      // Create a fresh copy to avoid any state mutations
+      const updatedSections = { ...prevSections };
+
+      // Toggle only the specific section that was clicked
+      updatedSections[section] = !prevSections[section];
+
+      // Return the new object with only the requested section changed
+      return updatedSections;
     });
-  };
 
-  const handleFilterChange = (filterType: keyof Filters, value: string) => {
-    // If a filter operation is already in progress, return to prevent flickering
-    if (isFilterChanging.current) return;
+    // Reset the toggle flag after a short delay
+    setTimeout(() => {
+      toggleInProgress.current = false;
+    }, 50);
+  }, []);
 
-    // Set the flag to indicate a filter operation is in progress
-    isFilterChanging.current = true;
-    // Show loading indicator
-    setIsLoading(true);
+  // Use a ref to track mounted state to prevent state updates after unmount
+  const isMounted = useRef(true);
 
-    // Update the local state first for immediate feedback
-    const currentFilterValues = localFilters[filterType] || [];
-    const newValues = currentFilterValues.includes(value)
-      ? currentFilterValues.filter((item: string) => item !== value)
-      : [...currentFilterValues, value];
+  // Set up mount/unmount tracking
+  useEffect(() => {
+    isMounted.current = true;
 
-    setLocalFilters((prev) => ({
-      ...prev,
-      [filterType]: newValues,
-    }));
+    return () => {
+      isMounted.current = false;
+    };
+  }, []);
 
-    // Use requestAnimationFrame to batch UI updates
-    requestAnimationFrame(() => {
-      // Create updated filters for parent component
-      const updatedFilters = {
-        ...filters,
-        [filterType]: currentFilterValues.includes(value)
-          ? currentFilterValues.filter((item: string) => item !== value)
-          : [...currentFilterValues, value],
-      };
+  // Fix for the handleFilterChange function to isolate filter types completely
+  const handleFilterChange = React.useCallback(
+    (filterType: keyof Filters, value: string) => {
+      // If a filter operation is already in progress, return to prevent flickering
+      if (isFilterChanging.current) return;
 
-      // Update parent without causing a re-render of this component
-      onFilterChange(updatedFilters);
+      // Set the flag to indicate a filter operation is in progress
+      isFilterChanging.current = true;
+      // Show loading indicator
+      setIsLoading(true);
 
-      // Reset the flag and loading state after a short delay
-      setTimeout(() => {
-        isFilterChanging.current = false;
-        setIsLoading(false);
-      }, 300); // A slightly longer delay to ensure the parent component has updated
-    });
-  };
+      // Create a new copy of the current filters to avoid reference issues
+      const updatedLocalFilters = JSON.parse(JSON.stringify(localFilters)) as Filters;
 
-  // Handle click on collapsed filter icon
-  const handleCollapsedFilterClick = (sectionId: string, filterType: keyof Filters) => {
-    // If drawer is closed, open it
-    if (!open) {
-      setOpen(true);
-      if (onToggleSidebar) {
-        onToggleSidebar();
+      // Ensure the filter property exists and is an array
+      if (!Array.isArray(updatedLocalFilters[filterType])) {
+        updatedLocalFilters[filterType] = [];
       }
 
-      // Expand the section that was clicked
-      setExpandedSections({
-        ...expandedSections,
-        [sectionId]: true,
-      });
-    }
-  };
+      // Get the current array for this filter type
+      const currentValues = updatedLocalFilters[filterType];
 
-  // Get count of active filters - use the cached counts
-  const getActiveFilterCount = (filterType: keyof Filters): number => activeCounts[filterType];
+      // Check if value exists in the array
+      const valueIndex = currentValues.indexOf(value);
+
+      // Toggle the value
+      if (valueIndex === -1) {
+        // Value doesn't exist, so add it
+        updatedLocalFilters[filterType] = [...currentValues, value];
+      } else {
+        // Value exists, so remove it
+        updatedLocalFilters[filterType] = [
+          ...currentValues.slice(0, valueIndex),
+          ...currentValues.slice(valueIndex + 1),
+        ];
+      }
+
+      // Update local state immediately for responsive UI
+      setLocalFilters(updatedLocalFilters);
+
+      // Use requestAnimationFrame to batch UI updates
+      requestAnimationFrame(() => {
+        // Update parent without causing a re-render of this component
+        // Pass a deep copy to avoid reference issues
+        onFilterChange(JSON.parse(JSON.stringify(updatedLocalFilters)));
+
+        // Reset the flag and loading state after a short delay
+        setTimeout(() => {
+          isFilterChanging.current = false;
+          setIsLoading(false);
+        }, 300);
+      });
+    },
+    [localFilters, onFilterChange]
+  );
 
   // Get filter item names by IDs
   const getFilterName = (type: keyof Filters, id: string): string => {
@@ -533,6 +675,10 @@ export default function KnowledgeBaseSideBar({
       case 'appSpecificRecordType':
         return recordCategories.find((c) => c._id === id)?.name || id;
       case 'indexingStatus':
+      case 'recordTypes':
+      case 'origin':
+      case 'connectors':
+      case 'permissions':
         return formatLabel(id);
       default:
         return id;
@@ -547,19 +693,25 @@ export default function KnowledgeBaseSideBar({
     isFilterChanging.current = true;
     setIsLoading(true);
 
-    // Update local state first
-    setLocalFilters((prev) => ({
-      ...prev,
-      [type]: (prev[type] || []).filter((item) => item !== value),
-    }));
+    // Create deep copies to avoid mutations
+    const updatedLocalFilters = JSON.parse(JSON.stringify(localFilters));
 
+    // Ensure the property exists and is an array
+    if (!Array.isArray(updatedLocalFilters[type])) {
+      updatedLocalFilters[type] = [];
+    } else {
+      // Filter out the value to remove
+      updatedLocalFilters[type] = updatedLocalFilters[type].filter(
+        (item: string) => item !== value
+      );
+    }
+
+    // Update local state
+    setLocalFilters(updatedLocalFilters);
+
+    // Send to parent component
     requestAnimationFrame(() => {
-      const updatedFilters = {
-        ...filters,
-        [type]: (filters[type] || []).filter((item) => item !== value),
-      };
-
-      onFilterChange(updatedFilters);
+      onFilterChange(JSON.parse(JSON.stringify(updatedLocalFilters)));
 
       setTimeout(() => {
         isFilterChanging.current = false;
@@ -569,37 +721,55 @@ export default function KnowledgeBaseSideBar({
   };
 
   // Clear all filters
-  const clearAllFilters = () => {
+  // Clear all filters - wrapped in useCallback
+  const clearAllFilters = React.useCallback(() => {
     // If a filter operation is already in progress, return
     if (isFilterChanging.current) return;
 
     isFilterChanging.current = true;
     setIsLoading(true);
 
+    // Create an empty filters object
+    const emptyFilters = createEmptyFilters();
+
     // Update local state immediately
-    setLocalFilters({
-      indexingStatus: [],
-      department: [],
-      moduleId: [],
-      searchTags: [],
-      appSpecificRecordType: [],
-    });
+    setLocalFilters(emptyFilters);
 
     requestAnimationFrame(() => {
-      onFilterChange({
-        indexingStatus: [],
-        department: [],
-        moduleId: [],
-        searchTags: [],
-        appSpecificRecordType: [],
-      });
+      onFilterChange(JSON.parse(JSON.stringify(emptyFilters)));
 
       setTimeout(() => {
         isFilterChanging.current = false;
         setIsLoading(false);
       }, 300);
     });
-  };
+  }, [onFilterChange]);
+
+  // Improved handleCollapsedFilterClick with better section handling - wrapped in useCallback
+  const handleCollapsedFilterClick = React.useCallback(
+    (sectionId: string, filterType: keyof Filters) => {
+      // If drawer is closed, open it first
+      if (!open) {
+        setOpen(true);
+        if (onToggleSidebar) {
+          onToggleSidebar();
+        }
+
+        // After drawer opens, expand only the section clicked
+        // Use setTimeout to ensure state updates happen in sequence
+        setTimeout(() => {
+          setExpandedSections((prevSections) => ({
+            ...prevSections,
+            [sectionId]: true,
+          }));
+        }, 100);
+      } else {
+        // If drawer is already open, just toggle the section
+        toggleSection(sectionId);
+      }
+    },
+    [open, onToggleSidebar, toggleSection]
+  );
 
   // Generate active filters view
   const renderActiveFilters = () => {
@@ -631,7 +801,7 @@ export default function KnowledgeBaseSideBar({
         </Box>
         <Box sx={{ display: 'flex', flexWrap: 'wrap' }}>
           {Object.entries(localFilters).map(([type, values]) =>
-            (values || []).map((value: any) => (
+            (values || []).map((value: string) => (
               <FilterChip
                 key={`${type}-${value}`}
                 label={getFilterName(type as keyof Filters, value)}
@@ -645,6 +815,302 @@ export default function KnowledgeBaseSideBar({
       </ActiveFiltersContainer>
     );
   };
+
+  // Filter section for Record Types
+  const RecordTypeFilterSection = useMemo(
+    () => (
+      <FilterSection>
+        <FilterHeader
+          expanded={expandedSections.recordType || false}
+          onClick={() => toggleSection('recordType')}
+        >
+          <FilterLabel>
+            <Icon
+              icon={fileIcon}
+              fontSize="large"
+              color={
+                expandedSections.recordType
+                  ? theme.palette.primary.main
+                  : theme.palette.text.secondary
+              }
+            />
+            Record Type
+            {activeCounts.recordTypes > 0 && (
+              <FilterCount badgeContent={activeCounts.recordTypes} color="primary" />
+            )}
+          </FilterLabel>
+          <Icon
+            icon={expandedSections.recordType ? upIcon : downIcon}
+            fontSize="large"
+            color={theme.palette.text.secondary}
+          />
+        </FilterHeader>
+        <FilterContent in={expandedSections.recordType || false}>
+          <FormGroup>
+            {['FILE', 'MAIL'].map((type) => {
+              const isChecked = (localFilters.recordTypes || []).includes(type);
+
+              return (
+                <FormControlLabelStyled
+                  key={type}
+                  control={
+                    <FilterCheckbox
+                      checked={isChecked}
+                      onClick={() => handleFilterChange('recordTypes', type)}
+                      size="small"
+                      disableRipple
+                    />
+                  }
+                  label={
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <Icon
+                        icon={recordTypeIcons[type]}
+                        color={theme.palette.text.secondary}
+                        width={16}
+                        height={16}
+                      />
+                      {formatLabel(type)}
+                    </Box>
+                  }
+                />
+              );
+            })}
+          </FormGroup>
+        </FilterContent>
+      </FilterSection>
+    ),
+    [
+      expandedSections.recordType,
+      activeCounts.recordTypes,
+      localFilters.recordTypes,
+      theme,
+      handleFilterChange,
+      recordTypeIcons,
+      toggleSection
+    ]
+  );
+
+  // Filter section for Origin
+  const OriginFilterSection = useMemo(
+    () => (
+      <FilterSection>
+        <FilterHeader
+          expanded={expandedSections.origin || false}
+          onClick={() => toggleSection('origin')}
+        >
+          <FilterLabel>
+            <Icon
+              icon={cloudUploadIcon}
+              fontSize="large"
+              color={
+                expandedSections.origin ? theme.palette.primary.main : theme.palette.text.secondary
+              }
+            />
+            Origin
+            {activeCounts.origin > 0 && (
+              <FilterCount badgeContent={activeCounts.origin} color="primary" />
+            )}
+          </FilterLabel>
+          <Icon
+            icon={expandedSections.origin ? upIcon : downIcon}
+            fontSize="large"
+            color={theme.palette.text.secondary}
+          />
+        </FilterHeader>
+        <FilterContent in={expandedSections.origin || false}>
+          <FormGroup>
+            {['UPLOAD', 'CONNECTOR'].map((origin) => {
+              const isChecked = (localFilters.origin || []).includes(origin);
+
+              return (
+                <FormControlLabelStyled
+                  key={origin}
+                  control={
+                    <FilterCheckbox
+                      checked={isChecked}
+                      onClick={() => handleFilterChange('origin', origin)}
+                      size="small"
+                      disableRipple
+                    />
+                  }
+                  label={
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <Icon
+                        icon={originIcons[origin]}
+                        color={theme.palette.text.secondary}
+                        width={16}
+                        height={16}
+                      />
+                      {origin === 'UPLOAD' ? 'Local Upload' : 'Connector'}
+                    </Box>
+                  }
+                />
+              );
+            })}
+          </FormGroup>
+        </FilterContent>
+      </FilterSection>
+    ),
+    [
+      expandedSections.origin,
+      activeCounts.origin,
+      localFilters.origin,
+      theme,
+      handleFilterChange,
+      originIcons,
+      toggleSection
+    ]
+  );
+
+  // Filter section for Connectors
+  const ConnectorFilterSection = useMemo(
+    () => (
+      <FilterSection>
+        <FilterHeader
+          expanded={expandedSections.connector || false}
+          onClick={() => toggleSection('connector')}
+        >
+          <FilterLabel>
+            <Icon
+              icon={cloudConnectorIcon}
+              fontSize="large"
+              color={
+                expandedSections.connector
+                  ? theme.palette.primary.main
+                  : theme.palette.text.secondary
+              }
+            />
+            Connectors
+            {activeCounts.connectors > 0 && (
+              <FilterCount badgeContent={activeCounts.connectors} color="primary" />
+            )}
+          </FilterLabel>
+          <Icon
+            icon={expandedSections.connector ? upIcon : downIcon}
+            fontSize="large"
+            color={theme.palette.text.secondary}
+          />
+        </FilterHeader>
+        <FilterContent in={expandedSections.connector || false}>
+          <FormGroup>
+            {['GMAIL', 'DRIVE'].map((connector) => {
+              const isChecked = (localFilters.connectors || []).includes(connector);
+
+              return (
+                <FormControlLabelStyled
+                  key={connector}
+                  control={
+                    <FilterCheckbox
+                      checked={isChecked}
+                      onClick={() => handleFilterChange('connectors', connector)}
+                      size="small"
+                      disableRipple
+                    />
+                  }
+                  label={
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <Icon
+                        icon={connectorIcons[connector]}
+                        color={theme.palette.text.secondary}
+                        width={16}
+                        height={16}
+                      />
+                      {connector}
+                    </Box>
+                  }
+                />
+              );
+            })}
+          </FormGroup>
+        </FilterContent>
+      </FilterSection>
+    ),
+    [
+      expandedSections.connector,
+      activeCounts.connectors,
+      localFilters.connectors,
+      theme,
+      handleFilterChange,
+      connectorIcons,
+      toggleSection
+    ]
+  );
+
+  // Filter section for Permissions
+  const PermissionsFilterSection = useMemo(
+    () => (
+      <FilterSection>
+        <FilterHeader
+          expanded={expandedSections.permissions || false}
+          onClick={() => toggleSection('permissions')}
+        >
+          <FilterLabel>
+            <Icon
+              icon={userCheckIcon}
+              fontSize="large"
+              color={
+                expandedSections.permissions
+                  ? theme.palette.primary.main
+                  : theme.palette.text.secondary
+              }
+            />
+            Permissions
+            {activeCounts.permissions > 0 && (
+              <FilterCount badgeContent={activeCounts.permissions} color="primary" />
+            )}
+          </FilterLabel>
+          <Icon
+            icon={expandedSections.permissions ? upIcon : downIcon}
+            fontSize="large"
+            color={theme.palette.text.secondary}
+          />
+        </FilterHeader>
+        <FilterContent in={expandedSections.permissions || false}>
+          <FormGroup>
+            {['READER', 'WRITER', 'OWNER', 'COMMENTER', 'ORGANIZER', 'FILEORGANIZER'].map(
+              (permission) => {
+                const isChecked = (localFilters.permissions || []).includes(permission);
+
+                return (
+                  <FormControlLabelStyled
+                    key={permission}
+                    control={
+                      <FilterCheckbox
+                        checked={isChecked}
+                        onClick={() => handleFilterChange('permissions', permission)}
+                        size="small"
+                        disableRipple
+                      />
+                    }
+                    label={
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <Icon
+                          icon={permissionIcons[permission]}
+                          color={theme.palette.text.secondary}
+                          width={16}
+                          height={16}
+                        />
+                        {formatLabel(permission)}
+                      </Box>
+                    }
+                  />
+                );
+              }
+            )}
+          </FormGroup>
+        </FilterContent>
+      </FilterSection>
+    ),
+    [
+      expandedSections.permissions,
+      activeCounts.permissions,
+      localFilters.permissions,
+      theme,
+      handleFilterChange,
+      permissionIcons,
+      toggleSection
+    ]
+  );
 
   // Collapsed sidebar content with memoization
   const CollapsedContent = useMemo(
@@ -662,6 +1128,59 @@ export default function KnowledgeBaseSideBar({
             </Badge>
           </IconButtonStyled>
         </Tooltip>
+
+        <Tooltip title="Record Type Filters" placement="right">
+          <IconButtonStyled
+            color="primary"
+            sx={{ mb: 2 }}
+            onClick={() => handleCollapsedFilterClick('recordType', 'recordTypes')}
+            disableRipple
+          >
+            <Badge badgeContent={activeCounts.recordTypes} color="primary">
+              <Icon icon={fileIcon} />
+            </Badge>
+          </IconButtonStyled>
+        </Tooltip>
+
+        <Tooltip title="Origin Filters" placement="right">
+          <IconButtonStyled
+            color="primary"
+            sx={{ mb: 2 }}
+            onClick={() => handleCollapsedFilterClick('origin', 'origin')}
+            disableRipple
+          >
+            <Badge badgeContent={activeCounts.origin} color="primary">
+              <Icon icon={cloudUploadIcon} />
+            </Badge>
+          </IconButtonStyled>
+        </Tooltip>
+
+        <Tooltip title="Connector Filters" placement="right">
+          <IconButtonStyled
+            color="primary"
+            sx={{ mb: 2 }}
+            onClick={() => handleCollapsedFilterClick('connector', 'connectors')}
+            disableRipple
+          >
+            <Badge badgeContent={activeCounts.connectors} color="primary">
+              <Icon icon={cloudConnectorIcon} />
+            </Badge>
+          </IconButtonStyled>
+        </Tooltip>
+
+        <Tooltip title="Permission Filters" placement="right">
+          <IconButtonStyled
+            color="primary"
+            sx={{ mb: 2 }}
+            onClick={() => handleCollapsedFilterClick('permissions', 'permissions')}
+            disableRipple
+          >
+            <Badge badgeContent={activeCounts.permissions} color="primary">
+              <Icon icon={userCheckIcon} />
+            </Badge>
+          </IconButtonStyled>
+        </Tooltip>
+        {/* 
         <Tooltip title="Department Filters" placement="right">
           <IconButtonStyled
             color="primary"
@@ -709,7 +1228,7 @@ export default function KnowledgeBaseSideBar({
               <Icon icon={formatListIcon} />
             </Badge>
           </IconButtonStyled>
-        </Tooltip>
+        </Tooltip> */}
 
         {totalActiveFilterCount > 0 && (
           <Tooltip title="Clear All Filters" placement="right">
@@ -731,8 +1250,14 @@ export default function KnowledgeBaseSideBar({
         )}
       </CollapsedButtonContainer>
     ),
-    // eslint-disable-next-line
-    [showCollapsedContent, activeCounts, totalActiveFilterCount]
+    [
+      showCollapsedContent,
+      activeCounts,
+      totalActiveFilterCount,
+      theme,
+      clearAllFilters,
+      handleCollapsedFilterClick,
+    ]
   );
 
   // Filter section component - memoize for better performance
@@ -746,7 +1271,7 @@ export default function KnowledgeBaseSideBar({
           <FilterLabel>
             <Icon
               icon={filterVariantIcon}
-              fontSize="small"
+              fontSize="large"
               color={
                 expandedSections.status ? theme.palette.primary.main : theme.palette.text.secondary
               }
@@ -758,7 +1283,7 @@ export default function KnowledgeBaseSideBar({
           </FilterLabel>
           <Icon
             icon={expandedSections.status ? upIcon : downIcon}
-            fontSize="small"
+            fontSize="large"
             color={theme.palette.text.secondary}
           />
         </FilterHeader>
@@ -796,8 +1321,15 @@ export default function KnowledgeBaseSideBar({
         </FilterContent>
       </FilterSection>
     ),
-    // eslint-disable-next-line
-    [expandedSections.status, activeCounts.indexingStatus, localFilters.indexingStatus]
+    [
+      expandedSections.status,
+      activeCounts.indexingStatus,
+      localFilters.indexingStatus,
+      theme,
+      statusColors,
+      handleFilterChange,
+      toggleSection
+    ]
   );
 
   return (
@@ -873,38 +1405,14 @@ export default function KnowledgeBaseSideBar({
             {renderActiveFilters()}
             {StatusFilterSection}
 
+            {RecordTypeFilterSection}
+            {OriginFilterSection}
+            {ConnectorFilterSection}
+            {PermissionsFilterSection}
+
             {/* Other filter sections can be added/implemented similarly */}
-            {/* <FilterSectionComponent
-              id="departments"
-              icon={officeBuildingIcon}
-              label="Departments"
-              filterType="department"
-              items={departments}
-            /> */}
-
-            {/* <FilterSectionComponent
-              id="modules"
-              icon={viewModuleIcon}
-              label="Modules"
-              filterType="moduleId"
-              items={modules}
-            /> */}
-
-            {/* <FilterSectionComponent
-              id="tags"
-              icon={tagIcon}
-              label="Tags"
-              filterType="searchTags"
-              items={tags}
-            /> */}
-
-            {/* <FilterSectionComponent
-              id="categories"
-              icon={formatListIcon}
-              label="Record Categories"
-              filterType="appSpecificRecordType"
-              items={recordCategories}
-            /> */}
+            {/* Department, Module, Tags, and Record Categories sections can be implemented 
+                when you have the actual data available */}
           </FiltersContainer>
         </ExpandedContentContainer>
       )}

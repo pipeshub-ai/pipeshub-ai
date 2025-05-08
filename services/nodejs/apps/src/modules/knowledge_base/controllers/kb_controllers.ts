@@ -764,6 +764,16 @@ export const getRecords =
       const origins = req.query.origins
         ? String(req.query.origins).split(',')
         : undefined;
+
+      // Add missing parameters
+      const connectors = req.query.connectors
+        ? String(req.query.connectors).split(',')
+        : undefined;
+
+      const permissions = req.query.permissions
+        ? String(req.query.permissions).split(',')
+        : undefined;
+
       const indexingStatus = req.query.indexingStatus
         ? String(req.query.indexingStatus).split(',')
         : undefined;
@@ -786,6 +796,22 @@ export const getRecords =
           ? sortOrderParam
           : undefined;
 
+      // Parse source parameter
+      const source = req.query.source
+        ? ['all', 'local', 'connector'].includes(String(req.query.source))
+          ? (String(req.query.source) as 'all' | 'local' | 'connector')
+          : 'all'
+        : 'all';
+
+      // Debug log for troubleshooting filter parameters
+      logger.debug('API Controller parameters', {
+        userId,
+        orgId,
+        source,
+        connectors,
+        requestId: req.context?.requestId,
+      });
+
       // Retrieve records using the service
       const result = await recordRelationService.getRecords({
         orgId,
@@ -795,11 +821,14 @@ export const getRecords =
         search,
         recordTypes,
         origins,
+        connectors,
+        permissions,
         indexingStatus,
         dateFrom,
         dateTo,
         sortBy,
         sortOrder,
+        source,
       });
 
       // Log successful retrieval
@@ -1409,9 +1438,7 @@ export const getConnectorStats =
   };
 
 export const reindexAllRecords =
-  (
-    recordRelationService: RecordRelationService,
-  ) =>
+  (recordRelationService: RecordRelationService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const userId = req.user?.userId;
@@ -1421,18 +1448,19 @@ export const reindexAllRecords =
         throw new BadRequestError('User not authenticated');
       }
 
-      const allowedApps = ["ONEDRIVE", "DRIVE", "GMAIL", "CONFLUENCE", "SLACK"]
-      if(!allowedApps.includes(app)){
-        throw new BadRequestError('APP not allowed')
+      const allowedApps = ['ONEDRIVE', 'DRIVE', 'GMAIL', 'CONFLUENCE', 'SLACK'];
+      if (!allowedApps.includes(app)) {
+        throw new BadRequestError('APP not allowed');
       }
 
       const reindexPayload = {
-        userId, orgId, app
-      }
+        userId,
+        orgId,
+        app,
+      };
 
-      const reindexResponse = await recordRelationService.reindexAllRecords(
-        reindexPayload,
-      );
+      const reindexResponse =
+        await recordRelationService.reindexAllRecords(reindexPayload);
 
       res.status(200).json({
         reindexResponse,
