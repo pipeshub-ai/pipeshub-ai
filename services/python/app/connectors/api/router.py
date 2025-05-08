@@ -878,14 +878,74 @@ async def stream_record(
 
                 if recordType == RecordTypes.MAIL.value:
                     try:
-                        # Fetch the full message from Gmail
-                        message = (
-                            gmail_service.users()
-                            .messages()
-                            .get(userId="me", id=file_id, format="full")
-                            .execute()
-                        )
+                        # First attempt to fetch the message directly
+                        try:
+                            message = (
+                                gmail_service.users()
+                                .messages()
+                                .get(userId="me", id=file_id, format="full")
+                                .execute()
+                            )
+                        except Exception as access_error:
+                            if hasattr(access_error, 'resp') and access_error.resp.status == 404:
+                                logger.info(f"Message not found with ID {file_id}, searching for related messages...")
 
+                                # Get messageIdHeader from the original mail
+                                file_key = await arango_service.get_key_by_external_message_id(file_id)
+                                aql_query = """
+                                FOR mail IN mails
+                                    FILTER mail._key == @file_key
+                                    RETURN mail.messageIdHeader
+                                """
+                                bind_vars = {"file_key": file_key}
+                                cursor = arango_service.db.aql.execute(aql_query, bind_vars=bind_vars)
+                                message_id_header = next(cursor, None)
+
+                                if not message_id_header:
+                                    raise HTTPException(
+                                        status_code=404,
+                                        detail="Original mail not found"
+                                    )
+
+                                # Find all mails with the same messageIdHeader
+                                aql_query = """
+                                FOR mail IN mails
+                                    FILTER mail.messageIdHeader == @message_id_header
+                                    AND mail._key != @file_key
+                                    RETURN mail._key
+                                """
+                                bind_vars = {"message_id_header": message_id_header, "file_key": file_key}
+                                cursor = arango_service.db.aql.execute(aql_query, bind_vars=bind_vars)
+                                related_mail_keys = list(cursor)
+
+                                # Try each related mail ID until we find one that works
+                                message = None
+                                for related_key in related_mail_keys:
+                                    related_mail = await arango_service.get_document(related_key, CollectionNames.RECORDS.value)
+                                    related_id = related_mail.get("externalRecordId")
+                                    try:
+                                        message = (
+                                            gmail_service.users()
+                                            .messages()
+                                            .get(userId="me", id=related_id, format="full")
+                                            .execute()
+                                        )
+                                        if message:
+                                            logger.info(f"Found accessible message with ID: {related_id}")
+                                            break
+                                    except Exception as e:
+                                        logger.warning(f"Failed to fetch message with ID {related_id}: {str(e)}")
+                                        continue
+
+                                if not message:
+                                    raise HTTPException(
+                                        status_code=404,
+                                        detail="No accessible messages found."
+                                    )
+                            else:
+                                raise access_error
+
+                        # Continue with existing code for processing the message
                         def extract_body(payload):
                             # If there are no parts, return the direct body data
                             if "parts" not in payload:
