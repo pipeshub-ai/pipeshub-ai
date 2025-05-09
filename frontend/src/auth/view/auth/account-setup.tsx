@@ -7,7 +7,6 @@ import { useNavigate } from 'react-router';
 import eyeIcon from '@iconify-icons/mdi/eye';
 import tagIcon from '@iconify-icons/mdi/tag';
 import lockIcon from '@iconify-icons/mdi/lock';
-import infoIcon from '@iconify-icons/mdi/info';
 import emailIcon from '@iconify-icons/mdi/email';
 import checkIcon from '@iconify-icons/mdi/check';
 import React, { useState, useEffect } from 'react';
@@ -32,15 +31,12 @@ import {
   styled,
   Snackbar,
   useTheme,
-  Checkbox,
   Container,
   TextField,
   IconButton,
   Typography,
   InputAdornment,
-  FormHelperText,
   CircularProgress,
-  FormControlLabel,
 } from '@mui/material';
 
 import { setEmail } from 'src/store/authSlice';

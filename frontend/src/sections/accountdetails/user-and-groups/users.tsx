@@ -67,7 +67,7 @@ import {
 } from '../utils';
 
 import type { SnackbarState } from '../types/organization-data';
-import type { AppUser, GroupUser, AppUserGroup, AddUserModalProps } from '../types/group-details';
+import type { GroupUser, AppUserGroup, AddUserModalProps } from '../types/group-details';
 
 interface AddUsersToGroupsModalProps {
   open: boolean;

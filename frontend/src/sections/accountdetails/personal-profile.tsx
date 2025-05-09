@@ -3,10 +3,10 @@ import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import lockIcon from '@iconify-icons/mdi/lock-outline';
 import visibilityIcon from '@iconify-icons/mdi/eye-outline';
+import infoIcon from '@iconify-icons/solar/info-circle-bold';
 import React, { useState, useEffect, useCallback } from 'react';
 import visibilityOffIcon from '@iconify-icons/mdi/eye-off-outline';
-import infoIcon from '@iconify-icons/solar/info-circle-bold';
-import { useAuthContext } from 'src/auth/hooks';
+
 import { LoadingButton } from '@mui/lab';
 import {
   Box,
@@ -16,6 +16,7 @@ import {
   alpha,
   Button,
   Dialog,
+  Switch,
   Divider,
   Snackbar,
   useTheme,
@@ -27,7 +28,6 @@ import {
   DialogActions,
   InputAdornment,
   CircularProgress,
-  Switch,
   FormControlLabel,
 } from '@mui/material';
 
@@ -35,6 +35,8 @@ import { useAdmin } from 'src/context/AdminContext';
 
 import { Iconify } from 'src/components/iconify';
 import { Form, Field } from 'src/components/hook-form';
+
+import { useAuthContext } from 'src/auth/hooks';
 
 import {
   logout,
@@ -44,8 +46,8 @@ import {
   uploadUserLogo,
   changePassword,
   getUserIdFromToken,
-  updateDataCollectionConsent,
   getDataCollectionConsent,
+  updateDataCollectionConsent,
 } from './utils';
 
 import type { SnackbarState } from './types/organization-data';
@@ -491,7 +493,7 @@ export default function PersonalProfile() {
                                     <Switch
                                       checked={field.value === true}
                                       onChange={(e) => {
-                                        const checked = e.target.checked;
+                                        const {checked} = e.target;
                                         handleConsentChange(checked);
                                       }}
                                       disabled={consentLoading}

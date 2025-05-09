@@ -1,12 +1,12 @@
 import { z as zod } from 'zod';
-import { useForm, Controller } from 'react-hook-form';
 import React, { useState, useEffect } from 'react';
+import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
+import infoIcon from '@iconify-icons/solar/info-circle-bold';
 import disketteBoldIcon from '@iconify-icons/solar/diskette-bold';
 import officeBuildingIcon from '@iconify-icons/mdi/office-building';
 import galleryAddBoldIcon from '@iconify-icons/solar/gallery-add-bold';
 import trashBinBoldIcon from '@iconify-icons/solar/trash-bin-trash-bold';
-import infoIcon from '@iconify-icons/solar/info-circle-bold';
 
 import { LoadingButton } from '@mui/lab';
 import {
@@ -15,6 +15,8 @@ import {
   Alert,
   Paper,
   alpha,
+  Switch,
+  Button,
   Tooltip,
   Snackbar,
   MenuItem,
@@ -22,10 +24,7 @@ import {
   Container,
   Typography,
   CircularProgress,
-  Switch,
   FormControlLabel,
-  FormHelperText,
-  Button,
 } from '@mui/material';
 
 import { countries } from 'src/assets/data';
@@ -41,8 +40,8 @@ import {
   uploadOrgLogo,
   deleteOrgLogo,
   getOrgIdFromToken,
-  updateDataCollectionConsent,
   getDataCollectionConsent,
+  updateDataCollectionConsent,
 } from './utils';
 
 import type { SnackbarState } from './types/organization-data';
@@ -564,7 +563,7 @@ export default function CompanyProfile() {
                               <Switch
                                 checked={field.value === true}
                                 onChange={(e) => {
-                                  const checked = e.target.checked;
+                                  const {checked} = e.target;
                                   handleConsentChange(checked);
                                 }}
                                 disabled={!isAdmin || consentLoading}
