@@ -703,6 +703,7 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
             user_service = await self.drive_admin_service.create_drive_user_service(
                 user_email
             )
+            self.logger.info("👀 Setting up Drive changes watch for user %s", user_email)
             page_token = await self.arango_service.get_page_token_db(
                 user_email=user_email
             )
@@ -710,26 +711,15 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                 self.logger.warning("⚠️ No page token found for user %s", user_email)
                 watch = await user_service.create_changes_watch()
                 if not watch:
-                    page_token = await user_service.get_start_page_token_api()
-                    if not page_token:
-                        self.logger.error("❌ Failed to get start page token from API")
-                        return None
-                    await self.arango_service.store_page_token(
-                        None,
-                        None,
-                        user_email,
-                        page_token,
-                        None,
-                    )
+                    self.logger.error("❌ Failed to create changes watch")
+                    return None
                 return watch
             # Check if the page token is expired
             current_time = get_epoch_timestamp_in_ms()
             expiration = page_token.get("expiration", 0)
             self.logger.info("Current time: %s", current_time)
             self.logger.info("Page token expiration: %s", expiration)
-            if expiration is None or expiration == 0:
-                return page_token
-            if expiration < current_time:
+            if expiration is None or expiration == 0 or expiration < current_time:
                 self.logger.warning("⚠️ Page token expired for user %s", user_email)
 
                 if page_token["channelId"] and page_token["resourceId"]:
@@ -737,19 +727,12 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                         page_token["channelId"], page_token["resourceId"]
                     )
 
-                watch = await user_service.create_changes_watch()
+                watch = await user_service.create_changes_watch(page_token)
                 if not watch:
-                    page_token = await user_service.get_start_page_token_api()
-                    if not page_token:
-                        self.logger.error("❌ Failed to get start page token from API")
-                        return None
-                    await self.arango_service.store_page_token(
-                        None,
-                        None,
-                        user_email,
-                        page_token,
-                        None,
+                    self.logger.warning(
+                        "Changes watch not created for user: %s", user_email
                     )
+                    return None
                 return watch
 
             self.logger.info(
@@ -913,8 +896,8 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                     )
                     channel_data = await self.setup_changes_watch(user["email"])
                     if not channel_data:
-                        self.logger.warning(
-                            "Changes watch not created for user: %s", user["email"]
+                        self.logger.error(
+                            "Token not created for user: %s", user["email"]
                         )
                         continue
                     else:
@@ -1055,24 +1038,24 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                         )
                         continue
 
-                    drive_key = drive_info.get("drive").get("_key")
+                    drive_id = drive_info.get("drive").get("id")
 
                     # Check drive state first
                     drive_state = await self.arango_service.get_drive_sync_state(
-                        drive_key
+                        drive_id
                     )
                     if drive_state == ProgressStatus.COMPLETED.value:
                         self.logger.info(
-                            "Drive %s is already completed, skipping", drive_key
+                            "Drive %s is already completed, skipping", drive_id
                         )
                         continue
 
                     if await self._should_stop(org_id):
                         self.logger.info(
-                            "Sync stopped during drive %s processing", drive_key
+                            "Sync stopped during drive %s processing", drive_id
                         )
                         await self.arango_service.update_drive_sync_state(
-                            drive_key, ProgressStatus.PAUSED.value
+                            drive_id, ProgressStatus.PAUSED.value
                         )
                         return False
 
@@ -1081,13 +1064,13 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                         if not await self.process_drive_data(drive_info, user):
                             self.logger.error(
                                 "❌ Failed to process drive data for drive %s",
-                                drive_key,
+                                drive_id,
                             )
                             continue
 
                         # Update drive state to RUNNING
                         await self.arango_service.update_drive_sync_state(
-                            drive_key, ProgressStatus.IN_PROGRESS.value
+                            drive_id, ProgressStatus.IN_PROGRESS.value
                         )
 
                         # Get file list
@@ -1111,7 +1094,7 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                                     i,
                                 )
                                 await self.arango_service.update_drive_sync_state(
-                                    drive_key, ProgressStatus.PAUSED.value
+                                    drive_id, ProgressStatus.PAUSED.value
                                 )
                                 return False
 
@@ -1208,12 +1191,12 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
 
                         # Update drive status after completion
                         await self.arango_service.update_drive_sync_state(
-                            drive_key, "COMPLETED"
+                            drive_id, "COMPLETED"
                         )
 
                     except Exception as e:
                         self.logger.error(
-                            f"❌ Failed to process drive {drive_key}: {str(e)}"
+                            f"❌ Failed to process drive {drive_id}: {str(e)}"
                         )
                         continue
 
@@ -1302,7 +1285,7 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
             # Set up changes watch for the user
             channel_data = await self.setup_changes_watch(user_email)
             if not channel_data:
-                self.logger.warning(f"Changes watch not created for user: {user_email}")
+                self.logger.error(f"Token not created for user: {user_email}")
             else:
                 # Store the page token
                 await self.arango_service.store_page_token(
@@ -1327,14 +1310,14 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                     )
                     continue
 
-                drive_key = drive_info.get("drive").get("_key")
+                drive_id = drive_info.get("drive").get("id")
 
                 if await self._should_stop(org_id):
                     self.logger.info(
                         "Sync stopped during drive %s processing", drive_id
                     )
                     await self.arango_service.update_drive_sync_state(
-                        drive_key, ProgressStatus.PAUSED.value
+                        drive_id, ProgressStatus.PAUSED.value
                     )
                     await self.arango_service.update_user_sync_state(
                         user_email, ProgressStatus.PAUSED.value, service_type=Connectors.GOOGLE_DRIVE.value
@@ -1342,10 +1325,10 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                     return False
 
                 # Check drive state first
-                drive_state = await self.arango_service.get_drive_sync_state(drive_key)
+                drive_state = await self.arango_service.get_drive_sync_state(drive_id)
                 if drive_state == ProgressStatus.COMPLETED.value:
                     self.logger.info(
-                        "Drive %s is already completed, skipping", drive_key
+                        "Drive %s is already completed, skipping", drive_id
                     )
                     continue
 
@@ -1353,13 +1336,13 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                     # Process drive data
                     if not await self.process_drive_data(drive_info, user):
                         self.logger.error(
-                            "❌ Failed to process drive data for drive %s", drive_key
+                            "❌ Failed to process drive data for drive %s", drive_id
                         )
                         continue
 
                     # Update drive state to RUNNING
                     await self.arango_service.update_drive_sync_state(
-                        drive_key, ProgressStatus.IN_PROGRESS.value
+                        drive_id, ProgressStatus.IN_PROGRESS.value
                     )
 
                     # Get file list
@@ -1382,7 +1365,7 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                                 "Sync stopped during batch processing at index %s", i
                             )
                             await self.arango_service.update_drive_sync_state(
-                                drive_key, ProgressStatus.PAUSED.value
+                                drive_id, ProgressStatus.PAUSED.value
                             )
                             await self.arango_service.update_user_sync_state(
                                 user_email,
@@ -1484,12 +1467,12 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
 
                     # Update drive status after completion
                     await self.arango_service.update_drive_sync_state(
-                        drive_key, "COMPLETED"
+                        drive_id, "COMPLETED"
                     )
 
                 except Exception as e:
                     self.logger.error(
-                        f"❌ Failed to process drive {drive_key}: {str(e)}"
+                        f"❌ Failed to process drive {drive_id}: {str(e)}"
                     )
                     continue
 
@@ -1731,17 +1714,8 @@ class DriveSyncIndividualService(BaseDriveSyncService):
                 self.logger.warning("⚠️ No page token found for user %s", user_email)
                 watch = await user_service.create_changes_watch()
                 if not watch:
-                    page_token = await user_service.get_start_page_token_api()
-                    if not page_token:
-                        self.logger.error("❌ Failed to get start page token from API")
-                        return None
-                    await self.arango_service.store_page_token(
-                        None,
-                        None,
-                        user_email,
-                        page_token,
-                        None,
-                    )
+                    self.logger.error("❌ Failed to create changes watch")
+                    return None
                 return watch
 
             # Check if the page token is expired
@@ -1749,9 +1723,7 @@ class DriveSyncIndividualService(BaseDriveSyncService):
             expiration = page_token.get("expiration", 0)
             self.logger.info("Current time: %s", current_time)
             self.logger.info("Page token expiration: %s", expiration)
-            if expiration is None or expiration == 0:
-                return page_token
-            if expiration < current_time:
+            if expiration is None or expiration == 0 or expiration < current_time:
                 self.logger.warning("⚠️ Page token expired for user %s", user_email)
 
                 if page_token["channelId"] and page_token["resourceId"]:
@@ -1759,19 +1731,10 @@ class DriveSyncIndividualService(BaseDriveSyncService):
                         page_token["channelId"], page_token["resourceId"]
                     )
 
-                watch = await user_service.create_changes_watch()
+                watch = await user_service.create_changes_watch(page_token)
                 if not watch:
-                    page_token = await user_service.get_start_page_token_api()
-                    if not page_token:
-                        self.logger.error("❌ Failed to get start page token from API")
-                        return None
-                    await self.arango_service.store_page_token(
-                        None,
-                        None,
-                        user_email,
-                        page_token,
-                        None,
-                    )
+                    self.logger.error("❌ Failed to create changes watch")
+                    return None
                 return watch
 
             self.logger.info(
@@ -1825,8 +1788,8 @@ class DriveSyncIndividualService(BaseDriveSyncService):
                 try:
                     channel_data = await self.setup_changes_watch(user_info["email"])
                     if not channel_data:
-                        self.logger.warning(
-                            "Changes watch not created for user: %s", user_info["email"]
+                        self.logger.error(
+                            "Token not created for user: %s", user_info["email"]
                         )
                     else:
                         await self.arango_service.store_page_token(
@@ -1943,22 +1906,22 @@ class DriveSyncIndividualService(BaseDriveSyncService):
                     )
                     continue
 
-                drive_key = drive_info.get("drive").get("_key")
+                drive_id = drive_info.get("drive").get("id")
 
                 if await self._should_stop(org_id):
                     self.logger.info(
-                        "Sync stopped during drive %s processing", drive_key
+                        "Sync stopped during drive %s processing", drive_id
                     )
                     await self.arango_service.update_drive_sync_state(
-                        drive_key, ProgressStatus.PAUSED.value
+                        drive_id, ProgressStatus.PAUSED.value
                     )
                     return False
 
                 # Check drive state first
-                drive_state = await self.arango_service.get_drive_sync_state(drive_key)
+                drive_state = await self.arango_service.get_drive_sync_state(drive_id)
                 if drive_state == ProgressStatus.COMPLETED.value:
                     self.logger.info(
-                        "Drive %s is already completed, skipping", drive_key
+                        "Drive %s is already completed, skipping", drive_id
                     )
                     continue
 
@@ -1966,13 +1929,13 @@ class DriveSyncIndividualService(BaseDriveSyncService):
                     # Process drive data
                     if not await self.process_drive_data(drive_info, user):
                         self.logger.error(
-                            "❌ Failed to process drive data for drive %s", drive_key
+                            "❌ Failed to process drive data for drive %s", drive_id
                         )
                         continue
 
                     # Update drive state to RUNNING
                     await self.arango_service.update_drive_sync_state(
-                        drive_key, ProgressStatus.IN_PROGRESS.value
+                        drive_id, ProgressStatus.IN_PROGRESS.value
                     )
 
                     # Get file list
@@ -1995,7 +1958,7 @@ class DriveSyncIndividualService(BaseDriveSyncService):
                                 "Sync stopped during batch processing at index %s", i
                             )
                             await self.arango_service.update_drive_sync_state(
-                                drive_key, ProgressStatus.PAUSED.value
+                                drive_id, ProgressStatus.PAUSED.value
                             )
                             return False
 
@@ -2092,12 +2055,12 @@ class DriveSyncIndividualService(BaseDriveSyncService):
 
                     # Update drive status after completion
                     await self.arango_service.update_drive_sync_state(
-                        drive_key, "COMPLETED"
+                        drive_id, "COMPLETED"
                     )
 
                 except Exception as e:
                     self.logger.error(
-                        f"❌ Failed to process drive {drive_key}: {str(e)}"
+                        f"❌ Failed to process drive {drive_id}: {str(e)}"
                     )
                     continue
 

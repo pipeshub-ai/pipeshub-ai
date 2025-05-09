@@ -171,9 +171,12 @@ class DriveUserService:
 
             self.logger.info("✅ Token refreshed, new expiry: %s", self.token_expiry)
 
-    async def connect_enterprise_user(self) -> bool:
+    async def connect_enterprise_user(self, org_id, user_id) -> bool:
         """Connect using OAuth2 credentials for enterprise user"""
         try:
+            self.org_id = org_id
+            self.user_id = user_id
+
             self.service = build(
                 "drive", "v3", credentials=self.credentials, cache_discovery=False
             )
@@ -366,7 +369,7 @@ class DriveUserService:
 
     @exponential_backoff()
     @token_refresh
-    async def create_changes_watch(self) -> Optional[Dict]:
+    async def create_changes_watch(self, token = None) -> Optional[Dict]:
         """Set up changes.watch for all changes"""
         try:
             self.logger.info("🚀 Creating changes watch")
@@ -387,6 +390,16 @@ class DriveUserService:
                                 "Missing webhook endpoint configuration",
                                 details={"endpoints": endpoints},
                             )
+                    if token is None:
+                        page_token = await self.get_start_page_token_api()
+                    else:
+                        page_token = token.get("token", None)
+
+                    if not page_token:
+                        raise DriveOperationError(
+                            "Failed to get start page token",
+                            details={"channel_id": channel_id},
+                        )
 
                     # Return None if webhook uses HTTP or localhost
                     if (
@@ -396,7 +409,13 @@ class DriveUserService:
                         self.logger.warning(
                             "⚠️ Skipping changes watch - webhook endpoint uses HTTP or localhost"
                         )
-                        return None
+                        data = {
+                            "channelId": None,
+                            "resourceId": None,
+                            "token": page_token,
+                            "expiration": None,
+                        }
+                        return data
 
                 except Exception as e:
                     raise DriveOperationError(
@@ -417,13 +436,6 @@ class DriveUserService:
                     "address": webhook_url,
                     "expiration": int(expiration_time.timestamp() * 1000),
                 }
-
-                page_token = await self.get_start_page_token_api()
-                if not page_token:
-                    raise DriveOperationError(
-                        "Failed to get start page token",
-                        details={"channel_id": channel_id},
-                    )
 
                 try:
                     response = (
@@ -475,9 +487,13 @@ class DriveUserService:
                 details={"error": str(e)},
             )
 
-    async def stop_watch(self, channel_id: str, resource_id: str) -> bool:
+    async def stop_watch(self, channel_id: Optional[str], resource_id: Optional[str]) -> bool:
         """Stop a changes watch"""
         try:
+            if channel_id is None or resource_id is None:
+                self.logger.warning("⚠️ No channel ID or resource ID to stop")
+                return True
+
             self.service.channels().stop(
                 body={"id": channel_id, "resourceId": resource_id}
             ).execute()

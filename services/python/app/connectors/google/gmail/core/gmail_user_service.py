@@ -191,14 +191,15 @@ class GmailUserService:
 
             self.logger.info("✅ Token refreshed, new expiry: %s", self.token_expiry)
 
-    async def connect_enterprise_user(self) -> bool:
+    async def connect_enterprise_user(self, org_id, user_id) -> bool:
         """Connect using OAuth2 credentials for enterprise user"""
         try:
             if not self.credentials:
                 raise GoogleAuthError(
                     "No credentials provided for enterprise connection."
                 )
-
+            self.org_id = org_id
+            self.user_id = user_id
             try:
                 self.service = build(
                     "gmail", "v1", credentials=self.credentials, cache_discovery=False
@@ -710,6 +711,7 @@ class GmailUserService:
         """Create user watch"""
         try:
             self.logger.info("🚀 Creating user watch for user %s", user_id)
+            self.logger.info("Org ID: %s, User ID: %s", self.org_id, self.user_id)
             if accountType == AccountType.INDIVIDUAL.value:
                 self.logger.info("Creating Individual Gmail User watch")
                 creds_data = await self.google_token_handler.get_individual_token(

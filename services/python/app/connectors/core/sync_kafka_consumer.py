@@ -377,7 +377,7 @@ class SyncKafkaRouteConsumer:
             if not org_id:
                 raise ValueError("orgId is required")
 
-            await self.sync_tasks.drive_sync_service.connect_services(org_id)
+            await self.sync_tasks.drive_sync_service.initialize(org_id)
 
             user_id = payload.get("userId")
             if user_id:
@@ -409,7 +409,7 @@ class SyncKafkaRouteConsumer:
             if not org_id:
                 raise ValueError("orgId is required")
 
-            await self.sync_tasks.gmail_sync_service.connect_services(org_id)
+            await self.sync_tasks.gmail_sync_service.initialize(org_id)
 
             user_id = payload.get("userId")
             if user_id:

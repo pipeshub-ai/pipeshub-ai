@@ -898,14 +898,12 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
             user_service = await self.gmail_admin_service.create_gmail_user_service(
                 user_email
             )
-            self.logger.info("👀 Setting up changes watch for user %s", user_email)
+            self.logger.info("👀 Setting up Gmail changes watch for user %s", user_email)
             channel_history = await self.arango_service.get_channel_history_id(
                 user_email
             )
             if not channel_history:
-                self.logger.info(
-                    "🚀 Creating new changes watch for user %s", user_email
-                )
+                self.logger.info("No channel history found for user %s", user_email)
                 watch = await user_service.create_gmail_user_watch(accountType=AccountType.ENTERPRISE.value)
                 if not watch:
                     self.logger.warning(
@@ -918,9 +916,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
             expiration_timestamp = channel_history.get("expiration", 0)
             self.logger.info("Current time: %s", current_timestamp)
             self.logger.info("Page token expiration: %s", expiration_timestamp)
-            if expiration_timestamp is None or expiration_timestamp == 0:
-                return channel_history
-            if expiration_timestamp < current_timestamp:
+            if expiration_timestamp is None or expiration_timestamp == 0 or expiration_timestamp < current_timestamp:
                 self.logger.info("⚠️ Page token expired for user %s", user_email)
                 await user_service.stop_gmail_user_watch()
 
@@ -2053,9 +2049,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
             expiration_timestamp = channel_history.get("expiration", 0)
             self.logger.info("Current time: %s", current_timestamp)
             self.logger.info("Page token expiration: %s", expiration_timestamp)
-            if expiration_timestamp is None or expiration_timestamp == 0:
-                return channel_history
-            if expiration_timestamp < current_timestamp:
+            if expiration_timestamp is None or expiration_timestamp == 0 or expiration_timestamp < current_timestamp:
                 self.logger.info("⚠️ Page token expired for user %s", user_email)
                 await user_service.stop_gmail_user_watch()
                 watch = await user_service.create_gmail_user_watch(accountType=AccountType.INDIVIDUAL.value)

@@ -66,10 +66,12 @@ class GCalUserService:
             )
             return False
 
-    async def connect_enterprise_user(self) -> bool:
+    async def connect_enterprise_user(self, org_id, user_id) -> bool:
         """Connect using OAuth2 credentials for enterprise user"""
         try:
             self.logger.info("🚀 Connecting to Enterprise Calendar Service")
+            self.org_id = org_id
+            self.user_id = user_id
             self.service = build(
                 "calendar", "v3", credentials=self.credentials, cache_discovery=False
             )

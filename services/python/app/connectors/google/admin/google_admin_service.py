@@ -805,7 +805,9 @@ class GoogleAdminService:
 
             # Connect the user service
             try:
-                if not await user_service.connect_enterprise_user():
+                org_id = user.get("orgId")
+                user_id = user.get("userId")
+                if not await user_service.connect_enterprise_user(org_id, user_id):
                     raise UserOperationError(
                         "Failed to connect user service",
                         details={"user_email": user_email},
@@ -859,7 +861,9 @@ class GoogleAdminService:
 
             # Connect the user service
             try:
-                if not await user_service.connect_enterprise_user():
+                org_id = user.get("orgId")
+                user_id = user.get("userId")
+                if not await user_service.connect_enterprise_user(org_id, user_id):
                     raise UserOperationError(
                         "Failed to connect user service",
                         details={"user_email": user_email},
@@ -905,8 +909,9 @@ class GoogleAdminService:
                 credentials=user_credentials,
             )
 
-            # Connect the user service
-            if not await user_service.connect_enterprise_user():
+            org_id = user.get("orgId")
+            user_id = user.get("userId")
+            if not await user_service.connect_enterprise_user(org_id, user_id):
                 return None
 
             return user_service
@@ -945,7 +950,9 @@ class GoogleAdminService:
                 google_token_handler=self.google_token_handler,
                 credentials=user_credentials,
             )
-            if not await user_service.connect_enterprise_user():
+            org_id = user.get("orgId")
+            user_id = user.get("userId")
+            if not await user_service.connect_enterprise_user(org_id, user_id):
                 return None
 
             return user_service

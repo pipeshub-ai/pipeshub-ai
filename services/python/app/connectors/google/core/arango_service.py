@@ -613,7 +613,6 @@ class ArangoService(BaseArangoService):
             db = transaction if transaction else self.db
             permissions_collection = db.collection(CollectionNames.PERMISSIONS.value)
 
-            edge_key = str(uuid.uuid4())
             timestamp = get_epoch_timestamp_in_ms()
 
             # Determine the correct collection for the _to field
@@ -622,6 +621,16 @@ class ArangoService(BaseArangoService):
                 to_collection = CollectionNames.ORGS.value
             else:
                 to_collection = f"{entityType}s"
+
+            existing_permissions = await self.get_file_permissions(file_key, transaction)
+            if existing_permissions:
+                existing_perm = next((p for p in existing_permissions if p.get("_to") == f"{to_collection}/{entity_key}"), None)
+                if existing_perm:
+                    edge_key = existing_perm.get("_key")
+                else:
+                    edge_key = str(uuid.uuid4())
+            else:
+                edge_key = str(uuid.uuid4())
 
             self.logger.info("Permission data is %s", permission_data)
             # Create edge document with proper formatting
@@ -786,10 +795,11 @@ class ArangoService(BaseArangoService):
                             existing_perm = None
 
                         if existing_perm:
+                            entity_key = existing_perm.get("_key")
                             # Update existing permission
                             await self.store_permission(
                                 file_key,
-                                existing_perm.get("_key"),
+                                entity_key,
                                 new_perm,
                                 transaction,
                             )
@@ -859,16 +869,6 @@ class ArangoService(BaseArangoService):
                 raise
             return False
 
-    async def process_mail_permissions(
-        self, message_id: str, permissions_data: List[Dict]
-    ) -> bool:
-        """Process mail permissions"""
-        try:
-            self.logger.info("🚀 Processing permissions for message %s", message_id)
-
-        except Exception as e:
-            self.logger.error("❌ Failed to process permissions: %s", str(e))
-            return False
 
     def _get_access_level(self, role: str) -> int:
         """Convert role to numeric access level for easy comparison"""
@@ -1546,7 +1546,7 @@ class ArangoService(BaseArangoService):
 
             query = """
             FOR drive IN drives
-                FILTER drive._key == @drive_id
+                FILTER drive.id == @drive_id
                 UPDATE drive WITH @update IN drives
                 RETURN NEW
             """
@@ -1586,7 +1586,7 @@ class ArangoService(BaseArangoService):
 
             query = """
             FOR drive IN drives
-                FILTER drive._key == @drive_id
+                FILTER drive.id == @drive_id
                 RETURN drive.sync_state
             """
 
