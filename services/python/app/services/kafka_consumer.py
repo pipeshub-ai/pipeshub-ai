@@ -200,6 +200,20 @@ class KafkaConsumerManager:
             if event_type == EventTypes.UPDATE_RECORD.value:
                 await self.redis_scheduler.schedule_update(data)
                 self.logger.info(f"Scheduled update for record {record_id}")
+                record = await self.event_processor.arango_service.get_document(
+                record_id, CollectionNames.RECORDS.value
+                )
+                if record is None:
+                    self.logger.error(f"❌ Record {record_id} not found in database")
+                    return
+                doc = dict(record)
+
+                doc.update({"isDirty": True})
+
+                docs = [doc]
+                await self.event_processor.arango_service.batch_upsert_nodes(
+                    docs, CollectionNames.RECORDS.value
+                )
                 return True
 
             if extension is None and mime_type != "text/gmail_content":

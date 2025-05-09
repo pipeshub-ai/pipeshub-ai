@@ -659,7 +659,8 @@ class ArangoService(BaseArangoService):
                     self.logger.info("✅ Created new permission edge: %s", edge_key)
                 elif self._permission_needs_update(existing_edge, permission_data):
                     # Update existing permission
-                    permissions_collection.update(edge_key, edge)
+                    self.logger.info("✅ Updating permission edge: %s", edge_key)
+                    await self.batch_upsert_nodes([edge], collection=CollectionNames.PERMISSIONS.value)
                     self.logger.info("✅ Updated permission edge: %s", edge_key)
                 else:
                     self.logger.info(
@@ -795,7 +796,8 @@ class ArangoService(BaseArangoService):
                             existing_perm = None
 
                         if existing_perm:
-                            entity_key = existing_perm.get("_key")
+                            entity_key = existing_perm.get("_to")
+                            entity_key = entity_key.split("/")[1]
                             # Update existing permission
                             await self.store_permission(
                                 file_key,
@@ -923,10 +925,10 @@ class ArangoService(BaseArangoService):
                     if json.dumps(new[field], sort_keys=True) != json.dumps(
                         existing.get(field, {}), sort_keys=True
                     ):
-                        self.logger.info("✅ Permission data needs to be updated")
+                        self.logger.info("✅ Permission data needs to be updated. Field %s", field)
                         return True
                 elif new[field] != existing.get(field):
-                    self.logger.info("✅ Permission data needs to be updated")
+                    self.logger.info("✅ Permission data needs to be updated. Field %s", field)
                     return True
 
         self.logger.info("✅ Permission data does not need to be updated")

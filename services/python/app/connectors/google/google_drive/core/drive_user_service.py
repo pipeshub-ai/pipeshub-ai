@@ -847,7 +847,6 @@ class DriveUserService:
                         "sourceLastModifiedTimestamp": 0,
                         "isArchived": False,
                         "isDeleted": False,
-                        "isDirty": True,
                         "virtualRecordId": None,
                     },
                 }

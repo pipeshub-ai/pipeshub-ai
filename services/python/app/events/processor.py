@@ -625,7 +625,8 @@ class Processor:
                         "extractionStatus": "COMPLETED",
                         "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
                         "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
-                        "virtualRecordId": virtual_record_id
+                        "virtualRecordId": virtual_record_id,
+                        "isDirty": False
                     }
                 )
                 await self.arango_service.batch_upsert_nodes(

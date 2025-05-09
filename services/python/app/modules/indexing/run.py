@@ -605,6 +605,7 @@ class IndexingPipeline:
                 doc.update(
                     {
                         "indexingStatus": "COMPLETED",
+                        "isDirty": False,
                         "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
                         "virtualRecordId": virtual_record_id,
                     }

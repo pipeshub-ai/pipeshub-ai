@@ -245,6 +245,7 @@ class EventProcessor:
                             if processed_duplicate:
                                 # Use data from processed duplicate
                                 doc.update({
+                                    "isDirty": False,
                                     "summaryDocumentId": processed_duplicate.get("summaryDocumentId"),
                                     "virtualRecordId": processed_duplicate.get("virtualRecordId"),
                                     "indexingStatus": ProgressStatus.COMPLETED.value,
