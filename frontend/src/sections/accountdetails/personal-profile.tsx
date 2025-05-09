@@ -1,11 +1,12 @@
 import { z as zod } from 'zod';
-import { useForm } from 'react-hook-form';
+import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import lockIcon from '@iconify-icons/mdi/lock-outline';
 import visibilityIcon from '@iconify-icons/mdi/eye-outline';
 import React, { useState, useEffect, useCallback } from 'react';
 import visibilityOffIcon from '@iconify-icons/mdi/eye-off-outline';
-
+import infoIcon from '@iconify-icons/solar/info-circle-bold';
+import { useAuthContext } from 'src/auth/hooks';
 import { LoadingButton } from '@mui/lab';
 import {
   Box,
@@ -26,6 +27,8 @@ import {
   DialogActions,
   InputAdornment,
   CircularProgress,
+  Switch,
+  FormControlLabel,
 } from '@mui/material';
 
 import { useAdmin } from 'src/context/AdminContext';
@@ -41,6 +44,8 @@ import {
   uploadUserLogo,
   changePassword,
   getUserIdFromToken,
+  updateDataCollectionConsent,
+  getDataCollectionConsent,
 } from './utils';
 
 import type { SnackbarState } from './types/organization-data';
@@ -51,6 +56,7 @@ const ProfileSchema = zod.object({
   lastName: zod.string().optional(),
   email: zod.string().email({ message: 'Invalid email' }).min(1, { message: 'Email is required' }),
   designation: zod.string().optional(),
+  dataCollectionConsent: zod.boolean().optional(),
 });
 
 const PasswordSchema = zod
@@ -90,7 +96,11 @@ export default function PersonalProfile() {
   const [currentEmail, setCurrentEmail] = useState<string>('');
   const [isEmailConfirmOpen, setIsEmailConfirmOpen] = useState<boolean>(false);
   const [pendingFormData, setPendingFormData] = useState<ProfileFormData | null>(null);
+  const [consentLoading, setConsentLoading] = useState<boolean>(false);
+  const [showMorePrivacy, setShowMorePrivacy] = useState<boolean>(false);
   const { isAdmin } = useAdmin();
+  const { user } = useAuthContext();
+  const accountType = user?.accountType || 'individual';
   const [passwordVisibility, setPasswordVisibility] = useState({
     current: false,
     new: false,
@@ -110,6 +120,8 @@ export default function PersonalProfile() {
     handleSubmit,
     reset,
     watch,
+    control,
+    setValue,
     formState: { isValid, isDirty },
   } = methods;
 
@@ -131,12 +143,19 @@ export default function PersonalProfile() {
         // Store the current email to check if it changes later
         setCurrentEmail(email);
 
+        // Only fetch data collection consent for individual accounts
+        let consentStatus = false;
+        if (accountType === 'individual') {
+          consentStatus = Boolean(await getDataCollectionConsent());
+        }
+
         reset({
           fullName,
           firstName,
           email,
           lastName,
           designation,
+          dataCollectionConsent: consentStatus,
         });
 
         setLoading(false);
@@ -147,7 +166,31 @@ export default function PersonalProfile() {
     };
 
     fetchUserData();
-  }, [reset]);
+  }, [reset, accountType]);
+
+  const handleConsentChange = async (checked: boolean): Promise<void> => {
+    try {
+      setConsentLoading(true);
+      await updateDataCollectionConsent(checked);
+      setValue('dataCollectionConsent', checked, { shouldDirty: false });
+      setSnackbar({
+        open: true,
+        message: `Data collection ${checked ? 'enabled' : 'disabled'} successfully!`,
+        severity: 'success',
+      });
+    } catch (err) {
+      setError(`Failed to ${checked ? 'enable' : 'disable'} data collection consent`);
+      setSnackbar({
+        open: true,
+        message: `Failed to update data collection settings`,
+        severity: 'error',
+      });
+      // Reset the switch to its previous state
+      setValue('dataCollectionConsent', !checked, { shouldDirty: false });
+    } finally {
+      setConsentLoading(false);
+    }
+  };
 
   const handleFormSubmit = (data: ProfileFormData): void => {
     const emailChanged = data.email !== currentEmail;
@@ -413,6 +456,167 @@ export default function PersonalProfile() {
                       </Alert>
                     )}
                   </Grid>
+
+                  {/* Data Collection Consent Section - Only for individual accounts */}
+                  {accountType === 'individual' && (
+                    <Grid item xs={12}>
+                      <Paper
+                        elevation={4}
+                        sx={{
+                          p: 3,
+                          borderRadius: 2,
+                          border: `1px solid ${alpha(theme.palette.divider, 0.1)}`,
+                          mb: 3,
+                        }}
+                      >
+                        <Box
+                          sx={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            mb: 2,
+                          }}
+                        >
+                          <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+                            Data Collection Settings
+                          </Typography>
+
+                          <Controller
+                            name="dataCollectionConsent"
+                            control={control}
+                            render={({ field, fieldState }) => (
+                              <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                                <FormControlLabel
+                                  control={
+                                    <Switch
+                                      checked={field.value === true}
+                                      onChange={(e) => {
+                                        const checked = e.target.checked;
+                                        handleConsentChange(checked);
+                                      }}
+                                      disabled={consentLoading}
+                                      color="primary"
+                                    />
+                                  }
+                                  label={
+                                    <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                                      {field.value === true ? 'Enabled' : 'Disabled'}
+                                    </Typography>
+                                  }
+                                />
+                                {consentLoading && (
+                                  <CircularProgress size={20} thickness={5} sx={{ ml: 1 }} />
+                                )}
+                              </Box>
+                            )}
+                          />
+                        </Box>
+
+                        <Box>
+                          <Typography
+                            variant="body2"
+                            sx={{ color: theme.palette.text.secondary, mb: 1 }}
+                          >
+                            PipesHub collects and processes personal information for a variety of
+                            business purposes.
+                          </Typography>
+
+                          {showMorePrivacy && (
+                            <>
+                              <Box component="ul" sx={{ pl: 2, m: 0, listStyleType: 'square' }}>
+                                <Typography
+                                  component="li"
+                                  variant="body2"
+                                  sx={{ color: theme.palette.text.secondary }}
+                                >
+                                  To provide customer service and support for our products
+                                </Typography>
+                                <Typography
+                                  component="li"
+                                  variant="body2"
+                                  sx={{ color: theme.palette.text.secondary }}
+                                >
+                                  To send marketing communications
+                                </Typography>
+                                <Typography
+                                  component="li"
+                                  variant="body2"
+                                  sx={{ color: theme.palette.text.secondary }}
+                                >
+                                  To manage your subscription to newsletters or other updates
+                                </Typography>
+                                <Typography
+                                  component="li"
+                                  variant="body2"
+                                  sx={{ color: theme.palette.text.secondary }}
+                                >
+                                  For security and fraud prevention purposes
+                                </Typography>
+                                <Typography
+                                  component="li"
+                                  variant="body2"
+                                  sx={{ color: theme.palette.text.secondary }}
+                                >
+                                  To personalize your user experience
+                                </Typography>
+                                <Typography
+                                  component="li"
+                                  variant="body2"
+                                  sx={{ color: theme.palette.text.secondary }}
+                                >
+                                  To enhance and improve our products and services
+                                </Typography>
+                              </Box>
+
+                              <Box
+                                sx={{
+                                  mt: 2.5,
+                                  p: 1.5,
+                                  borderRadius: 1,
+                                  bgcolor: alpha(theme.palette.info.main, 0.08),
+                                  border: `1px solid ${alpha(theme.palette.info.main, 0.2)}`,
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 1.5,
+                                }}
+                              >
+                                <Box sx={{ color: theme.palette.info.main, flexShrink: 0 }}>
+                                  <Iconify icon={infoIcon} width={20} height={20} />
+                                </Box>
+                                <Typography
+                                  variant="body2"
+                                  color="info.dark"
+                                  sx={{ fontWeight: 500 }}
+                                >
+                                  Disclaimer: We do not sell, trade, or otherwise transfer your
+                                  personal information to third parties
+                                </Typography>
+                              </Box>
+                            </>
+                          )}
+
+                          <Button
+                            onClick={() => setShowMorePrivacy(!showMorePrivacy)}
+                            sx={{
+                              mt: 1,
+                              textTransform: 'none',
+                              color: theme.palette.primary.main,
+                              fontWeight: 500,
+                              p: 0,
+                              '&:hover': {
+                                backgroundColor: 'transparent',
+                                textDecoration: 'underline',
+                              },
+                            }}
+                            disableRipple
+                          >
+                            {showMorePrivacy ? 'Show Less' : 'Show More'}
+                          </Button>
+                        </Box>
+                      </Paper>
+                    </Grid>
+                  )}
+
                   <Grid item xs={12}>
                     <Divider sx={{ mt: 1, mb: 2 }} />
                   </Grid>

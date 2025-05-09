@@ -339,3 +339,33 @@ export const logout = async (): Promise<void> => {
     );
   }
 };
+
+export const updateDataCollectionConsent = async (enableMetricCollection: boolean) => {
+  try {
+    const response = await axios.patch(
+      `${CONFIG.backendUrl}/api/v1/configurationManager/metricsCollection/toggle`,
+      {
+        enableMetricCollection,
+      }
+    );
+    return response.data;
+  } catch (error) {
+    throw new Error('Error editing the consent');
+  }
+};
+
+export const getDataCollectionConsent = async (): Promise<boolean> => {
+  try {
+    const response = await axios.get(
+      `${CONFIG.backendUrl}/api/v1/configurationManager/metricsCollection`
+    );
+    if (
+      response.data.enableMetricCollection === 'true' ||
+      response.data.enableMetricCollection === true
+    )
+      return true;
+    return false;
+  } catch (error) {
+    throw new Error('Error editing the consent');
+  }
+};

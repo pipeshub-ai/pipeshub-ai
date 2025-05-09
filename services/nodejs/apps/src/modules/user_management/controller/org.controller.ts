@@ -33,18 +33,12 @@ import {
   OrgUpdatedEvent,
   UserAddedEvent,
 } from '../services/entity_events.service';
-import {
-  fetchConfigJwtGenerator,
-  mailJwtGenerator,
-} from '../../../libs/utils/createJwt';
+import { mailJwtGenerator } from '../../../libs/utils/createJwt';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { PrometheusService } from '../../../libs/services/prometheus/prometheus.service';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { ORG_CREATED_ACTIVITY } from '../constants/constants';
-import { ConfigurationManagerService } from '../services/cm.service';
 
-const METRIC_COLLECTION_API =
-  'api/v1/configurationManager/internal/metricsCollection/toggle';
 @injectable()
 export class OrgController {
   constructor(
@@ -53,8 +47,6 @@ export class OrgController {
     @inject('Logger') private logger: Logger,
     @inject('EntitiesEventProducer')
     private eventService: EntitiesEventProducer,
-    @inject('ConfigurationManagerService')
-    private configurationManagerService: ConfigurationManagerService,
   ) {}
 
   getDomainFromEmail(email: string) {
@@ -149,11 +141,6 @@ export class OrgController {
         users: [],
       });
 
-      const enableMetricCollection = req.body?.dataCollectionConsent;
-
-      const metricCollectionBody = {
-        enableMetricCollection: enableMetricCollection,
-      };
       if (!org._id) {
         throw new NotFoundError('Org Id not found');
       }
@@ -205,22 +192,6 @@ export class OrgController {
         JSON.stringify(req.context),
         HTTP_STATUS.OK,
       );
-
-      const response = await this.configurationManagerService.setConfig(
-        this.config.cmBackend,
-        METRIC_COLLECTION_API,
-        fetchConfigJwtGenerator(
-          adminUser._id.toString(),
-          org._id.toString(),
-          this.config.scopedJwtSecret,
-        ),
-        metricCollectionBody,
-      );
-      if (response.statusCode != 200) {
-        throw new BadRequestError(
-          'Status ${response.statusCode}, Details: ${JSON.stringify(response.data)}',
-        );
-      }
 
       if (sendEmail) {
         await this.mailService.sendMail({

@@ -1,11 +1,12 @@
 import { z as zod } from 'zod';
-import { useForm } from 'react-hook-form';
+import { useForm, Controller } from 'react-hook-form';
 import React, { useState, useEffect } from 'react';
 import { zodResolver } from '@hookform/resolvers/zod';
 import disketteBoldIcon from '@iconify-icons/solar/diskette-bold';
 import officeBuildingIcon from '@iconify-icons/mdi/office-building';
 import galleryAddBoldIcon from '@iconify-icons/solar/gallery-add-bold';
 import trashBinBoldIcon from '@iconify-icons/solar/trash-bin-trash-bold';
+import infoIcon from '@iconify-icons/solar/info-circle-bold';
 
 import { LoadingButton } from '@mui/lab';
 import {
@@ -21,6 +22,10 @@ import {
   Container,
   Typography,
   CircularProgress,
+  Switch,
+  FormControlLabel,
+  FormHelperText,
+  Button,
 } from '@mui/material';
 
 import { countries } from 'src/assets/data';
@@ -36,6 +41,8 @@ import {
   uploadOrgLogo,
   deleteOrgLogo,
   getOrgIdFromToken,
+  updateDataCollectionConsent,
+  getDataCollectionConsent,
 } from './utils';
 
 import type { SnackbarState } from './types/organization-data';
@@ -60,6 +67,7 @@ const ProfileSchema = zod.object({
     postCode: zod.string().optional(),
     country: zod.string().optional(),
   }),
+  dataCollectionConsent: zod.boolean().optional(),
 });
 
 type ProfileFormData = zod.infer<typeof ProfileSchema>;
@@ -72,6 +80,8 @@ export default function CompanyProfile() {
   const [uploading, setUploading] = useState<boolean>(false);
   const [deleting, setDeleting] = useState<boolean>(false);
   const [saveChanges, setSaveChanges] = useState<boolean>(false);
+  const [consentLoading, setConsentLoading] = useState<boolean>(false);
+  const [showMorePrivacy, setShowMorePrivacy] = useState<boolean>(false);
   const [snackbar, setSnackbar] = useState<SnackbarState>({
     open: false,
     message: '',
@@ -88,6 +98,8 @@ export default function CompanyProfile() {
   const {
     handleSubmit,
     reset,
+    control,
+    setValue,
     formState: { isValid, isDirty },
   } = methods;
 
@@ -103,6 +115,9 @@ export default function CompanyProfile() {
         const orgData = await getOrgById(orgId);
         const { registeredName, shortName, contactEmail, permanentAddress } = orgData;
 
+        // Fetch data collection consent status
+        const consentStatus = Boolean(await getDataCollectionConsent());
+
         reset({
           registeredName,
           shortName,
@@ -114,6 +129,7 @@ export default function CompanyProfile() {
             postCode: permanentAddress?.postCode || '',
             country: permanentAddress?.country || '',
           },
+          dataCollectionConsent: consentStatus,
         });
 
         setLoading(false);
@@ -175,6 +191,31 @@ export default function CompanyProfile() {
       // setSnackbar({ open: true, message: err.errorMessage, severity: 'error' });
     } finally {
       setSaveChanges(false);
+    }
+  };
+
+  const handleConsentChange = async (checked: boolean): Promise<void> => {
+    try {
+      setConsentLoading(true);
+      const orgId = await getOrgIdFromToken();
+      await updateDataCollectionConsent(checked);
+      setValue('dataCollectionConsent', checked, { shouldDirty: false });
+      setSnackbar({
+        open: true,
+        message: `Data collection ${checked ? 'enabled' : 'disabled'} successfully!`,
+        severity: 'success',
+      });
+    } catch (err) {
+      setError(`Failed to ${checked ? 'enable' : 'disable'} data collection consent`);
+      setSnackbar({
+        open: true,
+        message: `Failed to update data collection settings`,
+        severity: 'error',
+      });
+      // Reset the switch to its previous state
+      setValue('dataCollectionConsent', !checked, { shouldDirty: false });
+    } finally {
+      setConsentLoading(false);
     }
   };
 
@@ -489,6 +530,155 @@ export default function CompanyProfile() {
                       </Field.Select>
                     </Grid>
                   </Grid>
+                </Paper>
+
+                {/* Data Collection Consent Section */}
+                <Paper
+                  elevation={4}
+                  sx={{
+                    p: 3,
+                    borderRadius: 2,
+                    border: `1px solid ${alpha(theme.palette.divider, 0.1)}`,
+                    mb: 3,
+                  }}
+                >
+                  <Box
+                    sx={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      mb: 2,
+                    }}
+                  >
+                    <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+                      Data Collection Settings
+                    </Typography>
+
+                    <Controller
+                      name="dataCollectionConsent"
+                      control={control}
+                      render={({ field, fieldState }) => (
+                        <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                          <FormControlLabel
+                            control={
+                              <Switch
+                                checked={field.value === true}
+                                onChange={(e) => {
+                                  const checked = e.target.checked;
+                                  handleConsentChange(checked);
+                                }}
+                                disabled={!isAdmin || consentLoading}
+                                color="primary"
+                              />
+                            }
+                            label={
+                              <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                                {field.value ? 'Enabled' : 'Disabled'}
+                              </Typography>
+                            }
+                          />
+                          {consentLoading && (
+                            <CircularProgress size={20} thickness={5} sx={{ ml: 1 }} />
+                          )}
+                        </Box>
+                      )}
+                    />
+                  </Box>
+
+                  <Box>
+                    <Typography variant="body2" sx={{ color: theme.palette.text.secondary, mb: 1 }}>
+                      PipesHub collects and processes personal information for a variety of business
+                      purposes.
+                    </Typography>
+
+                    {showMorePrivacy && (
+                      <>
+                        <Box component="ul" sx={{ pl: 2, m: 0, listStyleType: 'square' }}>
+                          <Typography
+                            component="li"
+                            variant="body2"
+                            sx={{ color: theme.palette.text.secondary }}
+                          >
+                            To provide customer service and support for our products
+                          </Typography>
+                          <Typography
+                            component="li"
+                            variant="body2"
+                            sx={{ color: theme.palette.text.secondary }}
+                          >
+                            To send marketing communications
+                          </Typography>
+                          <Typography
+                            component="li"
+                            variant="body2"
+                            sx={{ color: theme.palette.text.secondary }}
+                          >
+                            To manage your subscription to newsletters or other updates
+                          </Typography>
+                          <Typography
+                            component="li"
+                            variant="body2"
+                            sx={{ color: theme.palette.text.secondary }}
+                          >
+                            For security and fraud prevention purposes
+                          </Typography>
+                          <Typography
+                            component="li"
+                            variant="body2"
+                            sx={{ color: theme.palette.text.secondary }}
+                          >
+                            To personalize your user experience
+                          </Typography>
+                          <Typography
+                            component="li"
+                            variant="body2"
+                            sx={{ color: theme.palette.text.secondary }}
+                          >
+                            To enhance and improve our products and services
+                          </Typography>
+                        </Box>
+
+                        <Box
+                          sx={{
+                            mt: 2.5,
+                            p: 1.5,
+                            borderRadius: 1,
+                            bgcolor: alpha(theme.palette.info.main, 0.08),
+                            border: `1px solid ${alpha(theme.palette.info.main, 0.2)}`,
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 1.5,
+                          }}
+                        >
+                          <Box sx={{ color: theme.palette.info.main, flexShrink: 0 }}>
+                            <Iconify icon={infoIcon} width={20} height={20} />
+                          </Box>
+                          <Typography variant="body2" color="info.dark" sx={{ fontWeight: 500 }}>
+                            Disclaimer: We do not sell, trade, or otherwise transfer your personal
+                            information to third parties
+                          </Typography>
+                        </Box>
+                      </>
+                    )}
+
+                    <Button
+                      onClick={() => setShowMorePrivacy(!showMorePrivacy)}
+                      sx={{
+                        mt: 1,
+                        textTransform: 'none',
+                        color: theme.palette.primary.main,
+                        fontWeight: 500,
+                        p: 0,
+                        '&:hover': {
+                          backgroundColor: 'transparent',
+                          textDecoration: 'underline',
+                        },
+                      }}
+                      disableRipple
+                    >
+                      {showMorePrivacy ? 'Show Less' : 'Show More'}
+                    </Button>
+                  </Box>
                 </Paper>
 
                 {isAdmin && (

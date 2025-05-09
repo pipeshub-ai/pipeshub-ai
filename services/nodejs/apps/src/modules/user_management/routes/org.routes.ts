@@ -21,7 +21,6 @@ const OrgCreationBody = z
     adminFullName: z.string().min(1, 'Admin full name required'),
     password: z.string().min(8, 'Minimum 8 characters password required'),
     sendEmail: z.boolean().optional(),
-    dataCollectionConsent: z.boolean().optional(),
     permanentAddress: z
       .object({
         addressLine1: z.string().optional(),

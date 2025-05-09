@@ -656,7 +656,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
   );
 
   router.get(
-    '/metricsCollection/',
+    '/metricsCollection',
     authMiddleware.authenticate,
     userAdminCheck,
     metricsMiddleware(container),

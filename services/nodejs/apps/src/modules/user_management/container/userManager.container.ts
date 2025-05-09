@@ -83,9 +83,6 @@ export class UserManagerContainer {
           container.get<MailService>('MailService'),
           container.get('Logger'),
           container.get<EntitiesEventProducer>('EntitiesEventProducer'),
-          container.get<ConfigurationManagerService>(
-            'ConfigurationManagerService',
-          ),
         );
       });
 
