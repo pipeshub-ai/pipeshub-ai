@@ -160,21 +160,6 @@ export class OrgController {
       if (!adminUser._id) {
         throw new NotFoundError('Admin User Id not found');
       }
-      const response = await this.configurationManagerService.setConfig(
-        this.config.cmBackend,
-        METRIC_COLLECTION_API,
-        fetchConfigJwtGenerator(
-          adminUser._id.toString(),
-          org._id.toString(),
-          this.config.scopedJwtSecret,
-        ),
-        metricCollectionBody,
-      );
-      if (response.statusCode != 200) {
-        throw new BadRequestError(
-          'Status ${response.statusCode}, Details: ${JSON.stringify(response.data)}',
-        );
-      }
 
       const orgAuthConfig = new OrgAuthConfig({
         orgId: org._id,
@@ -220,6 +205,22 @@ export class OrgController {
         JSON.stringify(req.context),
         HTTP_STATUS.OK,
       );
+
+      const response = await this.configurationManagerService.setConfig(
+        this.config.cmBackend,
+        METRIC_COLLECTION_API,
+        fetchConfigJwtGenerator(
+          adminUser._id.toString(),
+          org._id.toString(),
+          this.config.scopedJwtSecret,
+        ),
+        metricCollectionBody,
+      );
+      if (response.statusCode != 200) {
+        throw new BadRequestError(
+          'Status ${response.statusCode}, Details: ${JSON.stringify(response.data)}',
+        );
+      }
 
       if (sendEmail) {
         await this.mailService.sendMail({
