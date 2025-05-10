@@ -19,12 +19,12 @@ from app.config.utils.named_constants.arangodb_constants import (
 )
 from app.core.embedding_service import (
     AzureEmbeddingConfig,
+    CohereEmbeddingConfig,
     EmbeddingFactory,
+    GeminiEmbeddingConfig,
     HuggingFaceEmbeddingConfig,
     OpenAIEmbeddingConfig,
     SentenceTransformersEmbeddingConfig,
-    CohereEmbeddingConfig,
-    GeminiEmbeddingConfig
 )
 from app.core.llm_service import (
     AnthropicLLMConfig,

@@ -1,13 +1,12 @@
 from typing import Any, Dict, Optional, Union
 
+from langchain_cohere import CohereEmbeddings
 from langchain_community.embeddings import (
     HuggingFaceEmbeddings,
     SentenceTransformerEmbeddings,
 )
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_openai.embeddings import AzureOpenAIEmbeddings, OpenAIEmbeddings
-from langchain_cohere import CohereEmbeddings
-
 from pydantic import BaseModel, Field
 
 
@@ -99,7 +98,7 @@ class EmbeddingFactory:
                 model=config.model,
                 cohere_api_key=config.api_key,
             )
-        
+
         elif isinstance(config, GeminiEmbeddingConfig):
 
             # Add "models/" prefix if it's missing
@@ -110,5 +109,5 @@ class EmbeddingFactory:
                 model=model_name,  # Now properly formatted as models/text-embedding-004
                 google_api_key=config.api_key,
             )
-        
+
         raise ValueError(f"Unsupported embedding config type: {type(config)}")

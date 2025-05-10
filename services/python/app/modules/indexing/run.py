@@ -18,12 +18,12 @@ from app.config.utils.named_constants.arangodb_constants import (
 )
 from app.core.embedding_service import (
     AzureEmbeddingConfig,
+    CohereEmbeddingConfig,
     EmbeddingFactory,
+    GeminiEmbeddingConfig,
     HuggingFaceEmbeddingConfig,
     OpenAIEmbeddingConfig,
     SentenceTransformersEmbeddingConfig,
-    CohereEmbeddingConfig,
-    GeminiEmbeddingConfig
 )
 from app.exceptions.indexing_exceptions import (
     ChunkingError,
