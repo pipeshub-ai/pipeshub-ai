@@ -245,7 +245,7 @@ class EntityKafkaRouteConsumer:
             return False
 
         return await handler(value["payload"])
-    
+
     async def _get_or_create_knowledge_base(self, user_key: str, userId: str, orgId: str, name: str = "Default") -> dict:
         """Get or create a knowledge base for a user"""
         try:
@@ -260,7 +260,7 @@ class EntityKafkaRouteConsumer:
                 RETURN kb
             """
             bind_vars = {"userId": userId, "orgId": orgId}
-            
+
             # Use the correct pattern for your ArangoDB Python driver
             cursor = self.arango_service.db.aql.execute(query, bind_vars=bind_vars)
             existing_kbs = [doc for doc in cursor]
@@ -287,7 +287,7 @@ class EntityKafkaRouteConsumer:
             await self.arango_service.batch_upsert_nodes(
                 [kb_data], CollectionNames.KNOWLEDGE_BASE.value
             )
-            
+
             # Create permission edge from user to knowledge base with OWNER role
             permission_edge = {
                 "_from": f"{CollectionNames.USERS.value}/{user_key}",
@@ -299,7 +299,7 @@ class EntityKafkaRouteConsumer:
                 "updatedAtTimestamp": current_timestamp,
                 "lastUpdatedTimestampAtSource": current_timestamp,
             }
-            
+
             await self.arango_service.batch_create_edges(
                 [permission_edge],
                 CollectionNames.PERMISSIONS_TO_KNOWLEDGE_BASE.value,
