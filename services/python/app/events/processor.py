@@ -545,9 +545,6 @@ class Processor:
             domain_metadata = None
             if text_content:
                 try:
-                    self.logger.info(
-                        f"🎯 Extracting metadata from HTML content {text_content}"
-                    )
                     metadata = await self.domain_extractor.extract_metadata(
                         text_content, orgId
                     )

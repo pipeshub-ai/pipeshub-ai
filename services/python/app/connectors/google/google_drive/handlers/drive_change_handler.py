@@ -539,8 +539,8 @@ class DriveChangeHandler:
                     "reason": None,
                 }
                 is_of_type_record = {
-                    "_from": f'records/{record["_key"]}',
-                    "_to": f'files/{file["_key"]}',
+                    "_from": f"{CollectionNames.RECORDS.value}/{record['_key']}",
+                    "_to": f"{CollectionNames.FILES.value}/{file['_key']}",
                     "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                     "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                 }
@@ -667,8 +667,8 @@ class DriveChangeHandler:
                 "reason": None,
             }
             is_of_type_record = {
-                "_from": f'records/{record["_key"]}',
-                "_to": f'files/{file["_key"]}',
+                "_from": f"{CollectionNames.RECORDS.value}/{record['_key']}",
+                "_to": f"{CollectionNames.FILES.value}/{file['_key']}",
                 "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                 "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
             }
@@ -781,8 +781,8 @@ class DriveChangeHandler:
                     if parent_key:
                         new_edges.append(
                             {
-                                "_from": f"records/{parent_key}",
-                                "_to": f"records/{file_key}",
+                                "_from": f"{CollectionNames.RECORDS.value}/{parent_key}",
+                                "_to": f"{CollectionNames.RECORDS.value}/{file_key}",
                                 "relationType": RecordRelations.PARENT_CHILD.value,
                             }
                         )

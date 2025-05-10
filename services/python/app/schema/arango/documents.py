@@ -158,6 +158,7 @@ record_schema = {
                 "enum": [
                     "NOT_STARTED",
                     "IN_PROGRESS",
+                    "PAUSED",
                     "FAILED",
                     "COMPLETED",
                     "FILE_TYPE_NOT_SUPPORTED",
@@ -169,6 +170,7 @@ record_schema = {
                 "enum": [
                     "NOT_STARTED",
                     "IN_PROGRESS",
+                    "PAUSED",
                     "FAILED",
                     "COMPLETED",
                     "FILE_TYPE_NOT_SUPPORTED",

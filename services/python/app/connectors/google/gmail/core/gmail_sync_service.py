@@ -410,8 +410,8 @@ class BaseGmailSyncService(ABC):
 
                             # Create is_of_type edge
                             is_of_type_record = {
-                                "_from": f'records/{message_record["_key"]}',
-                                "_to": f'message/{message_record["_key"]}',
+                                "_from": f'{CollectionNames.RECORDS.value}/{message_record["_key"]}',
+                                "_to": f'{CollectionNames.MAILS.value}/{message_record["_key"]}',
                                 "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                                 "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                             }
@@ -430,8 +430,8 @@ class BaseGmailSyncService(ABC):
                                 )
                                 recordRelations.append(
                                     {
-                                        "_from": f"records/{previous_message_key}",
-                                        "_to": f'records/{message_record["_key"]}',
+                                        "_from": f"{CollectionNames.RECORDS.value}/{previous_message_key}",
+                                        "_to": f"{CollectionNames.RECORDS.value}/{message_record['_key']}",
                                         "relationType": RecordRelations.SIBLING.value,
                                     }
                                 )
@@ -522,8 +522,8 @@ class BaseGmailSyncService(ABC):
 
                             # Create is_of_type edge
                             is_of_type_record = {
-                                "_from": f'records/{attachment_record["_key"]}',
-                                "_to": f'files/{attachment_record["_key"]}',
+                                "_from": f'{CollectionNames.RECORDS.value}/{attachment_record["_key"]}',
+                                "_to": f'{CollectionNames.FILES.value}/{attachment_record["_key"]}',
                                 "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                                 "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                             }
@@ -552,8 +552,8 @@ class BaseGmailSyncService(ABC):
                                 )
                                 recordRelations.append(
                                     {
-                                        "_from": f"records/{message_key}",
-                                        "_to": f'records/{attachment_record["_key"]}',
+                                        "_from": f"{CollectionNames.RECORDS.value}/{message_key}",
+                                        "_to": f"{CollectionNames.RECORDS.value}/{attachment_record['_key']}",
                                         "relationType": RecordRelations.ATTACHMENT.value,
                                     }
                                 )
@@ -620,7 +620,7 @@ class BaseGmailSyncService(ABC):
                                 permissions.append(
                                     {
                                         "_to": f"{entityType}/{entity_id}",
-                                        "_from": f"records/{message_key}",
+                                        "_from": f"{CollectionNames.RECORDS.value}/{message_key}",
                                         "role": role,
                                         "externalPermissionId": None,
                                         "type": permType,
@@ -682,7 +682,7 @@ class BaseGmailSyncService(ABC):
                                     permissions.append(
                                         {
                                             "_to": f"{entityType}/{entity_id}",
-                                            "_from": f"records/{attachment_key}",
+                                            "_from": f"{CollectionNames.RECORDS.value}/{attachment_key}",
                                             "role": role,
                                             "externalPermissionId": None,
                                             "type": permType,
@@ -1015,8 +1015,8 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                             )
                             if not existing_relation:
                                 relation = {
-                                    "_from": f'users/{matching_user["_key"]}',
-                                    "_to": f'groups/{group["_key"]}',
+                                    "_from": f"{CollectionNames.USERS.value}/{matching_user['_key']}",
+                                    "_to": f"{CollectionNames.GROUPS.value}/{group['_key']}",
                                     "entityType": "GROUP",
                                     "role": member.get("role", "member"),
                                 }
@@ -1045,14 +1045,14 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
             for user in enterprise_users:
                 # Check if the relationship already exists
                 existing_relation = await self.arango_service.check_edge_exists(
-                    f'users/{user["_key"]}',
-                    f"organizations/{org_id}",
+                    f"{CollectionNames.USERS.value}/{user['_key']}",
+                    f"{CollectionNames.ORGANIZATIONS.value}/{org_id}",
                     CollectionNames.BELONGS_TO.value,
                 )
                 if not existing_relation:
                     relation = {
-                        "_from": f'users/{user["_key"]}',
-                        "_to": f"organizations/{org_id}",
+                        "_from": f"{CollectionNames.USERS.value}/{user['_key']}",
+                        "_to": f"{CollectionNames.ORGANIZATIONS.value}/{org_id}",
                         "entityType": "ORGANIZATION",
                     }
                     belongs_to_org_relations.append(relation)

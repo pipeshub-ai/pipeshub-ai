@@ -339,14 +339,24 @@ class BaseDriveSyncService(ABC):
                 [drive_info["record"]], collection=CollectionNames.RECORDS.value
             )
 
+            await self.arango_service.batch_create_edges(
+                [
+                    {
+                        "_from": f"{CollectionNames.RECORDS.value}/{drive_info['record']['_key']}",
+                        "_to": f"{CollectionNames.DRIVES.value}/{drive_info['drive']['_key']}",
+                    }
+                ],
+                collection=CollectionNames.IS_OF_TYPE.value,
+            )
+
             # Get user ID for relationships
             user_id = await self.arango_service.get_entity_id_by_email(user["email"])
             self.logger.info("user_id: %s", user_id)
 
             # Create user-drive relationship
             user_drive_relation = {
-                "_from": f"users/{user_id}",
-                "_to": f'drives/{drive_info["drive"]["_key"]}',
+                "_from": f"{CollectionNames.USERS.value}/{user_id}",
+                "_to": f"{CollectionNames.DRIVES.value}/{drive_info['drive']['_key']}",
                 "access_level": drive_info["drive"]["access_level"],
             }
             self.logger.info("user_drive_relation: %s", user_drive_relation)
@@ -358,8 +368,8 @@ class BaseDriveSyncService(ABC):
 
             # Create user-record relationship with permissions
             user_record_relation = {
-                "_to": f"users/{user_id}",
-                "_from": f'records/{drive_info["record"]["_key"]}',
+                "_to": f"{CollectionNames.USERS.value}/{user_id}",
+                "_from": f"{CollectionNames.RECORDS.value}/{drive_info['record']['_key']}",
                 "role": (
                     "WRITER"
                     if drive_info["drive"]["access_level"] == "writer"
@@ -484,8 +494,8 @@ class BaseDriveSyncService(ABC):
                         }
 
                         is_of_type_record = {
-                            "_from": f'records/{record["_key"]}',
-                            "_to": f'files/{file["_key"]}',
+                            "_from": f"{CollectionNames.RECORDS.value}/{record['_key']}",
+                            "_to": f"{CollectionNames.FILES.value}/{file['_key']}",
                             "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                             "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                         }
@@ -797,15 +807,15 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                             # Check if the relationship already exists
                             existing_relation = (
                                 await self.arango_service.check_edge_exists(
-                                    f'users/{matching_user["_key"]}',
-                                    f'groups/{group["_key"]}',
+                                    f"{CollectionNames.USERS.value}/{matching_user['_key']}",
+                                    f"{CollectionNames.GROUPS.value}/{group['_key']}",
                                     CollectionNames.BELONGS_TO.value,
                                 )
                             )
                             if not existing_relation:
                                 relation = {
-                                    "_from": f'users/{matching_user["_key"]}',
-                                    "_to": f'groups/{group["_key"]}',
+                                    "_from": f"{CollectionNames.USERS.value}/{matching_user['_key']}",
+                                    "_to": f"{CollectionNames.GROUPS.value}/{group['_key']}",
                                     "entityType": "GROUP",
                                     "role": member.get("role", "member"),
                                 }
@@ -832,14 +842,14 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
             for user in enterprise_users:
                 # Check if the relationship already exists
                 existing_relation = await self.arango_service.check_edge_exists(
-                    f'users/{user["_key"]}',
-                    f"organizations/{org_id}",
+                    f"{CollectionNames.USERS.value}/{user['_key']}",
+                    f"{CollectionNames.ORGANIZATIONS.value}/{org_id}",
                     CollectionNames.BELONGS_TO.value,
                 )
                 if not existing_relation:
                     relation = {
-                        "_from": f'users/{user["_key"]}',
-                        "_to": f"organizations/{org_id}",
+                        "_from": f"{CollectionNames.USERS.value}/{user['_key']}",
+                        "_to": f"{CollectionNames.ORGANIZATIONS.value}/{org_id}",
                         "entityType": "ORGANIZATION",
                     }
                     belongs_to_org_relations.append(relation)

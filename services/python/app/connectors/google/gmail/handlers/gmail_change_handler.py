@@ -230,14 +230,14 @@ class GmailChangeHandler:
                                     "reason": None,
                                 }
                                 is_of_type_record = {
-                                    "_from": f'records/{record["_key"]}',
-                                    "_to": f'files/{attachment_record["_key"]}',
+                                    "_from": f"{CollectionNames.RECORDS.value}/{record['_key']}",
+                                    "_to": f"{CollectionNames.FILES.value}/{attachment_record['_key']}",
                                     "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                                     "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                                 }
                                 record_relation = {
-                                    "_from": f'records/{message_record["_key"]}',
-                                    "_to": f'records/{attachment_record["_key"]}',
+                                    "_from": f"{CollectionNames.RECORDS.value}/{message_record['_key']}",
+                                    "_to": f"{CollectionNames.RECORDS.value}/{attachment_record['_key']}",
                                     "relationType": RecordRelations.ATTACHMENT.value,
                                 }
 
@@ -306,7 +306,7 @@ class GmailChangeHandler:
                                 permission_records.append(
                                     {
                                         "_to": f"{entityType}/{entity_id}",
-                                        "_from": f'records/{message_record["_key"]}',
+                                        "_from": f"{CollectionNames.RECORDS.value}/{message_record['_key']}",
                                         "externalPermissionId": None,
                                         "type": permType,
                                         "role": "READER",
@@ -320,7 +320,7 @@ class GmailChangeHandler:
                                         permission_records.append(
                                             {
                                                 "_to": f"{entityType}/{entity_id}",
-                                                "_from": f'records/{attachment_record["_key"]}',
+                                                "_from": f"{CollectionNames.RECORDS.value}/{attachment_record['_key']}",
                                                 "externalPermissionId": None,
                                                 "type": permType,
                                                 "role": "READER",

@@ -119,6 +119,8 @@ class CollectionNames(Enum):
     USER_APP_RELATION = "userAppRelation"
     ORG_DEPARTMENT_RELATION = "orgDepartmentRelation"
 
+    BLOCKS = "blocks"
+
 
 class QdrantCollectionNames(Enum):
     RECORDS = "records"

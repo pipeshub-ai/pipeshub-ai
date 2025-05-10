@@ -224,8 +224,6 @@ class DomainExtractor:
                 response_text = response_text.rsplit("```", 1)[0]
             response_text = response_text.strip()
 
-            self.logger.info(f"🎯 Response received: {response_text}")
-
             try:
                 # Parse the response using the Pydantic parser
                 parsed_response = self.parser.parse(response_text)
@@ -387,8 +385,8 @@ class DomainExtractor:
                     CollectionNames.BELONGS_TO_CATEGORY.value
                 ).insert(
                     {
-                        "_from": f"records/{record_id}",
-                        "_to": f"categories/{category_key}",
+                        "_from": f"{CollectionNames.RECORDS.value}/{record_id}",
+                        "_to": f"{CollectionNames.CATEGORIES.value}/{category_key}",
                         "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                     }
                 )
@@ -425,7 +423,7 @@ class DomainExtractor:
                 cursor = self.arango_service.db.aql.execute(
                     edge_query,
                     bind_vars={
-                        "from": f"records/{record_id}",
+                        "from": f"{CollectionNames.RECORDS.value}/{record_id}",
                         "to": f"{collection_name}/{key}",
                     },
                 )
@@ -434,7 +432,7 @@ class DomainExtractor:
                         CollectionNames.BELONGS_TO_CATEGORY.value
                     ).insert(
                         {
-                            "_from": f"records/{record_id}",
+                            "_from": f"{CollectionNames.RECORDS.value}/{record_id}",
                             "_to": f"{collection_name}/{key}",
                             "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                         }
@@ -517,8 +515,8 @@ class DomainExtractor:
                         CollectionNames.BELONGS_TO_LANGUAGE.value
                     ).insert(
                         {
-                            "_from": f"records/{record_id}",
-                            "_to": f"languages/{lang_key}",
+                            "_from": f"{CollectionNames.RECORDS.value}/{record_id}",
+                            "_to": f"{CollectionNames.LANGUAGES.value}/{lang_key}",
                             "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                         }
                     )
@@ -563,8 +561,8 @@ class DomainExtractor:
                         CollectionNames.BELONGS_TO_TOPIC.value
                     ).insert(
                         {
-                            "_from": f"records/{record_id}",
-                            "_to": f"topics/{topic_key}",
+                            "_from": f"{CollectionNames.RECORDS.value}/{record_id}",
+                            "_to": f"{CollectionNames.TOPICS.value}/{topic_key}",
                             "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                         }
                     )

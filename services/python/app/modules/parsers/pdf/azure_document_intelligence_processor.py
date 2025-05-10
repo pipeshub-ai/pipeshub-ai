@@ -585,7 +585,6 @@ class AzureOCRStrategy(OCRStrategy):
                 page_width = page.rect.width
                 self.logger.debug("PAGE RECT WIDTH: %f", page_width)
                 page_height = page.rect.height
-                self.logger.debug("Content: %s", page.get_text("dict"))
                 self.logger.debug("PAGE RECT HEIGHT: %f", page_height)
                 page_unit = "point"
                 self.logger.debug("PAGE RECT UNIT: %s", page_unit)

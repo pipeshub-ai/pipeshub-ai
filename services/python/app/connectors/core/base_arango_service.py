@@ -30,6 +30,49 @@ from app.schema.arango.edges import (
     user_drive_relation_schema,
 )
 
+# Collection definitions with their schemas
+NODE_COLLECTIONS = [
+    (CollectionNames.RECORDS.value, record_schema),
+    (CollectionNames.DRIVES.value, None),
+    (CollectionNames.FILES.value, file_record_schema),
+    (CollectionNames.LINKS.value, None),
+    (CollectionNames.MAILS.value, mail_record_schema),
+    (CollectionNames.PEOPLE.value, None),
+    (CollectionNames.USERS.value, user_schema),
+    (CollectionNames.GROUPS.value, None),
+    (CollectionNames.ORGS.value, orgs_schema),
+    (CollectionNames.ANYONE.value, None),
+    (CollectionNames.CHANNEL_HISTORY.value, None),
+    (CollectionNames.PAGE_TOKENS.value, None),
+    (CollectionNames.APPS.value, app_schema),
+    (CollectionNames.DEPARTMENTS.value, department_schema),
+    (CollectionNames.CATEGORIES.value, None),
+    (CollectionNames.LANGUAGES.value, None),
+    (CollectionNames.TOPICS.value, None),
+    (CollectionNames.SUBCATEGORIES1.value, None),
+    (CollectionNames.SUBCATEGORIES2.value, None),
+    (CollectionNames.SUBCATEGORIES3.value, None),
+    (CollectionNames.BLOCKS.value, None),
+    (CollectionNames.KNOWLEDGE_BASE.value, kb_schema),
+]
+
+EDGE_COLLECTIONS = [
+    (CollectionNames.IS_OF_TYPE.value, is_of_type_schema),
+    (CollectionNames.RECORD_RELATIONS.value, record_relations_schema),
+    (CollectionNames.USER_DRIVE_RELATION.value, user_drive_relation_schema),
+    (CollectionNames.BELONGS_TO_DEPARTMENT.value, basic_edge_schema),
+    (CollectionNames.ORG_DEPARTMENT_RELATION.value, basic_edge_schema),
+    (CollectionNames.BELONGS_TO.value, belongs_to_schema),
+    (CollectionNames.PERMISSIONS.value, permissions_schema),
+    (CollectionNames.ORG_APP_RELATION.value, basic_edge_schema),
+    (CollectionNames.USER_APP_RELATION.value, user_app_relation_schema),
+    (CollectionNames.BELONGS_TO_CATEGORY.value, basic_edge_schema),
+    (CollectionNames.BELONGS_TO_LANGUAGE.value, basic_edge_schema),
+    (CollectionNames.BELONGS_TO_TOPIC.value, basic_edge_schema),
+    (CollectionNames.INTER_CATEGORY_RELATIONS.value, basic_edge_schema),
+    (CollectionNames.BELONGS_TO_KNOWLEDGE_BASE.value, belongs_to_schema),
+    (CollectionNames.PERMISSIONS_TO_KNOWLEDGE_BASE.value, permissions_schema),
+]
 
 class BaseArangoService:
     """Base ArangoDB service class for interacting with the database"""
@@ -42,53 +85,10 @@ class BaseArangoService:
         self.client = arango_client
         self.db = None
 
-        # Collections
+        # Initialize collections dictionary
         self._collections = {
-            # Records and Record relations
-            CollectionNames.RECORDS.value: None,
-            CollectionNames.RECORD_RELATIONS.value: None,
-            CollectionNames.IS_OF_TYPE.value: None,
-            # Drive related
-            CollectionNames.DRIVES.value: None,
-            CollectionNames.USER_DRIVE_RELATION.value: None,
-            # Record types
-            CollectionNames.FILES.value: None,
-            CollectionNames.LINKS.value: None,
-            CollectionNames.MAILS.value: None,
-            # Users and groups
-            CollectionNames.PEOPLE.value: None,
-            CollectionNames.USERS.value: None,
-            CollectionNames.GROUPS.value: None,
-            CollectionNames.ORGS.value: None,
-            CollectionNames.ANYONE.value: None,
-            CollectionNames.BELONGS_TO.value: None,
-            CollectionNames.PERMISSIONS.value: None,
-            # History and tokens
-            CollectionNames.CHANNEL_HISTORY.value: None,
-            CollectionNames.PAGE_TOKENS.value: None,
-            # Apps and relations
-            CollectionNames.APPS.value: None,
-            CollectionNames.ORG_APP_RELATION.value: None,
-            CollectionNames.USER_APP_RELATION.value: None,
-            # Departments
-            CollectionNames.DEPARTMENTS.value: None,
-            CollectionNames.BELONGS_TO_DEPARTMENT.value: None,
-            CollectionNames.ORG_DEPARTMENT_RELATION.value: None,
-            # Knowledge base
-            CollectionNames.KNOWLEDGE_BASE.value: None,
-            CollectionNames.BELONGS_TO_KNOWLEDGE_BASE.value: None,
-            CollectionNames.PERMISSIONS_TO_KNOWLEDGE_BASE.value: None,
-            # Categories and Classifications
-            CollectionNames.CATEGORIES.value: None,
-            CollectionNames.BELONGS_TO_CATEGORY.value: None,
-            CollectionNames.LANGUAGES.value: None,
-            CollectionNames.BELONGS_TO_LANGUAGE.value: None,
-            CollectionNames.TOPICS.value: None,
-            CollectionNames.BELONGS_TO_TOPIC.value: None,
-            CollectionNames.SUBCATEGORIES1.value: None,
-            CollectionNames.SUBCATEGORIES2.value: None,
-            CollectionNames.SUBCATEGORIES3.value: None,
-            CollectionNames.INTER_CATEGORY_RELATIONS.value: None,
+            collection_name: None
+            for collection_name, _ in NODE_COLLECTIONS + EDGE_COLLECTIONS
         }
 
     async def connect(self) -> bool:
@@ -139,381 +139,142 @@ class BaseArangoService:
             )
             self.logger.debug("Our DB: %s", self.db)
 
-            # Initialize collections
+            # Initialize collections with schema update handling
             try:
-                self._collections[CollectionNames.RECORDS.value] = (
-                    self.db.collection(CollectionNames.RECORDS.value)
-                    if self.db.has_collection(CollectionNames.RECORDS.value)
-                    else self.db.create_collection(
-                        CollectionNames.RECORDS.value, schema=record_schema
-                    )
-                )
-                self._collections[CollectionNames.IS_OF_TYPE.value] = (
-                    self.db.collection(CollectionNames.IS_OF_TYPE.value)
-                    if self.db.has_collection(CollectionNames.IS_OF_TYPE.value)
-                    else self.db.create_collection(
-                        CollectionNames.IS_OF_TYPE.value,
-                        edge=True,
-                        schema=is_of_type_schema,
-                    )
-                )
-                self._collections[CollectionNames.RECORD_RELATIONS.value] = (
-                    self.db.collection(CollectionNames.RECORD_RELATIONS.value)
-                    if self.db.has_collection(CollectionNames.RECORD_RELATIONS.value)
-                    else self.db.create_collection(
-                        CollectionNames.RECORD_RELATIONS.value,
-                        edge=True,
-                        schema=record_relations_schema,
-                    )
-                )
-                self._collections[CollectionNames.DRIVES.value] = (
-                    self.db.collection(CollectionNames.DRIVES.value)
-                    if self.db.has_collection(CollectionNames.DRIVES.value)
-                    else self.db.create_collection(CollectionNames.DRIVES.value)
-                )
-                # Relation between user and drive
-                self._collections[CollectionNames.USER_DRIVE_RELATION.value] = (
-                    self.db.collection(CollectionNames.USER_DRIVE_RELATION.value)
-                    if self.db.has_collection(CollectionNames.USER_DRIVE_RELATION.value)
-                    else self.db.create_collection(
-                        CollectionNames.USER_DRIVE_RELATION.value,
-                        edge=True,
-                        schema=user_drive_relation_schema,
-                    )
-                )
-                self._collections[CollectionNames.DEPARTMENTS.value] = (
-                    self.db.collection(CollectionNames.DEPARTMENTS.value)
-                    if self.db.has_collection(CollectionNames.DEPARTMENTS.value)
-                    else self.db.create_collection(
-                        CollectionNames.DEPARTMENTS.value, schema=department_schema
-                    )
-                )
-                self._collections[CollectionNames.BELONGS_TO_DEPARTMENT.value] = (
-                    self.db.collection(CollectionNames.BELONGS_TO_DEPARTMENT.value)
-                    if self.db.has_collection(
-                        CollectionNames.BELONGS_TO_DEPARTMENT.value
-                    )
-                    else self.db.create_collection(
-                        CollectionNames.BELONGS_TO_DEPARTMENT.value,
-                        edge=True,
-                        schema=basic_edge_schema,
-                    )
-                )
-                self._collections[CollectionNames.ORG_DEPARTMENT_RELATION.value] = (
-                    self.db.collection(CollectionNames.ORG_DEPARTMENT_RELATION.value)
-                    if self.db.has_collection(
-                        CollectionNames.ORG_DEPARTMENT_RELATION.value
-                    )
-                    else self.db.create_collection(
-                        CollectionNames.ORG_DEPARTMENT_RELATION.value,
-                        edge=True,
-                        schema=basic_edge_schema,
-                    )
-                )
-                self._collections[CollectionNames.BELONGS_TO.value] = (
-                    self.db.collection(CollectionNames.BELONGS_TO.value)
-                    if self.db.has_collection(CollectionNames.BELONGS_TO.value)
-                    else self.db.create_collection(
-                        CollectionNames.BELONGS_TO.value,
-                        edge=True,
-                        schema=belongs_to_schema,
-                    )
-                )
-                self._collections[CollectionNames.FILES.value] = (
-                    self.db.collection(CollectionNames.FILES.value)
-                    if self.db.has_collection(CollectionNames.FILES.value)
-                    else self.db.create_collection(
-                        CollectionNames.FILES.value, schema=file_record_schema
-                    )
-                )
-                self._collections[CollectionNames.LINKS.value] = (
-                    self.db.collection(CollectionNames.LINKS.value)
-                    if self.db.has_collection(CollectionNames.LINKS.value)
-                    else self.db.create_collection(CollectionNames.LINKS.value)
-                )
-                self._collections[CollectionNames.MAILS.value] = (
-                    self.db.collection(CollectionNames.MAILS.value)
-                    if self.db.has_collection(CollectionNames.MAILS.value)
-                    else self.db.create_collection(
-                        CollectionNames.MAILS.value, schema=mail_record_schema
-                    )
-                )
-                self._collections[CollectionNames.PEOPLE.value] = (
-                    self.db.collection(CollectionNames.PEOPLE.value)
-                    if self.db.has_collection(CollectionNames.PEOPLE.value)
-                    else self.db.create_collection(CollectionNames.PEOPLE.value)
-                )
-                self._collections[CollectionNames.USERS.value] = (
-                    self.db.collection(CollectionNames.USERS.value)
-                    if self.db.has_collection(CollectionNames.USERS.value)
-                    else self.db.create_collection(
-                        CollectionNames.USERS.value, schema=user_schema
-                    )
-                )
-                self._collections[CollectionNames.GROUPS.value] = (
-                    self.db.collection(CollectionNames.GROUPS.value)
-                    if self.db.has_collection(CollectionNames.GROUPS.value)
-                    else self.db.create_collection(CollectionNames.GROUPS.value)
-                )
-                self._collections[CollectionNames.ORGS.value] = (
-                    self.db.collection(CollectionNames.ORGS.value)
-                    if self.db.has_collection(CollectionNames.ORGS.value)
-                    else self.db.create_collection(
-                        CollectionNames.ORGS.value, schema=orgs_schema
-                    )
-                )
-                self._collections[CollectionNames.ANYONE.value] = (
-                    self.db.collection(CollectionNames.ANYONE.value)
-                    if self.db.has_collection(CollectionNames.ANYONE.value)
-                    else self.db.create_collection(CollectionNames.ANYONE.value)
-                )
-                self._collections[CollectionNames.PERMISSIONS.value] = (
-                    self.db.collection(CollectionNames.PERMISSIONS.value)
-                    if self.db.has_collection(CollectionNames.PERMISSIONS.value)
-                    else self.db.create_collection(
-                        CollectionNames.PERMISSIONS.value,
-                        edge=True,
-                        schema=permissions_schema,
-                    )
-                )
-                self._collections[CollectionNames.CHANNEL_HISTORY.value] = (
-                    self.db.collection(CollectionNames.CHANNEL_HISTORY.value)
-                    if self.db.has_collection(CollectionNames.CHANNEL_HISTORY.value)
-                    else self.db.create_collection(
-                        CollectionNames.CHANNEL_HISTORY.value
-                    )
-                )
-                self._collections[CollectionNames.PAGE_TOKENS.value] = (
-                    self.db.collection(CollectionNames.PAGE_TOKENS.value)
-                    if self.db.has_collection(CollectionNames.PAGE_TOKENS.value)
-                    else self.db.create_collection(CollectionNames.PAGE_TOKENS.value)
-                )
+                # Initialize all collections (both nodes and edges)
+                for collection_name, schema in NODE_COLLECTIONS + EDGE_COLLECTIONS:
+                    is_edge = (collection_name, schema) in EDGE_COLLECTIONS
 
-                self._collections[CollectionNames.APPS.value] = (
-                    self.db.collection(CollectionNames.APPS.value)
-                    if self.db.has_collection(CollectionNames.APPS.value)
-                    else self.db.create_collection(
-                        CollectionNames.APPS.value, schema=app_schema
+                    collection = self._collections[collection_name] = (
+                        self.db.collection(collection_name)
+                        if self.db.has_collection(collection_name)
+                        else self.db.create_collection(
+                            collection_name,
+                            edge=is_edge,
+                            schema=schema
+                        )
                     )
-                )
-                self._collections[CollectionNames.ORG_APP_RELATION.value] = (
-                    self.db.collection(CollectionNames.ORG_APP_RELATION.value)
-                    if self.db.has_collection(CollectionNames.ORG_APP_RELATION.value)
-                    else self.db.create_collection(
-                        CollectionNames.ORG_APP_RELATION.value,
-                        edge=True,
-                        schema=basic_edge_schema,
-                    )
-                )
-                self._collections[CollectionNames.USER_APP_RELATION.value] = (
-                    self.db.collection(CollectionNames.USER_APP_RELATION.value)
-                    if self.db.has_collection(CollectionNames.USER_APP_RELATION.value)
-                    else self.db.create_collection(
-                        CollectionNames.USER_APP_RELATION.value,
-                        edge=True,
-                        schema=user_app_relation_schema,
-                    )
-                )
 
-                self._collections[CollectionNames.CATEGORIES.value] = (
-                    self.db.collection(CollectionNames.CATEGORIES.value)
-                    if self.db.has_collection(CollectionNames.CATEGORIES.value)
-                    else self.db.create_collection(CollectionNames.CATEGORIES.value)
-                )
-                self._collections[CollectionNames.BELONGS_TO_CATEGORY.value] = (
-                    self.db.collection(CollectionNames.BELONGS_TO_CATEGORY.value)
-                    if self.db.has_collection(CollectionNames.BELONGS_TO_CATEGORY.value)
-                    else self.db.create_collection(
-                        CollectionNames.BELONGS_TO_CATEGORY.value,
-                        edge=True,
-                        schema=basic_edge_schema,
-                    )
-                )
-                self._collections[CollectionNames.LANGUAGES.value] = (
-                    self.db.collection(CollectionNames.LANGUAGES.value)
-                    if self.db.has_collection(CollectionNames.LANGUAGES.value)
-                    else self.db.create_collection(CollectionNames.LANGUAGES.value)
-                )
-                self._collections[CollectionNames.BELONGS_TO_LANGUAGE.value] = (
-                    self.db.collection(CollectionNames.BELONGS_TO_LANGUAGE.value)
-                    if self.db.has_collection(CollectionNames.BELONGS_TO_LANGUAGE.value)
-                    else self.db.create_collection(
-                        CollectionNames.BELONGS_TO_LANGUAGE.value,
-                        edge=True,
-                        schema=basic_edge_schema,
-                    )
-                )
-                self._collections[CollectionNames.TOPICS.value] = (
-                    self.db.collection(CollectionNames.TOPICS.value)
-                    if self.db.has_collection(CollectionNames.TOPICS.value)
-                    else self.db.create_collection(CollectionNames.TOPICS.value)
-                )
-                self._collections[CollectionNames.BELONGS_TO_TOPIC.value] = (
-                    self.db.collection(CollectionNames.BELONGS_TO_TOPIC.value)
-                    if self.db.has_collection(CollectionNames.BELONGS_TO_TOPIC.value)
-                    else self.db.create_collection(
-                        CollectionNames.BELONGS_TO_TOPIC.value,
-                        edge=True,
-                        schema=basic_edge_schema,
-                    )
-                )
-                self._collections[CollectionNames.SUBCATEGORIES1.value] = (
-                    self.db.collection(CollectionNames.SUBCATEGORIES1.value)
-                    if self.db.has_collection(CollectionNames.SUBCATEGORIES1.value)
-                    else self.db.create_collection(CollectionNames.SUBCATEGORIES1.value)
-                )
-                self._collections[CollectionNames.SUBCATEGORIES2.value] = (
-                    self.db.collection(CollectionNames.SUBCATEGORIES2.value)
-                    if self.db.has_collection(CollectionNames.SUBCATEGORIES2.value)
-                    else self.db.create_collection(CollectionNames.SUBCATEGORIES2.value)
-                )
-                self._collections[CollectionNames.SUBCATEGORIES3.value] = (
-                    self.db.collection(CollectionNames.SUBCATEGORIES3.value)
-                    if self.db.has_collection(CollectionNames.SUBCATEGORIES3.value)
-                    else self.db.create_collection(CollectionNames.SUBCATEGORIES3.value)
-                )
-                self._collections[CollectionNames.INTER_CATEGORY_RELATIONS.value] = (
-                    self.db.collection(CollectionNames.INTER_CATEGORY_RELATIONS.value)
-                    if self.db.has_collection(
-                        CollectionNames.INTER_CATEGORY_RELATIONS.value
-                    )
-                    else self.db.create_collection(
-                        CollectionNames.INTER_CATEGORY_RELATIONS.value,
-                        edge=True,
-                        schema=basic_edge_schema,
-                    )
-                )
-                self._collections[CollectionNames.KNOWLEDGE_BASE.value] = (
-                    self.db.collection(CollectionNames.KNOWLEDGE_BASE.value)
-                    if self.db.has_collection(CollectionNames.KNOWLEDGE_BASE.value)
-                    else self.db.create_collection(
-                        CollectionNames.KNOWLEDGE_BASE.value, schema=kb_schema
-                    )
-                )
-                self._collections[CollectionNames.BELONGS_TO_KNOWLEDGE_BASE.value] = (
-                    self.db.collection(CollectionNames.BELONGS_TO_KNOWLEDGE_BASE.value)
-                    if self.db.has_collection(
-                        CollectionNames.BELONGS_TO_KNOWLEDGE_BASE.value
-                    )
-                    else self.db.create_collection(
-                        CollectionNames.BELONGS_TO_KNOWLEDGE_BASE.value,
-                        edge=True,
-                        schema=belongs_to_schema,
-                    )
-                )
-                self._collections[
-                    CollectionNames.PERMISSIONS_TO_KNOWLEDGE_BASE.value
-                ] = (
-                    self.db.collection(
-                        CollectionNames.PERMISSIONS_TO_KNOWLEDGE_BASE.value
-                    )
-                    if self.db.has_collection(
-                        CollectionNames.PERMISSIONS_TO_KNOWLEDGE_BASE.value
-                    )
-                    else self.db.create_collection(
-                        CollectionNames.PERMISSIONS_TO_KNOWLEDGE_BASE.value,
-                        edge=True,
-                        schema=permissions_schema,
-                    )
-                )
+                    # Update schema if collection exists and has a schema
+                    if self.db.has_collection(collection_name) and schema:
+                        try:
+                            self.logger.info(f"Updating schema for collection {collection_name}")
+                            collection.configure(schema=schema)
+                        except Exception as e:
+                            self.logger.warning(
+                                f"Failed to update schema for {collection_name}: {str(e)}"
+                            )
 
-                # Create the permissions graph
+                # Create the permissions graph if it doesn't exist
                 if not self.db.has_graph(CollectionNames.FILE_ACCESS_GRAPH.value):
                     self.logger.info("🚀 Creating file access graph...")
-                    graph = self.db.create_graph(
-                        CollectionNames.FILE_ACCESS_GRAPH.value
-                    )
+                    graph = self.db.create_graph(CollectionNames.FILE_ACCESS_GRAPH.value)
 
-                    # Define edge definitions for permissions and group membership
-                    graph.create_edge_definition(
-                        edge_collection=CollectionNames.PERMISSIONS.value,
-                        from_vertex_collections=[CollectionNames.RECORDS.value],
-                        to_vertex_collections=[
-                            CollectionNames.USERS.value,
-                            CollectionNames.GROUPS.value,
-                            CollectionNames.ORGS.value,
-                        ],
-                    )
+                    # Define edge definitions
+                    edge_definitions = [
+                        {
+                            "edge_collection": CollectionNames.PERMISSIONS.value,
+                            "from_vertex_collections": [CollectionNames.RECORDS.value],
+                            "to_vertex_collections": [
+                                CollectionNames.USERS.value,
+                                CollectionNames.GROUPS.value,
+                                CollectionNames.ORGS.value,
+                            ],
+                        },
+                        {
+                            "edge_collection": CollectionNames.BELONGS_TO.value,
+                            "from_vertex_collections": [CollectionNames.USERS.value],
+                            "to_vertex_collections": [
+                                CollectionNames.GROUPS.value,
+                                CollectionNames.ORGS.value,
+                            ],
+                        },
+                        {
+                            "edge_collection": CollectionNames.ORG_DEPARTMENT_RELATION.value,
+                            "from_vertex_collections": [CollectionNames.ORGS.value],
+                            "to_vertex_collections": [CollectionNames.DEPARTMENTS.value],
+                        },
+                        {
+                            "edge_collection": CollectionNames.BELONGS_TO_DEPARTMENT.value,
+                            "from_vertex_collections": [CollectionNames.RECORDS.value],
+                            "to_vertex_collections": [CollectionNames.DEPARTMENTS.value],
+                        },
+                        {
+                            "edge_collection": CollectionNames.BELONGS_TO_CATEGORY.value,
+                            "from_vertex_collections": [CollectionNames.RECORDS.value],
+                            "to_vertex_collections": [
+                                CollectionNames.CATEGORIES.value,
+                                CollectionNames.SUBCATEGORIES1.value,
+                                CollectionNames.SUBCATEGORIES2.value,
+                                CollectionNames.SUBCATEGORIES3.value,
+                            ],
+                        },
+                        {
+                            "edge_collection": CollectionNames.BELONGS_TO_TOPIC.value,
+                            "from_vertex_collections": [CollectionNames.RECORDS.value],
+                            "to_vertex_collections": [CollectionNames.TOPICS.value],
+                        },
+                        {
+                            "edge_collection": CollectionNames.BELONGS_TO_LANGUAGE.value,
+                            "from_vertex_collections": [CollectionNames.RECORDS.value],
+                            "to_vertex_collections": [CollectionNames.LANGUAGES.value],
+                        },
+                        {
+                            "edge_collection": CollectionNames.INTER_CATEGORY_RELATIONS.value,
+                            "from_vertex_collections": [CollectionNames.CATEGORIES.value, CollectionNames.SUBCATEGORIES1.value, CollectionNames.SUBCATEGORIES2.value, CollectionNames.SUBCATEGORIES3.value],
+                            "to_vertex_collections": [CollectionNames.CATEGORIES.value, CollectionNames.SUBCATEGORIES1.value, CollectionNames.SUBCATEGORIES2.value, CollectionNames.SUBCATEGORIES3.value],
+                        },
+                        {
+                            "edge_collection": CollectionNames.BELONGS_TO_KNOWLEDGE_BASE.value,
+                            "from_vertex_collections": [CollectionNames.RECORDS.value],
+                            "to_vertex_collections": [CollectionNames.KNOWLEDGE_BASE.value],
+                        },
+                        {
+                            "edge_collection": CollectionNames.PERMISSIONS_TO_KNOWLEDGE_BASE.value,
+                            "from_vertex_collections": [CollectionNames.USERS.value],
+                            "to_vertex_collections": [CollectionNames.KNOWLEDGE_BASE.value],
+                        },
+                        {
+                            "edge_collection": CollectionNames.IS_OF_TYPE.value,
+                            "from_vertex_collections": [CollectionNames.RECORDS.value],
+                            "to_vertex_collections": [CollectionNames.FILES.value],
+                        },
+                        {
+                            "edge_collection": CollectionNames.RECORD_RELATIONS.value,
+                            "from_vertex_collections": [CollectionNames.RECORDS.value],
+                            "to_vertex_collections": [CollectionNames.RECORDS.value],
+                        },
+                        {
+                            "edge_collection": CollectionNames.USER_DRIVE_RELATION.value,
+                            "from_vertex_collections": [CollectionNames.USERS.value],
+                            "to_vertex_collections": [CollectionNames.DRIVES.value],
+                        },
+                        {
+                            "edge_collection": CollectionNames.USER_APP_RELATION.value,
+                            "from_vertex_collections": [CollectionNames.USERS.value],
+                            "to_vertex_collections": [CollectionNames.APPS.value],
+                        },
+                        {
+                            "edge_collection": CollectionNames.ORG_APP_RELATION.value,
+                            "from_vertex_collections": [CollectionNames.ORGS.value],
+                            "to_vertex_collections": [CollectionNames.APPS.value],
+                        },
+                    ]
 
-                    graph.create_edge_definition(
-                        edge_collection=CollectionNames.BELONGS_TO.value,
-                        from_vertex_collections=[CollectionNames.USERS.value],
-                        to_vertex_collections=[
-                            CollectionNames.GROUPS.value,
-                            CollectionNames.ORGS.value,
-                        ],
-                    )
-
-                    # Define edge definitions for record classifications
-                    graph.create_edge_definition(
-                        edge_collection=CollectionNames.BELONGS_TO_DEPARTMENT.value,
-                        from_vertex_collections=[CollectionNames.RECORDS.value],
-                        to_vertex_collections=[CollectionNames.DEPARTMENTS.value],
-                    )
-
-                    graph.create_edge_definition(
-                        edge_collection=CollectionNames.BELONGS_TO_CATEGORY.value,
-                        from_vertex_collections=[CollectionNames.RECORDS.value],
-                        to_vertex_collections=[
-                            CollectionNames.CATEGORIES.value,
-                            CollectionNames.SUBCATEGORIES1.value,
-                            CollectionNames.SUBCATEGORIES2.value,
-                            CollectionNames.SUBCATEGORIES3.value,
-                        ],
-                    )
-
-                    graph.create_edge_definition(
-                        edge_collection=CollectionNames.BELONGS_TO_KNOWLEDGE_BASE.value,
-                        from_vertex_collections=[CollectionNames.RECORDS.value],
-                        to_vertex_collections=[CollectionNames.KNOWLEDGE_BASE.value],
-                    )
-
-                    graph.create_edge_definition(
-                        edge_collection=CollectionNames.PERMISSIONS_TO_KNOWLEDGE_BASE.value,
-                        from_vertex_collections=[CollectionNames.USERS.value],
-                        to_vertex_collections=[CollectionNames.KNOWLEDGE_BASE.value],
-                    )
-
-                    graph.create_edge_definition(
-                        edge_collection=CollectionNames.IS_OF_TYPE.value,
-                        from_vertex_collections=[CollectionNames.RECORDS.value],
-                        to_vertex_collections=[CollectionNames.FILES.value],
-                    )
+                    # Create all edge definitions
+                    for edge_def in edge_definitions:
+                        graph.create_edge_definition(**edge_def)
 
                     self.logger.info("✅ File access graph created successfully")
 
                 self.logger.info("✅ Collections initialized successfully")
 
-                # Initialize departments collection with predefined department types
-                departments = [
-                    {
-                        "_key": str(uuid.uuid4()),
-                        "departmentName": dept.value,
-                        "orgId": None,
-                    }
-                    for dept in DepartmentNames
-                ]
-
-                # Bulk insert departments if not already present
-                existing_department_names = set(
-                    doc["departmentName"]
-                    for doc in self._collections[
-                        CollectionNames.DEPARTMENTS.value
-                    ].all()
-                )
-
-                new_departments = [
-                    dept
-                    for dept in departments
-                    if dept["departmentName"] not in existing_department_names
-                ]
-
-                if new_departments:
-                    self.logger.info(f"🚀 Inserting {len(new_departments)} departments")
-                    self._collections[CollectionNames.DEPARTMENTS.value].insert_many(
-                        new_departments
-                    )
-                    self.logger.info("✅ Departments initialized successfully")
+                # Initialize departments
+                try:
+                    await self._initialize_departments()
+                except Exception as e:
+                    self.logger.error("❌ Error initializing departments: %s", str(e))
+                    raise
 
                 return True
 
@@ -529,6 +290,36 @@ class BaseArangoService:
             for collection in self._collections:
                 self._collections[collection] = None
             return False
+
+    async def _initialize_departments(self):
+        """Initialize departments collection with predefined department types"""
+        departments = [
+            {
+                "_key": str(uuid.uuid4()),
+                "departmentName": dept.value,
+                "orgId": None,
+            }
+            for dept in DepartmentNames
+        ]
+
+        # Bulk insert departments if not already present
+        existing_department_names = set(
+            doc["departmentName"]
+            for doc in self._collections[CollectionNames.DEPARTMENTS.value].all()
+        )
+
+        new_departments = [
+            dept
+            for dept in departments
+            if dept["departmentName"] not in existing_department_names
+        ]
+
+        if new_departments:
+            self.logger.info(f"🚀 Inserting {len(new_departments)} departments")
+            self._collections[CollectionNames.DEPARTMENTS.value].insert_many(
+                new_departments
+            )
+            self.logger.info("✅ Departments initialized successfully")
 
     async def disconnect(self):
         """Disconnect from ArangoDB"""
