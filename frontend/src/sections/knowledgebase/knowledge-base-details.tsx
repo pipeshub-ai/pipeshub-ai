@@ -320,6 +320,9 @@ export default function KnowledgeBaseDetails({
         case 'application/vnd.microsoft.onedrive.folder':
           return folderIcon;
 
+        default:
+          return fileDocumentOutlineIcon;
+
         // Add more mime types as needed
       }
     }
@@ -453,6 +456,9 @@ export default function KnowledgeBaseDetails({
 
         case 'application/vnd.microsoft.onedrive.folder':
           return '#0078D4'; // OneDrive blue
+
+        default:
+          return '#1976d2'; // Default Blue
 
         // Add more mime types as needed
       }
