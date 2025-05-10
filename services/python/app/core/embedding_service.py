@@ -6,6 +6,8 @@ from langchain_community.embeddings import (
 )
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_openai.embeddings import AzureOpenAIEmbeddings, OpenAIEmbeddings
+from langchain_cohere import CohereEmbeddings
+
 from pydantic import BaseModel, Field
 
 
@@ -40,13 +42,16 @@ class GeminiEmbeddingConfig(BaseEmbeddingConfig):
     title: Optional[str] = None
     google_api_endpoint: Optional[str] = None
 
+class CohereEmbeddingConfig(BaseEmbeddingConfig):
+    """Cohere embedding models"""
+
 class EmbeddingFactory:
     """Factory for creating LangChain-compatible embedding models"""
 
     @staticmethod
     def create_embedding_model(config: Union[AzureEmbeddingConfig, OpenAIEmbeddingConfig,
                                             HuggingFaceEmbeddingConfig, SentenceTransformersEmbeddingConfig,
-                                            GeminiEmbeddingConfig]):
+                                            GeminiEmbeddingConfig, CohereEmbeddingConfig]):
         if isinstance(config, AzureEmbeddingConfig):
             return AzureOpenAIEmbeddings(
                 model=config.model,
@@ -89,25 +94,21 @@ class EmbeddingFactory:
                 encode_kwargs=encode_kwargs
             )
 
-        elif isinstance(config, GeminiEmbeddingConfig):
-            kwargs = {}
-
-            if config.task_type:
-                kwargs["task_type"] = config.task_type
-
-            if config.title:
-                kwargs["title"] = config.title
-
-            if config.google_api_endpoint:
-                kwargs["google_api_endpoint"] = config.google_api_endpoint
-
-            if config.dimensions:
-                kwargs["dimensions"] = config.dimensions
-
-            return GoogleGenerativeAIEmbeddings(
+        elif isinstance(config, CohereEmbeddingConfig):
+            return CohereEmbeddings(
                 model=config.model,
-                google_api_key=config.api_key,
-                **kwargs
+                cohere_api_key=config.api_key,
             )
+        
+        elif isinstance(config, GeminiEmbeddingConfig):
 
+            # Add "models/" prefix if it's missing
+            model_name = config.model
+            if not model_name.startswith("models/"):
+                model_name = f"models/{model_name}"
+            return GoogleGenerativeAIEmbeddings(
+                model=model_name,  # Now properly formatted as models/text-embedding-004
+                google_api_key=config.api_key,
+            )
+        
         raise ValueError(f"Unsupported embedding config type: {type(config)}")

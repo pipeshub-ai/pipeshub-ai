@@ -41,7 +41,7 @@ async def embedding_health_check(request: Request, embedding_configs: list[dict]
         app = request.app
         retrieval_service = await app.container.retrieval_service()
         await retrieval_service.get_embedding_model_instance(embedding_configs)
-        sample_embedding = retrieval_service.dense_embeddings.embed_query("Test message to verify embedding model health.")
+        sample_embedding = await retrieval_service.dense_embeddings.aembed_query("Test message to verify embedding model health.")
         if sample_embedding and len(sample_embedding) > 0:
             return JSONResponse(
                 status_code=200,

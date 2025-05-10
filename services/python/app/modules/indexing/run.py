@@ -22,6 +22,8 @@ from app.core.embedding_service import (
     HuggingFaceEmbeddingConfig,
     OpenAIEmbeddingConfig,
     SentenceTransformersEmbeddingConfig,
+    CohereEmbeddingConfig,
+    GeminiEmbeddingConfig
 )
 from app.exceptions.indexing_exceptions import (
     ChunkingError,
@@ -451,19 +453,19 @@ class IndexingPipeline:
 
             for config in embedding_configs:
                 provider = config["provider"]
-                if provider == EmbeddingProvider.AZURE_OPENAI_PROVIDER.value:
+                if provider == EmbeddingProvider.AZURE_OPENAI.value:
                     embedding_model = AzureEmbeddingConfig(
                         model=config['configuration']['model'],
                         api_key=config['configuration']['apiKey'],
                         azure_endpoint=config['configuration']['endpoint'],
                         azure_api_version=AZURE_EMBEDDING_API_VERSION,
                     )
-                elif provider == EmbeddingProvider.OPENAI_PROVIDER.value:
+                elif provider == EmbeddingProvider.OPENAI.value:
                     embedding_model = OpenAIEmbeddingConfig(
                         model=config["configuration"]["model"],
                         api_key=config["configuration"]["apiKey"],
                     )
-                elif provider == EmbeddingProvider.HUGGING_FACE_PROVIDER.value:
+                elif provider == EmbeddingProvider.HUGGING_FACE.value:
                     embedding_model = HuggingFaceEmbeddingConfig(
                       model=config['configuration']['model'],
                       api_key=config['configuration']['apiKey'],
@@ -471,6 +473,19 @@ class IndexingPipeline:
                 elif provider == EmbeddingProvider.SENTENCE_TRANSFOMERS.value:
                     embedding_model = SentenceTransformersEmbeddingConfig(
                       model=config['configuration']['model'],
+                    )
+
+                elif provider == EmbeddingProvider.GEMINI.value:
+
+                    embedding_model = GeminiEmbeddingConfig(
+                        model=config['configuration']['model'],
+                        api_key=config['configuration']['apiKey'],
+                    )
+                elif provider == EmbeddingProvider.COHERE.value:
+
+                    embedding_model = CohereEmbeddingConfig(
+                        model=config['configuration']['model'],
+                        api_key=config['configuration']['apiKey'],
                     )
 
             try:

@@ -24,7 +24,7 @@ async def get_llm(logger, config_service: ConfigurationService, llm_configs = No
 
     for config in llm_configs:
         provider = config["provider"]
-        if provider == LLMProvider.AZURE_OPENAI_PROVIDER.value:
+        if provider == LLMProvider.AZURE_OPENAI.value:
             llm_config = AzureLLMConfig(
                 model=config["configuration"]["model"],
                 temperature=0.2,
@@ -34,26 +34,26 @@ async def get_llm(logger, config_service: ConfigurationService, llm_configs = No
                 azure_deployment=config["configuration"]["deploymentName"],
             )
             break
-        elif provider == LLMProvider.OPENAI_PROVIDER.value:
+        elif provider == LLMProvider.OPENAI.value:
             llm_config = OpenAILLMConfig(
                 model=config["configuration"]["model"],
                 temperature=0.2,
                 api_key=config["configuration"]["apiKey"],
             )
             break
-        elif provider == LLMProvider.GEMINI_PROVIDER.value:
+        elif provider == LLMProvider.GEMINI.value:
             llm_config = GeminiLLMConfig(
                 model=config["configuration"]["model"],
                 temperature=0.2,
                 api_key=config["configuration"]["apiKey"],
             )
-        elif provider == LLMProvider.ANTHROPIC_PROVIDER.value:
+        elif provider == LLMProvider.ANTHROPIC.value:
             llm_config = AnthropicLLMConfig(
                 model=config["configuration"]["model"],
                 temperature=0.2,
                 api_key=config["configuration"]["apiKey"],
             )
-        elif provider == LLMProvider.AWS_BEDROCK_PROVIDER.value:
+        elif provider == LLMProvider.AWS_BEDROCK.value:
             llm_config = AwsBedrockLLMConfig(
                 model=config["configuration"]["model"],
                 temperature=0.2,
@@ -62,7 +62,7 @@ async def get_llm(logger, config_service: ConfigurationService, llm_configs = No
                 access_secret=config["configuration"]["aws_access_secret_key"],
                 api_key=config["configuration"]["aws_access_secret_key"],
             )
-        elif provider == LLMProvider.OLLAMA_PROVIDER.value:
+        elif provider == LLMProvider.OLLAMA.value:
             llm_config = OllamaConfig(
                 model=config['configuration']['model'],
                 temperature=0.2,

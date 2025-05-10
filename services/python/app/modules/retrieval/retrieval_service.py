@@ -23,6 +23,8 @@ from app.core.embedding_service import (
     HuggingFaceEmbeddingConfig,
     OpenAIEmbeddingConfig,
     SentenceTransformersEmbeddingConfig,
+    CohereEmbeddingConfig,
+    GeminiEmbeddingConfig
 )
 from app.core.llm_service import (
     AnthropicLLMConfig,
@@ -98,7 +100,7 @@ class RetrievalService:
 
             for config in llm_configs:
                 provider = config["provider"]
-                if provider == LLMProvider.AZURE_OPENAI_PROVIDER.value:
+                if provider == LLMProvider.AZURE_OPENAI.value:
                     llm_config = AzureLLMConfig(
                         model=config["configuration"]["model"],
                         temperature=0.2,
@@ -108,26 +110,26 @@ class RetrievalService:
                         azure_deployment=config["configuration"]["deploymentName"],
                     )
                     break
-                elif provider == LLMProvider.OPENAI_PROVIDER.value:
+                elif provider == LLMProvider.OPENAI.value:
                     llm_config = OpenAILLMConfig(
                         model=config["configuration"]["model"],
                         temperature=0.2,
                         api_key=config["configuration"]["apiKey"],
                     )
                     break
-                elif provider == LLMProvider.GEMINI_PROVIDER.value:
+                elif provider == LLMProvider.GEMINI.value:
                     llm_config = GeminiLLMConfig(
                         model=config["configuration"]["model"],
                         temperature=0.2,
                         api_key=config["configuration"]["apiKey"],
                     )
-                elif provider == LLMProvider.ANTHROPIC_PROVIDER.value:
+                elif provider == LLMProvider.ANTHROPIC.value:
                     llm_config = AnthropicLLMConfig(
                         model=config["configuration"]["model"],
                         temperature=0.2,
                         api_key=config["configuration"]["apiKey"],
                     )
-                elif provider == LLMProvider.AWS_BEDROCK_PROVIDER.value:
+                elif provider == LLMProvider.AWS_BEDROCK.value:
                     llm_config = AwsBedrockLLMConfig(
                         model=config["configuration"]["model"],
                         temperature=0.2,
@@ -136,7 +138,7 @@ class RetrievalService:
                         access_secret=config["configuration"]["aws_access_secret_key"],
                         api_key=config["configuration"]["aws_access_secret_key"],
                     )
-                elif provider == LLMProvider.OLLAMA_PROVIDER.value:
+                elif provider == LLMProvider.OLLAMA.value:
                     llm_config = OllamaConfig(
                         model=config['configuration']['model'],
                         temperature=0.2,
@@ -163,19 +165,19 @@ class RetrievalService:
             embedding_model = None
             for config in embedding_configs:
                 provider = config["provider"]
-                if provider == EmbeddingProvider.AZURE_OPENAI_PROVIDER.value:
+                if provider == EmbeddingProvider.AZURE_OPENAI.value:
                     embedding_model = AzureEmbeddingConfig(
                         model=config['configuration']['model'],
                         api_key=config['configuration']['apiKey'],
                         azure_endpoint=config['configuration']['endpoint'],
                         azure_api_version=AZURE_EMBEDDING_API_VERSION,
                     )
-                elif provider == EmbeddingProvider.OPENAI_PROVIDER.value:
+                elif provider == EmbeddingProvider.OPENAI.value:
                     embedding_model = OpenAIEmbeddingConfig(
                         model=config["configuration"]["model"],
                         api_key=config["configuration"]["apiKey"],
                     )
-                elif provider == EmbeddingProvider.HUGGING_FACE_PROVIDER.value:
+                elif provider == EmbeddingProvider.HUGGING_FACE.value:
                     embedding_model =   HuggingFaceEmbeddingConfig(
                       model=config['configuration']['model'],
                       api_key=config['configuration']['apiKey'],
@@ -184,7 +186,17 @@ class RetrievalService:
                     embedding_model =   SentenceTransformersEmbeddingConfig(
                       model=config['configuration']['model'],
                     )
-
+                elif provider == EmbeddingProvider.GEMINI.value:
+                    embedding_model = GeminiEmbeddingConfig(
+                      model=config['configuration']['model'],
+                      api_key=config['configuration']['apiKey'],
+                    )
+                elif provider == EmbeddingProvider.COHERE.value:
+                    embedding_model = CohereEmbeddingConfig(
+                      model=config['configuration']['model'],
+                      api_key=config['configuration']['apiKey'],
+                    )
+                    print("cohere embedding model config created")
             try:
                 if not embedding_model:
                     self.logger.info(
@@ -206,7 +218,7 @@ class RetrievalService:
 
             # Get the embedding dimensions from the model
             try:
-                sample_embedding = self.dense_embeddings.embed_query("test")
+                sample_embedding = await self.dense_embeddings.aembed_query("test")
                 embedding_size = len(sample_embedding)
             except Exception as e:
                 self.logger.warning(

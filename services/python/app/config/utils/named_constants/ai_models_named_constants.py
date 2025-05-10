@@ -4,23 +4,25 @@ AZURE_EMBEDDING_API_VERSION = "2024-02-01"
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-large-en-v1.5"
 
 class LLMProvider(Enum):
-    AZURE_OPENAI_PROVIDER = "azureOpenAI"
-    OPENAI_PROVIDER = "openAI"
-    GEMINI_PROVIDER = "gemini"
-    VERTEX_AI_PROVIDER = "vertexAI"
-    ANTHROPIC_PROVIDER = "anthropic"
-    AWS_BEDROCK_PROVIDER = "bedrock"
-    OLLAMA_PROVIDER = "ollama"
+    AZURE_OPENAI = "azureOpenAI"
+    OPENAI = "openAI"
+    GEMINI = "gemini"
+    VERTEX_AI = "vertexAI"
+    ANTHROPIC = "anthropic"
+    AWS_BEDROCK = "bedrock"
+    OLLAMA = "ollama"
 
 class OCRProvider(Enum):
-    AZURE_PROVIDER = "azureDI"
-    OCRMYPDF_PROVIDER = "ocrmypdf"
+    AZURE_DI = "azureDI"
+    OCRMYPDF = "ocrmypdf"
 
 class EmbeddingProvider(Enum):
-    AZURE_OPENAI_PROVIDER = "azureOpenAI"
-    OPENAI_PROVIDER = "openAI"
-    HUGGING_FACE_PROVIDER = "huggingFace"
+    AZURE_OPENAI = "azureOpenAI"
+    OPENAI = "openAI"
+    HUGGING_FACE = "huggingFace"
     SENTENCE_TRANSFOMERS = "sentenceTransformers"
+    GEMINI = "gemini"
+    COHERE = "cohere"
 
 class AzureOpenAILLM(Enum):
     AZURE_OPENAI_VERSION = "2023-07-01-preview"

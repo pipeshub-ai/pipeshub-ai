@@ -75,7 +75,8 @@ dependencies = [
    "langchain-aws==0.2.18",
    "markdown==3.8",
    "langgraph==0.3.34",
-   "aioredis==2.0.1"
+   "aioredis==2.0.1",
+   "langchain-cohere==0.4.4",
 ]
 
 [tool.setuptools.packages.find]

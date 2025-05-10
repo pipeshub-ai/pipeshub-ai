@@ -709,27 +709,27 @@ class Processor:
                 provider = config["provider"]
                 self.logger.info(f"🔧 Checking OCR provider: {provider}")
 
-                if provider == OCRProvider.AZURE_PROVIDER.value:
+                if provider == OCRProvider.AZURE_DI.value:
                     self.logger.debug("☁️ Setting up Azure OCR handler")
                     handler = OCRHandler(
                         self.logger,
-                        OCRProvider.AZURE_PROVIDER.value,
+                        OCRProvider.AZURE_DI.value,
                         endpoint=config["configuration"]["endpoint"],
                         key=config["configuration"]["apiKey"],
                         model_id=AzureDocIntelligenceModel.PREBUILT_DOCUMENT.value,
                     )
                     break
-                elif provider == OCRProvider.OCRMYPDF_PROVIDER.value:
+                elif provider == OCRProvider.OCRMYPDF.value:
                     self.logger.debug("📚 Setting up PyMuPDF OCR handler")
                     handler = OCRHandler(
-                        self.logger, OCRProvider.OCRMYPDF_PROVIDER.value
+                        self.logger, OCRProvider.OCRMYPDF.value
                     )
                     break
 
             if not handler:
                 self.logger.debug("📚 Setting up PyMuPDF OCR handler")
-                handler = OCRHandler(self.logger, OCRProvider.OCRMYPDF_PROVIDER.value)
-                provider = OCRProvider.OCRMYPDF_PROVIDER.value
+                handler = OCRHandler(self.logger, OCRProvider.OCRMYPDF.value)
+                provider = OCRProvider.OCRMYPDF.value
 
             # Process document
             self.logger.info("🔄 Processing document with OCR handler")
