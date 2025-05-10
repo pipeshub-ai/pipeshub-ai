@@ -48,6 +48,7 @@ interface IndexingStatusStats {
   COMPLETED: number;
   FAILED: number;
   FILE_TYPE_NOT_SUPPORTED: number;
+  AUTO_INDEX_OFF: number;
 }
 
 interface BasicStats {
@@ -402,6 +403,28 @@ const ConnectorCard = ({ connector }: { connector: ConnectorData }): JSX.Element
                 </Tooltip>
               </Grid>
             )}
+
+            {/* AUTO INDEX OFF records */}
+            {indexing_status.AUTO_INDEX_OFF > 0 && (
+              <Grid item xs={6}>
+                <Tooltip title="Auto Index Off">
+                  <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                    <Iconify
+                      icon={fileCancelOutlineIcon}
+                      width={18}
+                      height={18}
+                      sx={{ color: theme.palette.grey[600], mb: 0.5 }}
+                    />
+                    <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                      {indexing_status.AUTO_INDEX_OFF?.toLocaleString() || 0}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      Auto Index Off
+                    </Typography>
+                  </Box>
+                </Tooltip>
+              </Grid>
+            )}
           </Grid>
 
           {/* Action Buttons */}
@@ -586,6 +609,7 @@ const ConnectorStatistics = ({
             COMPLETED: 70,
             FAILED: 10,
             FILE_TYPE_NOT_SUPPORTED: index === 0 ? 5 : 0, // Add some unsupported files to first connector for testing
+            AUTO_INDEX_OFF: index === 1 ? 3 : 0,
           },
           by_record_type: [],
         }));
@@ -602,6 +626,7 @@ const ConnectorStatistics = ({
             COMPLETED: Math.round(totalRecords * 0.7),
             FAILED: Math.round(totalRecords * 0.1),
             FILE_TYPE_NOT_SUPPORTED: 5, // Add some unsupported files for testing
+            AUTO_INDEX_OFF: 3, 
           },
         });
       } else {
@@ -615,6 +640,7 @@ const ConnectorStatistics = ({
             COMPLETED: 3,
             FAILED: 0,
             FILE_TYPE_NOT_SUPPORTED: 1, // Add an unsupported file for testing
+            AUTO_INDEX_OFF: 0, 
           },
           by_record_type: [],
         };
@@ -632,6 +658,7 @@ const ConnectorStatistics = ({
             COMPLETED: 3,
             FAILED: 0,
             FILE_TYPE_NOT_SUPPORTED: 1,
+            AUTO_INDEX_OFF: 0,
           },
         });
       }

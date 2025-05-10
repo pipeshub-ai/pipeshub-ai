@@ -119,7 +119,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
     authMiddleware.authenticate,
     metricsMiddleware(container),
     ValidationMiddleware.validate(deleteRecordSchema),
-    deleteRecord(recordRelationService),
+    deleteRecord(recordRelationService, appConfig),
   );
 
   // Get all records
@@ -244,8 +244,8 @@ export function createKnowledgeBaseRouter(container: Container): Router {
     authMiddleware.authenticate,
     metricsMiddleware(container),
     ValidationMiddleware.validate(reindexAllRecordSchema),
-    reindexAllRecords(recordRelationService)
-  )
+    reindexAllRecords(recordRelationService),
+  );
 
   return router;
 }

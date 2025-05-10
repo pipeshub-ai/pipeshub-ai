@@ -87,6 +87,7 @@ export interface Record {
   externalRecordId: string;
   recordType: string;
   origin: string;
+  connectorName: string;
   createdAtTimestamp: string;
   updatedAtTimestamp: string;
   isDeleted: boolean;

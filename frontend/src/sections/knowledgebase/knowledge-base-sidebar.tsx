@@ -27,6 +27,8 @@ import gmailIcon from '@iconify-icons/mdi/gmail';
 import googleDriveIcon from '@iconify-icons/mdi/google-drive';
 import userCheckIcon from '@iconify-icons/mdi/account-check-outline';
 import checkCircleOutlineIcon from '@iconify-icons/mdi/check-circle-outline';
+import fileAlertIcon from '@iconify-icons/mdi/file-alert-outline';
+import timerOffIcon from '@iconify-icons/mdi/timer-off-outline';
 
 import { alpha, styled, useTheme, keyframes } from '@mui/material/styles';
 import {
@@ -337,6 +339,8 @@ const statusIcons: Record<string, React.ComponentProps<typeof IconifyIcon>['icon
   IN_PROGRESS: progressClockIcon,
   FAILED: alertCircleOutlineIcon,
   COMPLETED: checkCircleOutlineIcon,
+  FILE_TYPE_NOT_SUPPORTED: fileAlertIcon,
+  AUTO_INDEX_OFF: timerOffIcon,
 };
 
 // Helper function to format labels
@@ -413,12 +417,15 @@ export default function KnowledgeBaseSideBar({
       IN_PROGRESS: theme.palette.info.main,
       FAILED: theme.palette.error.main,
       COMPLETED: theme.palette.success.main,
+      FILE_TYPE_NOT_SUPPORTED: theme.palette.warning.main,
+      AUTO_INDEX_OFF: theme.palette.grey[600],
     }),
     [
       theme.palette.grey,
       theme.palette.info.main,
       theme.palette.error.main,
       theme.palette.success.main,
+      theme.palette.warning.main,
     ]
   );
 
@@ -886,7 +893,7 @@ export default function KnowledgeBaseSideBar({
       theme,
       handleFilterChange,
       recordTypeIcons,
-      toggleSection
+      toggleSection,
     ]
   );
 
@@ -958,7 +965,7 @@ export default function KnowledgeBaseSideBar({
       theme,
       handleFilterChange,
       originIcons,
-      toggleSection
+      toggleSection,
     ]
   );
 
@@ -1032,7 +1039,7 @@ export default function KnowledgeBaseSideBar({
       theme,
       handleFilterChange,
       connectorIcons,
-      toggleSection
+      toggleSection,
     ]
   );
 
@@ -1108,7 +1115,7 @@ export default function KnowledgeBaseSideBar({
       theme,
       handleFilterChange,
       permissionIcons,
-      toggleSection
+      toggleSection,
     ]
   );
 
@@ -1289,7 +1296,14 @@ export default function KnowledgeBaseSideBar({
         </FilterHeader>
         <FilterContent in={expandedSections.status || false}>
           <FormGroup>
-            {['NOT_STARTED', 'IN_PROGRESS', 'FAILED', 'COMPLETED'].map((status) => {
+            {[
+              'NOT_STARTED',
+              'IN_PROGRESS',
+              'FAILED',
+              'COMPLETED',
+              'FILE_TYPE_NOT_SUPPORTED',
+              'AUTO_INDEX_OFF',
+            ].map((status) => {
               const isChecked = (localFilters.indexingStatus || []).includes(status);
 
               return (
@@ -1328,7 +1342,7 @@ export default function KnowledgeBaseSideBar({
       theme,
       statusColors,
       handleFilterChange,
-      toggleSection
+      toggleSection,
     ]
   );
 

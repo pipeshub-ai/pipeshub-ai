@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import dayjs from 'dayjs';
 import { Icon } from '@iconify/react';
 import downloadIcon from '@iconify-icons/mdi/download';
@@ -10,7 +10,15 @@ import excelIcon from '@iconify-icons/vscode-icons/file-type-excel2';
 import defaultFileIcon from '@iconify-icons/mdi/file-document-outline';
 import powerpointIcon from '@iconify-icons/vscode-icons/file-type-powerpoint2';
 
-import { Box, Card, Stack, Typography, IconButton, CardContent } from '@mui/material';
+import {
+  Box,
+  Card,
+  Stack,
+  Typography,
+  IconButton,
+  CardContent,
+  CircularProgress,
+} from '@mui/material';
 
 import { handleDownloadDocument } from './utils';
 
@@ -73,6 +81,7 @@ interface RecordDocumentViewerProps {
 }
 
 const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
+  const [isDownloading, setIsDownloading] = useState<boolean>(false);
   if (!record?.fileRecord) return null;
 
   const {
@@ -83,13 +92,24 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
     modules,
     createdAtTimestamp,
     fileRecord,
+    origin,
   } = record;
 
   const handleDownload = async () => {
     try {
+      if (origin === 'CONNECTOR') {
+        const webUrl = record.fileRecord?.webUrl || record.mailRecord?.webUrl;
+        if (webUrl) {
+          window.open(webUrl, '_blank', 'noopener,noreferrer');
+          return;
+        }
+      }
+      setIsDownloading(true);
       await handleDownloadDocument(externalRecordId, recordName);
     } catch (error) {
       console.error('Failed to download document:', error);
+    } finally {
+      setIsDownloading(false);
     }
   };
 
@@ -112,9 +132,13 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
               Added on {dayjs(createdAtTimestamp).format('MMM DD, YYYY')}
             </Typography>
           </Box>
-          <IconButton onClick={handleDownload} sx={{ color: 'primary.main' }}>
-            <Icon icon={downloadIcon} width={24} />
-          </IconButton>
+          {isDownloading ? (
+            <CircularProgress size={28} />
+          ) : (
+            <IconButton onClick={handleDownload} sx={{ color: 'primary.main' }}>
+              <Icon icon={downloadIcon} width={24} />
+            </IconButton>
+          )}
         </Stack>
 
         {/* {certificate && (

@@ -1,4 +1,4 @@
-// RecordDetails.js - Modified to display metadata as chips
+// RecordDetails.js - Modified to display both file and mail records
 import type { User } from 'src/context/UserContext';
 import type { Icon as IconifyIcon } from '@iconify/react';
 
@@ -21,9 +21,12 @@ import fileImageBoxIcon from '@iconify-icons/mdi/file-image-box';
 import fileAlertIcon from '@iconify-icons/mdi/file-alert-outline';
 import fileTextBoxIcon from '@iconify-icons/mdi/file-text-outline';
 import fileCodeBoxIcon from '@iconify-icons/mdi/file-code-outline';
+import emailIcon from '@iconify-icons/mdi/email-outline';
 import fileArchiveBoxIcon from '@iconify-icons/mdi/archive-outline';
 import fileDocumentBoxIcon from '@iconify-icons/mdi/file-document-box';
 import filePowerpointBoxIcon from '@iconify-icons/mdi/file-powerpoint-box';
+import connectorIcon from '@iconify-icons/mdi/cloud-sync-outline';
+import refreshIcon from '@iconify-icons/mdi/refresh';
 
 import {
   Box,
@@ -43,8 +46,12 @@ import {
   CardContent,
   useMediaQuery,
   CircularProgress,
+  Snackbar,
+  Alert,
+  Tooltip,
 } from '@mui/material';
-
+import { CONFIG } from 'src/config-global';
+import axios from 'src/utils/axios';
 import { useUsers } from 'src/context/UserContext';
 
 import { fetchRecordDetails } from './utils';
@@ -54,6 +61,74 @@ import EditRecordDialog from './edit-record-dialog';
 import DeleteRecordDialog from './delete-record-dialog';
 
 import type { Permissions, RecordDetailsResponse } from './types/record-details';
+
+const getIndexingStatusColor = (
+  status: string
+): 'success' | 'info' | 'error' | 'warning' | 'default' => {
+  switch (status) {
+    case 'COMPLETED':
+      return 'success';
+    case 'IN_PROGRESS':
+      return 'info';
+    case 'FAILED':
+      return 'error';
+    case 'NOT_STARTED':
+      return 'warning';
+    case 'FILE_TYPE_NOT_SUPPORTED':
+      return 'default';
+    case 'AUTO_INDEX_OFF':
+      return 'default';
+    default:
+      return 'warning';
+  }
+};
+
+const getReindexButtonText = (status: string): string => {
+  switch (status) {
+    case 'FAILED':
+      return 'Retry Indexing';
+    case 'FILE_TYPE_NOT_SUPPORTED':
+      return 'File Not Supported';
+    case 'AUTO_INDEX_OFF':
+      return 'Enable Indexing';
+    case 'NOT_STARTED':
+      return 'Start Indexing';
+    default:
+      return 'Reindex';
+  }
+};
+
+const getReindexButtonColor = (status: string): 'warning' | 'error' | 'primary' | 'info' => {
+  switch (status) {
+    case 'FAILED':
+      return 'warning';
+    case 'FILE_TYPE_NOT_SUPPORTED':
+      return 'error';
+    case 'NOT_STARTED':
+      return 'info';
+    default:
+      return 'primary';
+  }
+};
+
+const getReindexTooltip = (status: string): string => {
+  switch (status) {
+    case 'FAILED':
+      return 'Document indexing failed. Click to retry.';
+    case 'FILE_TYPE_NOT_SUPPORTED':
+      return 'This file type is not supported for indexing';
+    case 'AUTO_INDEX_OFF':
+      return 'Document indexing is turned off';
+    case 'NOT_STARTED':
+      return 'Document indexing has not started yet';
+    case 'IN_PROGRESS':
+      return 'Document is currently being indexed';
+    case 'COMPLETED':
+      return 'Document has been successfully indexed. Click to reindex.';
+    default:
+      return 'Reindex document to update search indexes';
+  }
+};
 
 export default function RecordDetails() {
   const { recordId } = useParams<{ recordId: string }>();
@@ -66,6 +141,13 @@ export default function RecordDetails() {
   const users = useUsers() as User[];
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
+  const [isRecordConnector, setIsRecordConnector] = useState<boolean>(false);
+  let webUrl;
+  const [snackbar, setSnackbar] = useState({
+    open: false,
+    message: '',
+    severity: 'success' as 'success' | 'error' | 'warning',
+  });
 
   useEffect(() => {
     const fetchData = async () => {
@@ -73,6 +155,9 @@ export default function RecordDetails() {
         if (!recordId) return;
         const data = await fetchRecordDetails(recordId);
         setRecordData(data);
+        if (data.record.origin === 'CONNECTOR') {
+          setIsRecordConnector(true);
+        }
       } catch (error) {
         console.error('Error:', error);
       } finally {
@@ -102,7 +187,24 @@ export default function RecordDetails() {
 
   const handleDeleteRecord = () => {
     // Redirect to records list page after successful deletion
-    navigate('/records');
+    navigate('/knowledge-base/details');
+  };
+
+  const handleRetryIndexing = async (recId: string) => {
+    try {
+      const response = await axios.post(
+        `${CONFIG.backendUrl}/api/v1/knowledgeBase/reindex/record/${recId}`
+      );
+      setSnackbar({
+        open: true,
+        message: response.data.reindexResponse.success
+          ? 'File indexing started'
+          : 'Failed to start reindexing',
+        severity: response.data.reindexResponse.success ? 'success' : 'error',
+      });
+    } catch (error) {
+      console.log('error in re indexing', error);
+    }
   };
 
   if (loading) {
@@ -164,22 +266,38 @@ export default function RecordDetails() {
   const createdAt = new Date(record.createdAtTimestamp).toLocaleString();
   const updatedAt = new Date(record.updatedAtTimestamp).toLocaleString();
 
-  // Get file extension, size, etc.
-  const { fileRecord } = record;
-  const fileSize = fileRecord ? formatFileSize(fileRecord.sizeInBytes) : 'N/A';
-  const fileType = fileRecord && fileRecord.extension  ? fileRecord.extension.toUpperCase() : 'N/A';
+  // Check record type
+  const isFileRecord = record.recordType === 'FILE' && record.fileRecord;
+  const isMailRecord = record.recordType === 'MAIL' && record.mailRecord;
 
-  // Get file icon
-  const fileIcon = getFileIcon(fileRecord?.extension || '');
-  const fileIconColor = getFileIconColor(fileRecord?.extension || '');
+  // Get file information if it's a file record
+  let fileSize = 'N/A';
+  let fileType = 'N/A';
+  let fileIcon: any = fileDocumentBoxIcon;
+  let fileIconColor = '#1976d2';
+
+  if (isFileRecord && record.fileRecord) {
+    fileSize = formatFileSize(record.fileRecord.sizeInBytes);
+    fileType = record.fileRecord.extension ? record.fileRecord.extension.toUpperCase() : 'N/A';
+    fileIcon = getFileIcon(record.fileRecord.extension || '');
+    fileIconColor = getFileIconColor(record.fileRecord.extension || '');
+  } else if (isMailRecord) {
+    fileIcon = emailIcon;
+    fileIconColor = '#2196f3';
+    fileType = 'EMAIL';
+    // We don't have a size for emails, so leave fileSize as N/A
+  }
+  if (record.origin === 'CONNECTOR') {
+    webUrl = record.fileRecord?.webUrl || record.mailRecord?.webUrl;
+  }
 
   // Render chips function for metadata items
-  const renderChips = (items : any) => {
+  const renderChips = (items: any) => {
     if (!items || items.length === 0) return null;
 
     return (
       <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-        {items.map((item : any) => (
+        {items.map((item: any) => (
           <Chip
             key={item.id || item._id}
             label={item.name}
@@ -256,50 +374,106 @@ export default function RecordDetails() {
                       color="primary"
                       sx={{ height: 22, fontSize: '0.75rem' }}
                     />
-                    <Typography variant="body2" color="text.secondary">
-                      {fileSize}
-                    </Typography>
+                    {fileSize !== 'N/A' && (
+                      <Typography variant="body2" color="text.secondary">
+                        {fileSize}
+                      </Typography>
+                    )}
                   </Stack>
                 </Box>
               </Box>
-
               <Stack
-                direction="row"
-                spacing={2}
-                width={{ xs: '100%', sm: 'auto' }}
-                justifyContent={{ xs: 'flex-end', sm: 'flex-end' }}
+                direction={{ xs: 'column', sm: 'row' }}
+                spacing={{ xs: 1, sm: 2 }}
+                width="100%"
+                alignItems={{ xs: 'stretch', sm: 'center' }}
+                justifyContent="flex-end"
               >
-                <Button
-                  startIcon={<Icon icon={pencilIcon} />}
-                  variant="outlined"
-                  size="small"
-                  onClick={() => setIsEditDialogOpen(true)}
-                  sx={{
-                    borderRadius: 1,
-                    textTransform: 'none',
-                    fontSize: '0.875rem',
-                    height: 36,
-                    fontWeight: 500,
-                  }}
-                >
-                  Edit
-                </Button>
-                <Button
-                  startIcon={<Icon icon={trashCanIcon} />}
-                  variant="outlined"
-                  color="error"
-                  size="small"
-                  onClick={() => setIsDeleteDialogOpen(true)}
-                  sx={{
-                    borderRadius: 1,
-                    textTransform: 'none',
-                    fontSize: '0.875rem',
-                    height: 36,
-                    fontWeight: 500,
-                  }}
-                >
-                  Delete
-                </Button>
+                {!isRecordConnector && recordId && (
+                  <Tooltip title={getReindexTooltip(record.indexingStatus)} placement="top" arrow>
+                    <span>
+                      {' '}
+                      {/* Wrap with span to make tooltip work when button is disabled */}
+                      <Button
+                        startIcon={<Icon icon={refreshIcon} />}
+                        variant="outlined"
+                        size="small"
+                        color={getReindexButtonColor(record.indexingStatus)}
+                        onClick={() => handleRetryIndexing(recordId)}
+                        disabled={
+                          record.indexingStatus === 'FILE_TYPE_NOT_SUPPORTED' ||
+                          record.indexingStatus === 'IN_PROGRESS'
+                        }
+                        sx={{
+                          borderRadius: 1,
+                          textTransform: 'none',
+                          fontSize: '0.875rem',
+                          height: 36,
+                          fontWeight: 500,
+                          minWidth: { xs: '100%', sm: 130 },
+                          backgroundColor: 'background.paper',
+                          '&:hover': {
+                            backgroundColor:
+                              record.indexingStatus === 'FAILED'
+                                ? 'warning.lighter'
+                                : 'action.hover',
+                          },
+                        }}
+                      >
+                        {getReindexButtonText(record.indexingStatus)}
+                      </Button>
+                    </span>
+                  </Tooltip>
+                )}
+
+                {!isRecordConnector && (
+                  <Tooltip title="Edit document details" placement="top" arrow>
+                    <Button
+                      startIcon={<Icon icon={pencilIcon} />}
+                      variant="outlined"
+                      size="small"
+                      onClick={() => setIsEditDialogOpen(true)}
+                      sx={{
+                        borderRadius: 1,
+                        textTransform: 'none',
+                        fontSize: '0.875rem',
+                        height: 36,
+                        fontWeight: 500,
+                        minWidth: { xs: '100%', sm: 110 },
+                        backgroundColor: 'background.paper',
+                        '&:hover': {
+                          backgroundColor: 'action.hover',
+                        },
+                      }}
+                    >
+                      Edit
+                    </Button>
+                  </Tooltip>
+                )}
+
+                <Tooltip title="Delete this document" placement="top" arrow>
+                  <Button
+                    startIcon={<Icon icon={trashCanIcon} />}
+                    variant="outlined"
+                    color="error"
+                    size="small"
+                    onClick={() => setIsDeleteDialogOpen(true)}
+                    sx={{
+                      borderRadius: 1,
+                      textTransform: 'none',
+                      fontSize: '0.875rem',
+                      height: 36,
+                      fontWeight: 500,
+                      minWidth: { xs: '100%', sm: 110 },
+                      backgroundColor: 'background.paper',
+                      '&:hover': {
+                        backgroundColor: 'error.lighter',
+                      },
+                    }}
+                  >
+                    Delete
+                  </Button>
+                </Tooltip>
               </Stack>
             </Box>
 
@@ -329,18 +503,44 @@ export default function RecordDetails() {
                   </Typography>
                 </Grid>
 
-                {knowledgeBase && (
-                  <Grid item xs={12} sm={Boolean(true)}>
-                    <Typography
-                      variant="body2"
-                      color="text.secondary"
-                      sx={{ display: 'flex', alignItems: 'center', gap: 1 }}
-                    >
-                      <Icon icon={dbIcon} style={{ fontSize: '16px' }} />
-                      KB: {knowledgeBase?.name ? knowledgeBase.name : 'Default'}
-                    </Typography>
-                  </Grid>
-                )}
+                <Grid item xs={12} sm={Boolean(true)}>
+                  <Typography
+                    variant="body2"
+                    color="text.secondary"
+                    sx={{ display: 'flex', alignItems: 'center', gap: 1 }}
+                  >
+                    <Icon icon={updateIcon} style={{ fontSize: '16px' }} />
+                    Indexing Status:{' '}
+                    <Chip
+                      label={record.indexingStatus.replace('_', ' ')}
+                      size="small"
+                      color={getIndexingStatusColor(record.indexingStatus)}
+                      sx={{
+                        height: 20,
+                        fontSize: '0.7rem',
+                        fontWeight: 600,
+                        '& .MuiChip-label': { px: 1 },
+                      }}
+                    />
+                  </Typography>
+                </Grid>
+
+                <Grid item xs={12} sm={Boolean(true)}>
+                  <Typography
+                    variant="body2"
+                    color="text.secondary"
+                    sx={{ display: 'flex', alignItems: 'center', gap: 1 }}
+                  >
+                    <Icon
+                      icon={record?.origin === 'CONNECTOR' ? connectorIcon : dbIcon}
+                      style={{ fontSize: '16px' }}
+                    />
+                    {knowledgeBase && `KB: ${knowledgeBase.name || 'Default'}`}
+                    {record?.origin === 'CONNECTOR' && record.connectorName && (
+                      <>{record.connectorName}</>
+                    )}
+                  </Typography>
+                </Grid>
               </Grid>
             </Box>
           </Card>
@@ -374,7 +574,7 @@ export default function RecordDetails() {
                   <Grid container spacing={4}>
                     <Grid item xs={12} sm={6}>
                       <Stack spacing={3}>
-                        {fileRecord && (
+                        {isFileRecord && record.fileRecord && (
                           <Box>
                             <Typography
                               variant="caption"
@@ -390,10 +590,13 @@ export default function RecordDetails() {
                             >
                               File Name
                             </Typography>
-                            <Typography variant="body2">{fileRecord?.name || 'N/A'}</Typography>
+                            <Typography variant="body2">
+                              {record.fileRecord?.name || 'N/A'}
+                            </Typography>
                           </Box>
                         )}
-                        {fileRecord && (
+
+                        {isMailRecord && record.mailRecord && (
                           <Box>
                             <Typography
                               variant="caption"
@@ -407,24 +610,44 @@ export default function RecordDetails() {
                                 mb: 0.75,
                               }}
                             >
-                              File Type
+                              Subject
                             </Typography>
-                            <Chip
-                              label={fileType}
-                              size="small"
-                              sx={{
-                                height: 22,
-                                fontSize: '0.75rem',
-                                fontWeight: 500,
-                                bgcolor: alpha(theme.palette.primary.main, 0.08),
-                                color: theme.palette.primary.main,
-                                '&:hover': {
-                                  bgcolor: alpha(theme.palette.primary.main, 0.08),
-                                },
-                              }}
-                            />
+                            <Typography variant="body2">
+                              {record.mailRecord?.subject || 'N/A'}
+                            </Typography>
                           </Box>
                         )}
+
+                        <Box>
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            gutterBottom
+                            sx={{
+                              textTransform: 'uppercase',
+                              fontWeight: 500,
+                              letterSpacing: '0.5px',
+                              display: 'block',
+                              mb: 0.75,
+                            }}
+                          >
+                            Type
+                          </Typography>
+                          <Chip
+                            label={fileType}
+                            size="small"
+                            sx={{
+                              height: 22,
+                              fontSize: '0.75rem',
+                              fontWeight: 500,
+                              bgcolor: alpha(theme.palette.primary.main, 0.08),
+                              color: theme.palette.primary.main,
+                              '&:hover': {
+                                bgcolor: alpha(theme.palette.primary.main, 0.08),
+                              },
+                            }}
+                          />
+                        </Box>
 
                         <Box>
                           <Typography
@@ -460,23 +683,89 @@ export default function RecordDetails() {
 
                     <Grid item xs={12} sm={6}>
                       <Stack spacing={3}>
-                        <Box>
-                          <Typography
-                            variant="caption"
-                            color="text.secondary"
-                            gutterBottom
-                            sx={{
-                              textTransform: 'uppercase',
-                              fontWeight: 500,
-                              letterSpacing: '0.5px',
-                              display: 'block',
-                              mb: 0.75,
-                            }}
-                          >
-                            File Size
-                          </Typography>
-                          <Typography variant="body2">{fileSize}</Typography>
-                        </Box>
+                        {isFileRecord && (
+                          <Box>
+                            <Typography
+                              variant="caption"
+                              color="text.secondary"
+                              gutterBottom
+                              sx={{
+                                textTransform: 'uppercase',
+                                fontWeight: 500,
+                                letterSpacing: '0.5px',
+                                display: 'block',
+                                mb: 0.75,
+                              }}
+                            >
+                              File Size
+                            </Typography>
+                            <Typography variant="body2">{fileSize}</Typography>
+                          </Box>
+                        )}
+
+                        {isMailRecord && record.mailRecord && (
+                          <>
+                            <Box>
+                              <Typography
+                                variant="caption"
+                                color="text.secondary"
+                                gutterBottom
+                                sx={{
+                                  textTransform: 'uppercase',
+                                  fontWeight: 500,
+                                  letterSpacing: '0.5px',
+                                  display: 'block',
+                                  mb: 0.75,
+                                }}
+                              >
+                                From
+                              </Typography>
+                              <Typography variant="body2">{record.mailRecord.from}</Typography>
+                            </Box>
+                            <Box>
+                              <Typography
+                                variant="caption"
+                                color="text.secondary"
+                                gutterBottom
+                                sx={{
+                                  textTransform: 'uppercase',
+                                  fontWeight: 500,
+                                  letterSpacing: '0.5px',
+                                  display: 'block',
+                                  mb: 0.75,
+                                }}
+                              >
+                                To
+                              </Typography>
+                              <Typography variant="body2">
+                                {Array.isArray(record.mailRecord.to)
+                                  ? record.mailRecord.to.join(', ')
+                                  : record.mailRecord.to}
+                              </Typography>
+                            </Box>
+                            {record.mailRecord.cc && record.mailRecord.cc.length > 0 && (
+                              <Box>
+                                <Typography
+                                  variant="caption"
+                                  color="text.secondary"
+                                  gutterBottom
+                                  sx={{
+                                    textTransform: 'uppercase',
+                                    fontWeight: 500,
+                                    letterSpacing: '0.5px',
+                                    display: 'block',
+                                    mb: 0.75,
+                                  }}
+                                >
+                                  CC
+                                </Typography>
+                                <Typography variant="body2">
+                                  {record.mailRecord.cc.join(', ')}
+                                </Typography>
+                              </Box>
+                            )}
+                          </>
+                        )}
 
                         <Box>
                           <Typography
@@ -541,6 +830,7 @@ export default function RecordDetails() {
                 </CardContent>
               </Card>
 
+              {/* Show document viewer for both file and mail records */}
               <Card
                 elevation={0}
                 sx={{
@@ -580,6 +870,68 @@ export default function RecordDetails() {
 
                 <CardContent sx={{ p: 3, flexGrow: 1 }}>
                   <Stack spacing={3}>
+                    {/* Email specific information */}
+                    {isMailRecord &&
+                      record.mailRecord &&
+                      record.mailRecord.labelIds &&
+                      record.mailRecord.labelIds.length > 0 && (
+                        <Box>
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            gutterBottom
+                            sx={{
+                              textTransform: 'uppercase',
+                              fontWeight: 500,
+                              letterSpacing: '0.5px',
+                              display: 'block',
+                              mb: 0.75,
+                            }}
+                          >
+                            Labels
+                          </Typography>
+                          <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                            {record.mailRecord.labelIds.map((label) => (
+                              <Chip
+                                key={label}
+                                label={label}
+                                size="small"
+                                sx={{
+                                  height: 22,
+                                  fontSize: '0.75rem',
+                                  fontWeight: 500,
+                                  bgcolor: alpha(theme.palette.primary.main, 0.08),
+                                  color: theme.palette.primary.main,
+                                  '&:hover': {
+                                    bgcolor: alpha(theme.palette.primary.main, 0.08),
+                                  },
+                                }}
+                              />
+                            ))}
+                          </Box>
+                        </Box>
+                      )}
+
+                    {isMailRecord && record.mailRecord && record.mailRecord.date && (
+                      <Box>
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          gutterBottom
+                          sx={{
+                            textTransform: 'uppercase',
+                            fontWeight: 500,
+                            letterSpacing: '0.5px',
+                            display: 'block',
+                            mb: 0.75,
+                          }}
+                        >
+                          Date
+                        </Typography>
+                        <Typography variant="body2">{record.mailRecord.date}</Typography>
+                      </Box>
+                    )}
+
                     {/* Departments */}
                     {metadata?.departments && metadata.departments.length > 0 && (
                       <Box>
@@ -637,12 +989,12 @@ export default function RecordDetails() {
                             mb: 0.75,
                           }}
                         >
-                         Document Sub-category Level 1
+                          Document Sub-category Level 1
                         </Typography>
                         {renderChips(metadata.subcategories1)}
                       </Box>
                     )}
- 
+
                     {/* Subcategories2 */}
                     {metadata?.subcategories2 && metadata.subcategories2.length > 0 && (
                       <Box>
@@ -727,7 +1079,7 @@ export default function RecordDetails() {
                       </Box>
                     )}
 
-                    <Divider />
+                    {(record.departments || record.appSpecificRecordType) && <Divider />}
 
                     {/* Original department section from the record */}
                     {record.departments && record.departments.length > 0 && (
@@ -808,6 +1160,43 @@ export default function RecordDetails() {
                     )}
 
                     {/* Original modules from the record */}
+                    {record.modules && record.modules.length > 0 && (
+                      <Box>
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          gutterBottom
+                          sx={{
+                            textTransform: 'uppercase',
+                            fontWeight: 500,
+                            letterSpacing: '0.5px',
+                            display: 'block',
+                            mb: 0.75,
+                          }}
+                        >
+                          Record Modules
+                        </Typography>
+                        <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                          {record.modules.map((module) => (
+                            <Chip
+                              key={module._id}
+                              label={module.name}
+                              size="small"
+                              sx={{
+                                height: 22,
+                                fontSize: '0.75rem',
+                                fontWeight: 500,
+                                bgcolor: alpha(theme.palette.primary.main, 0.08),
+                                color: theme.palette.primary.main,
+                                '&:hover': {
+                                  bgcolor: alpha(theme.palette.primary.main, 0.08),
+                                },
+                              }}
+                            />
+                          ))}
+                        </Box>
+                      </Box>
+                    )}
 
                     {record.createdBy && (
                       <Box>
@@ -959,6 +1348,27 @@ export default function RecordDetails() {
           </Box>
         </Box>
       </Drawer>
+      <Snackbar
+        open={snackbar.open}
+        autoHideDuration={6000}
+        onClose={() => setSnackbar((prev) => ({ ...prev, open: false }))}
+        anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
+        sx={{ mt: 7 }}
+      >
+        <Alert
+          severity={snackbar.severity}
+          sx={{
+            width: '100%',
+            ...(snackbar.severity === 'success' && {
+              bgcolor: theme.palette.success.main,
+              color: theme.palette.success.contrastText,
+            }),
+          }}
+          onClose={() => setSnackbar((prev) => ({ ...prev, open: false }))}
+        >
+          {snackbar.message}
+        </Alert>
+      </Snackbar>
     </>
   );
 }

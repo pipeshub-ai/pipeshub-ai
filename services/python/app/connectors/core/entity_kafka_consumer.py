@@ -245,6 +245,72 @@ class EntityKafkaRouteConsumer:
             return False
 
         return await handler(value["payload"])
+    
+    async def _get_or_create_knowledge_base(self, user_key: str, userId: str, orgId: str, name: str = "Default") -> dict:
+        """Get or create a knowledge base for a user"""
+        try:
+            if not userId or not orgId:
+                self.logger.error("Both User ID and Organization ID are required to get or create a knowledge base")
+                return None
+
+            # Check if a knowledge base already exists for this user in this organization
+            query = f"""
+            FOR kb IN {CollectionNames.KNOWLEDGE_BASE.value}
+                FILTER kb.userId == @userId AND kb.orgId == @orgId AND kb.isDeleted == false
+                RETURN kb
+            """
+            bind_vars = {"userId": userId, "orgId": orgId}
+            
+            # Use the correct pattern for your ArangoDB Python driver
+            cursor = self.arango_service.db.aql.execute(query, bind_vars=bind_vars)
+            existing_kbs = [doc for doc in cursor]
+
+            if existing_kbs and len(existing_kbs) > 0:
+                self.logger.info(f"Found existing knowledge base for user {userId} in organization {orgId}")
+                return existing_kbs[0]
+
+            # Create a new knowledge base
+            current_timestamp = get_epoch_timestamp_in_ms()
+            kb_key = str(uuid4())
+            kb_data = {
+                "_key": kb_key,
+                "userId": userId,
+                "orgId": orgId,
+                "name": name,
+                "createdAtTimestamp": current_timestamp,
+                "updatedAtTimestamp": current_timestamp,
+                "isDeleted": False,
+                "isArchived": False,
+            }
+
+            # Save the knowledge base
+            await self.arango_service.batch_upsert_nodes(
+                [kb_data], CollectionNames.KNOWLEDGE_BASE.value
+            )
+            
+            # Create permission edge from user to knowledge base with OWNER role
+            permission_edge = {
+                "_from": f"{CollectionNames.USERS.value}/{user_key}",
+                "_to": f"{CollectionNames.KNOWLEDGE_BASE.value}/{kb_key}",
+                "externalPermissionId": "",
+                "type": "USER",
+                "role": "OWNER",
+                "createdAtTimestamp": current_timestamp,
+                "updatedAtTimestamp": current_timestamp,
+                "lastUpdatedTimestampAtSource": current_timestamp,
+            }
+            
+            await self.arango_service.batch_create_edges(
+                [permission_edge],
+                CollectionNames.PERMISSIONS_TO_KNOWLEDGE_BASE.value,
+            )
+
+            self.logger.info(f"Created new knowledge base for user {userId} in organization {orgId}")
+            return kb_data
+
+        except Exception as e:
+            self.logger.error(f"Failed to get or create knowledge base: {str(e)}")
+            return None
 
     # ORG EVENTS
     async def handle_org_created(self, payload: dict) -> bool:
@@ -367,6 +433,7 @@ class EntityKafkaRouteConsumer:
             current_timestamp = get_epoch_timestamp_in_ms()
 
             if existing_user:
+                user_key = existing_user
                 user_data = {
                     "_key": existing_user,
                     "userId": payload["userId"],
@@ -375,8 +442,9 @@ class EntityKafkaRouteConsumer:
                     "updatedAtTimestamp": current_timestamp,
                 }
             else:
+                user_key = str(uuid4())
                 user_data = {
-                    "_key": str(uuid4()),
+                    "_key": user_key,
                     "userId": payload["userId"],
                     "orgId": payload["orgId"],
                     "email": payload["email"],
@@ -416,6 +484,9 @@ class EntityKafkaRouteConsumer:
                 [edge_data],
                 CollectionNames.BELONGS_TO.value,
             )
+
+            # Get or create knowledge base for the user
+            await self._get_or_create_knowledge_base(user_key,payload["userId"], payload["orgId"])
 
             # Only proceed with app connections if syncAction is 'immediate'
             if payload["syncAction"] == "immediate":

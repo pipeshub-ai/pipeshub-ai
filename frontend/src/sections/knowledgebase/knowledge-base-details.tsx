@@ -454,7 +454,7 @@ export default function KnowledgeBaseDetails({
             }}
           >
             <Icon
-              icon={extension ? getFileIcon(extension) : folderIcon}
+              icon={extension ? getFileIcon(extension) :params.row.recordType === 'MAIL'? getFileIcon('eml'): folderIcon}
               style={{
                 fontSize: '20px',
                 color: getFileIconColor(extension),

@@ -29,11 +29,13 @@ export const INDEXING_STATUS = {
   IN_PROGRESS: 'IN_PROGRESS',
   FAILED: 'FAILED',
   COMPLETED: 'COMPLETED',
+  FILE_TYPE_NOT_SUPPORTED: 'FILE_TYPE_NOT_SUPPORTED',
+  AUTO_INDEX_OFF: 'AUTO_INDEX_OFF',
 } as const;
 
 export const ENTITY_TYPE = {
-  KNOWLEDGE_BASE : 'KB'
-}
+  KNOWLEDGE_BASE: 'KB',
+};
 
 // Collection names
 export const COLLECTIONS = {
@@ -42,9 +44,8 @@ export const COLLECTIONS = {
   FILES: 'files',
   USERS: 'users',
   KNOWLEDGE_BASE: 'knowledgeBase',
-  BELONGS_TO_KNOWLEDGE_BASE :'belongsToKnowledgeBase',
-  PERMISSIONS_TO_KNOWLEDGE_BASE : 'permissionsToKnowledgeBase',
-
+  BELONGS_TO_KNOWLEDGE_BASE: 'belongsToKnowledgeBase',
+  PERMISSIONS_TO_KNOWLEDGE_BASE: 'permissionsToKnowledgeBase',
 
   // Edge collections
   RECORD_TO_RECORD: 'recordRelations',

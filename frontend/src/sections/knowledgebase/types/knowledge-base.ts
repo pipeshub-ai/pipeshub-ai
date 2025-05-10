@@ -24,7 +24,7 @@ export interface Record {
   id: string;
   externalRecordId: string;
   recordName: string;
-  recordType: 'FILE' | 'CONNECTOR' | 'LINK' | 'FAQ';
+  recordType: 'FILE' | 'CONNECTOR' | 'LINK' | 'FAQ' | 'MAIL';
   origin: 'UPLOAD' | 'CONNECTOR';
   indexingStatus: string | null;
   createdAtTimestamp: number;
