@@ -268,7 +268,62 @@ export default function KnowledgeBaseDetails({
   };
 
   // Get file icon based on extension
-  const getFileIcon = (extension: string): React.ComponentProps<typeof IconifyIcon>['icon'] => {
+  const getFileIcon = (
+    extension: string,
+    mimeType?: string
+  ): React.ComponentProps<typeof IconifyIcon>['icon'] => {
+    if ((!extension || extension === '') && mimeType) {
+      // Google Workspace mime types
+      switch (mimeType) {
+        // Google Workspace documents
+        case 'application/vnd.google-apps.document':
+          return fileWordBoxIcon; // Use Word icon for Google Docs
+        case 'application/vnd.google-apps.spreadsheet':
+          return fileExcelBoxIcon; // Use Excel icon for Google Sheets
+        case 'application/vnd.google-apps.presentation':
+          return filePowerpointBoxIcon; // Use PowerPoint icon for Google Slides
+        case 'application/vnd.google-apps.form':
+          return noteTextOutlineIcon; // Use text icon for Google Forms
+        case 'application/vnd.google-apps.drawing':
+          return fileImageBoxIcon; // Use image icon for Google Drawings
+        case 'application/vnd.google-apps.folder':
+          return folderIcon;
+
+        // Microsoft 365 documents
+        case 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+        case 'application/vnd.microsoft.word.document.macroEnabled.12':
+        case 'application/vnd.ms-word.document.macroEnabled.12':
+        case 'application/vnd.ms-word.document':
+          return fileWordBoxIcon;
+
+        case 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
+        case 'application/vnd.microsoft.excel.sheet.macroEnabled.12':
+        case 'application/vnd.ms-excel.sheet.macroEnabled.12':
+        case 'application/vnd.ms-excel':
+          return fileExcelBoxIcon;
+
+        case 'application/vnd.openxmlformats-officedocument.presentationml.presentation':
+        case 'application/vnd.microsoft.powerpoint.presentation.macroEnabled.12':
+        case 'application/vnd.ms-powerpoint.presentation.macroEnabled.12':
+        case 'application/vnd.ms-powerpoint':
+          return filePowerpointBoxIcon;
+
+        // OneDrive/SharePoint specific
+        case 'application/vnd.microsoft.onedrive.document':
+          return fileWordBoxIcon;
+        case 'application/vnd.microsoft.onedrive.spreadsheet':
+          return fileExcelBoxIcon;
+        case 'application/vnd.microsoft.onedrive.presentation':
+          return filePowerpointBoxIcon;
+        case 'application/vnd.microsoft.onedrive.drawing':
+          return fileImageBoxIcon;
+        case 'application/vnd.microsoft.onedrive.folder':
+          return folderIcon;
+
+        // Add more mime types as needed
+      }
+    }
+
     const ext = extension?.toLowerCase() || '';
 
     switch (ext) {
@@ -353,7 +408,56 @@ export default function KnowledgeBaseDetails({
   };
 
   // Get file icon color based on extension
-  const getFileIconColor = (extension: string): string => {
+  const getFileIconColor = (extension: string, mimeType?: string): string => {
+    if ((!extension || extension === '') && mimeType) {
+      // Google Workspace mime types
+      switch (mimeType) {
+        // Google Workspace documents
+        case 'application/vnd.google-apps.document':
+          return '#4285F4'; // Google blue
+        case 'application/vnd.google-apps.spreadsheet':
+          return '#0F9D58'; // Google green
+        case 'application/vnd.google-apps.presentation':
+          return '#F4B400'; // Google yellow
+        case 'application/vnd.google-apps.form':
+          return '#673AB7'; // Purple for forms
+        case 'application/vnd.google-apps.drawing':
+          return '#DB4437'; // Google red
+        case 'application/vnd.google-apps.folder':
+          return '#5F6368'; // Google folder gray
+
+        // Microsoft 365 documents
+        case 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+        case 'application/vnd.microsoft.word.document.macroEnabled.12':
+        case 'application/vnd.ms-word.document.macroEnabled.12':
+        case 'application/vnd.ms-word.document':
+        case 'application/vnd.microsoft.onedrive.document':
+          return '#2B579A'; // Microsoft Word blue
+
+        case 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
+        case 'application/vnd.microsoft.excel.sheet.macroEnabled.12':
+        case 'application/vnd.ms-excel.sheet.macroEnabled.12':
+        case 'application/vnd.ms-excel':
+        case 'application/vnd.microsoft.onedrive.spreadsheet':
+          return '#217346'; // Microsoft Excel green
+
+        case 'application/vnd.openxmlformats-officedocument.presentationml.presentation':
+        case 'application/vnd.microsoft.powerpoint.presentation.macroEnabled.12':
+        case 'application/vnd.ms-powerpoint.presentation.macroEnabled.12':
+        case 'application/vnd.ms-powerpoint':
+        case 'application/vnd.microsoft.onedrive.presentation':
+          return '#B7472A'; // Microsoft PowerPoint orange/red
+
+        case 'application/vnd.microsoft.onedrive.drawing':
+          return '#8C6A4F'; // Brown-ish color for drawings
+
+        case 'application/vnd.microsoft.onedrive.folder':
+          return '#0078D4'; // OneDrive blue
+
+        // Add more mime types as needed
+      }
+    }
+
     const ext = extension?.toLowerCase() || '';
 
     switch (ext) {
@@ -443,6 +547,7 @@ export default function KnowledgeBaseDetails({
       minWidth: 200,
       renderCell: (params) => {
         const extension = params.row.fileRecord?.extension || '';
+        const mimeType = params.row.fileRecord?.mimeType || '';
         return (
           <Box
             sx={{
@@ -454,10 +559,16 @@ export default function KnowledgeBaseDetails({
             }}
           >
             <Icon
-              icon={extension ? getFileIcon(extension) :params.row.recordType === 'MAIL'? getFileIcon('eml'): folderIcon}
+              icon={
+                extension
+                  ? getFileIcon(extension, mimeType)
+                  : params.row.recordType === 'MAIL'
+                    ? getFileIcon('eml')
+                    : getFileIcon('', mimeType)
+              }
               style={{
                 fontSize: '20px',
-                color: getFileIconColor(extension),
+                color: getFileIconColor(extension, mimeType),
                 marginRight: '12px',
                 flexShrink: 0,
               }}
@@ -1135,7 +1246,7 @@ export default function KnowledgeBaseDetails({
       let hasErrors = false;
 
       // Split files into batches
-      const batches:any = [];
+      const batches: any = [];
       for (let i = 0; i < files.length; i += BATCH_SIZE) {
         const currentBatch = files.slice(i, i + BATCH_SIZE);
         const batchFormData = new FormData();
@@ -1157,7 +1268,7 @@ export default function KnowledgeBaseDetails({
       const batchResults = []; // Store results from each batch
 
       // Use recursive function instead of for loop to process batches sequentially
-      const processBatchSequentially = async (batchIndex:any) => {
+      const processBatchSequentially = async (batchIndex: any) => {
         // Base case: all batches processed
         if (batchIndex >= batches.length) {
           return;

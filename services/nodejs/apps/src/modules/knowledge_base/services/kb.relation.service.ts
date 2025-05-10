@@ -1498,9 +1498,12 @@ export class RecordRelationService {
       dateTo,
       connectors,
     } = params;
+    
+    const tempRecordTypeFilter = ['FILE','MAIL'];
+
 
     // Base filter for all records
-    let baseFilter = aql`FILTER record.isDeleted != true`;
+    let baseFilter = aql`FILTER record.isDeleted != true AND record.recordType in ${tempRecordTypeFilter}`;
     baseFilter = aql`${baseFilter} AND record.orgId == ${orgId}`;
 
     // Add search filter if provided
