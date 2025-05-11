@@ -706,6 +706,30 @@ const ConfigurationStepper: React.FC<ConfigurationStepperProps> = ({ open, onClo
             ];
           }
 
+          if (embeddingValues.modelType === 'gemini') {
+            return [
+              {
+                provider: 'gemini',
+                configuration: {
+                  apiKey: embeddingValues.apiKey,
+                  model: embeddingValues.model,
+                },
+              },
+            ];
+          }
+
+          if (embeddingValues.modelType === 'cohere') {
+            return [
+              {
+                provider: 'cohere',
+                configuration: {
+                  apiKey: embeddingValues.apiKey,
+                  model: embeddingValues.model,
+                },
+              },
+            ];
+          }
+
           // For Azure OpenAI embedding
           return [
             {

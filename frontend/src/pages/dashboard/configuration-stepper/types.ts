@@ -1,4 +1,4 @@
-// OpenAI specific fields
+// OpenAI specific fields 
 export interface OpenAILlmFormValues {
   modelType: 'openai';
   clientId: string;
@@ -11,7 +11,8 @@ export interface GeminiLlmFormValues {
   // clientId: string;
   apiKey: string;
   model: string;
-}
+} 
+
 export interface AnthropicLlmFormValues {
   modelType: 'anthropic';
   // clientId: string;
@@ -19,7 +20,7 @@ export interface AnthropicLlmFormValues {
   model: string;
 }
 
-// Azure OpenAI specific fields
+// Azure OpenAI specific fields 
 export interface AzureLlmFormValues {
   modelType: 'azure';
   endpoint: string;
@@ -30,7 +31,7 @@ export interface AzureLlmFormValues {
 
 // Embedding configuration
 export interface EmbeddingFormValues {
-  modelType: 'openai' | 'azureOpenAI' | 'sentenceTransformers' | 'default';
+  modelType: 'openai' | 'azureOpenAI' | 'sentenceTransformers' | 'default' | 'gemini' | 'cohere';
   apiKey?: string;
   model: string;
   endpoint?: string; // Only required for Azure

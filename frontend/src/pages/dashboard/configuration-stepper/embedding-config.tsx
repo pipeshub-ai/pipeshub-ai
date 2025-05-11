@@ -27,12 +27,41 @@ import { Iconify } from 'src/components/iconify';
 
 import type { EmbeddingFormValues } from './types';
 
-// Zod schema for OpenAI embedding validation
-const openaiEmbeddingSchema = z.object({
-  modelType: z.literal('openai'),
-  apiKey: z.string().min(1, 'API Key is required'),
-  model: z.string().min(1, 'Model is required'),
-});
+// Define common model configurations to reduce repetition
+const modelConfigs = {
+  // Models requiring API key and model name only
+  standardApiKeyModels: ['openai', 'gemini', 'cohere'] as const,
+  // Models requiring endpoint, API key, and model name
+  endpointModels: ['azureOpenAI'] as const,
+  // Models requiring model name only
+  modelOnlyModels: ['sentenceTransformers'] as const,
+  // Default model (no configuration needed)
+  defaultModel: 'default' as const,
+};
+
+// Helper type for model types
+type ModelType = 
+  | typeof modelConfigs.standardApiKeyModels[number]
+  | typeof modelConfigs.endpointModels[number]
+  | typeof modelConfigs.modelOnlyModels[number]
+  | typeof modelConfigs.defaultModel;
+
+// Model-specific placeholders for better UI guidance
+const modelPlaceholders = {
+  openai: 'e.g., text-embedding-3-small, text-embedding-3-large',
+  gemini: 'e.g., gemini-embedding-exp-03-07',
+  cohere: 'e.g., embed-v4.0',
+  azureOpenAI: 'e.g., text-embedding-ada-002',
+  sentenceTransformers: 'e.g., all-MiniLM-L6-v2',
+};
+
+// Create schemas for each model type
+const createApiKeyModelSchema = (modelType: typeof modelConfigs.standardApiKeyModels[number]) => 
+  z.object({
+    modelType: z.literal(modelType),
+    apiKey: z.string().min(1, 'API Key is required'),
+    model: z.string().min(1, 'Model is required'),
+  });
 
 // Zod schema for Azure OpenAI embedding validation
 const azureEmbeddingSchema = z.object({
@@ -55,9 +84,16 @@ const defaultEmbeddingSchema = z.object({
   // No other fields required for default
 });
 
+// Create schemas for all API key models individually to satisfy TypeScript
+const openaiEmbeddingSchema = createApiKeyModelSchema('openai');
+const geminiEmbeddingSchema = createApiKeyModelSchema('gemini');
+const cohereEmbeddingSchema = createApiKeyModelSchema('cohere');
+
 // Combined schema using discriminated union
 const embeddingSchema = z.discriminatedUnion('modelType', [
   openaiEmbeddingSchema,
+  geminiEmbeddingSchema,
+  cohereEmbeddingSchema,
   azureEmbeddingSchema,
   sentenceTransformersEmbeddingSchema,
   defaultEmbeddingSchema,
@@ -75,12 +111,13 @@ const EmbeddingConfigStep: React.FC<EmbeddingConfigStepProps> = ({
   initialValues,
 }) => {
   const [showPassword, setShowPassword] = useState<boolean>(false);
-  const [modelType, setModelType] = useState<
-    'openai' | 'azureOpenAI' | 'sentenceTransformers' | 'default'
-  >(initialValues?.modelType || 'default');
+  const [modelType, setModelType] = useState<ModelType>(
+    initialValues?.modelType || modelConfigs.defaultModel
+  );
 
   // Get default values based on modelType
   const getDefaultValues = () => {
+    // For models requiring endpoint + API key
     if (modelType === 'azureOpenAI') {
       return {
         modelType: 'azureOpenAI' as const,
@@ -89,22 +126,34 @@ const EmbeddingConfigStep: React.FC<EmbeddingConfigStepProps> = ({
         model: initialValues?.model || '',
       };
     }
+    
+    // For models requiring only model name
     if (modelType === 'sentenceTransformers') {
       return {
         modelType: 'sentenceTransformers' as const,
-        model: initialValues?.model || '', // Default model for sentence transformers
+        model: initialValues?.model || '',
       };
     }
+    
+    // For default option (no config needed)
     if (modelType === 'default') {
-      // Default option - no additional configuration needed
       return {
         modelType: 'default' as const,
       };
     }
+    
+    // For standard API key models (OpenAI, Gemini, Cohere)
+    if (modelConfigs.standardApiKeyModels.includes(modelType as any)) {
+      return {
+        modelType: modelType as any,
+        apiKey: initialValues?.apiKey || '',
+        model: initialValues?.model || '',
+      };
+    }
+    
+    // Fallback to default
     return {
-      modelType: 'openai' as const,
-      apiKey: initialValues?.apiKey || '',
-      model: initialValues?.model || '',
+      modelType: 'default' as const,
     };
   };
 
@@ -125,11 +174,10 @@ const EmbeddingConfigStep: React.FC<EmbeddingConfigStepProps> = ({
   const currentModelType = watch('modelType');
 
   // Handle model type change
-  const handleModelTypeChange = (
-    newType: 'openai' | 'azureOpenAI' | 'sentenceTransformers' | 'default'
-  ) => {
+  const handleModelTypeChange = (newType: ModelType) => {
     setModelType(newType);
 
+    // Reset form with appropriate fields based on the model type
     if (newType === 'azureOpenAI') {
       reset({
         modelType: 'azureOpenAI',
@@ -140,16 +188,16 @@ const EmbeddingConfigStep: React.FC<EmbeddingConfigStepProps> = ({
     } else if (newType === 'sentenceTransformers') {
       reset({
         modelType: 'sentenceTransformers',
-        model: '', // Default model
+        model: '',
       });
     } else if (newType === 'default') {
-      // Just reset to default with no additional fields
       reset({
         modelType: 'default',
       });
-    } else {
+    } else if (modelConfigs.standardApiKeyModels.includes(newType as any)) {
+      // Handle all standard API key models
       reset({
-        modelType: 'openai',
+        modelType: newType as any,
         apiKey: '',
         model: '',
       });
@@ -233,6 +281,11 @@ const EmbeddingConfigStep: React.FC<EmbeddingConfigStepProps> = ({
     onSubmit(data);
   };
 
+  // Helper to check model types for rendering decisions
+  const needsApiKey = modelConfigs.standardApiKeyModels.includes(currentModelType as any) || currentModelType === 'azureOpenAI';
+  const needsEndpoint = modelConfigs.endpointModels.includes(currentModelType as any);
+  const needsModel = currentModelType !== 'default';
+
   return (
     <Box
       component="form"
@@ -267,11 +320,7 @@ const EmbeddingConfigStep: React.FC<EmbeddingConfigStepProps> = ({
                   {...field}
                   label="Provider *"
                   onChange={(e: SelectChangeEvent) => {
-                    const newType = e.target.value as
-                      | 'openai'
-                      | 'azureOpenAI'
-                      | 'sentenceTransformers'
-                      | 'default';
+                    const newType = e.target.value as ModelType;
                     field.onChange(newType);
                     handleModelTypeChange(newType);
                   }}
@@ -280,6 +329,8 @@ const EmbeddingConfigStep: React.FC<EmbeddingConfigStepProps> = ({
                   <MenuItem value="sentenceTransformers">Sentence Transformer</MenuItem>
                   <MenuItem value="openai">OpenAI</MenuItem>
                   <MenuItem value="azureOpenAI">Azure OpenAI</MenuItem>
+                  <MenuItem value="gemini">Gemini</MenuItem>
+                  <MenuItem value="cohere">Cohere</MenuItem>
                 </Select>
                 {fieldState.error && <FormHelperText>{fieldState.error.message}</FormHelperText>}
               </FormControl>
@@ -296,33 +347,8 @@ const EmbeddingConfigStep: React.FC<EmbeddingConfigStepProps> = ({
           </Grid>
         )}
 
-        {/* Fields for Sentence Transformers */}
-        {currentModelType === 'sentenceTransformers' && (
-          <Grid item xs={12}>
-            <Controller
-              name="model"
-              control={control}
-              render={({ field, fieldState }) => (
-                <TextField
-                  {...field}
-                  label="Embedding Model"
-                  fullWidth
-                  size="small"
-                  error={!!fieldState.error}
-                  helperText={fieldState.error?.message || 'e.g: all-MiniLM-L6-v2'}
-                  required
-                  onBlur={() => {
-                    field.onBlur();
-                    trigger('model');
-                  }}
-                />
-              )}
-            />
-          </Grid>
-        )}
-
-        {/* Azure OpenAI specific fields */}
-        {currentModelType === 'azureOpenAI' && (
+        {/* Optional Endpoint field for models that need it */}
+        {needsEndpoint && (
           <Grid item xs={12}>
             <Controller
               name="endpoint"
@@ -349,8 +375,8 @@ const EmbeddingConfigStep: React.FC<EmbeddingConfigStepProps> = ({
           </Grid>
         )}
 
-        {/* API Key field - only show for OpenAI and Azure OpenAI */}
-        {(currentModelType === 'openai' || currentModelType === 'azureOpenAI') && (
+        {/* API Key field - only show for models that need it */}
+        {needsApiKey && (
           <Grid item xs={12}>
             <Controller
               name="apiKey"
@@ -392,8 +418,8 @@ const EmbeddingConfigStep: React.FC<EmbeddingConfigStepProps> = ({
           </Grid>
         )}
 
-        {/* Model field - only show for OpenAI and Azure OpenAI */}
-        {(currentModelType === 'openai' || currentModelType === 'azureOpenAI') && (
+        {/* Model field - show for all except default */}
+        {needsModel && (
           <Grid item xs={12}>
             <Controller
               name="model"
@@ -407,7 +433,7 @@ const EmbeddingConfigStep: React.FC<EmbeddingConfigStepProps> = ({
                   error={!!fieldState.error}
                   helperText={
                     fieldState.error?.message ||
-                    'e.g., text-embedding-3-small, text-embedding-3-large'
+                    (modelPlaceholders[currentModelType as keyof typeof modelPlaceholders] || 'Enter model name')
                   }
                   required
                   onBlur={() => {
