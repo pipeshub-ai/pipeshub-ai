@@ -3,9 +3,6 @@ services:
     image: pipeshubai/pipeshub-ai:${IMAGE_TAG:-latest}
     container_name: pipeshub-ai
     restart: always
-    build:
-      context: ../../
-      dockerfile: Dockerfile
     ports:
       - "8091:8091"
       - "8088:8088"
