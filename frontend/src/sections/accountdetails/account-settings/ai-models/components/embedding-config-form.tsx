@@ -54,7 +54,7 @@ const loadingOverlayStyle = {
 
 // Embedding form values interfaces
 interface EmbeddingFormValues {
-  modelType: 'openAI' | 'azureOpenAI' | 'sentenceTransformers' | 'default';
+  modelType: 'openAI' | 'azureOpenAI' | 'sentenceTransformers' | 'gemini' | 'cohere' | 'default';
   apiKey?: string;
   model?: string;
   endpoint?: string;
@@ -62,6 +62,16 @@ interface EmbeddingFormValues {
 
 interface OpenAIEmbeddingFormValues {
   modelType: 'openAI';
+  apiKey: string;
+  model: string;
+}
+interface GeminiEmbeddingFormValues {
+  modelType: 'gemini';
+  apiKey: string;
+  model: string;
+}
+interface CohereEmbeddingFormValues {
+  modelType: 'cohere';
   apiKey: string;
   model: string;
 }
@@ -106,6 +116,20 @@ const openaiSchema = z.object({
   model: z.string().min(1, 'Model is required'),
 });
 
+// Zod schema for Gemini validation
+const geminiSchema = z.object({
+  modelType: z.literal('gemini'),
+  apiKey: z.string().min(1, 'API Key is required'),
+  model: z.string().min(1, 'Model is required'),
+});
+
+// Zod schema for Cohere validation
+const cohereSchema = z.object({
+  modelType: z.literal('cohere'),
+  apiKey: z.string().min(1, 'API Key is required'),
+  model: z.string().min(1, 'Model is required'),
+});
+
 // Zod schema for Azure OpenAI validation
 const azureSchema = z.object({
   modelType: z.literal('azureOpenAI'),
@@ -134,6 +158,8 @@ const embeddingSchema = z.discriminatedUnion('modelType', [
   openaiSchema,
   azureSchema,
   sentenceTransformersSchema,
+  geminiSchema,
+  cohereSchema,
   defaultSchema,
 ]);
 
@@ -149,11 +175,21 @@ const getEmbeddingConfig = async (): Promise<EmbeddingFormValues | null> => {
       const config = embeddingConfig.configuration;
 
       // Set the modelType based on the provider
-      let modelType: 'openAI' | 'azureOpenAI' | 'sentenceTransformers' | 'default';
+      let modelType:
+        | 'openAI'
+        | 'azureOpenAI'
+        | 'sentenceTransformers'
+        | 'gemini'
+        | 'cohere'
+        | 'default';
       if (embeddingConfig.provider === 'azureOpenAI') {
         modelType = 'azureOpenAI';
       } else if (embeddingConfig.provider === 'sentenceTransformers') {
         modelType = 'sentenceTransformers';
+      } else if (embeddingConfig.provider === 'gemini') {
+        modelType = 'gemini';
+      } else if (embeddingConfig.provider === 'cohere') {
+        modelType = 'cohere';
       } else {
         modelType = 'openAI';
       }
@@ -209,7 +245,11 @@ const updateEmbeddingConfig = async (
         ? 'azureOpenAI'
         : modelType === 'sentenceTransformers'
           ? 'sentenceTransformers'
-          : 'openAI';
+          : modelType === 'gemini'
+            ? 'gemini'
+            : modelType === 'cohere'
+              ? 'cohere'
+              : 'openAI';
 
     // Create the updated config object
     const updatedConfig = {
@@ -240,6 +280,8 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
     const [isLoading, setIsLoading] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
     const [showOpenAIPassword, setShowOpenAIPassword] = useState(false);
+    const [showGeminiPassword, setShowGeminiPassword] = useState(false);
+    const [showCoherePassword, setShowCoherePassword] = useState(false);
     const [showAzurePassword, setShowAzurePassword] = useState(false);
     const [isEditing, setIsEditing] = useState(false);
     const [saveError, setSaveError] = useState<string | null>(null);
@@ -252,7 +294,7 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
     const saveErrorRef = useRef<string | null>(null);
 
     const [modelType, setModelType] = useState<
-      'openAI' | 'azureOpenAI' | 'sentenceTransformers' | 'default'
+      'openAI' | 'azureOpenAI' | 'sentenceTransformers' | 'cohere' | 'gemini' | 'default'
     >(
       provider === 'azureOpenAI'
         ? 'azureOpenAI'
@@ -260,7 +302,11 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
           ? 'sentenceTransformers'
           : provider === 'default'
             ? 'default'
-            : 'openAI'
+            : provider === 'gemini'
+              ? 'gemini'
+              : provider === 'cohere'
+                ? 'cohere'
+                : 'openAI'
     );
 
     // Create separate forms for each model type
@@ -274,6 +320,36 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
       mode: 'onChange',
       defaultValues: {
         modelType: 'openAI',
+        apiKey: '',
+        model: '',
+      },
+    });
+
+    const {
+      control: geminiControl,
+      handleSubmit: handleGeminiSubmit,
+      reset: resetGemini,
+      formState: { isValid: isGeminiValid },
+    } = useForm<GeminiEmbeddingFormValues>({
+      resolver: zodResolver(geminiSchema),
+      mode: 'onChange',
+      defaultValues: {
+        modelType: 'gemini',
+        apiKey: '',
+        model: '',
+      },
+    });
+
+    const {
+      control: cohereControl,
+      handleSubmit: handleCohereSubmit,
+      reset: resetCohere,
+      formState: { isValid: isCohereValid },
+    } = useForm<CohereEmbeddingFormValues>({
+      resolver: zodResolver(cohereSchema),
+      mode: 'onChange',
+      defaultValues: {
+        modelType: 'cohere',
         apiKey: '',
         model: '',
       },
@@ -353,6 +429,56 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
         saveErrorRef.current = errorMessage;
         setSaveError(errorMessage);
         console.error('Error saving OpenAI embedding configuration:', error);
+        formSubmitSuccessRef.current = false;
+        setFormSubmitSuccess(false);
+        return false;
+      } finally {
+        // Only set editing to false after successful save
+        if (formSubmitSuccessRef.current) {
+          setIsEditing(false);
+        }
+      }
+    };
+    const onGeminiSubmit: SubmitHandler<GeminiEmbeddingFormValues> = async (data) => {
+      try {
+        await updateEmbeddingConfig(data, 'gemini');
+        if (onSaveSuccess) {
+          onSaveSuccess();
+        }
+        formSubmitSuccessRef.current = true;
+        setFormSubmitSuccess(true);
+        return true;
+      } catch (error) {
+        const errorMessage =
+          error.response?.data?.message || 'Failed to save Gemini embedding configuration';
+        saveErrorRef.current = errorMessage;
+        setSaveError(errorMessage);
+        console.error('Error saving Gemini embedding configuration:', error);
+        formSubmitSuccessRef.current = false;
+        setFormSubmitSuccess(false);
+        return false;
+      } finally {
+        // Only set editing to false after successful save
+        if (formSubmitSuccessRef.current) {
+          setIsEditing(false);
+        }
+      }
+    };
+    const onCohereSubmit: SubmitHandler<CohereEmbeddingFormValues> = async (data) => {
+      try {
+        await updateEmbeddingConfig(data, 'cohere');
+        if (onSaveSuccess) {
+          onSaveSuccess();
+        }
+        formSubmitSuccessRef.current = true;
+        setFormSubmitSuccess(true);
+        return true;
+      } catch (error) {
+        const errorMessage =
+          error.response?.data?.message || 'Failed to save Cohere embedding configuration';
+        saveErrorRef.current = errorMessage;
+        setSaveError(errorMessage);
+        console.error('Error saving Cohere embedding configuration:', error);
         formSubmitSuccessRef.current = false;
         setFormSubmitSuccess(false);
         return false;
@@ -506,6 +632,22 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
                 resolve(result);
               })();
             });
+          } else if (modelType === 'gemini') {
+            // Execute the form submission
+            formResult = await new Promise<boolean>((resolve) => {
+              handleGeminiSubmit(async (data) => {
+                const result: any = await onGeminiSubmit(data);
+                resolve(result);
+              })();
+            });
+          } else if (modelType === 'cohere') {
+            // Execute the form submission
+            formResult = await new Promise<boolean>((resolve) => {
+              handleCohereSubmit(async (data) => {
+                const result: any = await onCohereSubmit(data);
+                resolve(result);
+              })();
+            });
           }
 
           // Keep loading state for a short delay to avoid UI flickering
@@ -577,6 +719,20 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
                 apiKey: config.apiKey || '',
                 model: config.model || '',
               });
+            } else if (config.modelType === 'gemini') {
+              // For OpenAI configuration
+              resetGemini({
+                modelType: 'gemini',
+                apiKey: config.apiKey || '',
+                model: config.model || '',
+              });
+            } else if (config.modelType === 'cohere') {
+              // For OpenAI configuration
+              resetCohere({
+                modelType: 'cohere',
+                apiKey: config.apiKey || '',
+                model: config.model || '',
+              });
             }
             // Default case is handled by the default state
           } else {
@@ -596,6 +752,16 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
               modelType: 'sentenceTransformers',
               model: '',
               apiKey: '',
+            });
+            resetGemini({
+              modelType: 'gemini',
+              apiKey: '',
+              model: '',
+            });
+            resetCohere({
+              modelType: 'cohere',
+              apiKey: '',
+              model: '',
             });
           }
         } catch (error) {
@@ -620,13 +786,23 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
             model: '',
             apiKey: '',
           });
+          resetGemini({
+            modelType: 'gemini',
+            apiKey: '',
+            model: '',
+          });
+          resetCohere({
+            modelType: 'cohere',
+            apiKey: '',
+            model: '',
+          });
         } finally {
           setIsLoading(false);
         }
       };
 
       fetchConfig();
-    }, [resetOpenAI, resetAzure, resetSentenceTransformers]);
+    }, [resetOpenAI, resetAzure, resetSentenceTransformers, resetCohere, resetGemini]);
 
     // Reset saveError after a timeout
     useEffect(() => {
@@ -666,6 +842,10 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
         isCurrentFormValid = isSentenceTransformersValid;
       } else if (modelType === 'default') {
         isCurrentFormValid = isDefaultValid;
+      } else if (modelType === 'gemini') {
+        isCurrentFormValid = isGeminiValid;
+      } else if (modelType === 'cohere') {
+        isCurrentFormValid = isCohereValid;
       }
 
       onValidationChange(isCurrentFormValid && isEditing);
@@ -674,6 +854,8 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
       isAzureValid,
       isSentenceTransformersValid,
       isDefaultValid,
+      isGeminiValid,
+      isCohereValid,
       isEditing,
       modelType,
       onValidationChange,
@@ -681,7 +863,7 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
 
     // Handle model type change
     const handleModelTypeChange = (
-      newType: 'openAI' | 'azureOpenAI' | 'sentenceTransformers' | 'default'
+      newType: 'openAI' | 'azureOpenAI' | 'sentenceTransformers' | 'cohere' | 'gemini' | 'default'
     ) => {
       setModelType(newType);
       // Don't reset forms - we keep separate state for each
@@ -719,6 +901,18 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
                   apiKey: config.apiKey || '',
                   model: config.model || '',
                 });
+              } else if (config.modelType === 'gemini') {
+                resetGemini({
+                  modelType: 'gemini',
+                  apiKey: config.apiKey || '',
+                  model: config.model || '',
+                });
+              } else if (config.modelType === 'cohere') {
+                resetCohere({
+                  modelType: 'cohere',
+                  apiKey: config.apiKey || '',
+                  model: config.model || '',
+                });
               }
               // Default case is handled by the default state
             } else {
@@ -738,6 +932,16 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
                 modelType: 'sentenceTransformers',
                 model: '',
                 apiKey: '',
+              });
+              resetGemini({
+                modelType: 'gemini',
+                apiKey: '',
+                model: '',
+              });
+              resetCohere({
+                modelType: 'cohere',
+                apiKey: '',
+                model: '',
               });
             }
           })
@@ -793,7 +997,11 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
                   ? ' Use Sentence Transformers for local embedding generation.'
                   : modelType === 'default'
                     ? ' Using the default embedding model provided by the system.'
-                    : ' Enter your OpenAI API credentials to get started.'}
+                    : modelType === 'gemini'
+                      ? ' Enter your Gemini API credentials to get started.'
+                      : modelType === 'cohere'
+                        ? 'Enter your Cohere API credentials to get started.'
+                        : ' Enter your OpenAI API credentials to get started.'}
               {fetchError && ' (View-only mode due to connection error)'}
             </Typography>
           </Box>
@@ -828,12 +1036,16 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
                     | 'openAI'
                     | 'azureOpenAI'
                     | 'sentenceTransformers'
+                    | 'gemini'
+                    | 'cohere'
                     | 'default';
                   handleModelTypeChange(newType);
                 }}
               >
                 <MenuItem value="openAI">OpenAI API</MenuItem>
                 <MenuItem value="azureOpenAI">Azure OpenAI Service</MenuItem>
+                <MenuItem value="gemini">Gemini</MenuItem>
+                <MenuItem value="cohere">Cohere</MenuItem>
                 <MenuItem value="sentenceTransformers">Sentence Transformers</MenuItem>
                 <MenuItem value="default">Default (System Provided)</MenuItem>
               </Select>
@@ -908,6 +1120,183 @@ const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFo
                         fieldState.error?.message ||
                         'e.g., text-embedding-3-small, text-embedding-3-large'
                       }
+                      required
+                      disabled={!isEditing || fetchError || isSaving}
+                      InputProps={{
+                        startAdornment: (
+                          <InputAdornment position="start">
+                            <Iconify icon={robotIcon} width={18} height={18} />
+                          </InputAdornment>
+                        ),
+                      }}
+                      sx={{
+                        '& .MuiOutlinedInput-root': {
+                          '& fieldset': {
+                            borderColor: alpha(theme.palette.text.primary, 0.15),
+                          },
+                        },
+                      }}
+                    />
+                  )}
+                />
+              </Grid>
+            </>
+          )}
+
+          {/* Gemini Form */}
+          {modelType === 'gemini' && (
+            <>
+              <Grid item xs={12} md={6}>
+                <Controller
+                  name="apiKey"
+                  control={geminiControl}
+                  render={({ field, fieldState }) => (
+                    <TextField
+                      {...field}
+                      label="API Key"
+                      fullWidth
+                      size="small"
+                      error={!!fieldState.error}
+                      helperText={fieldState.error?.message || 'Your Gemini API Key'}
+                      required
+                      disabled={!isEditing || fetchError || isSaving}
+                      type={showGeminiPassword ? 'text' : 'password'}
+                      InputProps={{
+                        startAdornment: (
+                          <InputAdornment position="start">
+                            <Iconify icon={keyIcon} width={18} height={18} />
+                          </InputAdornment>
+                        ),
+                        endAdornment: (
+                          <InputAdornment position="end">
+                            <IconButton
+                              onClick={() => setShowGeminiPassword(!showGeminiPassword)}
+                              edge="end"
+                              size="small"
+                              disabled={!isEditing || fetchError || isSaving}
+                            >
+                              <Iconify
+                                icon={showGeminiPassword ? eyeOffIcon : eyeIcon}
+                                width={16}
+                                height={16}
+                              />
+                            </IconButton>
+                          </InputAdornment>
+                        ),
+                      }}
+                      sx={{
+                        '& .MuiOutlinedInput-root': {
+                          '& fieldset': {
+                            borderColor: alpha(theme.palette.text.primary, 0.15),
+                          },
+                        },
+                      }}
+                    />
+                  )}
+                />
+              </Grid>
+
+              <Grid item xs={12} md={6}>
+                <Controller
+                  name="model"
+                  control={geminiControl}
+                  render={({ field, fieldState }) => (
+                    <TextField
+                      {...field}
+                      label="Model Name"
+                      fullWidth
+                      size="small"
+                      error={!!fieldState.error}
+                      helperText={
+                        fieldState.error?.message || 'e.g., gemini-embedding-exp-03-07, etc'
+                      }
+                      required
+                      disabled={!isEditing || fetchError || isSaving}
+                      InputProps={{
+                        startAdornment: (
+                          <InputAdornment position="start">
+                            <Iconify icon={robotIcon} width={18} height={18} />
+                          </InputAdornment>
+                        ),
+                      }}
+                      sx={{
+                        '& .MuiOutlinedInput-root': {
+                          '& fieldset': {
+                            borderColor: alpha(theme.palette.text.primary, 0.15),
+                          },
+                        },
+                      }}
+                    />
+                  )}
+                />
+              </Grid>
+            </>
+          )}
+
+          {modelType === 'cohere' && (
+            <>
+              <Grid item xs={12} md={6}>
+                <Controller
+                  name="apiKey"
+                  control={cohereControl}
+                  render={({ field, fieldState }) => (
+                    <TextField
+                      {...field}
+                      label="API Key"
+                      fullWidth
+                      size="small"
+                      error={!!fieldState.error}
+                      helperText={fieldState.error?.message || 'Your Cohere API Key'}
+                      required
+                      disabled={!isEditing || fetchError || isSaving}
+                      type={showCoherePassword ? 'text' : 'password'}
+                      InputProps={{
+                        startAdornment: (
+                          <InputAdornment position="start">
+                            <Iconify icon={keyIcon} width={18} height={18} />
+                          </InputAdornment>
+                        ),
+                        endAdornment: (
+                          <InputAdornment position="end">
+                            <IconButton
+                              onClick={() => setShowCoherePassword(!showCoherePassword)}
+                              edge="end"
+                              size="small"
+                              disabled={!isEditing || fetchError || isSaving}
+                            >
+                              <Iconify
+                                icon={showCoherePassword ? eyeOffIcon : eyeIcon}
+                                width={16}
+                                height={16}
+                              />
+                            </IconButton>
+                          </InputAdornment>
+                        ),
+                      }}
+                      sx={{
+                        '& .MuiOutlinedInput-root': {
+                          '& fieldset': {
+                            borderColor: alpha(theme.palette.text.primary, 0.15),
+                          },
+                        },
+                      }}
+                    />
+                  )}
+                />
+              </Grid>
+
+              <Grid item xs={12} md={6}>
+                <Controller
+                  name="model"
+                  control={cohereControl}
+                  render={({ field, fieldState }) => (
+                    <TextField
+                      {...field}
+                      label="Model Name"
+                      fullWidth
+                      size="small"
+                      error={!!fieldState.error}
+                      helperText={fieldState.error?.message || 'e.g., embed-v4.0, etc'}
                       required
                       disabled={!isEditing || fetchError || isSaving}
                       InputProps={{
