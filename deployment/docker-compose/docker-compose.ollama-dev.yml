@@ -1,7 +1,6 @@
 services:
   pipeshub-ai:
     image: pipeshub-ai:latest
-    container_name: pipeshub-ai
     restart: always
     build:
       context: ../../
@@ -10,7 +9,7 @@ services:
       - "8091:8091"
       - "8088:8088"
       - "3000:3000"
-      - "8000:8000"
+      - "8001:8000"
     environment:
       # Core environment settings
       - NODE_ENV=${NODE_ENV:-development}
@@ -30,8 +29,8 @@ services:
       - INDEXING_BACKEND=http://localhost:8091
 
       # ETCD config
-      - ETCD_URL=http://etcd-server:2379
-      - ETCD_HOST=etcd-server
+      - ETCD_URL=http://etcd:2379
+      - ETCD_HOST=etcd
 
       # ArangoDB config
       - ARANGO_URL=http://arango:8529
@@ -81,7 +80,6 @@ services:
 
   mongodb:
     image: mongo:8.0.6
-    container_name: mongodb
     restart: always
     ports:
       - "27017:27017"
@@ -98,7 +96,6 @@ services:
 
   ollama:
     image: ollama/ollama:0.6.7
-    container_name: ollama
     restart: always
     ports:
       - "11434:11434"
@@ -118,7 +115,6 @@ services:
 
   redis:
     image: redis:bookworm
-    container_name: redis
     restart: always
     ports:
       - "6379:6379"
@@ -131,7 +127,6 @@ services:
 
   arango:
     image: arangodb:3.12.4
-    container_name: arango
     restart: always
     ports:
       - "8529:8529"
@@ -147,7 +142,6 @@ services:
 
   etcd:
     image: quay.io/coreos/etcd:v3.5.17
-    container_name: etcd-server
     restart: always
     ports:
       - "2379:2379"
@@ -166,7 +160,6 @@ services:
 
   zookeeper:
     image: confluentinc/cp-zookeeper:7.9.0
-    container_name: zookeeper
     restart: always
     ports:
       - "2181:2181"
@@ -176,7 +169,6 @@ services:
 
   kafka-1:
     image: confluentinc/cp-kafka:7.9.0
-    container_name: kafka-1
     restart: always
     depends_on:
       - zookeeper
@@ -200,7 +192,6 @@ services:
 
   qdrant:
     image: qdrant/qdrant:v1.13.6
-    container_name: qdrant
     ports:
       - "6333:6333"
       - "6334:6334"
