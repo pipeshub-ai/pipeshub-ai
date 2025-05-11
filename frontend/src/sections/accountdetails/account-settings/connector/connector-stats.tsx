@@ -160,7 +160,6 @@ const ConnectorCard = ({ connector }: { connector: ConnectorData }): JSX.Element
 
   // Function to handle reindexing of failed documents
   const handleReindex = async () => {
-    if (indexing_status.FAILED === 0) return;
 
     try {
       setIsReindexing(true);
@@ -455,7 +454,7 @@ const ConnectorCard = ({ connector }: { connector: ConnectorData }): JSX.Element
                   Reindexing...
                 </>
               ) : (
-                'Reindex failed'
+                'Reindex'
               )}
             </Button>
           </Box>
