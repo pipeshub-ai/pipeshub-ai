@@ -430,36 +430,34 @@ const ConnectorCard = ({ connector }: { connector: ConnectorData }): JSX.Element
           {/* Action Buttons */}
           <Box sx={{ mt: 0.5, display: 'flex', justifyContent: 'center', width: '100%' }}>
             {/* Reindex button for failed documents */}
-            {indexing_status.FAILED > 0 && (
-              <Button
-                size="small"
-                color="error"
-                variant="outlined"
-                startIcon={<Iconify icon={refreshIcon} />}
-                onClick={handleReindex}
-                disabled={isReindexing}
-                sx={{
-                  borderRadius: '8px',
-                  textTransform: 'none',
-                  minHeight: '32px',
-                  fontSize: '0.75rem',
-                  border: `1px solid ${alpha(theme.palette.error.main, 0.5)}`,
-                  '&:hover': {
-                    borderColor: theme.palette.error.main,
-                    backgroundColor: alpha(theme.palette.error.main, 0.04),
-                  },
-                }}
-              >
-                {isReindexing ? (
-                  <>
-                    <CircularProgress size={16} color="error" sx={{ mr: 1 }} />
-                    Reindexing...
-                  </>
-                ) : (
-                  'Reindex failed'
-                )}
-              </Button>
-            )}
+            <Button
+              size="small"
+              color="error"
+              variant="outlined"
+              startIcon={<Iconify icon={refreshIcon} />}
+              onClick={handleReindex}
+              disabled={isReindexing}
+              sx={{
+                borderRadius: '8px',
+                textTransform: 'none',
+                minHeight: '32px',
+                fontSize: '0.75rem',
+                border: `1px solid ${alpha(theme.palette.error.main, 0.5)}`,
+                '&:hover': {
+                  borderColor: theme.palette.error.main,
+                  backgroundColor: alpha(theme.palette.error.main, 0.04),
+                },
+              }}
+            >
+              {isReindexing ? (
+                <>
+                  <CircularProgress size={16} color="error" sx={{ mr: 1 }} />
+                  Reindexing...
+                </>
+              ) : (
+                'Reindex failed'
+              )}
+            </Button>
           </Box>
         </Box>
       </Paper>
@@ -626,7 +624,7 @@ const ConnectorStatistics = ({
             COMPLETED: Math.round(totalRecords * 0.7),
             FAILED: Math.round(totalRecords * 0.1),
             FILE_TYPE_NOT_SUPPORTED: 5, // Add some unsupported files for testing
-            AUTO_INDEX_OFF: 3, 
+            AUTO_INDEX_OFF: 3,
           },
         });
       } else {
@@ -640,7 +638,7 @@ const ConnectorStatistics = ({
             COMPLETED: 3,
             FAILED: 0,
             FILE_TYPE_NOT_SUPPORTED: 1, // Add an unsupported file for testing
-            AUTO_INDEX_OFF: 0, 
+            AUTO_INDEX_OFF: 0,
           },
           by_record_type: [],
         };
