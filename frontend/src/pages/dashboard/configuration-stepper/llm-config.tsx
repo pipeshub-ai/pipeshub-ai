@@ -384,7 +384,7 @@ const LlmConfigStep: React.FC<LlmConfigStepProps> = ({ onSubmit, onSkip, initial
                     error={!!fieldState.error}
                     helperText={
                       fieldState.error?.message ||
-                      'e.g., https://your-resource-name.openai.azure.com/'
+                      'e.g., https://api.together.xyz/v1/'
                     }
                     required
                     onBlur={() => {
