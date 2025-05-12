@@ -8,9 +8,6 @@ export enum EventType {
   UpdateRecordEvent = 'updateRecord',
   DeletedRecordEvent = 'deleteRecord',
   ReindexRecordEvent = 'reindexRecord',
-  ReindexAllRecordEvent = 'reindexFailed',
-  SyncDriveEvent = 'drive.resync',
-  SyncGmailEvent = 'gmail.resync'
 }
 
 export interface Event {
@@ -21,7 +18,6 @@ export interface Event {
     | UpdateRecordEvent
     | DeletedRecordEvent
     | ReindexRecordEvent
-    | ReindexAllRecordEvent;
 }
 
 export interface NewRecordEvent {
@@ -62,15 +58,6 @@ export interface ReindexRecordEvent {
   sourceCreatedAtTimestamp: string;
 }
 
-export interface ReindexAllRecordEvent {
-  orgId: string;
-  connector: string;
-  origin: string;
-  createdAtTimestamp: string;
-  updatedAtTimestamp: string;
-  sourceCreatedAtTimestamp: string;
-}
-
 export interface DeletedRecordEvent {
   orgId: string;
   recordId: string;
@@ -81,7 +68,6 @@ export interface DeletedRecordEvent {
 @injectable()
 export class RecordsEventProducer extends BaseKafkaProducerConnection {
   private readonly recordsTopic = 'record-events';
-  private readonly syncTopic = 'sync-events';
 
   constructor(
     @inject('KafkaConfig') config: KafkaConfig,
@@ -112,21 +98,13 @@ export class RecordsEventProducer extends BaseKafkaProducerConnection {
       },
     };
 
-    // Choose the topic based on the event type
-    const topic =
-      event.eventType === EventType.ReindexAllRecordEvent
-        ? this.syncTopic
-        : this.recordsTopic;
-
     try {
-      await this.publish(topic, message);
+      await this.publish(this.recordsTopic, message);
       this.logger.info(
-        `Published event: ${event.eventType} to topic ${topic}`,
+        `Published event: ${event.eventType} to topic ${this.recordsTopic}`,
       );
     } catch (error) {
       this.logger.error(`Failed to publish event: ${event.eventType}`, error);
     }
   }
 }
-
-///////

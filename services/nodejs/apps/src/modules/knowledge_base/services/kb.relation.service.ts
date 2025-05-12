@@ -164,9 +164,7 @@ export class RecordRelationService {
     } catch (error) {
       logger.error('Failed to initialize Sync event producer', error);
       throw new InternalServerError(
-        error instanceof Error
-          ? error.message
-          : 'Failed to initialize sync event producer',
+        `Failed to initialize sync event producer: ${error instanceof Error ? error.message : 'Unknown error'}`,
       );
     }
   }
@@ -2556,7 +2554,10 @@ export class RecordRelationService {
         await this.createResyncConnectorEventPayload(resyncConnectorPayload);
 
       const event: SyncEvent = {
-        eventType: resyncConnectorEventPayload.connector === 'GMAIL' ? SyncEventType.SyncGmailEvent :SyncEventType.SyncDriveEvent,
+        eventType:
+          resyncConnectorEventPayload.connector === 'GMAIL'
+            ? SyncEventType.SyncGmailEvent
+            : SyncEventType.SyncDriveEvent,
         timestamp: Date.now(),
         payload: resyncConnectorEventPayload,
       };
@@ -2579,15 +2580,8 @@ export class RecordRelationService {
   async createResyncConnectorEventPayload(
     resyncConnectorEventPayload: any,
   ): Promise<SyncDriveEvent | SyncGmailEvent> {
-    let connectorName;
-    if (resyncConnectorEventPayload.connectorName === 'DRIVE') {
-      connectorName = 'DRIVE';
-    } else if (resyncConnectorEventPayload.connectorName === 'GMAIL') {
-      connectorName = 'GMAIL';
-    }
-    if (!connectorName) {
-      throw new BadRequestError('Connector name required');
-    }
+    const connectorName = resyncConnectorEventPayload.connectorName;
+
     return {
       orgId: resyncConnectorEventPayload.orgId,
       origin: resyncConnectorEventPayload.origin,
