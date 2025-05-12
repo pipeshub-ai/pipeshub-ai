@@ -19,6 +19,7 @@ import {
   reindexRecord,
   getConnectorStats,
   reindexAllRecords,
+  resyncConnectorRecords,
 } from '../controllers/kb_controllers';
 import { ArangoService } from '../../../libs/services/arango.service';
 import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
@@ -38,6 +39,7 @@ import {
   answerQueryFromKBSchema,
   getRecordsSchema,
   reindexAllRecordSchema,
+  resyncConnectorSchema,
 } from '../validators/validators';
 import { FileProcessorFactory } from '../../../libs/middlewares/file_processor/fp.factory';
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
@@ -46,6 +48,7 @@ import { RecordRelationService } from '../services/kb.relation.service';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { RecordsEventProducer } from '../services/records_events.service';
 import { AppConfig } from '../../tokens_manager/config/config';
+import { SyncEventProducer } from '../services/sync_events.service';
 
 export function createKnowledgeBaseRouter(container: Container): Router {
   const router = Router();
@@ -54,10 +57,14 @@ export function createKnowledgeBaseRouter(container: Container): Router {
   const recordsEventProducer = container.get<RecordsEventProducer>(
     'RecordsEventProducer',
   );
+  const syncEventProducer = container.get<SyncEventProducer>(
+    'SyncEventProducer',
+  );
 
   const recordRelationService = new RecordRelationService(
     arangoService,
     recordsEventProducer,
+    syncEventProducer,
     appConfig.storage,
   );
   const keyValueStoreService = container.get<KeyValueStoreService>(
@@ -245,6 +252,15 @@ export function createKnowledgeBaseRouter(container: Container): Router {
     metricsMiddleware(container),
     ValidationMiddleware.validate(reindexAllRecordSchema),
     reindexAllRecords(recordRelationService),
+  );
+
+  // resync connector records 
+  router.post(
+    '/resync/connector',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(resyncConnectorSchema),
+    resyncConnectorRecords(recordRelationService),
   );
 
   return router;

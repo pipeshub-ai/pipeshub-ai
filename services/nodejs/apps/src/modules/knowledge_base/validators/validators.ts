@@ -230,3 +230,9 @@ export const reindexAllRecordSchema = z.object({
     app : z.string().min(1),
   }),
 })
+
+export const resyncConnectorSchema = z.object({
+  body: z.object({
+    connectorName : z.string().min(1),
+  }),
+})

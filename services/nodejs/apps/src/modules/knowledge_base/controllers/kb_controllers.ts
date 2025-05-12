@@ -1319,7 +1319,7 @@ export const getConnectorStats =
       const db = arangoService.getConnection();
 
       // Base filter for organization
-      const baseFilter = `doc.orgId == "${orgId}"`;
+      const baseFilter = `doc.orgId == "${orgId}" AND doc.recordType!="DRIVE"`;
 
       // AQL query with enhanced connector statistics
       const query = `
@@ -1404,67 +1404,57 @@ export const getConnectorStats =
             FILTER ${baseFilter} AND doc.origin == "CONNECTOR"
             COLLECT connector = doc.connectorName INTO groupDocs = doc
             
-            // Basic stats for this connector
-            LET basic_stats = (
-              FOR d IN groupDocs
-                COLLECT AGGREGATE
-                  total         = COUNT(1),
-                  not_started   = SUM(d.indexingStatus == "NOT_STARTED" ? 1 : 0),
-                  in_progress   = SUM(d.indexingStatus == "IN_PROGRESS" ? 1 : 0),
-                  completed     = SUM(d.indexingStatus == "COMPLETED" ? 1 : 0),
-                  failed        = SUM(d.indexingStatus == "FAILED" ? 1 : 0),
-                  not_supported = SUM(d.indexingStatus == "FILE_TYPE_NOT_SUPPORTED" ? 1 : 0),
-                  auto_index_off = SUM(d.indexingStatus == "AUTO_INDEX_OFFF" ? 1 : 0)
-                RETURN {
-                  total,
-                  indexing_status: {
-                    NOT_STARTED: not_started,
-                    IN_PROGRESS: in_progress,
-                    COMPLETED: completed,
-                    FAILED: failed,
-                    FILE_TYPE_NOT_SUPPORTED: not_supported,
-                    AUTO_INDEX_OFF: auto_index_off
-                  }
-                }
-            )[0]
+            // Calculate counts directly for better consistency
+            LET statusCounts = {
+              "total": LENGTH(groupDocs),
+              "NOT_STARTED": LENGTH(FOR d IN groupDocs FILTER d.indexingStatus == "NOT_STARTED" RETURN 1),
+              "IN_PROGRESS": LENGTH(FOR d IN groupDocs FILTER d.indexingStatus == "IN_PROGRESS" RETURN 1),
+              "COMPLETED": LENGTH(FOR d IN groupDocs FILTER d.indexingStatus == "COMPLETED" RETURN 1),
+              "FAILED": LENGTH(FOR d IN groupDocs FILTER d.indexingStatus == "FAILED" RETURN 1),
+              "FILE_TYPE_NOT_SUPPORTED": LENGTH(FOR d IN groupDocs FILTER d.indexingStatus == "FILE_TYPE_NOT_SUPPORTED" RETURN 1),
+              "AUTO_INDEX_OFF": LENGTH(FOR d IN groupDocs FILTER d.indexingStatus == "AUTO_INDEX_OFF" RETURN 1)
+            }
             
             // Record type breakdown for this connector
             LET record_types = (
               FOR d IN groupDocs
                 COLLECT record_type = d.recordType INTO typeGroupDocs = d
-                LET type_stats = (
-                  FOR td IN typeGroupDocs
-                    COLLECT AGGREGATE
-                      total         = COUNT(1),
-                      not_started   = SUM(td.indexingStatus == "NOT_STARTED" ? 1 : 0),
-                      in_progress   = SUM(td.indexingStatus == "IN_PROGRESS" ? 1 : 0),
-                      completed     = SUM(td.indexingStatus == "COMPLETED" ? 1 : 0),
-                      failed        = SUM(td.indexingStatus == "FAILED" ? 1 : 0),
-                      not_supported = SUM(td.indexingStatus == "FILE_TYPE_NOT_SUPPORTED" ? 1 : 0),
-                      auto_index_off = SUM(td.indexingStatus == "AUTO_INDEX_OFF" ? 1 : 0)
-                    RETURN {
-                      total,
-                      indexing_status: {
-                        NOT_STARTED: not_started,
-                        IN_PROGRESS: in_progress,
-                        COMPLETED: completed,
-                        FAILED: failed,
-                        FILE_TYPE_NOT_SUPPORTED: not_supported,
-                        AUTO_INDEX_OFF: auto_index_off
-                      }
-                    }
-                )[0]
+                
+                LET typeStatusCounts = {
+                  "total": LENGTH(typeGroupDocs),
+                  "NOT_STARTED": LENGTH(FOR td IN typeGroupDocs FILTER td.indexingStatus == "NOT_STARTED" RETURN 1),
+                  "IN_PROGRESS": LENGTH(FOR td IN typeGroupDocs FILTER td.indexingStatus == "IN_PROGRESS" RETURN 1),
+                  "COMPLETED": LENGTH(FOR td IN typeGroupDocs FILTER td.indexingStatus == "COMPLETED" RETURN 1),
+                  "FAILED": LENGTH(FOR td IN typeGroupDocs FILTER td.indexingStatus == "FAILED" RETURN 1),
+                  "FILE_TYPE_NOT_SUPPORTED": LENGTH(FOR td IN typeGroupDocs FILTER td.indexingStatus == "FILE_TYPE_NOT_SUPPORTED" RETURN 1),
+                  "AUTO_INDEX_OFF": LENGTH(FOR td IN typeGroupDocs FILTER td.indexingStatus == "AUTO_INDEX_OFF" RETURN 1)
+                }
+                
                 RETURN {
                   record_type,
-                  total: type_stats.total,
-                  indexing_status: type_stats.indexing_status
+                  total: typeStatusCounts.total,
+                  indexing_status: {
+                    NOT_STARTED: typeStatusCounts.NOT_STARTED,
+                    IN_PROGRESS: typeStatusCounts.IN_PROGRESS,
+                    COMPLETED: typeStatusCounts.COMPLETED,
+                    FAILED: typeStatusCounts.FAILED,
+                    FILE_TYPE_NOT_SUPPORTED: typeStatusCounts.FILE_TYPE_NOT_SUPPORTED,
+                    AUTO_INDEX_OFF: typeStatusCounts.AUTO_INDEX_OFF
+                  }
                 }
             )
             
             RETURN {
               connector,
-              total: basic_stats.total,
-              indexing_status: basic_stats.indexing_status,
+              total: statusCounts.total,
+              indexing_status: {
+                NOT_STARTED: statusCounts.NOT_STARTED,
+                IN_PROGRESS: statusCounts.IN_PROGRESS,
+                COMPLETED: statusCounts.COMPLETED,
+                FAILED: statusCounts.FAILED,
+                FILE_TYPE_NOT_SUPPORTED: statusCounts.FILE_TYPE_NOT_SUPPORTED,
+                AUTO_INDEX_OFF: statusCounts.AUTO_INDEX_OFF
+              },
               by_record_type: record_types
             }
         )
@@ -1475,67 +1465,57 @@ export const getConnectorStats =
             FILTER ${baseFilter} AND doc.origin == "CONNECTOR"
             COLLECT record_type = doc.recordType INTO groupDocs = doc
             
-            // Basic stats for this record type
-            LET basic_stats = (
-              FOR d IN groupDocs
-                COLLECT AGGREGATE
-                  total         = COUNT(1),
-                  not_started   = SUM(d.indexingStatus == "NOT_STARTED" ? 1 : 0),
-                  in_progress   = SUM(d.indexingStatus == "IN_PROGRESS" ? 1 : 0),
-                  completed     = SUM(d.indexingStatus == "COMPLETED" ? 1 : 0),
-                  failed        = SUM(d.indexingStatus == "FAILED" ? 1 : 0),
-                  not_supported = SUM(d.indexingStatus == "FILE_TYPE_NOT_SUPPORTED" ? 1 : 0),
-                  auto_index_off = SUM(d.indexingStatus == "AUTO_INDEX_OFF" ? 1 : 0)
-                RETURN {
-                  total,
-                  indexing_status: {
-                    NOT_STARTED: not_started,
-                    IN_PROGRESS: in_progress,
-                    COMPLETED: completed,
-                    FAILED: failed,
-                    FILE_TYPE_NOT_SUPPORTED: not_supported,
-                    AUTO_INDEX_OFF: auto_index_off
-                  }
-                }
-            )[0]
+            // Calculate counts directly for better consistency
+            LET statusCounts = {
+              "total": LENGTH(groupDocs),
+              "NOT_STARTED": LENGTH(FOR d IN groupDocs FILTER d.indexingStatus == "NOT_STARTED" RETURN 1),
+              "IN_PROGRESS": LENGTH(FOR d IN groupDocs FILTER d.indexingStatus == "IN_PROGRESS" RETURN 1),
+              "COMPLETED": LENGTH(FOR d IN groupDocs FILTER d.indexingStatus == "COMPLETED" RETURN 1),
+              "FAILED": LENGTH(FOR d IN groupDocs FILTER d.indexingStatus == "FAILED" RETURN 1),
+              "FILE_TYPE_NOT_SUPPORTED": LENGTH(FOR d IN groupDocs FILTER d.indexingStatus == "FILE_TYPE_NOT_SUPPORTED" RETURN 1),
+              "AUTO_INDEX_OFF": LENGTH(FOR d IN groupDocs FILTER d.indexingStatus == "AUTO_INDEX_OFF" RETURN 1)
+            }
             
             // Connector breakdown for this record type
             LET connectors_for_type = (
               FOR d IN groupDocs
                 COLLECT connector = d.connectorName INTO connectorGroupDocs = d
-                LET connector_type_stats = (
-                  FOR cd IN connectorGroupDocs
-                    COLLECT AGGREGATE
-                      total         = COUNT(1),
-                      not_started   = SUM(cd.indexingStatus == "NOT_STARTED" ? 1 : 0),
-                      in_progress   = SUM(cd.indexingStatus == "IN_PROGRESS" ? 1 : 0),
-                      completed     = SUM(cd.indexingStatus == "COMPLETED" ? 1 : 0),
-                      failed        = SUM(cd.indexingStatus == "FAILED" ? 1 : 0),
-                      not_supported = SUM(cd.indexingStatus == "FILE_TYPE_NOT_SUPPORTED" ? 1 : 0),
-                      auto_index_off = SUM(cd.indexingStatus == "AUTO_INDEX_OFF" ? 1 : 0)
-                    RETURN {
-                      total,
-                      indexing_status: {
-                        NOT_STARTED: not_started,
-                        IN_PROGRESS: in_progress,
-                        COMPLETED: completed,
-                        FAILED: failed,
-                        FILE_TYPE_NOT_SUPPORTED: not_supported,
-                        AUTO_INDEX_OFF: auto_index_off
-                      }
-                    }
-                )[0]
+                
+                LET connectorStatusCounts = {
+                  "total": LENGTH(connectorGroupDocs),
+                  "NOT_STARTED": LENGTH(FOR cd IN connectorGroupDocs FILTER cd.indexingStatus == "NOT_STARTED" RETURN 1),
+                  "IN_PROGRESS": LENGTH(FOR cd IN connectorGroupDocs FILTER cd.indexingStatus == "IN_PROGRESS" RETURN 1),
+                  "COMPLETED": LENGTH(FOR cd IN connectorGroupDocs FILTER cd.indexingStatus == "COMPLETED" RETURN 1),
+                  "FAILED": LENGTH(FOR cd IN connectorGroupDocs FILTER cd.indexingStatus == "FAILED" RETURN 1),
+                  "FILE_TYPE_NOT_SUPPORTED": LENGTH(FOR cd IN connectorGroupDocs FILTER cd.indexingStatus == "FILE_TYPE_NOT_SUPPORTED" RETURN 1),
+                  "AUTO_INDEX_OFF": LENGTH(FOR cd IN connectorGroupDocs FILTER cd.indexingStatus == "AUTO_INDEX_OFF" RETURN 1)
+                }
+                
                 RETURN {
                   connector,
-                  total: connector_type_stats.total,
-                  indexing_status: connector_type_stats.indexing_status
+                  total: connectorStatusCounts.total,
+                  indexing_status: {
+                    NOT_STARTED: connectorStatusCounts.NOT_STARTED,
+                    IN_PROGRESS: connectorStatusCounts.IN_PROGRESS,
+                    COMPLETED: connectorStatusCounts.COMPLETED,
+                    FAILED: connectorStatusCounts.FAILED,
+                    FILE_TYPE_NOT_SUPPORTED: connectorStatusCounts.FILE_TYPE_NOT_SUPPORTED,
+                    AUTO_INDEX_OFF: connectorStatusCounts.AUTO_INDEX_OFF
+                  }
                 }
             )
             
             RETURN {
               record_type,
-              total: basic_stats.total,
-              indexing_status: basic_stats.indexing_status,
+              total: statusCounts.total,
+              indexing_status: {
+                NOT_STARTED: statusCounts.NOT_STARTED,
+                IN_PROGRESS: statusCounts.IN_PROGRESS,
+                COMPLETED: statusCounts.COMPLETED,
+                FAILED: statusCounts.FAILED,
+                FILE_TYPE_NOT_SUPPORTED: statusCounts.FILE_TYPE_NOT_SUPPORTED,
+                AUTO_INDEX_OFF: statusCounts.AUTO_INDEX_OFF
+              },
               by_connector: connectors_for_type
             }
         )
@@ -1558,6 +1538,57 @@ export const getConnectorStats =
       // Return the first item if it's an array
       const data =
         Array.isArray(result) && result.length === 1 ? result[0] : result;
+
+      // Add validation to verify consistency
+      const validateStatConsistency = (data: any) => {
+        // Check connector data
+        for (const connector of data.by_connector) {
+          // Calculate sum of status counts to compare with total
+          const statusSum = Object.values(connector.indexing_status).reduce(
+            (sum: number, count) => sum + Number(count),
+            0,
+          );
+
+          // Verify connector total matches sum of status counts
+          if (statusSum !== connector.total) {
+            logger.warn(
+              `Connector ${connector.connector}: Total (${connector.total}) doesn't match sum of status counts (${statusSum})`,
+            );
+          }
+
+          // Verify record type stats within this connector
+          let recordTypeTotal = 0;
+          for (const recordType of connector.by_record_type) {
+            // Sum status counts within this record type
+            const recordTypeStatusSum = Object.values(
+              recordType.indexing_status,
+            ).reduce((sum: number, count) => sum + Number(count), 0);
+
+            // Verify record type total matches sum of its status counts
+            if (recordTypeStatusSum !== recordType.total) {
+              logger.warn(
+                `Connector ${connector.connector}, Record type ${recordType.record_type}: ` +
+                  `Total (${recordType.total}) doesn't match sum of status counts (${recordTypeStatusSum})`,
+              );
+            }
+
+            recordTypeTotal += recordType.total;
+          }
+
+          // Verify sum of record type totals matches connector total
+          if (recordTypeTotal !== connector.total) {
+            logger.warn(
+              `Connector ${connector.connector}: Total (${connector.total}) doesn't match ` +
+                `sum of record type totals (${recordTypeTotal})`,
+            );
+          }
+        }
+      };
+
+      // Only run validation in development/testing environments
+      if (process.env.NODE_ENV !== 'production') {
+        validateStatConsistency(data);
+      }
 
       logger.info(
         `Retrieved enhanced connector stats for organization: ${orgId}`,
@@ -1608,6 +1639,45 @@ export const reindexAllRecords =
       return; // Added return statement
     } catch (error: any) {
       logger.error('Error re indexing all records', {
+        error,
+      });
+      next(error);
+      return; // Added return statement
+    }
+  };
+
+  export const resyncConnectorRecords =
+  (recordRelationService: RecordRelationService) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const userId = req.user?.userId;
+      const orgId = req.user?.orgId;
+      const connectorName = req.body.connectorName;
+      if (!userId || !orgId) {
+        throw new BadRequestError('User not authenticated');
+      }
+
+      const allowedConnectors = ['ONEDRIVE', 'DRIVE', 'GMAIL', 'CONFLUENCE', 'SLACK'];
+      if (!allowedConnectors.includes(connectorName)) {
+        throw new BadRequestError(`Connector ${connectorName} not allowed`);
+      }
+
+      const resyncConnectorPayload = {
+        userId,
+        orgId,
+        connectorName,
+      };
+
+      const resyncConnectorResponse =
+        await recordRelationService.resyncConnectorRecords(resyncConnectorPayload);
+
+      res.status(200).json({
+        resyncConnectorResponse,
+      });
+
+      return; // Added return statement
+    } catch (error: any) {
+      logger.error('Error resyncing connector records', {
         error,
       });
       next(error);

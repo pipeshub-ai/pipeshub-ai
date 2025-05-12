@@ -7,6 +7,7 @@ import { RecordsEventProducer } from '../services/records_events.service';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { AppConfig } from '../../tokens_manager/config/config';
+import { SyncEventProducer } from '../services/sync_events.service';
 const loggerConfig = {
   service: 'Knowledge Base Service',
 };
@@ -73,6 +74,21 @@ export class KnowledgeBaseContainer {
         .toConstantValue(recordsEventProducer);
 
       this.logger.info('After events producer binding');
+
+      const syncEventProducer = new SyncEventProducer(
+        appConfig.kafka,
+        this.logger,
+      );
+
+      // start the kafka producer for sync-events
+      await syncEventProducer.start();
+
+      container
+        .bind<SyncEventProducer>('SyncEventProducer')
+        .toConstantValue(syncEventProducer);
+        
+      this.logger.info('After sync producer binding');
+
       const authTokenService = new AuthTokenService(
         appConfig.jwtSecret,
         appConfig.scopedJwtSecret,
@@ -109,6 +125,13 @@ export class KnowledgeBaseContainer {
             'RecordsEventProducer',
           );
           await recordsEventProducer.stop();
+        }
+
+        // stop the sync-event kafka
+        if (this.instance.isBound('SyncEventProducer')) {
+          const syncEventProducer =
+            this.instance.get<SyncEventProducer>('SyncEventProducer');
+          await syncEventProducer.stop();
         }
         const keyValueStoreService = this.instance.isBound(
           'KeyValueStoreService',

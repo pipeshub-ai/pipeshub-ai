@@ -19,6 +19,7 @@ import fileCancelOutlineIcon from '@iconify-icons/mdi/file-cancel-outline';
 import checkCircleOutlineIcon from '@iconify-icons/mdi/check-circle-outline';
 import alertCircleOutlineIcon from '@iconify-icons/mdi/alert-circle-outline';
 import microsoftSharepointIcon from '@iconify-icons/mdi/microsoft-sharepoint';
+import syncIcon from '@iconify-icons/mdi/sync';
 
 import { alpha, useTheme } from '@mui/material/styles';
 import {
@@ -140,6 +141,7 @@ const CONNECTOR_COLORS: Record<string, string> = {
 const ConnectorCard = ({ connector }: { connector: ConnectorData }): JSX.Element => {
   const theme = useTheme();
   const [isReindexing, setIsReindexing] = useState(false);
+  const [isResyncing, setIsResyncing] = useState(false);
   const [snackbar, setSnackbar] = useState({
     open: false,
     message: '',
@@ -160,30 +162,57 @@ const ConnectorCard = ({ connector }: { connector: ConnectorData }): JSX.Element
 
   // Function to handle reindexing of failed documents
   const handleReindex = async () => {
-    if (indexing_status.FAILED === 0) return;
-
     try {
       setIsReindexing(true);
 
       // API call to reindex failed documents for this connector
       await axios.post('/api/v1/knowledgeBase/reindex-all/connector', {
         app: connectorName,
-        // status: 'FAILED',
-      });
-      setSnackbar({
-        open: true,
-        message: `Started reindexing for  ${connectorName}`,
-        severity: 'success',
       });
 
-      // Success notification could be added here
+      setSnackbar({
+        open: true,
+        message: `Reindexing started for ${displayName}`,
+        severity: 'success',
+      });
     } catch (error) {
       console.error('Failed to reindex documents:', error);
-      // Error notification could be added her
+      setSnackbar({
+        open: true,
+        message: `Failed to reindex documents for ${displayName}`,
+        severity: 'error',
+      });
     } finally {
-      // In a real app, you might want to refresh the stats after a delay
       setTimeout(() => {
         setIsReindexing(false);
+      }, 1000);
+    }
+  };
+
+  const handleResync = async () => {
+    try {
+      setIsResyncing(true);
+
+      // API call to resync connector
+      await axios.post('/api/v1/knowledgeBase/resync/connector', {
+        connectorName,
+      });
+
+      setSnackbar({
+        open: true,
+        message: `Resync started for ${displayName}`,
+        severity: 'success',
+      });
+    } catch (error) {
+      console.error('Failed to resync connector:', error);
+      setSnackbar({
+        open: true,
+        message: `Failed to resync ${displayName}`,
+        severity: 'error',
+      });
+    } finally {
+      setTimeout(() => {
+        setIsResyncing(false);
       }, 1000);
     }
   };
@@ -191,6 +220,62 @@ const ConnectorCard = ({ connector }: { connector: ConnectorData }): JSX.Element
   const handleCloseSnackbar = (): void => {
     setSnackbar({ open: false, message: '', severity: 'success' });
   };
+
+  // Create status counts array for uniform display
+  const statusItems = [
+    {
+      label: 'Indexed',
+      count: indexing_status.COMPLETED || 0,
+      icon: checkCircleOutlineIcon,
+      color: theme.palette.success.main,
+      tooltip: 'Indexed Records',
+    },
+    {
+      label: 'Failed',
+      count: indexing_status.FAILED || 0,
+      icon: alertCircleOutlineIcon,
+      color: theme.palette.error.main,
+      tooltip: 'Failed Records',
+    },
+    {
+      label: 'In Progress',
+      count: indexing_status.IN_PROGRESS || 0,
+      icon: progressClockIcon,
+      color: theme.palette.warning.main,
+      tooltip: 'In Progress Records',
+    },
+    {
+      label: 'Not Started',
+      count: indexing_status.NOT_STARTED || 0,
+      icon: clockOutlineIcon,
+      color: theme.palette.grey[500],
+      tooltip: 'Not Started Records',
+    },
+  ];
+
+  // Add optional status items only if count > 0
+  if (indexing_status.FILE_TYPE_NOT_SUPPORTED > 0) {
+    statusItems.push({
+      label: 'Unsupported',
+      count: indexing_status.FILE_TYPE_NOT_SUPPORTED,
+      icon: fileCancelOutlineIcon,
+      color: theme.palette.info.main,
+      tooltip: 'Unsupported File Types',
+    });
+  }
+
+  if (indexing_status.AUTO_INDEX_OFF > 0) {
+    statusItems.push({
+      label: 'Manual Sync',
+      count: indexing_status.AUTO_INDEX_OFF,
+      icon: fileCancelOutlineIcon,
+      color: theme.palette.grey[600],
+      tooltip: 'Auto Index Off',
+    });
+  }
+
+  // Determine if we should show the reindex button (only when failed docs exist)
+  const showReindexButton = indexing_status.FAILED > 0;
 
   return (
     <>
@@ -226,14 +311,14 @@ const ConnectorCard = ({ connector }: { connector: ConnectorData }): JSX.Element
         >
           <Avatar
             sx={{
-              width: 44,
-              height: 44,
+              width: 48,
+              height: 48,
               bgcolor: alpha(iconColor, 0.14),
               color: iconColor,
               borderRadius: '20%',
             }}
           >
-            <Iconify icon={iconName} width={24} height={24} />
+            <Iconify icon={iconName} width={26} height={26} />
           </Avatar>
         </Box>
 
@@ -256,7 +341,7 @@ const ConnectorCard = ({ connector }: { connector: ConnectorData }): JSX.Element
           <Typography
             variant="caption"
             sx={{
-              mb: 1,
+              mb: 1.5,
               color: theme.palette.text.secondary,
               fontWeight: 500,
             }}
@@ -271,13 +356,13 @@ const ConnectorCard = ({ connector }: { connector: ConnectorData }): JSX.Element
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              mb: 1,
+              mb: 2,
             }}
           >
             <CircularProgress
               variant="determinate"
               value={percentComplete}
-              size={54}
+              size={60}
               thickness={4}
               sx={{
                 color: iconColor,
@@ -300,137 +385,88 @@ const ConnectorCard = ({ connector }: { connector: ConnectorData }): JSX.Element
             </Box>
           </Box>
 
-          {/* Stats Grid */}
-          <Grid container spacing={1} sx={{ mb: 1 }}>
-            {/* Indexed Records */}
-            <Grid item xs={6}>
-              <Tooltip title="Indexed Records">
-                <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                  <Iconify
-                    icon={checkCircleOutlineIcon}
-                    width={18}
-                    height={18}
-                    sx={{ color: theme.palette.success.main, mb: 0.5 }}
-                  />
-                  <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                    {indexing_status.COMPLETED?.toLocaleString() || 0}
-                  </Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    Indexed
-                  </Typography>
-                </Box>
-              </Tooltip>
-            </Grid>
-
-            {/* Failed Records */}
-            <Grid item xs={6}>
-              <Tooltip title="Failed Records">
-                <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                  <Iconify
-                    icon={alertCircleOutlineIcon}
-                    width={18}
-                    height={18}
-                    sx={{ color: theme.palette.error.main, mb: 0.5 }}
-                  />
-                  <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                    {indexing_status.FAILED?.toLocaleString() || 0}
-                  </Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    Failed
-                  </Typography>
-                </Box>
-              </Tooltip>
-            </Grid>
-
-            {/* In Progress Records */}
-            <Grid item xs={6}>
-              <Tooltip title="In Progress Records">
-                <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                  <Iconify
-                    icon={progressClockIcon}
-                    width={18}
-                    height={18}
-                    sx={{ color: theme.palette.warning.main, mb: 0.5 }}
-                  />
-                  <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                    {indexing_status.IN_PROGRESS?.toLocaleString() || 0}
-                  </Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    In Progress
-                  </Typography>
-                </Box>
-              </Tooltip>
-            </Grid>
-
-            {/* Not Started Records */}
-            <Grid item xs={6}>
-              <Tooltip title="Not Started Records">
-                <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                  <Iconify
-                    icon={clockOutlineIcon}
-                    width={18}
-                    height={18}
-                    sx={{ color: theme.palette.grey[500], mb: 0.5 }}
-                  />
-                  <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                    {indexing_status.NOT_STARTED?.toLocaleString() || 0}
-                  </Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    Not Started
-                  </Typography>
-                </Box>
-              </Tooltip>
-            </Grid>
-
-            {/* Unsupported File Types - only show if value is greater than 0 */}
-            {indexing_status.FILE_TYPE_NOT_SUPPORTED > 0 && (
-              <Grid item xs={12} sx={{ mt: 0.5 }}>
-                <Tooltip title="Unsupported File Types">
-                  <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+          {/* Stats Grid - Rendered dynamically for uniformity */}
+          <Grid container spacing={1.5} sx={{ mb: 2 }}>
+            {statusItems.map((item, index) => (
+              <Grid item xs={statusItems.length <= 4 ? 6 : 4} key={`status-${index}`}>
+                <Tooltip title={item.tooltip}>
+                  <Box
+                    sx={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      backgroundColor: alpha(item.color, 0.05),
+                      borderRadius: 1,
+                      py: 1,
+                    }}
+                  >
                     <Iconify
-                      icon={fileCancelOutlineIcon}
+                      icon={item.icon}
                       width={18}
                       height={18}
-                      sx={{ color: theme.palette.info.main, mb: 0.5 }}
+                      sx={{ color: item.color, mb: 0.5 }}
                     />
                     <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                      {indexing_status.FILE_TYPE_NOT_SUPPORTED?.toLocaleString() || 0}
+                      {item.count.toLocaleString()}
                     </Typography>
                     <Typography variant="caption" color="text.secondary">
-                      Unsupported Files
+                      {item.label}
                     </Typography>
                   </Box>
                 </Tooltip>
               </Grid>
-            )}
-
-            {/* AUTO INDEX OFF records */}
-            {indexing_status.AUTO_INDEX_OFF > 0 && (
-              <Grid item xs={6}>
-                <Tooltip title="Auto Index Off">
-                  <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                    <Iconify
-                      icon={fileCancelOutlineIcon}
-                      width={18}
-                      height={18}
-                      sx={{ color: theme.palette.grey[600], mb: 0.5 }}
-                    />
-                    <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                      {indexing_status.AUTO_INDEX_OFF?.toLocaleString() || 0}
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      Auto Index Off
-                    </Typography>
-                  </Box>
-                </Tooltip>
-              </Grid>
-            )}
+            ))}
           </Grid>
 
-          {/* Action Buttons */}
-          <Box sx={{ mt: 0.5, display: 'flex', justifyContent: 'center', width: '100%' }}>
-            {/* Reindex button for failed documents */}
-            {indexing_status.FAILED > 0 && (
+          {/* Action Buttons - Adaptive layout based on button count */}
+          <Box
+            sx={{
+              mt: 'auto',
+              display: 'flex',
+              justifyContent: showReindexButton ? 'space-between' : 'center',
+              width: '100%',
+              gap: 1.5,
+            }}
+          >
+            {/* Resync button */}
+            <Button
+              size="small"
+              color="primary"
+              variant="outlined"
+              startIcon={<Iconify icon={syncIcon} />}
+              onClick={handleResync}
+              disabled={isResyncing}
+              fullWidth={showReindexButton}
+              sx={{
+                borderRadius: '8px',
+                textTransform: 'none',
+                minHeight: '36px',
+                fontSize: '0.8125rem',
+                fontWeight: 500,
+                border: `1px solid ${alpha(theme.palette.primary.main, 0.5)}`,
+                '&:hover': {
+                  borderColor: theme.palette.primary.main,
+                  backgroundColor: alpha(theme.palette.primary.main, 0.04),
+                },
+                '&:disabled': {
+                  color: alpha(theme.palette.primary.main, 0.4),
+                  borderColor: alpha(theme.palette.primary.main, 0.2),
+                },
+                maxWidth: showReindexButton ? '48%' : '180px',
+              }}
+            >
+              {isResyncing ? (
+                <>
+                  <CircularProgress size={16} color="primary" sx={{ mr: 1 }} />
+                  Syncing...
+                </>
+              ) : (
+                'Resync'
+              )}
+            </Button>
+
+            {/* Reindex button - Only show if there are failed records */}
+            {showReindexButton && (
               <Button
                 size="small"
                 color="error"
@@ -438,25 +474,32 @@ const ConnectorCard = ({ connector }: { connector: ConnectorData }): JSX.Element
                 startIcon={<Iconify icon={refreshIcon} />}
                 onClick={handleReindex}
                 disabled={isReindexing}
+                fullWidth
                 sx={{
                   borderRadius: '8px',
                   textTransform: 'none',
-                  minHeight: '32px',
-                  fontSize: '0.75rem',
+                  minHeight: '36px',
+                  fontSize: '0.8125rem',
+                  fontWeight: 500,
                   border: `1px solid ${alpha(theme.palette.error.main, 0.5)}`,
                   '&:hover': {
                     borderColor: theme.palette.error.main,
                     backgroundColor: alpha(theme.palette.error.main, 0.04),
                   },
+                  '&:disabled': {
+                    color: alpha(theme.palette.error.main, 0.4),
+                    borderColor: alpha(theme.palette.error.main, 0.2),
+                  },
+                  maxWidth: '48%',
                 }}
               >
                 {isReindexing ? (
                   <>
                     <CircularProgress size={16} color="error" sx={{ mr: 1 }} />
-                    Reindexing...
+                    Indexing...
                   </>
                 ) : (
-                  'Reindex failed'
+                  'Reindex Failed'
                 )}
               </Button>
             )}

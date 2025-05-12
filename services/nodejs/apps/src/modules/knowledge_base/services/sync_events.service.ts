@@ -4,70 +4,47 @@ import { BaseKafkaProducerConnection } from '../../../libs/services/kafka.servic
 import { KafkaConfig, KafkaMessage } from '../../../libs/types/kafka.types';
 
 export enum EventType {
-  NewRecordEvent = 'newRecord',
-  UpdateRecordEvent = 'updateRecord',
-  DeletedRecordEvent = 'deleteRecord',
-  ReindexRecordEvent = 'reindexRecord',
+  ReindexAllRecordEvent = 'reindexFailed',
+  SyncDriveEvent = 'drive.resync',
+  SyncGmailEvent = 'gmail.resync',
 }
 
 export interface Event {
   eventType: EventType;
   timestamp: number;
-  payload:
-    | NewRecordEvent
-    | UpdateRecordEvent
-    | DeletedRecordEvent
-    | ReindexRecordEvent
+  payload: ReindexAllRecordEvent;
 }
 
-export interface NewRecordEvent {
+export interface ReindexAllRecordEvent {
   orgId: string;
-  recordId: string;
-  recordName: string;
-  recordType: string;
-  version: number;
-  signedUrlRoute: string;
+  connector: string;
   origin: string;
-  extension: string;
   createdAtTimestamp: string;
   updatedAtTimestamp: string;
   sourceCreatedAtTimestamp: string;
 }
 
-export interface UpdateRecordEvent {
+export interface SyncDriveEvent {
   orgId: string;
-  recordId: string;
-  version: number;
-  signedUrlRoute: string;
-  updatedAtTimestamp: string;
-  sourceLastModifiedTimestamp: string;
-  virtualRecordId?: string;
-}
-
-export interface ReindexRecordEvent {
-  orgId: string;
-  recordId: string;
-  recordName: string;
-  recordType: string;
-  version: number;
-  signedUrlRoute: string;
+  connector: string;
   origin: string;
-  extension: string;
   createdAtTimestamp: string;
   updatedAtTimestamp: string;
   sourceCreatedAtTimestamp: string;
 }
 
-export interface DeletedRecordEvent {
+export interface SyncGmailEvent {
   orgId: string;
-  recordId: string;
-  version: number;
-  virtualRecordId?: string;
+  connector: string;
+  origin: string;
+  createdAtTimestamp: string;
+  updatedAtTimestamp: string;
+  sourceCreatedAtTimestamp: string;
 }
 
 @injectable()
-export class RecordsEventProducer extends BaseKafkaProducerConnection {
-  private readonly recordsTopic = 'record-events';
+export class SyncEventProducer extends BaseKafkaProducerConnection {
+  private readonly syncTopic = 'sync-events';
 
   constructor(
     @inject('KafkaConfig') config: KafkaConfig,
@@ -99,10 +76,8 @@ export class RecordsEventProducer extends BaseKafkaProducerConnection {
     };
 
     try {
-      await this.publish(this.recordsTopic, message);
-      this.logger.info(
-        `Published event: ${event.eventType} to topic ${this.recordsTopic}`,
-      );
+      await this.publish(this.syncTopic, message);
+      this.logger.info(`Published event: ${event.eventType} to topic ${this.syncTopic}`);
     } catch (error) {
       this.logger.error(`Failed to publish event: ${event.eventType}`, error);
     }
