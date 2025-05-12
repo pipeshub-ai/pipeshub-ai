@@ -2527,7 +2527,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                 self.logger.warning("⚠️ No user found!")
                 return False
 
-            user_id = user["userId"]
+            user_id = user[0]["userId"]
 
             count = 0
             failed_records = list(failed_records)

@@ -1634,7 +1634,6 @@ class Processor:
                 for text_item in doc_dict.get("texts", [])
                 if text_item.get("text", "").strip()
             )
-            self.logger.debug(f"Text content: {text_content}")
 
             # Extract domain metadata from content
             self.logger.info("🎯 Extracting domain metadata")
