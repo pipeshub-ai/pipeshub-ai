@@ -32,6 +32,7 @@ import type {
   OpenAILlmFormValues,
   GeminiLlmFormValues,
   AnthropicLlmFormValues,
+  OpenAICompatibleLlmFormValues,
 } from './types';
 
 // Zod schema for OpenAI validation with more descriptive error messages
@@ -65,12 +66,21 @@ const azureSchema = z.object({
   model: z.string().min(1, 'Model is required'),
 });
 
+// Zod schema for OpenAI API Compatible validation with more descriptive error messages
+const openAICompatibleSchema = z.object({
+  modelType: z.literal('openAICompatible'),
+  endpoint: z.string().min(1, 'Endpoint is required').url('Please enter a valid URL'),
+  apiKey: z.string().min(1, 'API Key is required'),
+  model: z.string().min(1, 'Model is required'),
+});
+
 // Combined schema using discriminated union
 const llmSchema = z.discriminatedUnion('modelType', [
   openaiSchema,
   azureSchema,
   geminiSchema,
   anthropicSchema,
+  openAICompatibleSchema,
 ]);
 
 interface LlmConfigStepProps {
@@ -81,9 +91,9 @@ interface LlmConfigStepProps {
 
 const LlmConfigStep: React.FC<LlmConfigStepProps> = ({ onSubmit, onSkip, initialValues }) => {
   const [showPassword, setShowPassword] = useState<boolean>(false);
-  const [modelType, setModelType] = useState<'openai' | 'azure' | 'gemini' | 'anthropic'>(
-    initialValues?.modelType || 'openai'
-  );
+  const [modelType, setModelType] = useState<
+    'openai' | 'azure' | 'gemini' | 'anthropic' | 'openAICompatible'
+  >(initialValues?.modelType || 'openai');
 
   // Get default values based on modelType
   const getDefaultValues = () => {
@@ -95,6 +105,14 @@ const LlmConfigStep: React.FC<LlmConfigStepProps> = ({ onSubmit, onSkip, initial
         deploymentName: (initialValues as AzureLlmFormValues)?.deploymentName || '',
         model: initialValues?.model || '',
       } as AzureLlmFormValues;
+    }
+    if (modelType === 'openAICompatible') {
+      return {
+        modelType: 'openAICompatible' as const,
+        endpoint: (initialValues as OpenAICompatibleLlmFormValues)?.endpoint || '',
+        apiKey: initialValues?.apiKey || '',
+        model: initialValues?.model || '',
+      } as OpenAICompatibleLlmFormValues;
     }
     if (modelType === 'gemini') {
       return {
@@ -133,7 +151,9 @@ const LlmConfigStep: React.FC<LlmConfigStepProps> = ({ onSubmit, onSkip, initial
   });
 
   // Handle model type change
-  const handleModelTypeChange = (newType: 'openai' | 'azure' | 'gemini' | 'anthropic') => {
+  const handleModelTypeChange = (
+    newType: 'openai' | 'azure' | 'gemini' | 'anthropic' | 'openAICompatible'
+  ) => {
     setModelType(newType);
     reset(
       newType === 'azure'
@@ -158,12 +178,19 @@ const LlmConfigStep: React.FC<LlmConfigStepProps> = ({ onSubmit, onSkip, initial
                 apiKey: '',
                 model: '',
               } as AnthropicLlmFormValues)
-            : ({
-                modelType: 'openai',
-                // clientId: '',
-                apiKey: '',
-                model: '',
-              } as OpenAILlmFormValues)
+            : newType === 'openAICompatible'
+              ? ({
+                  modelType: 'openAICompatible',
+                  endpoint: '',
+                  apiKey: '',
+                  model: '',
+                } as OpenAICompatibleLlmFormValues)
+              : ({
+                  modelType: 'openai',
+                  // clientId: '',
+                  apiKey: '',
+                  model: '',
+                } as OpenAILlmFormValues)
     );
   };
 
@@ -243,7 +270,12 @@ const LlmConfigStep: React.FC<LlmConfigStepProps> = ({ onSubmit, onSkip, initial
                   {...field}
                   label="Provider *"
                   onChange={(e: SelectChangeEvent) => {
-                    const newType = e.target.value as 'openai' | 'azure' | 'gemini' | 'anthropic';
+                    const newType = e.target.value as
+                      | 'openai'
+                      | 'azure'
+                      | 'gemini'
+                      | 'anthropic'
+                      | 'openAICompatible';
                     field.onChange(newType);
                     handleModelTypeChange(newType);
                   }}
@@ -252,6 +284,7 @@ const LlmConfigStep: React.FC<LlmConfigStepProps> = ({ onSubmit, onSkip, initial
                   <MenuItem value="azure">Azure OpenAI</MenuItem>
                   <MenuItem value="gemini">Gemini</MenuItem>
                   <MenuItem value="anthropic">Anthropic</MenuItem>
+                  <MenuItem value="openAICompatible">OpenAI API Compatible</MenuItem>
                 </Select>
                 {fieldState.error && <FormHelperText>{fieldState.error.message}</FormHelperText>}
               </FormControl>
@@ -335,6 +368,36 @@ const LlmConfigStep: React.FC<LlmConfigStepProps> = ({ onSubmit, onSkip, initial
           </>
         )}
 
+        {/* OpenAi API compatible fields */}
+        {modelType === 'openAICompatible' && (
+          <>
+            <Grid item xs={12}>
+              <Controller
+                name="endpoint"
+                control={control}
+                render={({ field, fieldState }) => (
+                  <TextField
+                    {...field}
+                    label="Endpoint"
+                    fullWidth
+                    size="small"
+                    error={!!fieldState.error}
+                    helperText={
+                      fieldState.error?.message ||
+                      'e.g., https://your-resource-name.openai.azure.com/'
+                    }
+                    required
+                    onBlur={() => {
+                      field.onBlur();
+                      trigger('endpoint');
+                    }}
+                  />
+                )}
+              />
+            </Grid>
+          </>
+        )}
+
         {/* Common fields for both providers */}
         <Grid item xs={12}>
           <Controller
@@ -395,7 +458,9 @@ const LlmConfigStep: React.FC<LlmConfigStepProps> = ({ onSubmit, onSkip, initial
                       ? 'e.g., gemini-2.0-flash'
                       : modelType === 'anthropic'
                         ? 'e.g.,  claude-3-7-sonnet-20250219'
-                        : 'e.g., gpt-4o')
+                        : modelType === 'openAICompatible'
+                          ? 'e.g., deepseek-ai/DeepSeek-V3'
+                          : 'e.g., gpt-4o')
                 }
                 required
                 onBlur={() => {

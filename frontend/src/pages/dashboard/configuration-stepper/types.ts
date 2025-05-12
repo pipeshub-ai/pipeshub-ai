@@ -1,4 +1,4 @@
-// OpenAI specific fields 
+// OpenAI specific fields
 export interface OpenAILlmFormValues {
   modelType: 'openai';
   clientId: string;
@@ -11,7 +11,7 @@ export interface GeminiLlmFormValues {
   // clientId: string;
   apiKey: string;
   model: string;
-} 
+}
 
 export interface AnthropicLlmFormValues {
   modelType: 'anthropic';
@@ -20,12 +20,20 @@ export interface AnthropicLlmFormValues {
   model: string;
 }
 
-// Azure OpenAI specific fields 
+// Azure OpenAI specific fields
 export interface AzureLlmFormValues {
   modelType: 'azure';
   endpoint: string;
   apiKey: string;
   deploymentName: string;
+  model: string;
+}
+
+// Open AI Compatible specific fields
+export interface OpenAICompatibleLlmFormValues {
+  modelType: 'openAICompatible';
+  endpoint: string;
+  apiKey: string;
   model: string;
 }
 
@@ -42,7 +50,8 @@ export type LlmFormValues =
   | OpenAILlmFormValues
   | AzureLlmFormValues
   | GeminiLlmFormValues
-  | AnthropicLlmFormValues;
+  | AnthropicLlmFormValues
+  | OpenAICompatibleLlmFormValues;
 
 export const storageTypes = {
   LOCAL: 'local',

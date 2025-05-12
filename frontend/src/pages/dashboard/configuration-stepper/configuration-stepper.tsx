@@ -45,6 +45,7 @@ import type {
   OpenAILlmFormValues,
   ConnectorFormValues,
   EmbeddingFormValues,
+  OpenAICompatibleLlmFormValues,
 } from './types';
 
 // Updated steps to include Storage
@@ -638,7 +639,9 @@ const ConfigurationStepper: React.FC<ConfigurationStepperProps> = ({ open, onClo
                   ? 'gemini'
                   : llmValues!.modelType === 'anthropic'
                     ? 'anthropic'
-                    : 'azureOpenAI',
+                    : llmValues!.modelType === 'openAICompatible'
+                      ? 'openAICompatible'
+                      : 'azureOpenAI',
             configuration: (() => {
               // For OpenAI config
               if (
@@ -675,6 +678,14 @@ const ConfigurationStepper: React.FC<ConfigurationStepperProps> = ({ open, onClo
 
               if (azureValues.deploymentName && azureValues.deploymentName.trim() !== '') {
                 config.deploymentName = azureValues.deploymentName;
+              }
+
+              const openAICompatibleValues = llmValues as OpenAICompatibleLlmFormValues;
+              if (
+                openAICompatibleValues.endpoint &&
+                openAICompatibleValues.endpoint.trim() !== ''
+              ) {
+                config.endpoint = openAICompatibleValues.endpoint;
               }
 
               return config;
