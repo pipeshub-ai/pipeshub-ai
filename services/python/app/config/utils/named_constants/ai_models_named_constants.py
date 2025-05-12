@@ -11,6 +11,7 @@ class LLMProvider(Enum):
     ANTHROPIC = "anthropic"
     AWS_BEDROCK = "bedrock"
     OLLAMA = "ollama"
+    OPENAI_COMPATIBLE = "openAICompatible"
 
 class OCRProvider(Enum):
     AZURE_DI = "azureDI"

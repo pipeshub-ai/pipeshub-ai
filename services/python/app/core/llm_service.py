@@ -21,6 +21,9 @@ class BaseLLMConfig(BaseModel):
     temperature: float = Field(default=0.4, ge=0, le=1)
     api_key: str
 
+class OpenAICompatibleLLMConfig(BaseLLMConfig):
+    """OpenAI-compatible configuration"""
+    endpoint: str
 
 class AzureLLMConfig(BaseLLMConfig):
     """Azure-specific configuration"""
@@ -159,6 +162,14 @@ class LLMFactory:
                 temperature=0.2,
                 callbacks=[cost_callback],
                 base_url=base_url
+            )
+        elif isinstance(config, OpenAICompatibleLLMConfig):
+            return ChatOpenAI(
+                model=config.model,
+                temperature=0.2,
+                api_key=config.api_key,
+                base_url=config.endpoint, 
+                callbacks=[cost_callback]
             )
 
         raise ValueError(f"Unsupported config type: {type(config)}")

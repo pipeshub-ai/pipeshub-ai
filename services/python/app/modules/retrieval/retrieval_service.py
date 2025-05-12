@@ -34,6 +34,7 @@ from app.core.llm_service import (
     LLMFactory,
     OllamaConfig,
     OpenAILLMConfig,
+    OpenAICompatibleLLMConfig,
 )
 from app.exceptions.fastapi_responses import Status
 from app.exceptions.indexing_exceptions import IndexingError
@@ -144,6 +145,14 @@ class RetrievalService:
                         temperature=0.2,
                         api_key=config['configuration']['apiKey'],
                     )
+                elif provider == LLMProvider.OPENAI_COMPATIBLE.value:
+                    llm_config = OpenAICompatibleLLMConfig(
+                        model=config['configuration']['model'],
+                        temperature=0.2,
+                        api_key=config['configuration']['apiKey'],
+                        endpoint=config['configuration']['endpoint'],
+                    )
+
             if not llm_config:
                 raise ValueError("No supported LLM provider found in configuration")
 
