@@ -33,8 +33,8 @@ from app.core.llm_service import (
     GeminiLLMConfig,
     LLMFactory,
     OllamaConfig,
-    OpenAILLMConfig,
     OpenAICompatibleLLMConfig,
+    OpenAILLMConfig,
 )
 from app.exceptions.fastapi_responses import Status
 from app.exceptions.indexing_exceptions import IndexingError

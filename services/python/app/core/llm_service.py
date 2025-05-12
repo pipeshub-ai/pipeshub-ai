@@ -168,7 +168,7 @@ class LLMFactory:
                 model=config.model,
                 temperature=0.2,
                 api_key=config.api_key,
-                base_url=config.endpoint, 
+                base_url=config.endpoint,
                 callbacks=[cost_callback]
             )
 

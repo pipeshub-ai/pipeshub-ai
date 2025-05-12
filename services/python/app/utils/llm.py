@@ -10,8 +10,8 @@ from app.core.llm_service import (
     GeminiLLMConfig,
     LLMFactory,
     OllamaConfig,
-    OpenAILLMConfig,
     OpenAICompatibleLLMConfig,
+    OpenAILLMConfig,
 )
 
 
