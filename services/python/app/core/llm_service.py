@@ -23,7 +23,7 @@ class BaseLLMConfig(BaseModel):
 
 class OpenAICompatibleLLMConfig(BaseLLMConfig):
     """OpenAI-compatible configuration"""
-    endpoint: str
+    endpoint: str = Field(default="", description="The endpoint for the OpenAI-compatible API")
 
 class AzureLLMConfig(BaseLLMConfig):
     """Azure-specific configuration"""
