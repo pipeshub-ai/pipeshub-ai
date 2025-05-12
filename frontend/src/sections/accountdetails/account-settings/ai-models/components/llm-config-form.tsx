@@ -38,7 +38,7 @@ import axios from 'src/utils/axios';
 import { Iconify } from 'src/components/iconify';
 // LLM form values interfaces
 interface LlmFormValues {
-  modelType: 'openAI' | 'azureOpenAI' | 'gemini' | 'anthropic';
+  modelType: 'openAI' | 'azureOpenAI' | 'gemini' | 'anthropic' | 'openAICompatible';
   apiKey: string;
   model: string;
   // clientId?: string;
@@ -70,6 +70,13 @@ interface AzureLlmFormValues {
   endpoint: string;
   apiKey: string;
   deploymentName: string;
+  model: string;
+}
+
+interface OpenAICompatibleLlmFormValues {
+  modelType: 'openAICompatible';
+  endpoint: string;
+  apiKey: string;
   model: string;
 }
 
@@ -125,12 +132,24 @@ const azureSchema = z.object({
   model: z.string().min(1, 'Model is required'),
 });
 
+// Zod schema for  OpenAI API Compatible validation
+const openAICompatibleSchema = z.object({
+  modelType: z.literal('openAICompatible'),
+  endpoint: z
+    .string()
+    .min(1, 'Endpoint is required')
+    .startsWith('https://', 'Endpoint must start with https://'),
+  apiKey: z.string().min(1, 'API Key is required'),
+  model: z.string().min(1, 'Model is required'),
+});
+
 // Combined schema using discriminated union
 const llmSchema = z.discriminatedUnion('modelType', [
   openaiSchema,
   azureSchema,
   geminiSchema,
   anthropicSchema,
+  openAICompatibleSchema,
 ]);
 
 // Utility functions for API interaction
@@ -145,13 +164,15 @@ const getLlmConfig = async (): Promise<LlmFormValues | null> => {
       const config = llmConfig.configuration;
 
       // Set the modelType based on the provider
-      let modelType: 'openAI' | 'azureOpenAI' | 'gemini' | 'anthropic';
+      let modelType: 'openAI' | 'azureOpenAI' | 'gemini' | 'anthropic' | 'openAICompatible';
       if (llmConfig.provider === 'azureOpenAI') {
         modelType = 'azureOpenAI';
       } else if (llmConfig.provider === 'gemini') {
         modelType = 'gemini';
       } else if (llmConfig.provider === 'anthropic') {
         modelType = 'anthropic';
+      } else if (llmConfig.provider === 'openAICompatible') {
+        modelType = 'openAICompatible';
       } else {
         modelType = 'openAI';
       }
@@ -209,19 +230,24 @@ const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
     const [showOpenAIPassword, setShowOpenAIPassword] = useState(false);
     const [showGeminiPassword, setShowGeminiPassword] = useState(false);
     const [showAzurePassword, setShowAzurePassword] = useState(false);
+    const [showOpenAICompatiblePassword, setShowOpenAICompatiblePassword] = useState(false);
     const [isEditing, setIsEditing] = useState(false);
     const [saveError, setSaveError] = useState<string | null>(null);
     const [formSubmitSuccess, setFormSubmitSuccess] = useState(false);
     const [fetchError, setFetchError] = useState<boolean>(false);
 
-    const [modelType, setModelType] = useState<'openAI' | 'azureOpenAI' | 'gemini' | 'anthropic'>(
+    const [modelType, setModelType] = useState<
+      'openAI' | 'azureOpenAI' | 'gemini' | 'anthropic' | 'openAICompatible'
+    >(
       provider === 'Azure OpenAI'
         ? 'azureOpenAI'
         : provider === 'Gemini'
           ? 'gemini'
           : provider === 'Anthropic'
             ? 'anthropic'
-            : 'openAI'
+            : provider === 'openAICompatible'
+              ? 'openAICompatible'
+              : 'openAI'
     );
 
     // Create separate forms for OpenAI and Azure
@@ -286,6 +312,22 @@ const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
         endpoint: '',
         apiKey: '',
         deploymentName: '',
+        model: '',
+      },
+    });
+
+    const {
+      control: openAICompatibleControl,
+      handleSubmit: handleOpenAICompatibleSubmit,
+      reset: resetOpenAICompatible,
+      formState: { isValid: isOpenAICompatibleValid },
+    } = useForm<OpenAICompatibleLlmFormValues>({
+      resolver: zodResolver(openAICompatibleSchema),
+      mode: 'onChange',
+      defaultValues: {
+        modelType: 'openAICompatible',
+        endpoint: '',
+        apiKey: '',
         model: '',
       },
     });
@@ -357,6 +399,23 @@ const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
       }
     };
 
+    const onOpenAICompatibleSubmit: SubmitHandler<AzureLlmFormValues> = async (data) => {
+      try {
+        await updateLlmConfig(data, 'openAICompatible');
+        if (onSaveSuccess) {
+          onSaveSuccess();
+        }
+        setIsEditing(false);
+        setFormSubmitSuccess(true);
+      } catch (error) {
+        const errorMessage =
+          error.response?.data?.message || 'Failed to save OpenAI API compatible configuration';
+        setSaveError(errorMessage);
+        console.error('Error saving OpenAI API comaptible configuration:', error);
+        setFormSubmitSuccess(false);
+      }
+    };
+
     // Expose the handleSave method to the parent component
     useImperativeHandle(ref, () => ({
       handleSave: async (): Promise<SaveResult> => {
@@ -405,6 +464,29 @@ const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
                     error.response?.data?.message || 'Failed to save Azure OpenAI configuration';
                   setSaveError(errorMessage);
                   console.error('Error saving Azure OpenAI configuration:', error);
+                  setFormSubmitSuccess(false);
+                  resolve({ success: false, error: errorMessage });
+                } finally {
+                  setIsSaving(false);
+                }
+              })();
+            } else if (modelType === 'openAICompatible') {
+              // Execute the Azure form submission
+              handleOpenAICompatibleSubmit(async (data) => {
+                try {
+                  await updateLlmConfig(data, 'openAICompatible');
+                  if (onSaveSuccess) {
+                    onSaveSuccess();
+                  }
+                  setIsEditing(false);
+                  setFormSubmitSuccess(true);
+                  resolve({ success: true });
+                } catch (error) {
+                  const errorMessage =
+                    error.response?.data?.message ||
+                    'Failed to save OpenAI API Compatible configuration';
+                  setSaveError(errorMessage);
+                  console.error('Error saving OpenAI compatible configuration:', error);
                   setFormSubmitSuccess(false);
                   resolve({ success: false, error: errorMessage });
                 } finally {
@@ -491,6 +573,14 @@ const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
                 deploymentName: config.deploymentName || '',
                 model: config.model || '',
               });
+            } else if (config.modelType === 'openAICompatible') {
+              // For Azure configuration
+              resetOpenAICompatible({
+                modelType: 'openAICompatible',
+                endpoint: config.endpoint || '',
+                apiKey: config.apiKey || '',
+                model: config.model || '',
+              });
             } else if (config.modelType === 'gemini') {
               resetGemini({
                 modelType: 'gemini',
@@ -539,6 +629,12 @@ const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
               deploymentName: '',
               model: '',
             });
+            resetOpenAICompatible({
+              modelType: 'openAICompatible',
+              endpoint: '',
+              apiKey: '',
+              model: '',
+            });
           }
         } catch (error) {
           console.error('Failed to load LLM configuration:', error);
@@ -571,13 +667,19 @@ const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
             deploymentName: '',
             model: '',
           });
+          resetOpenAICompatible({
+            modelType: 'openAICompatible',
+            endpoint: '',
+            apiKey: '',
+            model: '',
+          });
         } finally {
           setIsLoading(false);
         }
       };
 
       fetchConfig();
-    }, [resetOpenAI, resetAzure, resetGemini, resetAnthropic]);
+    }, [resetOpenAI, resetAzure, resetGemini, resetAnthropic, resetOpenAICompatible]);
 
     // Reset saveError when it changes
     useEffect(() => {
@@ -604,7 +706,9 @@ const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
       } else if (modelType === 'gemini') {
         isCurrentFormValid = isGeminiValid; // Assuming you have a validation state for Gemini
       } else if (modelType === 'anthropic') {
-        isCurrentFormValid = isAnthropicValid; // Assuming you have a validation state for Gemini
+        isCurrentFormValid = isAnthropicValid; // Assuming you have a validation state for anthropic
+      } else if (modelType === 'openAICompatible') {
+        isCurrentFormValid = isOpenAICompatibleValid; // Assuming you have a validation state for openai api compatible
       }
 
       onValidationChange(isCurrentFormValid && isEditing);
@@ -613,13 +717,16 @@ const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
       isAzureValid,
       isGeminiValid,
       isAnthropicValid,
+      isOpenAICompatibleValid,
       isEditing,
       modelType,
       onValidationChange,
     ]);
 
     // Handle model type change
-    const handleModelTypeChange = (newType: 'openAI' | 'azureOpenAI' | 'gemini' | 'anthropic') => {
+    const handleModelTypeChange = (
+      newType: 'openAI' | 'azureOpenAI' | 'gemini' | 'anthropic' | 'openAICompatible'
+    ) => {
       setModelType(newType);
       // Don't reset forms - we keep separate state for each
     };
@@ -643,6 +750,13 @@ const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
                   endpoint: config.endpoint || '',
                   apiKey: config.apiKey || '',
                   deploymentName: config.deploymentName || '',
+                  model: config.model || '',
+                });
+              } else if (config.modelType === 'openAICompatible') {
+                resetOpenAICompatible({
+                  modelType: 'openAICompatible',
+                  endpoint: config.endpoint || '',
+                  apiKey: config.apiKey || '',
                   model: config.model || '',
                 });
               } else if (modelType === 'gemini') {
@@ -690,6 +804,12 @@ const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
                 endpoint: '',
                 apiKey: '',
                 deploymentName: '',
+                model: '',
+              });
+              resetOpenAICompatible({
+                modelType: 'openAICompatible',
+                endpoint: '',
+                apiKey: '',
                 model: '',
               });
             }
@@ -774,7 +894,8 @@ const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
                     | 'openAI'
                     | 'azureOpenAI'
                     | 'gemini'
-                    | 'anthropic';
+                    | 'anthropic'
+                    | 'openAICompatible';
                   handleModelTypeChange(newType);
                 }}
               >
@@ -782,6 +903,7 @@ const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
                 <MenuItem value="azureOpenAI">Azure OpenAI Service</MenuItem>
                 <MenuItem value="gemini">Gemini API</MenuItem>
                 <MenuItem value="anthropic">Anthropic API</MenuItem>
+                <MenuItem value="openAICompatible">OpenAI API Compatible</MenuItem>
               </Select>
             </FormControl>
           </Grid>
@@ -1216,6 +1338,131 @@ const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
                       size="small"
                       error={!!fieldState.error}
                       helperText={fieldState.error?.message || 'e.g., gpt-4, gpt-35-turbo'}
+                      required
+                      disabled={!isEditing || fetchError}
+                      InputProps={{
+                        startAdornment: (
+                          <InputAdornment position="start">
+                            <Iconify icon={robotIcon} width={18} height={18} />
+                          </InputAdornment>
+                        ),
+                      }}
+                      sx={{
+                        '& .MuiOutlinedInput-root': {
+                          '& fieldset': {
+                            borderColor: alpha(theme.palette.text.primary, 0.15),
+                          },
+                        },
+                      }}
+                    />
+                  )}
+                />
+              </Grid>
+            </>
+          )}
+
+          {/* OpenAI Compatible Form */}
+          {modelType === 'openAICompatible' && (
+            <>
+              <Grid item xs={12} md={6}>
+                <Controller
+                  name="endpoint"
+                  control={openAICompatibleControl}
+                  render={({ field, fieldState }) => (
+                    <TextField
+                      {...field}
+                      label="Endpoint URL"
+                      fullWidth
+                      size="small"
+                      error={!!fieldState.error}
+                      helperText={
+                        fieldState.error?.message || 'e.g., https://your-resource.openai.azure.com/'
+                      }
+                      required
+                      disabled={!isEditing || fetchError}
+                      InputProps={{
+                        startAdornment: (
+                          <InputAdornment position="start">
+                            <Iconify icon={linkIcon} width={18} height={18} />
+                          </InputAdornment>
+                        ),
+                      }}
+                      sx={{
+                        '& .MuiOutlinedInput-root': {
+                          '& fieldset': {
+                            borderColor: alpha(theme.palette.text.primary, 0.15),
+                          },
+                        },
+                      }}
+                    />
+                  )}
+                />
+              </Grid>
+
+              <Grid item xs={12} md={6}>
+                <Controller
+                  name="apiKey"
+                  control={openAICompatibleControl}
+                  render={({ field, fieldState }) => (
+                    <TextField
+                      {...field}
+                      label="API Key"
+                      fullWidth
+                      size="small"
+                      error={!!fieldState.error}
+                      helperText={fieldState.error?.message || 'Your OpenAI API Compatible API Key'}
+                      required
+                      disabled={!isEditing || fetchError}
+                      type={showOpenAICompatiblePassword ? 'text' : 'password'}
+                      InputProps={{
+                        startAdornment: (
+                          <InputAdornment position="start">
+                            <Iconify icon={keyIcon} width={18} height={18} />
+                          </InputAdornment>
+                        ),
+                        endAdornment: (
+                          <InputAdornment position="end">
+                            <IconButton
+                              onClick={() =>
+                                setShowOpenAICompatiblePassword(!showOpenAICompatiblePassword)
+                              }
+                              edge="end"
+                              size="small"
+                              disabled={!isEditing || fetchError}
+                            >
+                              <Iconify
+                                icon={showOpenAICompatiblePassword ? eyeOffIcon : eyeIcon}
+                                width={16}
+                                height={16}
+                              />
+                            </IconButton>
+                          </InputAdornment>
+                        ),
+                      }}
+                      sx={{
+                        '& .MuiOutlinedInput-root': {
+                          '& fieldset': {
+                            borderColor: alpha(theme.palette.text.primary, 0.15),
+                          },
+                        },
+                      }}
+                    />
+                  )}
+                />
+              </Grid>
+
+              <Grid item xs={12} md={6}>
+                <Controller
+                  name="model"
+                  control={openAICompatibleControl}
+                  render={({ field, fieldState }) => (
+                    <TextField
+                      {...field}
+                      label="Model Name"
+                      fullWidth
+                      size="small"
+                      error={!!fieldState.error}
+                      helperText={fieldState.error?.message || 'e.g., deepseek-ai/DeepSeek-V3'}
                       required
                       disabled={!isEditing || fetchError}
                       InputProps={{
