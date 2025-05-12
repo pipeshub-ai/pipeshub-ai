@@ -24,7 +24,6 @@ import {
   EventType,
   NewRecordEvent,
   RecordsEventProducer,
-  ReindexAllRecordEvent,
   UpdateRecordEvent,
 } from './records_events.service';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
@@ -32,6 +31,14 @@ import { endpoint } from '../../storage/constants/constants';
 import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
 import { configPaths } from '../../configuration_manager/paths/paths';
 import { storageTypes } from '../../configuration_manager/constants/constants';
+import {
+  ReindexAllRecordEvent,
+  SyncEventProducer,
+  Event as SyncEvent,
+  EventType as SyncEventType,
+  SyncDriveEvent,
+  SyncGmailEvent,
+} from './sync_events.service';
 
 const logger = Logger.getInstance({
   service: 'Knowledge Base Service',
@@ -52,8 +59,8 @@ export class RecordRelationService {
 
   constructor(
     @inject(ArangoService) private readonly arangoService: ArangoService,
-    @inject(RecordsEventProducer)
-    readonly eventProducer: RecordsEventProducer,
+    @inject(RecordsEventProducer) readonly eventProducer: RecordsEventProducer,
+    @inject(SyncEventProducer) readonly syncEventProducer: SyncEventProducer,
     private readonly defaultConfig: DefaultStorageConfig,
   ) {
     this.db = this.arangoService.getConnection();
@@ -82,6 +89,7 @@ export class RecordRelationService {
     ) as EdgeCollection;
 
     this.initializeEventProducer();
+    this.initializeSyncEventProducer();
   }
 
   /**
@@ -145,6 +153,20 @@ export class RecordRelationService {
         error instanceof Error
           ? error.message
           : 'Failed to initialize event producer',
+      );
+    }
+  }
+
+  private async initializeSyncEventProducer() {
+    try {
+      await this.syncEventProducer.start();
+      logger.info('Sync Event producer initialized successfully');
+    } catch (error) {
+      logger.error('Failed to initialize Sync event producer', error);
+      throw new InternalServerError(
+        error instanceof Error
+          ? error.message
+          : 'Failed to initialize sync event producer',
       );
     }
   }
@@ -1498,9 +1520,8 @@ export class RecordRelationService {
       dateTo,
       connectors,
     } = params;
-    
-    const tempRecordTypeFilter = ['FILE','MAIL'];
 
+    const tempRecordTypeFilter = ['FILE', 'MAIL'];
 
     // Base filter for all records
     let baseFilter = aql`FILTER record.isDeleted != true AND record.recordType in ${tempRecordTypeFilter}`;
@@ -2497,13 +2518,13 @@ export class RecordRelationService {
       const reindexAllRecordEventPayload =
         await this.createReindexAllRecordEventPayload(reindexPayload);
 
-      const event: Event = {
-        eventType: EventType.ReindexAllRecordEvent,
+      const event: SyncEvent = {
+        eventType: SyncEventType.ReindexAllRecordEvent,
         timestamp: Date.now(),
         payload: reindexAllRecordEventPayload,
       };
 
-      await this.eventProducer.publishEvent(event);
+      await this.syncEventProducer.publishEvent(event);
       logger.info(`Published reindex all record for app ${reindexPayload.app}`);
 
       return { success: true };
@@ -2523,6 +2544,54 @@ export class RecordRelationService {
       orgId: reindexPayload.orgId,
       origin: reindexPayload.origin,
       connector: reindexPayload.app,
+      createdAtTimestamp: Date.now().toString(),
+      updatedAtTimestamp: Date.now().toString(),
+      sourceCreatedAtTimestamp: Date.now().toString(),
+    };
+  }
+
+  async resyncConnectorRecords(resyncConnectorPayload: any): Promise<any> {
+    try {
+      const resyncConnectorEventPayload =
+        await this.createResyncConnectorEventPayload(resyncConnectorPayload);
+
+      const event: SyncEvent = {
+        eventType: resyncConnectorEventPayload.connector === 'GMAIL' ? SyncEventType.SyncGmailEvent :SyncEventType.SyncDriveEvent,
+        timestamp: Date.now(),
+        payload: resyncConnectorEventPayload,
+      };
+
+      await this.syncEventProducer.publishEvent(event);
+      logger.info(
+        `Published resync connector event for app ${resyncConnectorPayload.connectorName}`,
+      );
+
+      return { success: true };
+    } catch (eventError: any) {
+      logger.error('Failed to publish resync connector event', {
+        error: eventError,
+      });
+      // Don't throw the error to avoid affecting the main operation
+      return { success: false, error: eventError.message };
+    }
+  }
+
+  async createResyncConnectorEventPayload(
+    resyncConnectorEventPayload: any,
+  ): Promise<SyncDriveEvent | SyncGmailEvent> {
+    let connectorName;
+    if (resyncConnectorEventPayload.connectorName === 'DRIVE') {
+      connectorName = 'DRIVE';
+    } else if (resyncConnectorEventPayload.connectorName === 'GMAIL') {
+      connectorName = 'GMAIL';
+    }
+    if (!connectorName) {
+      throw new BadRequestError('Connector name required');
+    }
+    return {
+      orgId: resyncConnectorEventPayload.orgId,
+      origin: resyncConnectorEventPayload.origin,
+      connector: connectorName,
       createdAtTimestamp: Date.now().toString(),
       updatedAtTimestamp: Date.now().toString(),
       sourceCreatedAtTimestamp: Date.now().toString(),
