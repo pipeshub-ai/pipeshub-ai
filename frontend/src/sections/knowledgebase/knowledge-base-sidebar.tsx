@@ -342,6 +342,7 @@ const statusIcons: Record<string, React.ComponentProps<typeof IconifyIcon>['icon
 // Helper function to format labels
 const formatLabel = (label: string): string => {
   if (!label) return '';
+  if(label ==='AUTO_INDEX_OFF')  return 'Maual Sync'
   return label
     .replace(/_/g, ' ')
     .toLowerCase()
@@ -1321,7 +1322,7 @@ export default function KnowledgeBaseSideBar({
                         width={16}
                         height={16}
                       />
-                      {formatLabel(status)}
+                      {status === 'AUTO_INDEX_OFF' ? 'Manual Sync' : formatLabel(status)}
                     </Box>
                   }
                 />

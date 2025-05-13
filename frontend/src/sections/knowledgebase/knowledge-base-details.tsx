@@ -75,6 +75,7 @@ import {
   LinearProgress,
   FormControlLabel,
   CircularProgress,
+  Tooltip,
 } from '@mui/material';
 
 import axios from 'src/utils/axios';
@@ -573,10 +574,11 @@ export default function KnowledgeBaseDetails({
                     : getFileIcon('', mimeType)
               }
               style={{
-                fontSize: '20px',
+                fontSize: '18px',
                 color: getFileIconColor(extension, mimeType),
-                marginRight: '12px',
+                marginRight: '10px',
                 flexShrink: 0,
+                opacity: 0.85,
               }}
             />
             <Typography variant="body2" noWrap sx={{ fontWeight: 500 }}>
@@ -593,77 +595,78 @@ export default function KnowledgeBaseDetails({
       align: 'center',
       headerAlign: 'center',
       renderCell: (params) => (
-        <Box
+        <Typography
+          variant="caption"
           sx={{
-            width: '100%',
-            display: 'flex',
-            justifyContent: 'center',
-            alignItems: 'center',
-            mt: 1.5,
+            fontWeight: 500,
           }}
         >
-          <Chip
-            label={params.value}
-            size="small"
-            color={params.value === 'FILE' ? 'primary' : 'secondary'}
-            sx={{
-              height: 24,
-              minWidth: 70,
-              fontWeight: 500,
-              fontSize: '0.75rem',
-            }}
-          />
-        </Box>
+          {params.value}
+        </Typography>
       ),
     },
     {
       field: 'indexingStatus',
       headerName: 'Status',
-      width: 120,
+      width: 140,
       align: 'center',
       headerAlign: 'center',
       renderCell: (params) => {
-        const status = params.value || 'NOT STARTED';
-        let color: 'default' | 'primary' | 'success' | 'error' | 'info' | 'warning' = 'default';
+        const status = params.value || 'NOT_STARTED';
+        let displayLabel = '';
+        let color = theme.palette.text.secondary;
 
+        // Map the indexing status to appropriate display values
         switch (status) {
           case 'COMPLETED':
-            color = 'success';
+            displayLabel = 'COMPLETED';
+            color = theme.palette.success.main;
             break;
           case 'IN_PROGRESS':
-            color = 'info';
+            displayLabel = 'IN PROGRESS';
+            color = theme.palette.info.main;
             break;
           case 'FAILED':
-            color = 'error';
+            displayLabel = 'FAILED';
+            color = theme.palette.error.main;
             break;
-          case 'NOT STARTED':
-            color = 'warning';
+          case 'NOT_STARTED':
+            displayLabel = 'NOT STARTED';
+            color = theme.palette.warning.main;
+            break;
+          case 'FILE_TYPE_NOT_SUPPORTED':
+            displayLabel = 'FILE TYPE NOT SUPPORTED';
+            color = theme.palette.text.secondary;
+            break;
+          case 'AUTO_INDEX_OFF':
+            displayLabel = 'MANUAL SYNC';
+            color = theme.palette.primary.main;
             break;
           default:
-            color = 'warning';
+            displayLabel = status.replace(/_/g, ' ').toLowerCase();
+            color = theme.palette.text.secondary;
         }
+
+        // Capitalize first letter of each word
+        displayLabel = displayLabel
+          .split(' ')
+          .map((word: string) => word.charAt(0).toUpperCase() + word.slice(1))
+          .join(' ');
 
         return (
           <Box
             sx={{
-              width: '100%',
               display: 'flex',
-              justifyContent: 'center',
               alignItems: 'center',
-              mt: 1.5,
+              justifyContent: 'center',
+              gap: 0.75,
+              mt: 2.4,
             }}
           >
-            <Chip
-              label={status || 'PENDING'}
-              size="small"
-              color={color}
-              sx={{
-                height: 24,
-                minWidth: 85,
-                fontWeight: 500,
-                fontSize: '0.75rem',
-              }}
-            />
+            <Box sx={{}} />
+            <Typography variant="caption" sx={{ color, fontWeight: 500 }}>
+              {displayLabel}
+            </Typography>
           </Box>
         );
       },
@@ -671,151 +674,182 @@ export default function KnowledgeBaseDetails({
     {
       field: 'origin',
       headerName: 'Origin',
-      width: 120,
+      width: 110,
       align: 'center',
       headerAlign: 'center',
       renderCell: (params) => (
-        <Box
+        <Typography
+          variant="caption"
           sx={{
-            width: '100%',
-            display: 'flex',
-            justifyContent: 'center',
-            alignItems: 'center',
-            mt: 1.5,
+            fontWeight: 500,
           }}
         >
-          <Chip
-            label={params.value}
-            size="small"
-            variant="outlined"
-            sx={{
-              height: 24,
-              minWidth: 70,
-              fontWeight: 500,
-              fontSize: '0.75rem',
-            }}
-          />
-        </Box>
+          {params.value}
+        </Typography>
       ),
     },
     {
       field: 'fileRecord',
-      headerName: 'File Size',
-      width: 120,
+      headerName: 'Size',
+      width: 100,
       align: 'right',
       headerAlign: 'right',
-      renderCell: (params) => (
-        <Box
-          sx={{
-            width: '100%',
-            display: 'flex',
-            justifyContent: 'flex-end',
-            alignItems: 'center',
-            pr: 2,
-            mt: 1.5,
-          }}
-        >
-          <Typography variant="body2" color="text.secondary">
-            {params.value ? formatFileSize(params.value.sizeInBytes) : '-'}
+      renderCell: (params) => {
+        // Handle undefined, NaN, or invalid size values
+        const size = params.value?.sizeInBytes;
+        const formattedSize =
+          size !== undefined && !Number.isNaN(size) && size > 0 ? formatFileSize(size) : '—';
+
+        return (
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            sx={{
+              pr: 2,
+              fontFamily: theme.typography.fontFamily,
+            }}
+          >
+            {formattedSize}
           </Typography>
-        </Box>
-      ),
+        );
+      },
     },
     {
       field: 'createdAtTimestamp',
       headerName: 'Created',
-      width: 170,
+      width: 160,
       align: 'left',
       headerAlign: 'left',
-      renderCell: (params) => (
-        <Box
-          sx={{
-            display: 'flex',
-            flexDirection: 'column',
-            height: '100%',
-            justifyContent: 'center',
-            pl: 2,
-          }}
-        >
-          <Typography variant="body2" lineHeight={1.4}>
-            {params.value ? new Date(params.value).toLocaleDateString() : '-'}
-          </Typography>
-          <Typography variant="caption" color="text.secondary" lineHeight={1.4}>
-            {params.value
-              ? new Date(params.value).toLocaleTimeString([], {
+      renderCell: (params) => {
+        const timestamp = params.value;
+
+        if (!timestamp) {
+          return (
+            <Typography variant="caption" color="text.secondary">
+              —
+            </Typography>
+          );
+        }
+
+        try {
+          const date = new Date(timestamp);
+
+          // Check if date is valid
+          if (Number.isNaN(date.getTime())) {
+            return (
+              <Typography variant="caption" color="text.secondary">
+                —
+              </Typography>
+            );
+          }
+
+          return (
+            <Box sx={{ pl: 1.5, mt: 1.5 }}>
+              <Typography
+                variant="caption"
+                display="block"
+                color="text.primary"
+                sx={{ fontWeight: 500 }}
+              >
+                {date.toLocaleDateString(undefined, {
+                  year: 'numeric',
+                  month: 'short',
+                  day: 'numeric',
+                })}
+              </Typography>
+              <Typography variant="caption" display="block" color="text.secondary">
+                {date.toLocaleTimeString([], {
                   hour: '2-digit',
                   minute: '2-digit',
-                })
-              : ''}
-          </Typography>
-        </Box>
-      ),
+                })}
+              </Typography>
+            </Box>
+          );
+        } catch (e) {
+          return (
+            <Typography variant="caption" color="text.secondary">
+              —
+            </Typography>
+          );
+        }
+      },
     },
     {
       field: 'updatedAtTimestamp',
       headerName: 'Updated',
-      width: 170,
+      width: 160,
       align: 'left',
       headerAlign: 'left',
-      renderCell: (params) => (
-        <Box
-          sx={{
-            display: 'flex',
-            flexDirection: 'column',
-            height: '100%',
-            justifyContent: 'center',
-            pl: 2,
-          }}
-        >
-          <Typography variant="body2" lineHeight={1.4}>
-            {params.value ? new Date(params.value).toLocaleDateString() : '-'}
-          </Typography>
-          <Typography variant="caption" color="text.secondary" lineHeight={1.4}>
-            {params.value
-              ? new Date(params.value).toLocaleTimeString([], {
+      renderCell: (params) => {
+        const timestamp = params.value;
+
+        if (!timestamp) {
+          return (
+            <Typography variant="caption" color="text.secondary">
+              —
+            </Typography>
+          );
+        }
+
+        try {
+          const date = new Date(timestamp);
+
+          // Check if date is valid
+          if (Number.isNaN(date.getTime())) {
+            return (
+              <Typography variant="caption" color="text.secondary">
+                —
+              </Typography>
+            );
+          }
+
+          return (
+            <Box sx={{ pl: 0.5, mt: 1.5 }}>
+              <Typography
+                variant="caption"
+                display="block"
+                color="text.primary"
+                sx={{ fontWeight: 500 }}
+              >
+                {date.toLocaleDateString(undefined, {
+                  year: 'numeric',
+                  month: 'short',
+                  day: 'numeric',
+                })}
+              </Typography>
+              <Typography variant="caption" display="block" color="text.secondary">
+                {date.toLocaleTimeString([], {
                   hour: '2-digit',
                   minute: '2-digit',
-                })
-              : ''}
-          </Typography>
-        </Box>
-      ),
+                })}
+              </Typography>
+            </Box>
+          );
+        } catch (e) {
+          return (
+            <Typography variant="caption" color="text.secondary">
+              —
+            </Typography>
+          );
+        }
+      },
     },
     {
       field: 'version',
       headerName: 'Version',
-      width: 140,
+      width: 100,
       align: 'center',
       headerAlign: 'center',
       renderCell: (params) => (
-        <Box
-          sx={{
-            width: '100%',
-            display: 'flex',
-            justifyContent: 'center',
-            alignItems: 'center',
-            gap: 1,
-            mt: 1.5,
-          }}
-        >
-          <Chip
-            label={params.value || '1.0'}
-            size="small"
-            variant="outlined"
-            sx={{
-              minWidth: 40,
-              height: 24,
-              fontWeight: 500,
-              fontSize: '0.75rem',
-            }}
-          />
-        </Box>
+        <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 500 }}>
+          {params.value || '1.0'}
+        </Typography>
       ),
     },
     {
       field: 'actions',
       headerName: 'Actions',
-      width: 90,
+      width: 70,
       sortable: false,
       align: 'center',
       headerAlign: 'center',
@@ -839,32 +873,33 @@ export default function KnowledgeBaseDetails({
             {
               label: 'View Details',
               icon: eyeIcon,
-              color: '#1976d2',
+              color: theme.palette.primary.main,
               onClick: () => navigate(`/record/${params.row.id}`),
             },
             {
               label: getDownloadLabel(),
               icon: downloadIcon,
-              color: '#1976d2',
+              color: theme.palette.primary.main,
               onClick: () =>
                 handleDownloadDocument(params.row.externalRecordId, params.row.recordName),
             },
-            ...(params.row.indexingStatus === 'FAILED'
+            ...(params.row.indexingStatus === 'FAILED' ||
+            params.row.indexingStatus === 'NOT_STARTED'
               ? [
                   {
                     label: 'Retry Indexing',
                     icon: refreshIcon,
-                    color: '#ff9800',
+                    color: theme.palette.warning.main,
                     onClick: () => handleRetryIndexing(params.row.id),
                   },
                 ]
               : []),
-            ...(params.row.indexingStatus === 'NOT_STARTED'
+            ...(params.row.indexingStatus === 'AUTO_INDEX_OFF'
               ? [
                   {
-                    label: 'Start Indexing',
+                    label: 'Start Manual Indexing',
                     icon: refreshIcon,
-                    color: '#ff9800',
+                    color: theme.palette.success.main,
                     onClick: () => handleRetryIndexing(params.row.id),
                   },
                 ]
@@ -872,7 +907,7 @@ export default function KnowledgeBaseDetails({
             {
               label: 'Delete Record',
               icon: trashCanIcon,
-              color: '#f44336',
+              color: theme.palette.error.main,
               onClick: () =>
                 setDeleteDialogData({
                   open: true,
@@ -887,58 +922,50 @@ export default function KnowledgeBaseDetails({
           showActionMenu(event.currentTarget, items);
         };
 
-        const handleRetryIndexing = async (recordId: string) => {
-          try {
-            const response = await axios.post(
-              `${CONFIG.backendUrl}/api/v1/knowledgeBase/reindex/record/${recordId}`
-            );
-            console.log(response);
-            setSnackbar({
-              open: true,
-              message: response.data.reindexResponse.success
-                ? 'File indexing started'
-                : 'Failed to start reindexing',
-              severity: response.data.reindexResponse.success ? 'success' : 'error',
-            });
-            console.log(response.data.reindexResponse.success);
-          } catch (error) {
-            console.log('error in re indexing', error);
-            // setSnackbar({
-            //   open: true,
-            //   message: 'Failed to start reindexing',
-            //   severity: 'error',
-            // });
-          }
-        };
-
         return (
-          <Box sx={{ width: '100%', display: 'flex', justifyContent: 'center', mt: 1 }}>
-            <IconButton
-              size="small"
-              onClick={handleActionsClick}
-              sx={{
-                width: 28,
-                height: 28,
-                borderRadius: 1.5,
-                color: 'text.secondary',
-                transition: 'all 0.15s ease-in-out',
-                '&:hover': {
-                  backgroundColor: alpha('#1976d2', 0.06),
-                  color: 'primary.main',
-                  transform: 'translateY(-1px)',
-                },
-                '&:active': {
-                  transform: 'translateY(0)',
-                },
-              }}
-            >
-              <Icon icon={dotsIcon} fontSize={18} />
-            </IconButton>
-          </Box>
+          <IconButton
+            size="small"
+            onClick={handleActionsClick}
+            sx={{
+              width: 28,
+              height: 28,
+              color: alpha(theme.palette.text.primary, 0.6),
+              '&:hover': {
+                backgroundColor: alpha(theme.palette.primary.main, 0.04),
+                color: theme.palette.primary.main,
+              },
+            }}
+          >
+            <Icon icon={dotsIcon} fontSize={16} />
+          </IconButton>
         );
       },
     },
   ];
+
+  const handleRetryIndexing = async (recordId: string) => {
+    try {
+      const response = await axios.post(
+        `${CONFIG.backendUrl}/api/v1/knowledgeBase/reindex/record/${recordId}`
+      );
+      console.log(response);
+      setSnackbar({
+        open: true,
+        message: response.data.reindexResponse.success
+          ? 'File indexing started'
+          : 'Failed to start reindexing',
+        severity: response.data.reindexResponse.success ? 'success' : 'error',
+      });
+      console.log(response.data.reindexResponse.success);
+    } catch (error) {
+      console.log('error in re indexing', error);
+      // setSnackbar({
+      //   open: true,
+      //   message: 'Failed to start reindexing',
+      //   severity: 'error',
+      // });
+    }
+  };
 
   const handleColumnVisibilityClick = (event: React.MouseEvent<HTMLElement>): void => {
     setAnchorEl(event.currentTarget);
