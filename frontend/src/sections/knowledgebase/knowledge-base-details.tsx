@@ -75,7 +75,6 @@ import {
   LinearProgress,
   FormControlLabel,
   CircularProgress,
-  Tooltip,
 } from '@mui/material';
 
 import axios from 'src/utils/axios';
@@ -591,7 +590,7 @@ export default function KnowledgeBaseDetails({
     {
       field: 'recordType',
       headerName: 'Type',
-      width: 110,
+      width: 100,
       align: 'center',
       headerAlign: 'center',
       renderCell: (params) => (
@@ -608,7 +607,7 @@ export default function KnowledgeBaseDetails({
     {
       field: 'indexingStatus',
       headerName: 'Status',
-      width: 140,
+      width: 180,
       align: 'center',
       headerAlign: 'center',
       renderCell: (params) => {
@@ -837,7 +836,7 @@ export default function KnowledgeBaseDetails({
     {
       field: 'version',
       headerName: 'Version',
-      width: 100,
+      width: 70,
       align: 'center',
       headerAlign: 'center',
       renderCell: (params) => (
