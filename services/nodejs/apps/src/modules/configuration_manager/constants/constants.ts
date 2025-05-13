@@ -25,6 +25,11 @@ export const googleWorkspaceTypes = {
   BUSINESS: 'business',
 };
 
+export const connectorTypes = {
+  GOOGLEWORKSPACE: 'googleWorkspace',
+  NOTION: 'notion',
+};
+
 export const googleWorkspaceServiceTypes = {
   GOOGLE_DRIVE: 'googleDrive',
   GOOGLE_DOCS: 'googleDocs',

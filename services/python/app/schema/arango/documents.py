@@ -131,13 +131,13 @@ record_schema = {
             "externalRevisionId": {"type": ["string", "null"]},
             "recordType": {
                 "type": "string",
-                "enum": ["FILE", "DRIVE", "WEBPAGE", "MESSAGE", "MAIL", "OTHERS"],
+                "enum": ["FILE", "DRIVE", "WEBPAGE", "MESSAGE", "MAIL", "OTHERS","DATABASE"],
             },
             "version": {"type": "number", "default": 0},
             "origin": {"type": "string", "enum": ["UPLOAD", "CONNECTOR"]},
             "connectorName": {
                 "type": "string",
-                "enum": ["ONEDRIVE", "DRIVE", "CONFLUENCE", "GMAIL", "SLACK"],
+                "enum": ["ONEDRIVE", "DRIVE", "CONFLUENCE", "GMAIL", "SLACK","NOTION"],
             },
             "summaryDocumentId": {"type": ["string", "null"]},
             "virtualRecordId": {"type": ["string", "null"], "default": None},
@@ -283,7 +283,7 @@ record_group_schema = {
             },
             "connectorName": {
                 "type": "string",
-                "enum": ["ONEDRIVE", "DRIVE", "CONFLUENCE", "SLACK"],
+                "enum": ["ONEDRIVE", "DRIVE", "CONFLUENCE", "SLACK","NOTION"],
             },
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
@@ -338,4 +338,202 @@ kb_schema = {
     },
     "level": "strict",
     "message": "Document does not match the department schema.",
+}
+
+notion_page_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "page_id": {"type": "string", "minLength": 1},  # Notion's UUID for the page
+            "title": {"type": "string"},  # Extracted page title
+            "url": {"type": "string", "format": "uri"},  # Notion page URL
+            "parent": {
+                "type": "object",
+                "properties": {
+                    "type": {
+                        "type": "string",
+                        "enum": ["database_id", "page_id", "workspace", "block_id"]
+                    },
+                    "database_id": {"type": "string"},
+                    "page_id": {"type": "string"},
+                    "workspace": {"type": "boolean"},
+                    "block_id": {"type": "string"}
+                },
+                "additionalProperties": False
+            },
+           
+            "isArchived": {"type": "boolean", "default": False},  # Whether the page is archived in Notion
+            "isDeleted": {"type": "boolean", "default": False},  # Whether the page is deleted in your system
+            "deletedAtTimestamp": {"type": "number"},  # When the page was deleted in your system
+            "hasChildren": {"type": "boolean"},  # Whether the page has child bloc
+            "propertyValues": {
+                "type": "object",
+                "additionalProperties": True  # Allow any database properties
+            },
+            "rawData": {
+                "type": "object",
+                "additionalProperties": True  # Store the complete raw JSON from Notion API
+            }
+        },
+        "required": [
+            "page_id",
+            "title",
+            "url",
+        ],
+        "additionalProperties": False
+    },
+    "level": "strict",
+    "message": "Document does not match the Notion page schema."
+}
+
+notion_database_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "database_id": {"type": "string", "minLength": 1},  # Notion's UUID for the database
+            "title": {"type": "string"},  # Extracted database title
+            "url": {"type": "string", "format": "uri"},  # Notion database URL
+            "parent": {
+                "type": "object",
+                "properties": {
+                    "type": {
+                        "type": "string",
+                        "enum": ["page_id", "workspace", "block_id"]
+                    },
+                    "page_id": {"type": "string"},
+                    "workspace": {"type": "boolean"},
+                    "block_id": {"type": "string"}
+                },
+                "additionalProperties": False
+            },
+            "isArchived": {"type": "boolean", "default": False},  # Whether the database is archived in Notion
+            "isDeleted": {"type": "boolean", "default": False},  # Whether the database is deleted in your system
+            "deletedAtTimestamp": {"type": "number"},  # When the database was deleted in your system
+            "properties": {
+                "type": "object",
+                "additionalProperties": True  # Database schema/properties definition
+            },
+            "rawData": {
+                "type": "object",
+                "additionalProperties": True  # Store the complete raw JSON from Notion API
+            }
+        },
+        "required": [
+            "database_id",
+            "title",
+            "url",
+        ],
+        "additionalProperties": False
+    },
+    "level": "strict",
+    "message": "Document does not match the Notion database schema."
+}
+
+notion_comment_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "database_id": {"type": "string", "minLength": 1},  # Notion's UUID for the database
+            "title": {"type": "string"},  # Extracted database title
+            "url": {"type": "string", "format": "uri"},  # Notion database URL
+            "parent": {
+                "type": "object",
+                "properties": {
+                    "type": {
+                        "type": "string",
+                        "enum": ["page_id", "workspace", "block_id"]
+                    },
+                    "page_id": {"type": "string"},
+                    "workspace": {"type": "boolean"},
+                    "block_id": {"type": "string"}
+                },
+                "additionalProperties": False
+            },
+            "isArchived": {"type": "boolean", "default": False},  # Whether the database is archived in Notion
+            "isDeleted": {"type": "boolean", "default": False},  # Whether the database is deleted in your system
+            "deletedAtTimestamp": {"type": "number"},  # When the database was deleted in your system
+            "properties": {
+                "type": "object",
+                "additionalProperties": True  # Database schema/properties definition
+            },
+            "rawData": {
+                "type": "object",
+                "additionalProperties": True  # Store the complete raw JSON from Notion API
+            }
+        },
+        "required": [
+            "database_id",
+            "title",
+            "url",
+        ],
+        "additionalProperties": False
+    },
+    "level": "strict",
+    "message": "Document does not match the Notion database schema."
+}
+notion_comment_schema = {
+  "rule": {
+    "type": "object",
+    "properties": {
+      "comment_id": {"type": "string", "minLength": 1},  
+      "parent": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["page_id", "block_id", "discussion_id"]
+          },
+          "page_id": {"type": "string"},
+          "block_id": {"type": "string"},
+          "discussion_id": {"type": "string"}
+        },
+        "additionalProperties": False
+      },
+      "discussion_id": {"type": "string"},  
+      "created_by": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "string"},
+          "name": {"type": "string"},
+          "avatar_url": {"type": "string", "format": "uri"}
+        }
+      },
+
+      "rich_text": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": True 
+        }
+      },
+      "plain_text": {"type": "string"},  
+      "resolved": {"type": "boolean", "default": False},  
+      "isDeleted": {"type": "boolean", "default": False},  
+      "deletedAtTimestamp": {"type": "number"},  
+      "reactions": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "emoji": {"type": "string"},
+            "users": {
+              "type": "array",
+              "items": {"type": "string"}  
+            }
+          }
+        }
+      },
+      "rawData": {
+        "type": "object",
+        "additionalProperties": True  
+      }
+    },
+    "required": [
+      "comment_id",
+      "parent",
+    ],
+    "additionalProperties": False
+  },
+  "level": "strict",
+  "message": "Document does not match the Notion comment schema."
 }

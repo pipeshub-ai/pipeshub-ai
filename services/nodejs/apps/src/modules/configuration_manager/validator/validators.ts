@@ -257,6 +257,14 @@ export const googleWorkspaceConfigSchema = z.object({
   }),
 });
 
+export const notionCredentialsSchema = z.object({
+  body: z.object({
+    integrationSecrets: z
+      .array(z.string())
+      .min(1, 'At least one integration secret is required'),
+  }),
+});
+
 export const aiModelsConfigSchema = z.object({
   body: z
     .object({

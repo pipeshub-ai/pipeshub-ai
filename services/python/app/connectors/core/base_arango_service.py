@@ -19,6 +19,9 @@ from app.schema.arango.documents import (
     orgs_schema,
     record_schema,
     user_schema,
+    notion_page_schema,
+    notion_database_schema,
+    notion_comment_schema,
 )
 from app.schema.arango.edges import (
     basic_edge_schema,
@@ -89,6 +92,7 @@ class BaseArangoService:
         self._collections = {
             collection_name: None
             for collection_name, _ in NODE_COLLECTIONS + EDGE_COLLECTIONS
+
         }
 
     async def connect(self) -> bool:
