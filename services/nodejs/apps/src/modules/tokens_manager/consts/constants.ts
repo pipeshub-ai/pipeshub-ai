@@ -11,6 +11,10 @@ export const GOOGLE_WORKSPACE_TOKEN_EXCHANGE_PATH =
 
 export const CONNECTORS_TYPES = {
   GOOGLE_WORKSPACE: 'googleWorkspace',
+  NOTION: 'notion',
 };
 export const REFRESH_TOKEN_PATH =
   'api/v1/connectors/internal/refreshIndividualConnectorToken';
+
+export const NOTION_CREDENTIALS_PATH =
+  'api/v1/configurationManager/internal/connectors/notionCredentials';

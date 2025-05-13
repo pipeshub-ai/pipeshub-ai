@@ -121,6 +121,10 @@ class CollectionNames(Enum):
 
     BLOCKS = "blocks"
 
+    NOTION_PAGE_RECORD="notionPageRecord"
+    NOTION_DATABASE_RECORD="notionDatabaseRecord"
+    NOTION_COMMENT_RECORD="notionCommentRecord"
+
 
 class QdrantCollectionNames(Enum):
     RECORDS = "records"

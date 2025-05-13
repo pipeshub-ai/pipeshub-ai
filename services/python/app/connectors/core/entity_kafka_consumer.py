@@ -19,6 +19,9 @@ from app.setups.connector_setup import (
     initialize_enterprise_account_services_fn,
     initialize_individual_account_services_fn,
 )
+
+from app.connectors.notion.core.notion_service import NotionService
+
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -662,104 +665,136 @@ class EntityKafkaRouteConsumer:
             enabled_apps = set(apps)
 
             if enabled_apps:
-                self.logger.info(f"Enabled apps are: {enabled_apps}")
-                # Initialize services based on account type
-                if self.app_container:
-                    accountType = org["accountType"]
-                    self.logger.info(f"Account type: {accountType}")
-                    # Use the existing app container to initialize services
-                    if accountType == AccountType.ENTERPRISE.value or accountType == AccountType.BUSINESS.value:
-                        await initialize_enterprise_account_services_fn(
-                            org_id, self.app_container
-                        )
-                    elif accountType == AccountType.INDIVIDUAL.value:
-                        await initialize_individual_account_services_fn(
-                            org_id, self.app_container
+                if app_group == 'Google Workspace':
+                    self.logger.info(f"Enabled apps are: {enabled_apps}")
+                    # Initialize services based on account type
+                    if self.app_container:
+                        accountType = org["accountType"]
+                        # Use the existing app container to initialize services
+                        if accountType == AccountType.ENTERPRISE.value or accountType == AccountType.BUSINESS.value:
+                            await initialize_enterprise_account_services_fn(
+                                org_id, self.app_container
+                            )
+                        elif accountType == AccountType.INDIVIDUAL.value:
+                            await initialize_individual_account_services_fn(
+                                org_id, self.app_container
+                            )
+                        else:
+                            self.logger.error("Account Type not valid")
+                            return False
+                        self.logger.info(
+                            f"✅ Successfully initialized services for account type: {org['accountType']}"
                         )
                     else:
-                        self.logger.error("Account Type not valid")
-                        return False
-                    self.logger.info(
-                        f"✅ Successfully initialized services for account type: {org['accountType']}"
-                    )
-                else:
-                    self.logger.warning(
-                        "App container not provided, skipping service initialization"
-                    )
-
-                user_type = (
-                    AccountType.ENTERPRISE.value
-                    if org["accountType"] in [AccountType.ENTERPRISE.value, AccountType.BUSINESS.value]
-                    else AccountType.INDIVIDUAL.value
-                )
-
-                # Handle enterprise/business account type
-                if user_type == AccountType.ENTERPRISE.value:
-                    active_users = await self.arango_service.get_users(
-                        org_id, active=True
-                    )
-
-                    for app_name in enabled_apps:
-                        if app_name in [Connectors.GOOGLE_CALENDAR.value]:
-                            self.logger.info(f"Skipping init for {app_name}")
-                            continue
-
-                        # Initialize app (this will fetch and create users)
-                        await self._handle_sync_event(
-                            event_type=f"{app_name.lower()}.init",
-                            value={"orgId": org_id},
+                        self.logger.warning(
+                            "App container not provided, skipping service initialization"
                         )
 
-                        await asyncio.sleep(5)
+                    user_type = (
+                        AccountType.ENTERPRISE.value
+                        if org["accountType"] in [AccountType.ENTERPRISE.value, AccountType.BUSINESS.value]
+                        else AccountType.INDIVIDUAL.value
+                    )
 
-                        if sync_action == "immediate":
-                            # Start sync for all users
+                    # Handle enterprise/business account type
+                    if user_type == AccountType.ENTERPRISE.value:
+                        active_users = await self.arango_service.get_users(
+                            org_id, active=True
+                        )
+
+                        for app_name in enabled_apps:
+                            if app_name in [Connectors.GOOGLE_CALENDAR.value]:
+                                self.logger.info(f"Skipping init for {app_name}")
+                                continue
+
+                            # Initialize app (this will fetch and create users)
                             await self._handle_sync_event(
-                                event_type=f"{app_name.lower()}.start",
+                                event_type=f"{app_name.lower()}.init",
                                 value={"orgId": org_id},
                             )
+
                             await asyncio.sleep(5)
 
-                # For individual accounts, create edges between existing active users and apps
-                else:
-                    active_users = await self.arango_service.get_users(
-                        org_id, active=True
-                    )
-
-                    # First initialize each app
-                    for app_name in enabled_apps:
-                        if app_name in [Connectors.GOOGLE_CALENDAR.value]:
-                            self.logger.info(f"Skipping init for {app_name}")
-                            continue
-
-                        # Initialize app
-                        await self._handle_sync_event(
-                            event_type=f"{app_name.lower()}.init",
-                            value={"orgId": org_id},
-                        )
-
-                        await asyncio.sleep(5)
-
-                    # Then create edges and start sync if needed
-                    for user in active_users:
-                        for app in app_docs:
                             if sync_action == "immediate":
-                                # Start sync for individual user
-                                if app["name"] in [Connectors.GOOGLE_CALENDAR.value]:
-                                    self.logger.info("Skipping start")
-                                    continue
-
+                                # Start sync for all users
                                 await self._handle_sync_event(
-                                    event_type=f'{app["name"].lower()}.start',
-                                    value={
-                                        "orgId": org_id,
-                                        "email": user["email"],
-                                    },
+                                    event_type=f"{app_name.lower()}.start",
+                                    value={"orgId": org_id},
                                 )
                                 await asyncio.sleep(5)
 
-            self.logger.info(f"✅ Successfully enabled apps for org: {org_id}")
-            return True
+                    # For individual accounts, create edges between existing active users and apps
+                    else:
+                        active_users = await self.arango_service.get_users(
+                            org_id, active=True
+                        )
+
+                        # First initialize each app
+                        for app_name in enabled_apps:
+                            if app_name in [Connectors.GOOGLE_CALENDAR.value]:
+                                self.logger.info(f"Skipping init for {app_name}")
+                                continue
+
+                            # Initialize app
+                            await self._handle_sync_event(
+                                event_type=f"{app_name.lower()}.init",
+                                value={"orgId": org_id},
+                            )
+
+                            await asyncio.sleep(5)
+
+                        # Then create edges and start sync if needed
+                        for user in active_users:
+                            for app in app_docs:
+                                if sync_action == "immediate":
+                                    # Start sync for individual user
+                                    if app["name"] in [Connectors.GOOGLE_CALENDAR.value]:
+                                        self.logger.info("Skipping start")
+                                        continue
+
+                                    await self._handle_sync_event(
+                                        event_type=f'{app["name"].lower()}.start',
+                                        value={
+                                            "orgId": org_id,
+                                            "email": user["email"],
+                                        },
+                                    )
+                                    await asyncio.sleep(5)
+
+                elif app_group == 'Notion':
+                    self.logger.info(f"📥 Processing Notion app enabled event")
+               
+                
+                # Initialize NotionService
+                    notion_service = NotionService(
+                        integration_secret='',
+                        org_id=org_id,
+                        logger=self.logger
+                    )
+                
+                    try:
+                    # Process and store pages
+                        notion_pages_count, general_records_count = await notion_service.process_and_store_pages(
+                            self.arango_service
+                        )
+
+                        notion_database_count,database_records_count=await notion_service.process_and_store_databases(
+                            self.arango_service
+                        )
+
+                    
+                        self.logger.info(
+                            f"✅ Successfully processed {notion_pages_count} Notion pages and created {general_records_count} records"
+                        )
+                        self.logger.info(
+                            f"✅ Successfully processed {notion_database_count} Notion pages and created {database_records_count} records"
+                        )
+                    
+                    except Exception as e:
+                        self.logger.error(f"Error processing Notion pages: {str(e)}")
+                        return False
+                    self.logger.info(f"✅ Successfully enabled apps for org: {org_id}")
+                    return True
 
         except Exception as e:
             self.logger.error(f"❌ Error enabling apps: {str(e)}")
