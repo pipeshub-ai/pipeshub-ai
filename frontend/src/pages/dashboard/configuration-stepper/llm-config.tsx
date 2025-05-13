@@ -370,8 +370,7 @@ const LlmConfigStep: React.FC<LlmConfigStepProps> = ({ onSubmit, onSkip, initial
 
         {/* OpenAi API compatible fields */}
         {modelType === 'openAICompatible' && (
-          <>
-            <Grid item xs={12}>
+          <Grid item xs={12}>
               <Controller
                 name="endpoint"
                 control={control}
@@ -395,7 +394,6 @@ const LlmConfigStep: React.FC<LlmConfigStepProps> = ({ onSubmit, onSkip, initial
                 )}
               />
             </Grid>
-          </>
         )}
 
         {/* Common fields for both providers */}

@@ -993,29 +993,29 @@ const ConfigurationStepper: React.FC<ConfigurationStepperProps> = ({ open, onClo
     }
   };
 
-  // Handler for skipping the entire configuration
-  const handleSkipConfiguration = async (): Promise<void> => {
-    try {
-      setIsSubmitting(true);
+  // // Handler for skipping the entire configuration
+  // const handleSkipConfiguration = async (): Promise<void> => {
+  //   try {
+  //     setIsSubmitting(true);
 
-      if (!isLlmConfigured) {
-        setSubmissionError('LLm configuration is mandatory');
-        setIsSubmitting(false);
-        return;
-      }
-      // Update onboarding status to 'skipped' - explicitly calling when user clicks Skip Configuration
-      await updateOnboardingStatus('skipped');
+  //     if (!isLlmConfigured) {
+  //       setSubmissionError('LLm configuration is mandatory');
+  //       setIsSubmitting(false);
+  //       return;
+  //     }
+  //     // Update onboarding status to 'skipped' - explicitly calling when user clicks Skip Configuration
+  //     await updateOnboardingStatus('skipped');
 
-      setSubmissionSuccess(true);
-      setTimeout(() => {
-        onClose();
-      }, 2000);
-    } catch (error) {
-      setSubmissionError('Failed to skip the configuration process. Please try again.');
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
+  //     setSubmissionSuccess(true);
+  //     setTimeout(() => {
+  //       onClose();
+  //     }, 2000);
+  //   } catch (error) {
+  //     setSubmissionError('Failed to skip the configuration process. Please try again.');
+  //   } finally {
+  //     setIsSubmitting(false);
+  //   }
+  // };
 
   const handleContinueWithValidation = async () => {
     // Clear any previous error messages
@@ -1386,52 +1386,52 @@ const ConfigurationStepper: React.FC<ConfigurationStepperProps> = ({ open, onClo
     return undefined;
   };
 
-  const handleManualSubmit = async () => {
-    try {
-      // Verify LLM is configured - required
-      if (!llmValues) {
-        setSubmissionError('LLM configuration is required.');
-        return;
-      }
+  // const handleManualSubmit = async () => {
+  //   try {
+  //     // Verify LLM is configured - required
+  //     if (!llmValues) {
+  //       setSubmissionError('LLM configuration is required.');
+  //       return;
+  //     }
 
-      // If we're on the SMTP step
-      if (activeStep === 3) {
-        // IMPORTANT: Reset the skip state if continuing
-        if (skipSteps.smtp) {
-          setSkipSteps((prev) => ({ ...prev, smtp: false }));
-        }
+  //     // If we're on the SMTP step
+  //     if (activeStep === 3) {
+  //       // IMPORTANT: Reset the skip state if continuing
+  //       if (skipSteps.smtp) {
+  //         setSkipSteps((prev) => ({ ...prev, smtp: false }));
+  //       }
 
-        // Check if there's any input in the SMTP form
-        const hasSmtpInput =
-          typeof (window as any).hasSmtpInput === 'function'
-            ? (window as any).hasSmtpInput()
-            : false;
+  //       // Check if there's any input in the SMTP form
+  //       const hasSmtpInput =
+  //         typeof (window as any).hasSmtpInput === 'function'
+  //           ? (window as any).hasSmtpInput()
+  //           : false;
 
-        if (hasSmtpInput) {
-          // If there's any input, validate ALL fields
-          const isValid = await Promise.resolve((window as any).submitSmtpForm());
-          if (!isValid) {
-            setSubmissionError(
-              'Please complete all required SMTP fields or use the "Skip SMTP Configuration" button.'
-            );
-            return;
-          }
-        } else {
-          // No input - force using the Skip button
-          setSubmissionError(
-            'Please use the "Skip SMTP Configuration" button if you don\'t want to configure SMTP.'
-          );
-          return;
-        }
-      }
+  //       if (hasSmtpInput) {
+  //         // If there's any input, validate ALL fields
+  //         const isValid = await Promise.resolve((window as any).submitSmtpForm());
+  //         if (!isValid) {
+  //           setSubmissionError(
+  //             'Please complete all required SMTP fields or use the "Skip SMTP Configuration" button.'
+  //           );
+  //           return;
+  //         }
+  //       } else {
+  //         // No input - force using the Skip button
+  //         setSubmissionError(
+  //           'Please use the "Skip SMTP Configuration" button if you don\'t want to configure SMTP.'
+  //         );
+  //         return;
+  //       }
+  //     }
 
-      // All validations passed, submit configurations
-      await submitAllConfigurations();
-    } catch (error) {
-      console.error('Error in form submission:', error);
-      setSubmissionError('An error occurred during validation. Please try again.');
-    }
-  };
+  //     // All validations passed, submit configurations
+  //     await submitAllConfigurations();
+  //   } catch (error) {
+  //     console.error('Error in form submission:', error);
+  //     setSubmissionError('An error occurred during validation. Please try again.');
+  //   }
+  // };
 
   return (
     <Dialog

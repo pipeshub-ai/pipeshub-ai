@@ -229,9 +229,6 @@ interface AccountSetupFormProps {
 
 export const AccountSetupForm: React.FC<AccountSetupFormProps> = ({ accountType }) => {
   const theme = useTheme();
-  const [orgExists, setOrgExists] = useState(false);
-  const [showMorePrivacy, setShowMorePrivacy] = useState(false);
-
   // Get the correct validation schema based on account type
   const schema = getValidationSchema(accountType);
 
@@ -293,7 +290,6 @@ export const AccountSetupForm: React.FC<AccountSetupFormProps> = ({ accountType 
       } catch (err) {
         console.error('Error checking if organization exists:', err);
         // Default to false if there's an error
-        setOrgExists(false);
       }
     };
 

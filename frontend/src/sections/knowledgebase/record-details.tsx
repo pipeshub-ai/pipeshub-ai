@@ -10,7 +10,9 @@ import React, { useState, useEffect } from 'react';
 import pencilIcon from '@iconify-icons/mdi/pencil';
 import updateIcon from '@iconify-icons/mdi/update';
 import accountIcon from '@iconify-icons/mdi/account';
+import refreshIcon from '@iconify-icons/mdi/refresh';
 import clockIcon from '@iconify-icons/mdi/clock-outline';
+import emailIcon from '@iconify-icons/mdi/email-outline';
 import { useParams, useNavigate } from 'react-router-dom';
 import arrowLeftIcon from '@iconify-icons/mdi/arrow-left';
 import filePdfBoxIcon from '@iconify-icons/mdi/file-pdf-box';
@@ -19,14 +21,12 @@ import trashCanIcon from '@iconify-icons/mdi/trash-can-outline';
 import fileExcelBoxIcon from '@iconify-icons/mdi/file-excel-box';
 import fileImageBoxIcon from '@iconify-icons/mdi/file-image-box';
 import fileAlertIcon from '@iconify-icons/mdi/file-alert-outline';
+import connectorIcon from '@iconify-icons/mdi/cloud-sync-outline';
 import fileTextBoxIcon from '@iconify-icons/mdi/file-text-outline';
 import fileCodeBoxIcon from '@iconify-icons/mdi/file-code-outline';
-import emailIcon from '@iconify-icons/mdi/email-outline';
 import fileArchiveBoxIcon from '@iconify-icons/mdi/archive-outline';
 import fileDocumentBoxIcon from '@iconify-icons/mdi/file-document-box';
 import filePowerpointBoxIcon from '@iconify-icons/mdi/file-powerpoint-box';
-import connectorIcon from '@iconify-icons/mdi/cloud-sync-outline';
-import refreshIcon from '@iconify-icons/mdi/refresh';
 
 import {
   Box,
@@ -35,10 +35,13 @@ import {
   Card,
   Stack,
   alpha,
+  Alert,
   Drawer,
   Button,
   Divider,
+  Tooltip,
   useTheme,
+  Snackbar,
   Container,
   Typography,
   IconButton,
@@ -46,12 +49,11 @@ import {
   CardContent,
   useMediaQuery,
   CircularProgress,
-  Snackbar,
-  Alert,
-  Tooltip,
 } from '@mui/material';
-import { CONFIG } from 'src/config-global';
+
 import axios from 'src/utils/axios';
+
+import { CONFIG } from 'src/config-global';
 import { useUsers } from 'src/context/UserContext';
 
 import { fetchRecordDetails } from './utils';

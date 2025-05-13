@@ -28,7 +28,6 @@ const metadata = { title: 'Account Setup' };
 export default function Page() {
   const [open, setOpen] = useState(true);
   const [accountType, setAccountType] = useState<AccountType | null>(null);
-  const [orgExists, setOrgExists] = useState(false);
   const navigate = useNavigate();
   const [snackbar, setSnackbar] = useState({
     open: false,
@@ -45,7 +44,6 @@ export default function Page() {
     const checkOrgExists = async () => {
       try {
         const response = await OrgExists();
-        setOrgExists(response.exists);
         if (response.exists === false) {
           setSnackbar({
             open: true,
@@ -59,8 +57,6 @@ export default function Page() {
         }
       } catch (err) {
         console.error('Error checking if organization exists:', err);
-        // Default to false if there's an error
-        setOrgExists(false);
       }
     };
 

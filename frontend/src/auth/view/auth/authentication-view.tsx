@@ -202,7 +202,6 @@ export const AuthenticationView = () => {
   const [selectedTabs, setSelectedTabs] = useState<number[]>([0, 0]); // Track selected tab for each step
   const emailFromStore = useSelector((state: RootState) => state.auth.email);
   const { checkUserSession } = useAuthContext();
-  const [orgExists, setOrgExists] = useState(false);
   const navigate = useNavigate();
   const [snackbar, setSnackbar] = useState({
     open: false,
@@ -425,8 +424,6 @@ export const AuthenticationView = () => {
         }
       } catch (err) {
         console.error('Error checking if organization exists:', err);
-        // Default to false if there's an error
-        setOrgExists(false);
       }
     };
 

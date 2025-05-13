@@ -42,11 +42,9 @@ export default function App() {
                     <Snackbar />
                     <ProgressBar />
                     <SettingsDrawer />
-                    <>
-                      <ErrorProvider>
-                        <Router />
-                      </ErrorProvider>
-                    </>
+                    <ErrorProvider>
+                      <Router />
+                    </ErrorProvider>
                   </MotionLazy>
                 </AdminProvider>
               </ThemeProvider>

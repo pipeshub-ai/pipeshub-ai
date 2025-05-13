@@ -267,7 +267,7 @@ const ConnectorConfigStep: React.FC<ConnectorConfigStepProps> = ({
   const { handleSubmit, formState, control, watch, getValues } =
     accountType === 'business' ? businessForm : individualForm;
 
-  const { isValid, errors } = formState;
+  const { isValid } = formState;
 
   // Watch form fields to determine if partially filled
   const formValues = watch();

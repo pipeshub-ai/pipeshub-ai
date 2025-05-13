@@ -1,34 +1,30 @@
 import type { Icon as IconifyIcon } from '@iconify/react';
 
 import { Icon } from '@iconify/react';
-import tagIcon from '@iconify-icons/mdi/tag';
 import closeIcon from '@iconify-icons/mdi/close';
+import gmailIcon from '@iconify-icons/mdi/gmail';
 import upIcon from '@iconify-icons/mdi/chevron-up';
 import leftIcon from '@iconify-icons/mdi/chevron-left';
 import downIcon from '@iconify-icons/mdi/chevron-down';
-import rightIcon from '@iconify-icons/mdi/chevron-right';
 import fileIcon from '@iconify-icons/mdi/file-outline';
+import rightIcon from '@iconify-icons/mdi/chevron-right';
 import emailIcon from '@iconify-icons/mdi/email-outline';
 import { useLocation, useNavigate } from 'react-router-dom';
-import viewModuleIcon from '@iconify-icons/mdi/view-module';
 import filterMenuIcon from '@iconify-icons/mdi/filter-menu';
+import googleDriveIcon from '@iconify-icons/mdi/google-drive';
 import filterRemoveIcon from '@iconify-icons/mdi/filter-remove';
+import timerOffIcon from '@iconify-icons/mdi/timer-off-outline';
 import filterVariantIcon from '@iconify-icons/mdi/filter-variant';
 import circleOutlineIcon from '@iconify-icons/mdi/circle-outline';
 import progressClockIcon from '@iconify-icons/mdi/progress-clock';
+import fileAlertIcon from '@iconify-icons/mdi/file-alert-outline';
 import React, { useRef, useMemo, useState, useEffect } from 'react';
-import officeBuildingIcon from '@iconify-icons/mdi/office-building';
-import formatListIcon from '@iconify-icons/mdi/format-list-bulleted';
+import userCheckIcon from '@iconify-icons/mdi/account-check-outline';
 import closeCircleIcon from '@iconify-icons/mdi/close-circle-outline';
-import alertCircleOutlineIcon from '@iconify-icons/mdi/alert-circle-outline';
 import cloudUploadIcon from '@iconify-icons/mdi/cloud-upload-outline';
 import cloudConnectorIcon from '@iconify-icons/mdi/cloud-sync-outline';
-import gmailIcon from '@iconify-icons/mdi/gmail';
-import googleDriveIcon from '@iconify-icons/mdi/google-drive';
-import userCheckIcon from '@iconify-icons/mdi/account-check-outline';
+import alertCircleOutlineIcon from '@iconify-icons/mdi/alert-circle-outline';
 import checkCircleOutlineIcon from '@iconify-icons/mdi/check-circle-outline';
-import fileAlertIcon from '@iconify-icons/mdi/file-alert-outline';
-import timerOffIcon from '@iconify-icons/mdi/timer-off-outline';
 
 import { alpha, styled, useTheme, keyframes } from '@mui/material/styles';
 import {
