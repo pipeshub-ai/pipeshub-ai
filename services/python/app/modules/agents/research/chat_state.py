@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional
 
 from typing_extensions import TypedDict
 
+
 class ChatMessage(TypedDict):
     role: str
     content: str
@@ -10,7 +11,7 @@ class ChatMessage(TypedDict):
 class Document(TypedDict):
     page_content: str
     metadata: Dict[str, Any]
-    
+
 class ChatState(TypedDict):
     query: str
     limit: int

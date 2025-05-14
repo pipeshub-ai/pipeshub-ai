@@ -1,17 +1,19 @@
 # Create node functions properly designed for LangGraph
 import asyncio
 from typing import Any
-from app.modules.agents.research.chat_state import ChatState
-from app.modules.retrieval.retrieval_service import RetrievalService
-from app.modules.retrieval.retrieval_arango import ArangoService
-from app.modules.reranker.reranker import RerankerService
+
 from app.config.utils.named_constants.arangodb_constants import (
     AccountType,
     CollectionNames,
-)  
+)
+from app.modules.agents.research.chat_state import ChatState
 from app.modules.qna.prompt_templates import qna_prompt
+from app.modules.reranker.reranker import RerankerService
+from app.modules.retrieval.retrieval_arango import ArangoService
+from app.modules.retrieval.retrieval_service import RetrievalService
 from app.utils.citations import process_citations
 from app.utils.query_transform import setup_query_transformation
+
 
 # 1. Decomposition Node (FIXED - made async compatible)
 async def decompose_query_node(
