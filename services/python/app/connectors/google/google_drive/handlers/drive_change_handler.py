@@ -82,8 +82,11 @@ class DriveChangeHandler:
             self.logger.info(
                 f"""
             🔄 Processing change:
+            - File key: {file_key}
             - File ID: {file_id}
             - Name: {new_file.get('name', 'Unknown')}
+            - Removed: {removed}
+            - Trashed: {is_trashed}
             """
             )
 
@@ -127,8 +130,11 @@ class DriveChangeHandler:
             )
 
             if not file_key:
-                await self.handle_insert(new_file, org_id, transaction=txn)
-                change_type = EventTypes.NEW_RECORD.value
+                if removed or is_trashed:
+                    change_type = ""
+                else:
+                    await self.handle_insert(new_file, org_id, transaction=txn)
+                    change_type = EventTypes.NEW_RECORD.value
             else:
                 if removed or is_trashed:
                     await self.handle_removal(db_file, db_record, transaction=txn)
