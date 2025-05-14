@@ -559,13 +559,117 @@ async def download_file(
                             return
 
                         try:
-                            attachment = (
-                                gmail_service.users()
-                                .messages()
-                                .attachments()
-                                .get(userId="me", messageId=message_id, id=file_id)
-                                .execute()
-                            )
+                            # Check if file_id is a combined ID (messageId_partId format)
+                            actual_attachment_id = file_id
+                            if "_" in file_id:
+                                try:
+                                    message_id, part_id = file_id.split("_", 1)
+
+                                    # Fetch the message to get the actual attachment ID
+                                    try:
+                                        message = (
+                                            gmail_service.users()
+                                            .messages()
+                                            .get(userId="me", id=message_id, format="full")
+                                            .execute()
+                                        )
+                                    except Exception as access_error:
+                                        if hasattr(access_error, 'resp') and access_error.resp.status == 404:
+                                            logger.info(f"Message not found with ID {message_id}, searching for related messages...")
+
+                                            # Get messageIdHeader from the original mail
+                                            file_key = await arango_service.get_key_by_external_message_id(message_id)
+                                            aql_query = """
+                                            FOR mail IN mails
+                                                FILTER mail._key == @file_key
+                                                RETURN mail.messageIdHeader
+                                            """
+                                            bind_vars = {"file_key": file_key}
+                                            cursor = arango_service.db.aql.execute(aql_query, bind_vars=bind_vars)
+                                            message_id_header = next(cursor, None)
+
+                                            if not message_id_header:
+                                                raise HTTPException(
+                                                    status_code=404,
+                                                    detail="Original mail not found"
+                                                )
+
+                                            # Find all mails with the same messageIdHeader
+                                            aql_query = """
+                                            FOR mail IN mails
+                                                FILTER mail.messageIdHeader == @message_id_header
+                                                AND mail._key != @file_key
+                                                RETURN mail._key
+                                            """
+                                            bind_vars = {"message_id_header": message_id_header, "file_key": file_key}
+                                            cursor = arango_service.db.aql.execute(aql_query, bind_vars=bind_vars)
+                                            related_mail_keys = list(cursor)
+
+                                            # Try each related mail ID until we find one that works
+                                            message = None
+                                            for related_key in related_mail_keys:
+                                                related_mail = await arango_service.get_document(related_key, CollectionNames.RECORDS.value)
+                                                related_message_id = related_mail.get("externalRecordId")
+                                                try:
+                                                    message = (
+                                                        gmail_service.users()
+                                                        .messages()
+                                                        .get(userId="me", id=related_message_id, format="full")
+                                                        .execute()
+                                                    )
+                                                    if message:
+                                                        logger.info(f"Found accessible message with ID: {related_message_id}")
+                                                        message_id = related_message_id  # Update message_id to use the accessible one
+                                                        break
+                                                except Exception as e:
+                                                    logger.warning(f"Failed to fetch message with ID {related_message_id}: {str(e)}")
+                                                    continue
+
+                                            if not message:
+                                                raise HTTPException(
+                                                    status_code=404,
+                                                    detail="No accessible messages found."
+                                                )
+                                        else:
+                                            raise access_error
+
+                                    if not message or "payload" not in message:
+                                        raise Exception(f"Message or payload not found for message ID {message_id}")
+
+                                    # Search for the part with matching partId
+                                    parts = message["payload"].get("parts", [])
+                                    for part in parts:
+                                        if part.get("partId") == part_id:
+                                            actual_attachment_id = part.get("body", {}).get("attachmentId")
+                                            if not actual_attachment_id:
+                                                raise Exception("Attachment ID not found in part body")
+                                            break
+                                    else:
+                                        raise Exception("Part ID not found in message")
+
+                                except Exception as e:
+                                    logger.error(f"Error extracting attachment ID: {str(e)}")
+                                    raise HTTPException(
+                                        status_code=400,
+                                        detail=f"Invalid attachment ID format: {str(e)}"
+                                    )
+
+                            # Try to get the attachment with potential fallback message_id
+                            try:
+                                attachment = (
+                                    gmail_service.users()
+                                    .messages()
+                                    .attachments()
+                                    .get(userId="me", messageId=message_id, id=actual_attachment_id)
+                                    .execute()
+                                )
+                            except Exception as attachment_error:
+                                if hasattr(attachment_error, 'resp') and attachment_error.resp.status == 404:
+                                    raise HTTPException(
+                                        status_code=404,
+                                        detail="Attachment not found in accessible messages"
+                                    )
+                                raise attachment_error
 
                             # Decode the attachment data
                             file_data = base64.urlsafe_b64decode(attachment["data"])
@@ -1027,14 +1131,119 @@ async def stream_record(
                     else:
                         raise Exception("Related message not found")
 
-                    attachment = (
-                        gmail_service.users()
-                        .messages()
-                        .attachments()
-                        .get(userId="me", messageId=message_id, id=file_id)
-                        .execute()
-                    )
+                    # Check if file_id is a combined ID (messageId_partId format)
+                    actual_attachment_id = file_id
+                    if "_" in file_id:
+                        try:
+                            message_id, part_id = file_id.split("_", 1)
 
+                            # Fetch the message to get the actual attachment ID
+                            try:
+                                message = (
+                                    gmail_service.users()
+                                    .messages()
+                                    .get(userId="me", id=message_id, format="full")
+                                    .execute()
+                                )
+                            except Exception as access_error:
+                                if hasattr(access_error, 'resp') and access_error.resp.status == 404:
+                                    logger.info(f"Message not found with ID {message_id}, searching for related messages...")
+
+                                    # Get messageIdHeader from the original mail
+                                    file_key = await arango_service.get_key_by_external_message_id(message_id)
+                                    aql_query = """
+                                    FOR mail IN mails
+                                        FILTER mail._key == @file_key
+                                        RETURN mail.messageIdHeader
+                                    """
+                                    bind_vars = {"file_key": file_key}
+                                    cursor = arango_service.db.aql.execute(aql_query, bind_vars=bind_vars)
+                                    message_id_header = next(cursor, None)
+
+                                    if not message_id_header:
+                                        raise HTTPException(
+                                            status_code=404,
+                                            detail="Original mail not found"
+                                        )
+
+                                    # Find all mails with the same messageIdHeader
+                                    aql_query = """
+                                    FOR mail IN mails
+                                        FILTER mail.messageIdHeader == @message_id_header
+                                        AND mail._key != @file_key
+                                        RETURN mail._key
+                                    """
+                                    bind_vars = {"message_id_header": message_id_header, "file_key": file_key}
+                                    cursor = arango_service.db.aql.execute(aql_query, bind_vars=bind_vars)
+                                    related_mail_keys = list(cursor)
+
+                                    # Try each related mail ID until we find one that works
+                                    message = None
+                                    for related_key in related_mail_keys:
+                                        related_mail = await arango_service.get_document(related_key, CollectionNames.RECORDS.value)
+                                        related_message_id = related_mail.get("externalRecordId")
+                                        try:
+                                            message = (
+                                                gmail_service.users()
+                                                .messages()
+                                                .get(userId="me", id=related_message_id, format="full")
+                                                .execute()
+                                            )
+                                            if message:
+                                                logger.info(f"Found accessible message with ID: {related_message_id}")
+                                                message_id = related_message_id  # Update message_id to use the accessible one
+                                                break
+                                        except Exception as e:
+                                            logger.warning(f"Failed to fetch message with ID {related_message_id}: {str(e)}")
+                                            continue
+
+                                    if not message:
+                                        raise HTTPException(
+                                            status_code=404,
+                                            detail="No accessible messages found."
+                                        )
+                                else:
+                                    raise access_error
+
+                            if not message or "payload" not in message:
+                                raise Exception(f"Message or payload not found for message ID {message_id}")
+
+                            # Search for the part with matching partId
+                            parts = message["payload"].get("parts", [])
+                            for part in parts:
+                                if part.get("partId") == part_id:
+                                    actual_attachment_id = part.get("body", {}).get("attachmentId")
+                                    if not actual_attachment_id:
+                                        raise Exception("Attachment ID not found in part body")
+                                    break
+                            else:
+                                raise Exception("Part ID not found in message")
+
+                        except Exception as e:
+                            logger.error(f"Error extracting attachment ID: {str(e)}")
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"Invalid attachment ID format: {str(e)}"
+                            )
+
+                    # Try to get the attachment with potential fallback message_id
+                    try:
+                        attachment = (
+                            gmail_service.users()
+                            .messages()
+                            .attachments()
+                            .get(userId="me", messageId=message_id, id=actual_attachment_id)
+                            .execute()
+                        )
+                    except Exception as attachment_error:
+                        if hasattr(attachment_error, 'resp') and attachment_error.resp.status == 404:
+                            raise HTTPException(
+                                status_code=404,
+                                detail="Attachment not found in accessible messages"
+                            )
+                        raise attachment_error
+
+                    # Decode the attachment data
                     file_data = base64.urlsafe_b64decode(attachment["data"])
 
                     if convertTo == MimeTypes.PDF.value:

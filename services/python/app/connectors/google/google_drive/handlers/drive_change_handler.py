@@ -26,6 +26,7 @@ class DriveChangeHandler:
         txn = None
         try:
             self.logger.info(f"user_id: {user_id}")
+            self.logger.info(f"change: {change}")
             file_id = change.get("fileId")
             if not file_id:
                 self.logger.warning("⚠️ Change missing fileId")

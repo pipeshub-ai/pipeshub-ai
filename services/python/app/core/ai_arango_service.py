@@ -557,45 +557,27 @@ class ArangoService:
             )
             return []
 
+    async def get_documents_by_status(self, collection: str, status: str) -> List[Dict]:
+        """
+        Get all documents with a specific indexing status
 
+        Args:
+            collection (str): Collection name
+            status (str): Status to filter by
 
-    # async def try_acquire_processing_lock(self, lock_key: str, record_id: str) -> bool:
-    #     """
-    #     Atomically try to acquire processing lock and mark the file as being processed
-    #     """
-    #     # Ensure locks collection exists with TTL index
-    #     if not await self.db.has_collection("duplicate_locks"):
-    #         collection = await self.db.create_collection("duplicate_locks")
-    #         # Create TTL index to auto-expire locks after 5 minutes
-    #         await collection.add_ttl_index(["timestamp"], expireAfter=300)
-    #         self.logger.info("Created duplicate_locks collection with TTL index")
+        Returns:
+            List[Dict]: List of matching documents
+        """
+        query = """
+        FOR doc IN @@collection
+            FILTER doc.indexingStatus == @status
+            RETURN doc
+        """
 
-    #     query = """
-    #     UPSERT { _key: @lock_key }
-    #     INSERT {
-    #         _key: @lock_key,
-    #         processing_id: @record_id,
-    #         timestamp: @timestamp,
-    #         status: 'processing'
-    #     }
-    #     UPDATE {
-    #         processing_id: @record_id,
-    #         timestamp: @timestamp,
-    #         status: 'processing'
-    #     }
-    #     IN duplicate_locks
-    #     RETURN { old: OLD, new: NEW }
-    #     """
+        bind_vars = {
+            "@collection": collection,
+            "status": status
+        }
 
-    #     bind_vars = {
-    #         "lock_key": lock_key,
-    #         "record_id": record_id,
-    #         "timestamp": get_epoch_timestamp_in_ms()
-    #     }
-
-    #     result = await self.db.aql.execute(query, bind_vars=bind_vars)
-    #     result = await result.next()
-
-    #     return result["old"] is None
-
-
+        cursor = self.db.aql.execute(query, bind_vars=bind_vars)
+        return list(cursor)

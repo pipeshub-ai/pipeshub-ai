@@ -1951,9 +1951,13 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
 
                             # Add type-specific fields
                             if record["recordType"] == RecordTypes.MAIL.value:
+                                gmail_user_service = await self.gmail_admin_service.create_gmail_user_service(user["email"])
+                                message = await gmail_user_service.get_message(record["externalRecordId"])
+                                message_body = message.get("body", {}) if message else {}
                                 event.update({
                                     "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user['userId']}/gmail/record/{record['_key']}/signedUrl",
-                                    "mimeType": "text/gmail_content"
+                                    "mimeType": "text/gmail_content",
+                                    "body": message_body
                                 })
                             elif record["recordType"] == RecordTypes.FILE.value:
                                 event.update({
@@ -2372,7 +2376,6 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                                 message["id"]
                             )
                         )
-                        # message = await self.arango_service.get_document(message_key, "messages")
 
                         user_id = user["userId"]
                         headers = message.get("headers", {})

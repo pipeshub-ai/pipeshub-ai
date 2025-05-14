@@ -700,7 +700,7 @@ class IndexingPipeline:
                 filter_dict = Filter(
                     should=[
                         FieldCondition(
-                            key="metadata.recordId", match=MatchValue(value=record_id)
+                            key="metadata.virtualRecordId", match=MatchValue(value=virtual_record_id)
                         )
                     ]
                 )
@@ -815,6 +815,55 @@ class IndexingPipeline:
             raise IndexingError(
                 f"Unexpected error during indexing: {str(e)}",
                 details={"error_type": type(e).__name__},
+            )
+
+    async def check_embeddings_exist(self, record_id: str, virtual_record_id: str):
+        try:
+            if not virtual_record_id:
+                raise EmbeddingDeletionError(
+                    "No virtual record ID provided for deletion", virtual_record_id=virtual_record_id
+                )
+
+            self.logger.info(f"🔍 Checking embeddings with virtual_record_id {virtual_record_id}")
+
+            try:
+                filter_dict = Filter(
+                    should=[
+                        FieldCondition(
+                            key="metadata.virtualRecordId", match=MatchValue(value=virtual_record_id)
+                        )
+                    ]
+                )
+
+                result = self.qdrant_client.scroll(
+                    collection_name=self.collection_name,
+                    scroll_filter=filter_dict,
+                    limit=1000000,
+                )
+
+                ids = [point.id for point in result[0]]
+                self.logger.info(f"🎯 Filter: {filter_dict}")
+                self.logger.info(f"🎯 Ids: {ids}")
+
+                if ids:
+                    return True
+
+                return False
+
+            except Exception as e:
+                raise EmbeddingDeletionError(
+                    "Failed to check embeddings in vector store: " + str(e),
+                    record_id=record_id,
+                    details={"error": str(e)},
+                )
+
+        except EmbeddingDeletionError:
+            raise
+        except Exception as e:
+            raise EmbeddingDeletionError(
+                "Unexpected error during embedding deletion: " + str(e),
+                record_id=record_id,
+                details={"error": str(e)},
             )
 
     def _process_metadata(self, meta: Dict[str, Any]) -> Dict[str, Any]:

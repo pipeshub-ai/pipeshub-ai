@@ -4,7 +4,7 @@ import base64
 import os
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List
+from typing import Dict, List, Optional
 from uuid import uuid4
 
 import google.oauth2.credentials
@@ -416,6 +416,7 @@ class GmailUserService:
                     .get(userId="me", id=message_id, format="full")
                     .execute()
                 )
+                self.logger.debug("📝 Message: %s", message)
             except HttpError as e:
                 if e.resp.status == 404:
                     raise MailOperationError(
@@ -568,11 +569,14 @@ class GmailUserService:
                                 else ""
                             )
 
+                            constructed_attachment_id = f"{message['id']}_{part.get('partId', 'unknown')}"
+                            self.logger.debug("📝 Constructed attachment ID: %s", constructed_attachment_id)
+
                             attachments.append(
                                 {
                                     "message_id": message["id"],
                                     "org_id": org_id,
-                                    "attachment_id": part["body"]["attachmentId"],
+                                    "attachment_id": constructed_attachment_id,
                                     "filename": filename,
                                     "extension": extension,
                                     "mimeType": part.get("mimeType", ""),
@@ -892,4 +896,59 @@ class GmailUserService:
                     "history_id": history_id,
                     "error": str(e),
                 },
+            )
+
+    @exponential_backoff()
+    @token_refresh
+    async def get_attachment_id_from_message_part(
+        self, combined_id: str, user
+    ) -> Optional[str]:
+        """
+        Given a combined ID (messageId_partId), fetch the actual attachmentId from Gmail.
+        """
+        try:
+            message_id, part_id = combined_id.split("_", 1)
+            user_id = user.get("userId")
+
+            self.logger.info(f"🔍 Fetching message: {message_id} to get attachment ID for part: {part_id}")
+
+            message = (
+                self.service.users()
+                .messages()
+                .get(userId=user_id, id=message_id, format="full")
+                .execute()
+            )
+
+            if not message or "payload" not in message:
+                raise MailOperationError(
+                    f"Message or payload not found for message ID {message_id}",
+                    details={"message_id": message_id},
+                )
+
+            parts = message["payload"].get("parts", [])
+            for part in parts:
+                if part.get("partId") == part_id:
+                    attachment_id = part.get("body", {}).get("attachmentId")
+                    if attachment_id:
+                        return attachment_id
+                    else:
+                        raise MailOperationError(
+                            "Attachment ID not found in part body",
+                            details={"combined_id": combined_id, "part": part},
+                        )
+
+            raise MailOperationError(
+                "Part ID not found in message",
+                details={"combined_id": combined_id, "message_id": message_id},
+            )
+
+        except ValueError:
+            raise MailOperationError(
+                "Invalid combined ID format. Expected 'messageId_partId'",
+                details={"combined_id": combined_id},
+            )
+        except Exception as e:
+            self.logger.exception("Error fetching attachment ID from message part")
+            raise MailOperationError(
+                "Failed to fetch attachment ID", details={"error": str(e), "combined_id": combined_id}
             )

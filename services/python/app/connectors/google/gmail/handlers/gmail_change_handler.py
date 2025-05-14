@@ -21,6 +21,7 @@ class GmailChangeHandler:
     async def process_changes(self, user_service, changes, org_id, user) -> bool:
         """Process changes since last sync time"""
         self.logger.info("🚀 Processing changes")
+        self.logger.info(f"changes: {changes}")
         try:
             endpoints = await self.config_service.get_config(
                 config_node_constants.ENDPOINTS.value

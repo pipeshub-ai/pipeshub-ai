@@ -231,6 +231,10 @@ class KafkaConsumerManager:
                 return
             doc = dict(record)
 
+            if event_type == EventTypes.NEW_RECORD.value and doc.get("indexingStatus") == ProgressStatus.COMPLETED.value:
+                self.logger.info(f"🔍 Embeddings already exist for record {record_id} with virtual_record_id {virtual_record_id}")
+                return True
+
             supported_mime_types = [
                 MimeTypes.GMAIL.value,
                 MimeTypes.GOOGLE_SLIDES.value,
@@ -597,10 +601,17 @@ class KafkaConsumerManager:
 
     async def start(self):
         """Start the consumer and scheduled update processor."""
-        self.running = True
-        await self.create_consumer()
-        # Start scheduled update processing
-        self.scheduled_update_task = asyncio.create_task(self.process_scheduled_updates())
+        try:
+            # Clean up any documents stuck in IN_PROGRESS state
+            await self.cleanup_in_progress_documents()
+
+            self.running = True
+            await self.create_consumer()
+            # Start scheduled update processing
+            self.scheduled_update_task = asyncio.create_task(self.process_scheduled_updates())
+        except Exception as e:
+            self.logger.error(f"❌ Error starting Kafka consumer: {str(e)}")
+            raise
 
     def stop(self):
         """Stop the consumer and scheduled update processor."""
@@ -645,6 +656,45 @@ class KafkaConsumerManager:
 
         except Exception as e:
             self.logger.error(f"❌ Failed to update document status: {str(e)}")
+
+    async def cleanup_in_progress_documents(self):
+        """
+        Cleanup documents that were left in IN_PROGRESS state due to application crash
+        """
+        try:
+            self.logger.info("🧹 Cleaning up documents stuck in IN_PROGRESS state")
+
+            # Get all documents with IN_PROGRESS status
+            records = await self.event_processor.arango_service.get_documents_by_status(
+                CollectionNames.RECORDS.value,
+                ProgressStatus.IN_PROGRESS.value
+            )
+
+            if not records:
+                self.logger.info("✅ No documents found in IN_PROGRESS state")
+                return
+
+            self.logger.warning(
+                f"Found {len(records)} documents stuck in IN_PROGRESS state"
+            )
+
+            # Update each document's status to FAILED
+            for record in records:
+                await self._update_document_status(
+                    record_id=record["_key"],
+                    indexing_status=ProgressStatus.FAILED.value,
+                    extraction_status=ProgressStatus.FAILED.value,
+                    reason="Document processing interrupted due to system crash"
+                )
+
+            self.logger.info(
+                f"✅ Successfully cleaned up {len(records)} stuck documents"
+            )
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ Error cleaning up IN_PROGRESS documents: {str(e)}"
+            )
 
 
 class RateLimiter:
