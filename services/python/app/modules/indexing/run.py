@@ -681,7 +681,7 @@ class IndexingPipeline:
                     f"⏭️ Skipping embedding deletion for record {record_id} as other records "
                     f"exist with same virtual_record_id: {other_records}"
                 )
-                return
+                return False
 
             self.logger.info("🗑️ Proceeding with deletion as no other records exist")
 
@@ -713,12 +713,29 @@ class IndexingPipeline:
                     )
 
                 if ids:
-                    await self.vector_store.adelete(ids=ids)
+                    if not self.dense_embeddings or not self.vector_store:
+                        try:
+                            await self.get_embedding_model_instance()
+                        except Exception as e:
+                            raise IndexingError(
+                                "Failed to get embedding model instance: " + str(e),
+                                details={"error": str(e)},
+                            )
+
+                    try:
+                        await self.vector_store.adelete(ids=ids)
+                    except Exception as e:
+                        raise EmbeddingDeletionError(
+                            "Failed to delete embeddings from vector store: " + str(e),
+                            record_id=record_id,
+                            details={"error": str(e)},
+                        )
+                await self.arango_service.delete_blocks_by_virtual_record_id(virtual_record_id)
 
                 self.logger.info(
                     f"✅ Successfully deleted embeddings for record {record_id}"
                 )
-
+                return True
             except Exception as e:
                 raise EmbeddingDeletionError(
                     "Failed to delete embeddings from vector store: " + str(e),
@@ -874,6 +891,7 @@ class IndexingPipeline:
             MetadataProcessingError: If there's an error processing the metadata
         """
         try:
+            self.logger.debug(f"🔍 Meta: {meta}")
             block_type = meta.get("blockType", "text")
             virtual_record_id = meta.get("virtualRecordId", "")
             record_name = meta.get("recordName", "")
@@ -886,8 +904,6 @@ class IndexingPipeline:
                 "recordName": record_name,
                 "recordType": meta.get("recordType", ""),
                 "recordVersion": meta.get("version", ""),
-                "origin": meta.get("origin", ""),
-                "connector": meta.get("connectorName", ""),
                 "blockNum": meta.get("blockNum", [0]),
                 "blockText": meta.get("blockText", ""),
                 "blockType": str(block_type),
@@ -900,6 +916,7 @@ class IndexingPipeline:
                 "languages": meta.get("languages", []),
                 "extension": meta.get("extension", ""),
                 "mimeType": meta.get("mimeType", ""),
+                "isBlock": meta.get("isBlock", False),
             }
 
             if meta.get("bounding_box"):
@@ -920,3 +937,4 @@ class IndexingPipeline:
                 f"Unexpected error processing metadata: {str(e)}",
                 details={"error_type": type(e).__name__},
             )
+

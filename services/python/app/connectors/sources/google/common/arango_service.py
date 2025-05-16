@@ -373,28 +373,6 @@ class ArangoService(BaseArangoService):
             self.logger.error("❌ Batch edge creation failed: %s", str(e))
             return False
 
-    # async def remove_existing_edges(self, file_id: str) -> bool:
-    #     """Remove all existing edges for a record"""
-    #     try:
-    #         self.logger.info("🚀 Removing all existing edges for file %s", file_id)
-    #         query = """
-    #         FOR edge in @@recordRelations
-    #             FILTER edge._from == @@records/@file_id OR edge._to == @@records/@file_id
-    #             REMOVE edge._key IN @@recordRelations
-    #         """
-    #         self.db.aql.execute(
-    #             query,
-    #             bind_vars={'file_id': file_id, '@records': CollectionNames.RECORDS.value, '@recordRelations': CollectionNames.RECORD_RELATIONS.value}
-    #         )
-    #         self.logger.info("✅ Removed all existing edges for file %s", file_id)
-    #         return True
-    #     except Exception as e:
-    #         self.logger.error(
-    #             "❌ Failed to remove existing edges: %s",
-    #             str(e)
-    #         )
-    #         return False
-
     async def get_file_parents(self, file_key: str, transaction) -> List[Dict]:
         try:
             if not file_key:

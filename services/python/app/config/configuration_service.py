@@ -76,6 +76,7 @@ class Routes(Enum):
     STORAGE_PLACEHOLDER = "/api/v1/document/internal/placeholder"
     STORAGE_DIRECT_UPLOAD = "/api/v1/document/internal/{documentId}/directUpload"
     STORAGE_UPLOAD = "/api/v1/document/internal/upload"
+    STORAGE_DELETE = "/api/v1/document/internal/{documentId}/"
 
 class WebhookConfig(Enum):
     """Constants for webhook configuration"""

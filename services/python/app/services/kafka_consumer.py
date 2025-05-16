@@ -181,6 +181,7 @@ class KafkaConsumerManager:
                 raise ValueError(f"Missing event_type in message {message_id}")
 
             payload_data = data.get("payload", {})
+            org_id = payload_data.get("orgId")
             record_id = payload_data.get("recordId")
             extension = payload_data.get("extension", "unknown")
             mime_type = payload_data.get("mimeType", "unknown")
@@ -195,7 +196,9 @@ class KafkaConsumerManager:
             # Handle delete event
             if event_type == EventTypes.DELETE_RECORD.value:
                 self.logger.info(f"🗑️ Deleting embeddings for record {record_id}")
-                await self.event_processor.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
+                deleted = await self.event_processor.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
+                if deleted:
+                    await self.event_processor.processor.domain_extractor.delete_summary_from_storage(org_id, record_id)
                 return True
 
             if event_type == EventTypes.UPDATE_RECORD.value:

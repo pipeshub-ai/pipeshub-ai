@@ -34,6 +34,7 @@ Instructions must be strictly followed, failure to do so will result in terminat
    - Analyze the overall tone and sentiment
    - Choose exactly one from:
    {sentiment_list}
+   - If the sentiment is not clear, choose "Neutral"
 
 5. **Topics**:
    - Extract the main themes and subjects discussed.

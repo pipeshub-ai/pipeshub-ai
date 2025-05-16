@@ -151,8 +151,9 @@ class EventProcessor:
             # Extract event type and record ID
             event_type = event_data.get(
                 "eventType", EventTypes.NEW_RECORD.value
-            )  # default to create
+            )
             event_data = event_data.get("payload")
+            self.logger.debug(f"🔍 Event data: {event_data}")
             record_id = event_data.get("recordId")
             org_id = event_data.get("orgId")
             virtual_record_id = event_data.get("virtualRecordId")
@@ -169,7 +170,9 @@ class EventProcessor:
                 self.logger.info(
                     f"""🔄 Updating record {record_id} - deleting existing embeddings"""
                 )
-                await self.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
+                deleted =await self.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
+                if deleted:
+                    await self.processor.domain_extractor.delete_summary_from_storage(org_id, record_id)
 
             if virtual_record_id is None:
                 virtual_record_id = str(uuid4())
