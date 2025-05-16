@@ -464,7 +464,13 @@ class RetrievalService:
             for result in search_results:
                 virtual_id = result["metadata"]["virtualRecordId"]
                 if virtual_id in virtual_to_record_map:
-                    result["metadata"]["recordId"] = virtual_to_record_map[virtual_id]
+                    record_id = virtual_to_record_map[virtual_id]
+                    result["metadata"]["recordId"] = record_id
+                    record = await arango_service.get_document(
+                        record_id, CollectionNames.RECORDS.value
+                    )
+                    result["metadata"]["origin"] = record.get("origin")
+                    result["metadata"]["connector"] = record.get("connectorName")
 
             user = await arango_service.get_user_by_user_id(user_id)
 
