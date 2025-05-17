@@ -7,7 +7,8 @@ import type {
 } from 'src/types/chat-bot';
 
 import React, { useMemo, useState, useEffect, useCallback, useLayoutEffect } from 'react';
-import { Box, Fade, Stack, Typography, CircularProgress } from '@mui/material';
+import { Box, Fade, Stack, Typography, CircularProgress, useTheme } from '@mui/material';
+import { createScrollableContainerStyle } from '../utils/styles/scrollbar';
 
 import ChatMessage from './chat-message';
 import WelcomeMessage from './welcome-message';
@@ -115,7 +116,7 @@ const ChatMessagesArea = ({
   const messagesContainerRef = React.useRef<HTMLDivElement | null>(null);
   const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
   const prevMessagesLength = React.useRef(messages.length);
-  
+
   // Critical: Track whether we're in a 'sending message' state to prevent scroll jumps
   const isSendingMessage = React.useRef(false);
   const lastScrollTopRef = React.useRef(0);
@@ -137,13 +138,13 @@ const ChatMessagesArea = ({
     },
     [messages]
   );
-  
+
   // NEW: Function to explicitly preserve scroll position
   const preserveScrollPosition = useCallback(() => {
     if (messagesContainerRef.current) {
       // Save current position
       lastScrollTopRef.current = messagesContainerRef.current.scrollTop;
-      
+
       // Immediately set it back (prevents browser from resetting)
       requestAnimationFrame(() => {
         if (messagesContainerRef.current) {
@@ -154,33 +155,36 @@ const ChatMessagesArea = ({
   }, []);
 
   // FIXED: Don't let the scroll change on normal user input
-  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
-    if (isSendingMessage.current) {
-      // If we're sending a message, prevent any scroll position changes
-      preserveScrollPosition();
-      return;
-    }
-    
-    if (!messagesContainerRef.current) return;
-    
-    const { scrollTop, scrollHeight, clientHeight } = messagesContainerRef.current;
-    
-    // Update last known position
-    lastScrollTopRef.current = scrollTop;
-    
-    // If we're close to the bottom (within 150px), enable auto-scrolling
-    const isNearBottom = scrollHeight - scrollTop - clientHeight < 150;
-    setShouldAutoScroll(isNearBottom);
-  }, [preserveScrollPosition]);
+  const handleScroll = useCallback(
+    (e: React.UIEvent<HTMLDivElement>) => {
+      if (isSendingMessage.current) {
+        // If we're sending a message, prevent any scroll position changes
+        preserveScrollPosition();
+        return;
+      }
+
+      if (!messagesContainerRef.current) return;
+
+      const { scrollTop, scrollHeight, clientHeight } = messagesContainerRef.current;
+
+      // Update last known position
+      lastScrollTopRef.current = scrollTop;
+
+      // If we're close to the bottom (within 150px), enable auto-scrolling
+      const isNearBottom = scrollHeight - scrollTop - clientHeight < 150;
+      setShouldAutoScroll(isNearBottom);
+    },
+    [preserveScrollPosition]
+  );
 
   // New function to immediately scroll to bottom without animations
   // This prevents the visible "jump" effect
   const immediateScrollToBottom = useCallback(() => {
     if (!messagesEndRef.current || !messagesContainerRef.current) return;
-    
+
     // Use instant scroll (no animation) to prevent visible jumps
     messagesEndRef.current.scrollIntoView({ behavior: 'auto', block: 'end' });
-    
+
     // Update our saved position
     if (messagesContainerRef.current) {
       lastScrollTopRef.current = messagesContainerRef.current.scrollTop;
@@ -190,10 +194,10 @@ const ChatMessagesArea = ({
   // Smooth scroll for non-critical operations
   const smoothScrollToBottom = useCallback(() => {
     if (!messagesEndRef.current) return;
-    
-    messagesEndRef.current.scrollIntoView({ 
-      behavior: 'smooth', 
-      block: 'end' 
+
+    messagesEndRef.current.scrollIntoView({
+      behavior: 'smooth',
+      block: 'end',
     });
   }, []);
 
@@ -209,39 +213,44 @@ const ChatMessagesArea = ({
   // IMPORTANT: This setup ensures scroll position is maintained when messages array changes
   useEffect(() => {
     const isNewMessage = messages.length > prevMessagesLength.current;
-    
+
     // CRITICAL: For new messages, we need to handle scroll properly
     if (isNewMessage) {
       const latestMessage = messages[messages.length - 1];
       const isUserMessage = latestMessage?.type === 'user';
-      
+
       if (isUserMessage) {
         // When sending a message, we initially prevent scroll jumps
         isSendingMessage.current = true;
-        
+
         // First, preserve position
         preserveScrollPosition();
-        
+
         // Then, after a tiny delay (to allow render to complete), jump to bottom
         requestAnimationFrame(() => {
           immediateScrollToBottom();
-          
+
           // Clear sending flag after we've handled it
           setTimeout(() => {
             isSendingMessage.current = false;
           }, 100);
         });
-      }
-      else if (shouldAutoScroll) {
+      } else if (shouldAutoScroll) {
         // For bot messages, use smooth scroll if user hasn't scrolled up
         requestAnimationFrame(() => {
           smoothScrollToBottom();
         });
       }
     }
-    
+
     prevMessagesLength.current = messages.length;
-  }, [messages, shouldAutoScroll, immediateScrollToBottom, smoothScrollToBottom, preserveScrollPosition]);
+  }, [
+    messages,
+    shouldAutoScroll,
+    immediateScrollToBottom,
+    smoothScrollToBottom,
+    preserveScrollPosition,
+  ]);
 
   // Scroll to bottom when loading completes
   useEffect(() => {
@@ -263,23 +272,25 @@ const ChatMessagesArea = ({
   }, [conversationId, immediateScrollToBottom]);
 
   const shouldShowLoadingIndicator = (isLoading || isLoadingConversation) && messages.length > 0;
+  const theme = useTheme();
 
+  const scrollableStyles = createScrollableContainerStyle(theme);
   // Custom hook to enforce scroll position during critical renders
   useEffect(() => {
     let timer: NodeJS.Timeout | null = null;
-    
+
     // Function to ensure we maintain scroll during updates
     const maintainScrollPosition = () => {
       if (messagesContainerRef.current) {
         messagesContainerRef.current.scrollTop = lastScrollTopRef.current;
       }
     };
-    
+
     // Set up interval to enforce position during rapid updates
     if (isSendingMessage.current) {
       timer = setInterval(maintainScrollPosition, 10);
     }
-    
+
     return () => {
       if (timer) clearInterval(timer);
     };
@@ -299,6 +310,7 @@ const ChatMessagesArea = ({
         // Critical: Remove any automatic scroll behavior
         scrollBehavior: 'auto',
         scrollPaddingBottom: '100px',
+        ...scrollableStyles,
       }}
     >
       {isLoadingConversation && conversationId && messages.length === 0 ? (
@@ -339,7 +351,7 @@ const ChatMessagesArea = ({
             <>
               {/* Force minimum height at top to prevent scroll jump */}
               <Box sx={{ minHeight: 4 }} />
-              
+
               {displayMessages.map((message, index) => (
                 <MessageWithControls
                   key={`msg-${message.id}`}
@@ -354,23 +366,23 @@ const ChatMessagesArea = ({
                   onViewPdf={onViewPdf}
                 />
               ))}
-              
+
               {shouldShowLoadingIndicator && (
                 <Box sx={{ mt: 2, display: 'flex', justifyContent: 'flex-start' }}>
                   <ProcessingIndicator isLoadingConversation={false} />
                 </Box>
               )}
-              
+
               {/* Enhanced scroll anchor with proper height */}
               <Box sx={{ minHeight: 20 }} />
-              <div 
-                ref={messagesEndRef} 
-                style={{ 
-                  float: 'left', 
+              <div
+                ref={messagesEndRef}
+                style={{
+                  float: 'left',
                   clear: 'both',
                   height: 1,
                   width: '100%',
-                }} 
+                }}
               />
             </>
           )}

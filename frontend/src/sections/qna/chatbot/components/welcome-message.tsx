@@ -176,10 +176,10 @@ const WelcomeMessageComponent = ({
         }
       };
     }
-        return undefined;
+    return undefined;
 
     // Only depend on isDark, not on inputValue to prevent re-runs
-  }, [isDark, autoResizeTextarea,inputValue]);
+  }, [isDark, autoResizeTextarea, inputValue]);
 
   return (
     <Container
@@ -239,7 +239,6 @@ const WelcomeMessageComponent = ({
         >
           Workplace AI that understands your workplace inside out
         </Typography>
-
       </Box>
 
       {/* Chat Input - Modern & Minimal Style */}

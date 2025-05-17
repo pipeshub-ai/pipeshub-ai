@@ -36,7 +36,7 @@ export function SettingsButton({ sx, ...other }: SettingsButtonProps) {
         invisible={!settings.canReset}
         sx={{
           '& .MuiBadge-badge': {
-            boxShadow: isDarkMode ? '0 0 0 2px #1a1a1a' : '0 0 0 2px #ffffff',
+            boxShadow: isDarkMode ? `0 0 0 2px ${theme.palette.background.default}` : `0 0 0 2px ${theme.palette.background.paper}`,
           },
         }}
       >

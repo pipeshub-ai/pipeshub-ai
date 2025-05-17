@@ -607,7 +607,7 @@ const AuthMethodsList: React.FC<AuthMethodsListProps> = ({
                             : alpha(isConfigured ? theme.palette.info.main : theme.palette.warning.main, 0.08),
                           color: isConfigured ? theme.palette.info.main : theme.palette.warning.main,
                           fontWeight: 650,
-                          width:'98px'
+                          minWidth:'98px'
                         }}
                       >
                         {isConfigured ? 'Configured' : 'Not Configured'}
