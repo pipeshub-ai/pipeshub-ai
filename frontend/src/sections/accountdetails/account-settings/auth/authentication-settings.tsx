@@ -227,13 +227,19 @@ const AuthenticationSettings: React.FC = () => {
   };
 
   return (
-    <Container maxWidth="lg">
+    <Container maxWidth="lg" sx={{ py: 3 }}>
       <Paper
+        elevation={0}
         sx={{
           overflow: 'hidden',
           position: 'relative',
-          p: 3,
-          borderRadius: 2,
+          p: { xs: 2, md: 3 },
+          borderRadius: 1,
+          border: '1px solid',
+          borderColor: theme.palette.divider,
+          backgroundColor: theme.palette.mode === 'dark' 
+            ? alpha(theme.palette.background.paper, 0.6)
+            : theme.palette.background.paper,
         }}
       >
         {/* Loading overlay */}
@@ -249,10 +255,11 @@ const AuthenticationSettings: React.FC = () => {
               alignItems: 'center',
               justifyContent: 'center',
               backgroundColor: alpha(theme.palette.background.paper, 0.7),
+              backdropFilter: 'blur(4px)',
               zIndex: 10,
             }}
           >
-            <CircularProgress size={32} />
+            <CircularProgress size={28} />
           </Box>
         )}
 
@@ -263,7 +270,7 @@ const AuthenticationSettings: React.FC = () => {
             flexDirection: { xs: 'column', sm: 'row' },
             justifyContent: 'space-between',
             alignItems: { xs: 'flex-start', sm: 'center' },
-            mb: 4,
+            mb: 3,
             gap: 2,
           }}
         >
@@ -273,13 +280,21 @@ const AuthenticationSettings: React.FC = () => {
               component="h1"
               sx={{
                 fontWeight: 600,
-                mb: 1,
+                mb: 0.5,
+                fontSize: '1.25rem',
                 color: theme.palette.text.primary,
               }}
             >
               Authentication Settings
             </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 500 }}>
+            <Typography 
+              variant="body2" 
+              color="text.secondary" 
+              sx={{ 
+                maxWidth: 500,
+                lineHeight: 1.5 
+              }}
+            >
               Configure how users sign in to your application
             </Typography>
           </Box>
@@ -293,14 +308,14 @@ const AuthenticationSettings: React.FC = () => {
             sx={{
               mb: 3,
               borderRadius: 1,
-              border: `1px solid ${alpha(theme.palette.error.main, 0.2)}`,
+              border: 'none',
               '& .MuiAlert-icon': {
                 color: theme.palette.error.main,
               },
             }}
           >
-            <AlertTitle sx={{ fontWeight: 500 }}>Error</AlertTitle>
-            {error}
+            <AlertTitle sx={{ fontWeight: 500, fontSize: '0.875rem' }}>Error</AlertTitle>
+            <Typography variant="body2">{error}</Typography>
           </Alert>
         )}
 
@@ -327,20 +342,22 @@ const AuthenticationSettings: React.FC = () => {
         {/* Info box */}
         <Box
           sx={{
-            mt: 4,
-            p: 3,
-            borderRadius: 2,
-            bgcolor: alpha(theme.palette.primary.main, 0.04),
-            border: `1px solid ${alpha(theme.palette.primary.main, 0.1)}`,
+            mt: 3,
+            p: 2.5,
+            borderRadius: 1,
+            bgcolor: theme.palette.mode === 'dark' 
+              ? alpha(theme.palette.info.main, 0.08)
+              : alpha(theme.palette.info.main, 0.04),
+            border: `1px solid ${alpha(theme.palette.info.main, theme.palette.mode === 'dark' ? 0.2 : 0.1)}`,
             display: 'flex',
             alignItems: 'flex-start',
-            gap: 2,
+            gap: 1.5,
           }}
         >
           <Box sx={{ color: theme.palette.info.main, mt: 0.5 }}>
             <svg
-              width="20"
-              height="20"
+              width="18"
+              height="18"
               viewBox="0 0 24 24"
               fill="none"
               xmlns="http://www.w3.org/2000/svg"
@@ -369,10 +386,25 @@ const AuthenticationSettings: React.FC = () => {
             </svg>
           </Box>
           <Box>
-            <Typography variant="subtitle2" color="text.primary" sx={{ mb: 0.5, fontWeight: 500 }}>
+            <Typography 
+              variant="subtitle2" 
+              color="text.primary" 
+              sx={{ 
+                mb: 0.5, 
+                fontWeight: 600,
+                fontSize: '0.875rem' 
+              }}
+            >
               Authentication Method Policy
             </Typography>
-            <Typography variant="body2" color="text.secondary">
+            <Typography 
+              variant="body2" 
+              color="text.secondary"
+              sx={{
+                fontSize: '0.8125rem',
+                lineHeight: 1.5
+              }}
+            >
               Only one authentication method can be active at a time. To change the method, please
               disable the current one and enable a different method.
               {!smtpConfigured && (
@@ -380,9 +412,14 @@ const AuthenticationSettings: React.FC = () => {
                   component="span"
                   sx={{
                     display: 'block',
-                    mt: 1,
-                    color: theme.palette.warning.dark,
+                    mt: 1.5,
+                    p: 1.5,
+                    borderRadius: 1,
+                    bgcolor: alpha(theme.palette.warning.main, theme.palette.mode === 'dark' ? 0.08 : 0.05),
+                    border: `1px solid ${alpha(theme.palette.warning.main, theme.palette.mode === 'dark' ? 0.2 : 0.1)}`,
+                    color: theme.palette.mode === 'dark' ? theme.palette.warning.light : theme.palette.warning.dark,
                     fontWeight: 500,
+                    fontSize: '0.8125rem',
                   }}
                 >
                   Note: OTP authentication requires SMTP configuration. Please configure SMTP
@@ -405,7 +442,7 @@ const AuthenticationSettings: React.FC = () => {
       {/* Snackbar for success and error messages */}
       <Snackbar
         open={snackbar.open}
-        autoHideDuration={6000}
+        autoHideDuration={4000}
         onClose={handleCloseSnackbar}
         anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
         sx={{ mt: 6 }}
@@ -416,26 +453,51 @@ const AuthenticationSettings: React.FC = () => {
           variant="filled"
           sx={{
             width: '100%',
-            boxShadow: '0px 3px 8px rgba(0, 0, 0, 0.12)',
-            ...(snackbar.severity === 'error' && {
-              bgcolor: theme.palette.error.main,
-              color: theme.palette.error.contrastText,
-            }),
-            ...(snackbar.severity === 'success' && {
-              bgcolor: theme.palette.success.main,
-              color: theme.palette.success.contrastText,
-            }),
+            boxShadow: theme.palette.mode === 'dark'
+              ? '0px 3px 8px rgba(0, 0, 0, 0.3)'
+              : '0px 3px 8px rgba(0, 0, 0, 0.12)',
+            '& .MuiAlert-icon': {
+              opacity: 0.8,
+            },
+            fontSize: '0.8125rem',
           }}
         >
           {snackbar.message}
         </Alert>
       </Snackbar>
-      <Alert variant="outlined" severity="info" sx={{ my: 3 }}>
-        Refer to{' '}
-        <Link href="https://docs.pipeshub.com/auth" target="_blank" rel="noopener">
-          the documentation
-        </Link>{' '}
-        for more information.
+      
+      <Alert 
+        variant="outlined" 
+        severity="info" 
+        sx={{ 
+          mt: 3,
+          mb: 1,
+          borderRadius: 1,
+          borderColor: alpha(theme.palette.info.main, theme.palette.mode === 'dark' ? 0.3 : 0.2),
+          '& .MuiAlert-icon': {
+            color: theme.palette.info.main,
+          },
+        }}
+      >
+        <Typography variant="body2">
+          Refer to{' '}
+          <Link 
+            href="https://docs.pipeshub.com/auth" 
+            target="_blank" 
+            rel="noopener"
+            sx={{
+              color: theme.palette.primary.main,
+              textDecoration: 'none',
+              fontWeight: 500,
+              '&:hover': {
+                textDecoration: 'underline',
+              },
+            }}
+          >
+            the documentation
+          </Link>{' '}
+          for more information.
+        </Typography>
       </Alert>
     </Container>
   );

@@ -1,44 +1,74 @@
 import type { IconButtonProps } from '@mui/material/IconButton';
-
 import { m } from 'framer-motion';
-
 import Badge from '@mui/material/Badge';
 import SvgIcon from '@mui/material/SvgIcon';
 import IconButton from '@mui/material/IconButton';
-
 import { useSettingsContext } from 'src/components/settings/context';
-
-// ----------------------------------------------------------------------
+import { useTheme } from '@mui/material/styles';
 
 export type SettingsButtonProps = IconButtonProps;
 
 export function SettingsButton({ sx, ...other }: SettingsButtonProps) {
   const settings = useSettingsContext();
+  const theme = useTheme();
+  const isDarkMode = theme.palette.mode === 'dark';
 
   return (
     <IconButton
-      aria-label="settings"
+      aria-label="UI settings"
       onClick={settings.onToggleDrawer}
-      sx={{ p: 0, width: 40, height: 40, ...sx }}
+      sx={{
+        p: 0,
+        width: 40,
+        height: 40,
+        backgroundColor: 'transparent',
+        '&:hover': {
+          backgroundColor: isDarkMode ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.04)',
+        },
+        transition: 'background-color 200ms cubic-bezier(0.4, 0, 0.2, 1)',
+        ...sx,
+      }}
       {...other}
     >
-      <Badge color="error" variant="dot" invisible={!settings.canReset}>
+      <Badge 
+        color="primary" 
+        variant="dot" 
+        invisible={!settings.canReset}
+        sx={{
+          '& .MuiBadge-badge': {
+            boxShadow: isDarkMode ? '0 0 0 2px #1a1a1a' : '0 0 0 2px #ffffff',
+          },
+        }}
+      >
         <SvgIcon
           component={m.svg}
-          animate={{ rotate: 360 }}
-          transition={{ duration: 8, ease: 'linear', repeat: Infinity }}
+          animate={{ 
+            y: [0, -1, 0, 1, 0],
+          }}
+          transition={{ 
+            duration: 4, 
+            ease: "easeInOut", 
+            repeat: Infinity,
+            repeatDelay: 2
+          }}
+          sx={{
+            color: isDarkMode ? 'grey.300' : 'grey.700',
+            '&:hover': {
+              color: theme.palette.primary.main,
+            },
+          }}
+          viewBox="0 0 24 24"
         >
-          {/* https://icon-sets.iconify.design/solar/settings-bold-duotone/ */}
+          {/* Palette Icon */}
           <path
             fill="currentColor"
-            fillRule="evenodd"
-            d="M14.279 2.152C13.909 2 13.439 2 12.5 2s-1.408 0-1.779.152a2.008 2.008 0 0 0-1.09 1.083c-.094.223-.13.484-.145.863a1.615 1.615 0 0 1-.796 1.353a1.64 1.64 0 0 1-1.579.008c-.338-.178-.583-.276-.825-.308a2.026 2.026 0 0 0-1.49.396c-.318.242-.553.646-1.022 1.453c-.47.807-.704 1.21-.757 1.605c-.07.526.074 1.058.4 1.479c.148.192.357.353.68.555c.477.297.783.803.783 1.361c0 .558-.306 1.064-.782 1.36c-.324.203-.533.364-.682.556a1.99 1.99 0 0 0-.399 1.479c.053.394.287.798.757 1.605c.47.807.704 1.21 1.022 1.453c.424.323.96.465 1.49.396c.242-.032.487-.13.825-.308a1.64 1.64 0 0 1 1.58.008c.486.28.774.795.795 1.353c.015.38.051.64.145.863c.204.49.596.88 1.09 1.083c.37.152.84.152 1.779.152s1.409 0 1.779-.152a2.008 2.008 0 0 0 1.09-1.083c.094-.223.13-.483.145-.863c.02-.558.309-1.074.796-1.353a1.64 1.64 0 0 1 1.579-.008c.338.178.583.276.825.308c.53.07 1.066-.073 1.49-.396c.318-.242.553-.646 1.022-1.453c.47-.807.704-1.21.757-1.605a1.99 1.99 0 0 0-.4-1.479c-.148-.192-.357-.353-.68-.555c-.477-.297-.783-.803-.783-1.361c0-.558.306-1.064.782-1.36c.324-.203.533-.364.682-.556a1.99 1.99 0 0 0 .399-1.479c-.053-.394-.287-.798-.757-1.605c-.47-.807-.704-1.21-1.022-1.453a2.026 2.026 0 0 0-1.49-.396c-.242.032-.487.13-.825.308a1.64 1.64 0 0 1-1.58-.008a1.615 1.615 0 0 1-.795-1.353c-.015-.38-.051-.64-.145-.863a2.007 2.007 0 0 0-1.09-1.083"
-            clipRule="evenodd"
-            opacity="0.5"
+            d="M12 2C6.49 2 2 6.49 2 12s4.49 10 10 10c1.38 0 2.5-1.12 2.5-2.5 0-.61-.23-1.2-.64-1.67-.08-.1-.13-.21-.13-.33 0-.28.22-.5.5-.5H16c3.31 0 6-2.69 6-6 0-4.96-4.49-9-10-9zm5.5 11c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm-3-4c-.83 0-1.5-.67-1.5-1.5S13.67 6 14.5 6s1.5.67 1.5 1.5S15.33 9 14.5 9zM5 11.5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5S7.33 13 6.5 13 5 12.33 5 11.5zm6-4c0 .83-.67 1.5-1.5 1.5S8 8.33 8 7.5 8.67 6 9.5 6s1.5.67 1.5 1.5z"
+            opacity={isDarkMode ? "0.9" : "0.8"}
           />
           <path
             fill="currentColor"
-            d="M15.523 12c0 1.657-1.354 3-3.023 3c-1.67 0-3.023-1.343-3.023-3S10.83 9 12.5 9c1.67 0 3.023 1.343 3.023 3"
+            d="M12 2C6.49 2 2 6.49 2 12s4.49 10 10 10c1.38 0 2.5-1.12 2.5-2.5 0-.61-.23-1.2-.64-1.67-.08-.1-.13-.21-.13-.33 0-.28.22-.5.5-.5H16c3.31 0 6-2.69 6-6 0-4.96-4.49-9-10-9zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8c0 2.21-1.79 4-4 4h-1.77c-.28 0-.5.22-.5.5 0 .12.05.23.13.33.41.47.64 1.06.64 1.67 0 1.38-1.12 2.5-2.5 2.5z"
+            opacity="0.4"
           />
         </SvgIcon>
       </Badge>

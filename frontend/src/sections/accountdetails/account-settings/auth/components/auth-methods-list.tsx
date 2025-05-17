@@ -63,7 +63,6 @@ interface ConfigStatus {
 }
 
 // Configuration for auth methods with icons and descriptions
-
 const AUTH_METHODS_CONFIG = [
   {
     type: 'otp',
@@ -128,6 +127,7 @@ const SMTP_CONFIG = {
   configurable: true,
   requiresSmtp: false,
 };
+
 const AuthMethodsList: React.FC<AuthMethodsListProps> = ({
   authMethods,
   handleToggleMethod,
@@ -387,27 +387,50 @@ const AuthMethodsList: React.FC<AuthMethodsListProps> = ({
       {/* Error/Success notification */}
       <Snackbar
         open={showError}
-        autoHideDuration={6000}
+        autoHideDuration={4000}
         onClose={handleCloseError}
         anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
-        sx={{mt:6}}
+        sx={{ mt: 6 }}
       >
         <Alert
           onClose={handleCloseError}
           severity={errorMessage?.includes('successfully') ? 'success' : 'warning'}
           variant="filled"
-          sx={{ width: '100%' }}
+          sx={{ 
+            width: '100%',
+            boxShadow: theme.palette.mode === 'dark'
+              ? '0px 3px 8px rgba(0, 0, 0, 0.3)'
+              : '0px 3px 8px rgba(0, 0, 0, 0.12)',
+            '& .MuiAlert-icon': {
+              opacity: 0.8,
+            },
+            fontSize: '0.8125rem',
+          }}
         >
           {errorMessage}
         </Alert>
       </Snackbar>
 
       {/* Section header for Authentication Methods */}
-      <Box sx={{ mb: 2, mt: 4 }}>
-        <Typography variant="h6" sx={{ fontWeight: 600, mb: 1 }}>
+      <Box sx={{ mb: 2, mt: 3 }}>
+        <Typography 
+          variant="h6" 
+          sx={{ 
+            fontWeight: 600, 
+            mb: 0.5,
+            fontSize: '1rem',
+          }}
+        >
           Authentication Methods
         </Typography>
-        <Typography variant="body2" color="text.secondary">
+        <Typography 
+          variant="body2" 
+          color="text.secondary"
+          sx={{ 
+            fontSize: '0.8125rem',
+            lineHeight: 1.5 
+          }}
+        >
           Select the authentication method users will use to sign in
         </Typography>
       </Box>
@@ -443,192 +466,242 @@ const AuthMethodsList: React.FC<AuthMethodsListProps> = ({
           }
 
           return (
-            <Grid item xs={16} sm={12} md={6} key={methodConfig.type}>
-              <Fade in={Boolean(true)}>
-                <Tooltip
-                  title={tooltipMessage}
-                  placement="top"
-                  arrow
-                  disableHoverListener={!tooltipMessage}
+            <Grid item xs={12} sm={12} md={6} key={methodConfig.type}>
+              <Tooltip
+                title={tooltipMessage}
+                placement="top"
+                arrow
+                disableHoverListener={!tooltipMessage}
+              >
+                <Paper
+                  elevation={0}
+                  sx={{
+                    p: 2,
+                    display: 'flex',
+                    alignItems: 'center',
+                    minHeight: 68,
+                    borderRadius: 1,
+                    border: '1px solid',
+                    borderColor: isEnabled 
+                      ? alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.3 : 0.2) 
+                      : theme.palette.divider,
+                    bgcolor: isEnabled 
+                      ? alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.05 : 0.02)
+                      : 'transparent',
+                    transition: 'all 0.15s ease',
+                    opacity: isDisabled && !isEnabled ? 0.7 : 1,
+                    ...(isEditing &&
+                      !isDisabled && {
+                        '&:hover': {
+                          borderColor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.4 : 0.3),
+                          bgcolor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.08 : 0.04),
+                          transform: 'translateY(-1px)',
+                        },
+                      }),
+                  }}
                 >
-                  <Paper
-                    elevation={0}
+                  {/* Icon container */}
+                  <Box
                     sx={{
-                      p: 2,
+                      width: 36,
+                      height: 36,
                       display: 'flex',
                       alignItems: 'center',
-                      height: 72,
+                      justifyContent: 'center',
+                      mr: 2,
+                      bgcolor: theme.palette.mode === 'dark' 
+                        ? alpha(theme.palette.background.paper, 0.3)
+                        : alpha(theme.palette.grey[100], 0.8),
+                      color: isEnabled
+                        ? theme.palette.primary.main
+                        : theme.palette.text.secondary,
                       borderRadius: 1,
+                      flexShrink: 0,
                       border: '1px solid',
                       borderColor: theme.palette.divider,
-                      bgcolor: 'transparent',
-                      transition: 'all 0.2s ease',
-                      opacity: isDisabled && !isEnabled ? 0.6 : 1,
-                      ...(isEditing &&
-                        !isDisabled && {
-                          '&:hover': {
-                            borderColor: alpha(theme.palette.primary.main, 0.3),
-                            bgcolor: alpha(theme.palette.primary.main, 0.05),
-                          },
-                        }),
                     }}
                   >
-                    {/* Icon container */}
-                    <Box
+                    <Iconify icon={methodConfig.icon} width={20} height={20} />
+                  </Box>
+
+                  {/* Content */}
+                  <Box
+                    sx={{
+                      flexGrow: 1,
+                      overflow: 'hidden',
+                      mr: 1,
+                    }}
+                  >
+                    <Typography
+                      variant="subtitle2"
                       sx={{
-                        width: 40,
-                        height: 40,
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        mr: 2,
-                        bgcolor: alpha(theme.palette.grey[500], 0.08),
-                        color: theme.palette.text.secondary,
-                        borderRadius: 1,
-                        flexShrink: 0,
+                        fontWeight: 600,
+                        fontSize: '0.875rem',
+                        color: isEnabled
+                          ? theme.palette.primary.main
+                          : theme.palette.text.primary,
                       }}
                     >
-                      <Iconify icon={methodConfig.icon} width={22} height={22} />
-                    </Box>
-
-                    {/* Content */}
-                    <Box
+                      {methodConfig.title}
+                    </Typography>
+                    <Typography
+                      variant="caption"
+                      color="text.secondary"
                       sx={{
-                        flexGrow: 1,
+                        display: '-webkit-box',
+                        WebkitLineClamp: 1,
+                        WebkitBoxOrient: 'vertical',
                         overflow: 'hidden',
-                        mr: 2,
+                        textOverflow: 'ellipsis',
+                        fontSize: '0.75rem',
+                        lineHeight: 1.4,
                       }}
                     >
-                      <Typography
-                        variant="subtitle2"
-                        sx={{
-                          fontWeight: 500,
-                          color: theme.palette.text.primary,
-                        }}
-                      >
-                        {methodConfig.title}
-                      </Typography>
-                      <Typography
-                        variant="caption"
-                        color="text.secondary"
-                        sx={{
-                          display: '-webkit-box',
-                          WebkitLineClamp: 1,
-                          WebkitBoxOrient: 'vertical',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                        }}
-                      >
-                        {methodConfig.description}
-                      </Typography>
-                    </Box>
+                      {methodConfig.description}
+                    </Typography>
+                  </Box>
 
-                    {/* Status indicators */}
+                  {/* Status indicators */}
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mr: 1 }}>
                     {isEnabled && (
-                      <Chip
-                        label="Enabled"
-                        size="small"
+                      <Box
                         sx={{
-                          height: 24,
-                          fontSize: '0.75rem',
-                          mr: 1.5,
-                          bgcolor: alpha(theme.palette.success.main, 0.08),
+                          height: 22,
+                          fontSize: '0.6875rem',
+                          px: 1,
+                          display: 'flex',
+                          alignItems: 'center',
+                          borderRadius: 0.75,
+                          bgcolor: theme.palette.mode === 'dark' 
+                            ? alpha(theme.palette.success.main, 0.15)
+                            : alpha(theme.palette.success.main, 0.08),
                           color: theme.palette.success.main,
-                          borderColor: alpha(theme.palette.success.main, 0.2),
-                          fontWeight: 500,
-                          border: '1px solid',
+                          fontWeight: 600,
                         }}
-                      />
+                      >
+                        <Box
+                          sx={{
+                            width: 6,
+                            height: 6,
+                            borderRadius: '50%',
+                            bgcolor: 'currentColor',
+                            mr: 0.5,
+                          }}
+                        />
+                        Enabled
+                      </Box>
                     )}
 
                     {/* Configuration status indicator */}
                     {methodConfig.requiresConfig && (
-                      <Chip
-                        label={isConfigured ? 'Configured' : 'Not Configured'}
-                        size="small"
+                      <Box
                         sx={{
-                          height: 24,
-                          fontSize: '0.75rem',
-                          mr: 1.5,
-                          bgcolor: isConfigured
-                            ? alpha(theme.palette.info.main, 0.08)
-                            : alpha(theme.palette.warning.main, 0.08),
-                          color: isConfigured
-                            ? theme.palette.info.main
-                            : theme.palette.warning.main,
-                          borderColor: isConfigured
-                            ? alpha(theme.palette.info.main, 0.2)
-                            : alpha(theme.palette.warning.main, 0.2),
-                          fontWeight: 500,
-                          border: '1px solid',
+                          height: 22,
+                          fontSize: '0.6875rem',
+                          px: 1,
+                          display: 'flex',
+                          alignItems: 'center',
+                          borderRadius: 0.75,
+                          bgcolor: theme.palette.mode === 'dark' 
+                            ? alpha(isConfigured ? theme.palette.info.main : theme.palette.warning.main, 0.15)
+                            : alpha(isConfigured ? theme.palette.info.main : theme.palette.warning.main, 0.08),
+                          color: isConfigured ? theme.palette.info.main : theme.palette.warning.main,
+                          fontWeight: 650,
+                          width:'98px'
                         }}
-                      />
+                      >
+                        {isConfigured ? 'Configured' : 'Not Configured'}
+                      </Box>
                     )}
+                  </Box>
 
-                    {/* Warning for OTP */}
-                    {methodConfig.type === 'otp' && !smtpConfigured && isEditing && (
-                      <Tooltip title="SMTP must be configured first">
-                        <Box
-                          sx={{
-                            color: theme.palette.warning.main,
-                            display: 'flex',
-                            mr: 1.5,
-                          }}
-                        >
-                          <Iconify icon={dangerIcon} width={18} height={18} />
-                        </Box>
-                      </Tooltip>
-                    )}
-
-                    {/* Actions */}
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                      {methodConfig.configurable && (
-                        <IconButton
-                          size="small"
-                          onClick={() => handleConfigureWithTracking(methodConfig.type)}
-                          sx={{
-                            color: theme.palette.text.secondary,
-                            '&:hover': {
-                              bgcolor: alpha(theme.palette.primary.main, 0.08),
-                              color: theme.palette.primary.main,
-                            },
-                          }}
-                        >
-                          <Iconify icon={settingsIcon} width={18} height={18} />
-                        </IconButton>
-                      )}
-
-                      <Switch
-                        checked={isEnabled}
-                        onChange={() =>
-                          !isDisabled && handleToggleWithValidation(methodConfig.type)
-                        }
-                        disabled={isDisabled}
-                        size="small"
+                  {/* Warning for OTP */}
+                  {methodConfig.type === 'otp' && !smtpConfigured && isEditing && (
+                    <Tooltip title="SMTP must be configured first">
+                      <Box
                         sx={{
-                          '& .MuiSwitch-switchBase.Mui-checked': {
+                          color: theme.palette.warning.main,
+                          display: 'flex',
+                          mr: 1,
+                        }}
+                      >
+                        <Iconify icon={dangerIcon} width={18} height={18} />
+                      </Box>
+                    </Tooltip>
+                  )}
+
+                  {/* Actions */}
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                    {methodConfig.configurable && (
+                      <IconButton
+                        size="small"
+                        onClick={() => handleConfigureWithTracking(methodConfig.type)}
+                        sx={{
+                          p: 0.75,
+                          color: theme.palette.text.secondary,
+                          bgcolor: theme.palette.mode === 'dark' 
+                            ? alpha(theme.palette.background.paper, 0.3)
+                            : alpha(theme.palette.background.default, 0.8),
+                          border: '1px solid',
+                          borderColor: theme.palette.divider,
+                          '&:hover': {
+                            bgcolor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.15 : 0.08),
                             color: theme.palette.primary.main,
                           },
-                          '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': {
-                            backgroundColor: alpha(theme.palette.primary.main, 0.5),
-                          },
                         }}
-                      />
-                    </Box>
-                  </Paper>
-                </Tooltip>
-              </Fade>
+                      >
+                        <Iconify icon={settingsIcon} width={18} height={18} />
+                      </IconButton>
+                    )}
+
+                    <Switch
+                      checked={isEnabled}
+                      onChange={() =>
+                        !isDisabled && handleToggleWithValidation(methodConfig.type)
+                      }
+                      disabled={isDisabled}
+                      size="small"
+                      sx={{
+                        ml: 0.5,
+                        '& .MuiSwitch-switchBase.Mui-checked': {
+                          color: theme.palette.primary.main,
+                        },
+                        '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': {
+                          backgroundColor: alpha(theme.palette.primary.main, 0.5),
+                        },
+                        '& .MuiSwitch-track': {
+                          opacity: 0.8,
+                        },
+                      }}
+                    />
+                  </Box>
+                </Paper>
+              </Tooltip>
             </Grid>
           );
         })}
       </Grid>
 
       {/* Section header for Configuration */}
-      <Box sx={{ mb: 2, mt: 4 }}>
-        <Typography variant="h6" sx={{ fontWeight: 600, mb: 1 }}>
+      <Box sx={{ mb: 2, mt: 3 }}>
+        <Typography 
+          variant="h6" 
+          sx={{ 
+            fontWeight: 600, 
+            mb: 0.5,
+            fontSize: '1rem',
+          }}
+        >
           Server Configuration
         </Typography>
-        <Typography variant="body2" color="text.secondary">
+        <Typography 
+          variant="body2" 
+          color="text.secondary"
+          sx={{ 
+            fontSize: '0.8125rem',
+            lineHeight: 1.5 
+          }}
+        >
           Configure email and other server settings for authentication
         </Typography>
       </Box>
@@ -636,113 +709,140 @@ const AuthMethodsList: React.FC<AuthMethodsListProps> = ({
       {/* SMTP Configuration Card */}
       <Grid container spacing={2}>
         <Grid item xs={12} sm={10} md={6}>
-          <Fade in={Boolean(true)}>
-            <Paper
-              elevation={0}
+          <Paper
+            elevation={0}
+            sx={{
+              p: 2,
+              display: 'flex',
+              alignItems: 'center',
+              minHeight: 68,
+              borderRadius: 1,
+              border: '1px solid',
+              borderColor: smtpConfigured 
+                ? alpha(theme.palette.success.main, theme.palette.mode === 'dark' ? 0.3 : 0.2) 
+                : alpha(theme.palette.warning.main, theme.palette.mode === 'dark' ? 0.3 : 0.2),
+              bgcolor: smtpConfigured 
+                ? alpha(theme.palette.success.main, theme.palette.mode === 'dark' ? 0.05 : 0.02)
+                : alpha(theme.palette.warning.main, theme.palette.mode === 'dark' ? 0.05 : 0.02),
+              transition: 'all 0.15s ease',
+              '&:hover': {
+                borderColor: smtpConfigured 
+                  ? alpha(theme.palette.success.main, theme.palette.mode === 'dark' ? 0.4 : 0.3)
+                  : alpha(theme.palette.warning.main, theme.palette.mode === 'dark' ? 0.4 : 0.3),
+                transform: 'translateY(-1px)',
+              },
+            }}
+          >
+            {/* Icon container */}
+            <Box
               sx={{
-                p: 2,
+                width: 36,
+                height: 36,
                 display: 'flex',
                 alignItems: 'center',
-                height: 72,
+                justifyContent: 'center',
+                mr: 2,
+                bgcolor: theme.palette.mode === 'dark' 
+                  ? alpha(theme.palette.background.paper, 0.3)
+                  : alpha(theme.palette.grey[100], 0.8),
+                color: smtpConfigured ? theme.palette.success.main : theme.palette.warning.main,
                 borderRadius: 1,
+                flexShrink: 0,
                 border: '1px solid',
                 borderColor: theme.palette.divider,
-                bgcolor: 'transparent',
-                transition: 'all 0.2s ease',
+              }}
+            >
+              <Iconify icon={SMTP_CONFIG.icon} width={20} height={20} />
+            </Box>
+
+            {/* Content */}
+            <Box
+              sx={{
+                flexGrow: 1,
+                overflow: 'hidden',
+                mr: 1,
+              }}
+            >
+              <Typography
+                variant="subtitle2"
+                sx={{
+                  fontWeight: 600,
+                  fontSize: '0.875rem',
+                  color: smtpConfigured ? theme.palette.success.main : theme.palette.warning.main,
+                }}
+              >
+                {SMTP_CONFIG.title}
+              </Typography>
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{
+                  display: '-webkit-box',
+                  WebkitLineClamp: 1,
+                  WebkitBoxOrient: 'vertical',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  fontSize: '0.75rem',
+                  lineHeight: 1.4,
+                }}
+              >
+                {SMTP_CONFIG.description}
+              </Typography>
+            </Box>
+
+            {/* Status indicator */}
+            <Box
+              sx={{
+                height: 22,
+                fontSize: '0.6875rem',
+                px: 1,
+                display: 'flex',
+                alignItems: 'center',
+                borderRadius: 0.75,
+                mr: 1.5,
+                bgcolor: theme.palette.mode === 'dark' 
+                  ? alpha(smtpConfigured ? theme.palette.success.main : theme.palette.warning.main, 0.15)
+                  : alpha(smtpConfigured ? theme.palette.success.main : theme.palette.warning.main, 0.08),
+                color: smtpConfigured ? theme.palette.success.main : theme.palette.warning.main,
+                fontWeight: 600,
+              }}
+            >
+              <Box
+                sx={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: '50%',
+                  bgcolor: 'currentColor',
+                  mr: 0.5,
+                }}
+              />
+              {smtpConfigured ? 'Configured' : 'Not Configured'}
+            </Box>
+
+            {/* Configure button */}
+            <IconButton
+              size="small"
+              onClick={() => handleConfigureWithTracking('smtp')}
+              sx={{
+                p: 0.75,
+                color: theme.palette.text.secondary,
+                bgcolor: theme.palette.mode === 'dark' 
+                  ? alpha(theme.palette.background.paper, 0.3)
+                  : alpha(theme.palette.background.default, 0.8),
+                border: '1px solid',
+                borderColor: theme.palette.divider,
                 '&:hover': {
-                  borderColor: smtpConfigured
-                    ? alpha(theme.palette.success.main, 0.3)
-                    : alpha(theme.palette.warning.main, 0.3),
+                  bgcolor: alpha(
+                    smtpConfigured ? theme.palette.success.main : theme.palette.warning.main,
+                    theme.palette.mode === 'dark' ? 0.15 : 0.08
+                  ),
+                  color: smtpConfigured ? theme.palette.success.main : theme.palette.warning.main,
                 },
               }}
             >
-              {/* Icon container */}
-              <Box
-                sx={{
-                  width: 40,
-                  height: 40,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  mr: 2,
-                  bgcolor: alpha(theme.palette.grey[500], 0.08),
-                  color: theme.palette.text.secondary,
-                  borderRadius: 1,
-                  flexShrink: 0,
-                }}
-              >
-                <Iconify icon={SMTP_CONFIG.icon} width={22} height={22} />
-              </Box>
-
-              {/* Content */}
-              <Box
-                sx={{
-                  flexGrow: 1,
-                  overflow: 'hidden',
-                  mr: 2,
-                }}
-              >
-                <Typography
-                  variant="subtitle2"
-                  sx={{
-                    fontWeight: 500,
-                    color: theme.palette.text.secondary,
-                  }}
-                >
-                  {SMTP_CONFIG.title}
-                </Typography>
-                <Typography
-                  variant="caption"
-                  color="text.secondary"
-                  sx={{
-                    display: '-webkit-box',
-                    WebkitLineClamp: 1,
-                    WebkitBoxOrient: 'vertical',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                  }}
-                >
-                  {SMTP_CONFIG.description}
-                </Typography>
-              </Box>
-
-              {/* Status indicator */}
-              <Chip
-                label={smtpConfigured ? 'Configured' : 'Not Configured'}
-                size="small"
-                sx={{
-                  height: 24,
-                  fontSize: '0.75rem',
-                  mr: 1.5,
-                  bgcolor: smtpConfigured
-                    ? alpha(theme.palette.success.main, 0.08)
-                    : alpha(theme.palette.warning.main, 0.08),
-                  color: smtpConfigured ? theme.palette.success.main : theme.palette.warning.main,
-                  borderColor: smtpConfigured
-                    ? alpha(theme.palette.success.main, 0.2)
-                    : alpha(theme.palette.warning.main, 0.2),
-                  fontWeight: 500,
-                  border: '1px solid',
-                }}
-              />
-
-              {/* Configure button */}
-              <IconButton
-                size="small"
-                onClick={() => handleConfigureWithTracking('smtp')}
-                sx={{
-                  color: smtpConfigured ? theme.palette.success.main : theme.palette.warning.main,
-                  '&:hover': {
-                    bgcolor: smtpConfigured
-                      ? alpha(theme.palette.success.main, 0.08)
-                      : alpha(theme.palette.warning.main, 0.08),
-                  },
-                }}
-              >
-                <Iconify icon={settingsIcon} width={18} height={18} />
-              </IconButton>
-            </Paper>
-          </Fade>
+              <Iconify icon={settingsIcon} width={18} height={18} />
+            </IconButton>
+          </Paper>
         </Grid>
       </Grid>
     </>

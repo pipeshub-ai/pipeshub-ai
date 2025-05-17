@@ -36,12 +36,13 @@ import {
   IconButton,
   ListItemButton,
   CircularProgress,
+  useTheme,
 } from '@mui/material';
 
 import axiosInstance from 'src/utils/axios';
 
 import ArchivedChatsDialog from './dialogs/archieve-chat-dialog';
-import scrollableContainerStyle from '../utils/styles/scrollbar';
+import { createScrollableContainerStyle } from '../utils/styles/scrollbar';
 import ShareConversationDialog from './dialogs/share-conversation-dialog';
 import DeleteConversationDialog from './dialogs/delete-conversation-dialog';
 
@@ -76,7 +77,9 @@ const ChatSidebar = ({
   });
 
   const [archiveDialogOpen, setArchiveDialogOpen] = useState<boolean>(false);
+  const theme = useTheme();
 
+  const scrollableStyles = createScrollableContainerStyle(theme);
   // Memoize fetch function to prevent recreation on each render
   const fetchConversations = useCallback(
     async (pageNum: number): Promise<void> => {
@@ -311,7 +314,7 @@ const ChatSidebar = ({
 
       // Check if the deleted chat is the currently selected one
       const isCurrentChatDeleted = selectedId === deleteDialog.chat._id;
-      
+
       // Send API request in the background
       await axiosInstance.delete(`/api/v1/conversations/${deleteDialog.chat._id}`);
 
@@ -328,7 +331,7 @@ const ChatSidebar = ({
     } catch (error) {
       // If the API request fails, fetch conversations again to restore the correct state
       fetchConversations(1);
-      
+
       // setSnackbar({
       //   open: true,
       //   message: 'Failed to delete conversation. Please try again.',
@@ -345,20 +348,20 @@ const ChatSidebar = ({
       try {
         // First update UI optimistically
         setConversations((prev) => prev.filter((c) => c._id !== chat._id));
-        
+
         // Check if the archived chat is the currently selected one
         const isCurrentChatArchived = selectedId === chat._id;
-        
+
         // Make API call in background
         await axiosInstance.patch(`/api/v1/conversations/${chat._id}/archive`);
-        
+
         // If we archived the current chat, navigate to a new conversation
         if (isCurrentChatArchived && onNewChat) {
           onNewChat();
         }
 
         handleMenuClose();
-        
+
         setSnackbar({
           open: true,
           message: 'Conversation archived successfully',
@@ -367,7 +370,7 @@ const ChatSidebar = ({
       } catch (error) {
         // If API request fails, restore the list
         fetchConversations(1);
-        
+
         // setSnackbar({
         //   open: true,
         //   message: 'Failed to archive conversation. Please try again.',
@@ -571,7 +574,7 @@ const ChatSidebar = ({
         display: 'flex',
         flexDirection: 'column',
         bgcolor: 'background.default',
-        ...scrollableContainerStyle,
+        ...scrollableStyles,
       }}
     >
       {/* Header */}
@@ -651,10 +654,10 @@ const ChatSidebar = ({
       <Box
         sx={{
           flexGrow: 1,
-          overflowY: 'auto',
           px: 1,
           display: 'flex',
           flexDirection: 'column',
+          ...scrollableStyles,
         }}
         onScroll={handleScroll}
       >
@@ -663,7 +666,7 @@ const ChatSidebar = ({
             sx={{
               display: 'flex',
               justifyContent: 'center',
-              alignItems: 'center', 
+              alignItems: 'center',
               minHeight: 200,
               width: '100%',
               py: 4,

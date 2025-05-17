@@ -1,324 +1,400 @@
-// WelcomeMessage.js
-import React from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { Icon } from '@iconify/react';
 import githubIcon from '@iconify-icons/mdi/github';
-import graphIcon from '@iconify-icons/mdi/graph-outline';
-import lightningBoltIcon from '@iconify-icons/mdi/lightning-bolt-outline';
-import databaseSearchIcon from '@iconify-icons/mdi/database-search-outline';
+import sendIcon from '@iconify-icons/mdi/send';
 
-import { Box, Grid, Fade, Zoom, Paper, useTheme, Typography } from '@mui/material';
+import {
+  Box,
+  Paper,
+  useTheme,
+  Typography,
+  Link,
+  IconButton,
+  Container,
+  alpha,
+} from '@mui/material';
 
-const WelcomeMessage = () => {
+interface WelcomeMessageProps {
+  inputValue?: string;
+  onInputChange: (
+    value: string | React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
+  ) => void;
+  onSubmit: () => Promise<void>;
+  isLoading?: boolean;
+}
+
+const WelcomeMessageComponent = ({
+  inputValue = '',
+  onInputChange,
+  onSubmit,
+  isLoading = false,
+}: WelcomeMessageProps) => {
   const theme = useTheme();
+  const isDark = theme.palette.mode === 'dark';
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const isSubmittingRef = useRef(false);
 
-  // Features list - updated for enterprise knowledge base search
-  const features = [
-    {
-      icon: databaseSearchIcon,
-      title: 'Knowledge Search',
-      description: 'Search across your entire knowledge base with natural language',
+  const [hasText, setHasText] = useState(() => Boolean(inputValue.trim()));
+
+  const syncWithParent = useCallback(() => {
+    if (inputRef.current) {
+      onInputChange(inputRef.current.value);
+    }
+  }, [onInputChange]);
+
+  // Auto-resize textarea based on content
+  const autoResizeTextarea = useCallback(() => {
+    if (inputRef.current) {
+      // Reset height first to get accurate scrollHeight
+      inputRef.current.style.height = 'auto';
+
+      // Calculate new height based on content (with limits)
+      const newHeight = Math.min(Math.max(inputRef.current.scrollHeight, 50), 200);
+      inputRef.current.style.height = `${newHeight}px`;
+    }
+  }, []);
+
+  // Handle changes directly in the component
+  const handleChange = useCallback(
+    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+      // Update local state for button enabling/disabling
+      setHasText(!!e.target.value.trim());
+
+      // Only update parent state when needed - this reduces flickering
+      onInputChange(e.target.value);
+
+      // Resize the textarea
+      autoResizeTextarea();
     },
-    {
-      icon: lightningBoltIcon,
-      title: 'Instant Answers',
-      description: 'Get precise answers extracted directly from your documents',
+    [onInputChange, autoResizeTextarea]
+  );
+
+  // Improved submit function
+  const submitMessage = useCallback(async () => {
+    if (
+      !inputRef.current ||
+      !inputRef.current.value.trim() ||
+      isLoading ||
+      isSubmittingRef.current
+    ) {
+      return;
+    }
+
+    // Save message content before clearing
+    const messageContent = inputRef.current.value;
+
+    // Mark as submitting to prevent multiple submissions
+    isSubmittingRef.current = true;
+
+    try {
+      // Update parent state with the message
+      onInputChange(messageContent);
+
+      // Clear input for better UX
+      if (inputRef.current) {
+        inputRef.current.value = '';
+        setHasText(false);
+      }
+
+      // Submit the message after UI updates
+      await onSubmit();
+
+      // Let parent know the input is now empty
+      onInputChange('');
+    } finally {
+      isSubmittingRef.current = false;
+    }
+  }, [isLoading, onSubmit, onInputChange]);
+
+  // Handle enter key press for submission
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        submitMessage();
+      }
     },
-    {
-      icon: graphIcon,
-      title: 'Context Awareness',
-      description: 'Results understand relationships between information in your repository',
-    },
-  ];
+    [submitMessage]
+  );
+
+  // Setup on mount - focus, set initial value, add scrollbar style
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (inputRef.current) {
+      // Set initial value and state
+      if (inputValue) {
+        inputRef.current.value = inputValue;
+        setHasText(!!inputValue.trim());
+      }
+
+      // Focus the textarea
+      inputRef.current.focus();
+
+      // Initial resize
+      autoResizeTextarea();
+
+      // Add custom scrollbar styles
+      const styleId = 'welcome-textarea-style';
+      if (!document.getElementById(styleId)) {
+        const style = document.createElement('style');
+        style.id = styleId;
+        style.textContent = isDark
+          ? `
+          textarea::-webkit-scrollbar {
+            width: 6px;
+            background-color: transparent;
+          }
+          textarea::-webkit-scrollbar-thumb {
+            background-color: rgba(255, 255, 255, 0.2);
+            border-radius: 10px;
+          }
+          textarea::-webkit-scrollbar-thumb:hover {
+            background-color: rgba(255, 255, 255, 0.3);
+          }
+        `
+          : `
+          textarea::-webkit-scrollbar {
+            width: 6px;
+            background-color: transparent;
+          }
+          textarea::-webkit-scrollbar-thumb {
+            background-color: rgba(0, 0, 0, 0.2);
+            border-radius: 10px;
+          }
+          textarea::-webkit-scrollbar-thumb:hover {
+            background-color: rgba(0, 0, 0, 0.3);
+          }
+        `;
+        document.head.appendChild(style);
+      }
+
+      // Cleanup function
+      return () => {
+        const styleElement = document.getElementById(styleId);
+        if (styleElement) {
+          document.head.removeChild(styleElement);
+        }
+      };
+    }
+        return undefined;
+
+    // Only depend on isDark, not on inputValue to prevent re-runs
+  }, [isDark, autoResizeTextarea,inputValue]);
 
   return (
-    <Fade in={Boolean(true)} timeout={800}>
+    <Container
+      sx={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        height: '100%',
+        maxWidth: '960px',
+        padding: { xs: '16px', sm: '24px' },
+        position: 'relative',
+      }}
+    >
       <Box
         sx={{
-          height: '100%',
           display: 'flex',
           flexDirection: 'column',
-          justifyContent: 'center',
           alignItems: 'center',
           textAlign: 'center',
-          px: { xs: 2, sm: 4 },
-          // py: { xs: 4, sm: 5 },
-          maxWidth: '1200px',
-          mx: 'auto',
+          mb: 8,
+          mt: { xs: -2, sm: -8 },
         }}
       >
-        {/* Logo */}
-        <Zoom in={Boolean(true)} timeout={1000}>
-          <Box
-            sx={{
-              animation: 'pulse 3s infinite ease-in-out',
-              '@keyframes pulse': {
-                '0%': { opacity: 0.9, transform: 'scale(1)' },
-                '50%': { opacity: 1, transform: 'scale(1.05)' },
-                '100%': { opacity: 0.9, transform: 'scale(1)' },
-              },
-            }}
-          >
-            <img
-              src="/logo/logo-blue.svg"
-              alt="Knowledge Search Logo"
-              style={{
-                width: '4rem',
-                marginBottom: '12px',
-                filter: 'drop-shadow(0 4px 6px rgba(0, 0, 0, 0.1))',
-              }}
-            />
-          </Box>
-        </Zoom>
-
-        {/* Welcome Text */}
         <Typography
           variant="h5"
           sx={{
             fontWeight: 600,
-            background: `linear-gradient(90deg, ${theme.palette.primary.main}, ${theme.palette.secondary.main})`,
-            backgroundClip: 'text',
+            color: theme.palette.text.primary,
+            mb: 2,
+            fontSize: { xs: '1.6rem', sm: '1.85rem' },
+            letterSpacing: '-0.03em',
+            background: isDark
+              ? 'linear-gradient(90deg, #fff 0%, #e0e0e0 100%)'
+              : 'linear-gradient(90deg, #222 0%, #555 100%)',
             WebkitBackgroundClip: 'text',
             WebkitTextFillColor: 'transparent',
-            mb: 0.75,
-            letterSpacing: '-0.01em',
           }}
         >
-          Workplace AI
+          PipesHub AI
         </Typography>
 
-        <Typography
-          variant="subtitle1"
-          sx={{
-            color: theme.palette.text.secondary,
-            maxWidth: '550px',
-            mb: 3,
-            mx: 'auto',
-            lineHeight: 1.4,
-            fontWeight: 400,
-          }}
-        >
-          Instantly find answers from your organization&apos;s knowledge base
-        </Typography>
-
-        {/* Features Section */}
-        <Grid
-          container
-          spacing={2.5}
-          sx={{
-            width: '100%',
-            maxWidth: '950px',
-            mb: 3,
-          }}
-        >
-          {features.map((feature, index) => (
-            <Grid item xs={12} md={4} key={index}>
-              <Fade in={Boolean(true)} timeout={(index + 1) * 500}>
-                <Paper
-                  elevation={1}
-                  sx={{
-                    py: 2.5,
-                    px: 2.5,
-                    height: '100%',
-                    borderRadius: 2.5,
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'center',
-                    border: '1px solid',
-                    borderColor:
-                      theme.palette.mode === 'dark'
-                        ? 'rgba(255, 255, 255, 0.1)'
-                        : 'rgba(0, 0, 0, 0.05)',
-                    transition: 'all 0.25s ease',
-                    '&:hover': {
-                      transform: 'translateY(-5px)',
-                      borderColor: theme.palette.primary.light,
-                      boxShadow: theme.shadows[4],
-                      backgroundColor:
-                        theme.palette.mode === 'dark'
-                          ? 'rgba(66, 133, 244, 0.08)'
-                          : 'rgba(66, 133, 244, 0.04)',
-                    },
-                  }}
-                >
-                  <Icon
-                    icon={feature.icon}
-                    style={{
-                      fontSize: '2.25rem',
-                      color: theme.palette.primary.main,
-                      marginBottom: '10px',
-                    }}
-                  />
-                  <Typography
-                    variant="h6"
-                    gutterBottom
-                    fontWeight={600}
-                    sx={{ mb: 0.75, fontSize: '1.125rem' }}
-                  >
-                    {feature.title}
-                  </Typography>
-                  <Typography variant="body2" color="textSecondary" sx={{ lineHeight: 1.5 }}>
-                    {feature.description}
-                  </Typography>
-                </Paper>
-              </Fade>
-            </Grid>
-          ))}
-        </Grid>
-
-        {/* Example queries */}
-        <Box
-          sx={{
-            width: '100%',
-            maxWidth: '650px',
-            mx: 'auto',
-            p: { xs: 2, sm: 2.5 },
-            borderRadius: 2,
-            backgroundColor:
-              theme.palette.mode === 'dark' ? 'rgba(255, 255, 255, 0.03)' : 'rgba(0, 0, 0, 0.02)',
-            border: `1px dashed ${
-              theme.palette.mode === 'dark' ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.08)'
-            }`,
-          }}
-        >
-          <Typography
-            variant="body1"
-            sx={{ fontWeight: 500, mb: 1, color: theme.palette.text.primary }}
-          >
-            Ask a question about your knowledge base
-          </Typography>
-          <Typography variant="body2" color="textSecondary" sx={{ mb: 1.5 }}>
-            Try queries like:
-          </Typography>
-          <Grid container spacing={2} sx={{ mt: 0.5 }}>
-            <Grid item xs={12} sm={6}>
-              <Paper
-                elevation={0}
-                sx={{
-                  p: 1.25,
-                  borderRadius: 1.5,
-                  backgroundColor:
-                    theme.palette.mode === 'dark'
-                      ? 'rgba(255, 255, 255, 0.05)'
-                      : 'rgba(0, 0, 0, 0.02)',
-                  border: '1px solid',
-                  borderColor:
-                    theme.palette.mode === 'dark'
-                      ? 'rgba(255, 255, 255, 0.1)'
-                      : 'rgba(0, 0, 0, 0.06)',
-                  textAlign: 'left',
-                  height: '100%',
-                  display: 'flex',
-                  alignItems: 'center',
-                  cursor: 'pointer',
-                  transition: 'all 0.2s ease',
-                  '&:hover': {
-                    backgroundColor:
-                      theme.palette.mode === 'dark'
-                        ? 'rgba(255, 255, 255, 0.08)'
-                        : 'rgba(0, 0, 0, 0.04)',
-                    boxShadow: theme.shadows[1],
-                  },
-                }}
-              >
-                <Typography variant="body2" sx={{ fontWeight: 400 }}>
-                  &quot;What&apos;s our policy on remote work?&quot;
-                </Typography>
-              </Paper>
-            </Grid>
-            <Grid item xs={12} sm={6}>
-              <Paper
-                elevation={0}
-                sx={{
-                  p: 1.25,
-                  borderRadius: 1.5,
-                  backgroundColor:
-                    theme.palette.mode === 'dark'
-                      ? 'rgba(255, 255, 255, 0.05)'
-                      : 'rgba(0, 0, 0, 0.02)',
-                  border: '1px solid',
-                  borderColor:
-                    theme.palette.mode === 'dark'
-                      ? 'rgba(255, 255, 255, 0.1)'
-                      : 'rgba(0, 0, 0, 0.06)',
-                  textAlign: 'left',
-                  height: '100%',
-                  display: 'flex',
-                  alignItems: 'center',
-                  cursor: 'pointer',
-                  transition: 'all 0.2s ease',
-                  '&:hover': {
-                    backgroundColor:
-                      theme.palette.mode === 'dark'
-                        ? 'rgba(255, 255, 255, 0.08)'
-                        : 'rgba(0, 0, 0, 0.04)',
-                    boxShadow: theme.shadows[1],
-                  },
-                }}
-              >
-                <Typography variant="body2" sx={{ fontWeight: 400 }}>
-                  &quot;Find the latest quarterly report&quot;
-                </Typography>
-              </Paper>
-            </Grid>
-            <Grid item xs={12}>
-              <Paper
-                elevation={0}
-                sx={{
-                  p: 1.25,
-                  borderRadius: 1.5,
-                  backgroundColor:
-                    theme.palette.mode === 'dark'
-                      ? 'rgba(255, 255, 255, 0.05)'
-                      : 'rgba(0, 0, 0, 0.02)',
-                  border: '1px solid',
-                  borderColor:
-                    theme.palette.mode === 'dark'
-                      ? 'rgba(255, 255, 255, 0.1)'
-                      : 'rgba(0, 0, 0, 0.06)',
-                  textAlign: 'left',
-                  display: 'flex',
-                  alignItems: 'center',
-                  cursor: 'pointer',
-                  transition: 'all 0.2s ease',
-                  '&:hover': {
-                    backgroundColor:
-                      theme.palette.mode === 'dark'
-                        ? 'rgba(255, 255, 255, 0.08)'
-                        : 'rgba(0, 0, 0, 0.04)',
-                    boxShadow: theme.shadows[1],
-                  },
-                }}
-              >
-                <Typography variant="body2" sx={{ fontWeight: 400 }}>
-                  &quot;Summarize our data security guidelines&quot;
-                </Typography>
-              </Paper>
-            </Grid>
-          </Grid>
-        </Box>
-
-        {/* Open source reference */}
         <Typography
           variant="caption"
-          color="textSecondary"
           sx={{
-            mt: 3,
+            fontWeight: 500,
+            color: theme.palette.primary.main,
+            letterSpacing: '0.02em',
+            fontSize: '0.85rem',
+            opacity: 0.92,
+            background: isDark
+              ? `linear-gradient(90deg, ${theme.palette.primary.main} 0%, ${alpha(theme.palette.primary.light, 0.8)} 100%)`
+              : `linear-gradient(90deg, ${theme.palette.primary.main} 0%, ${theme.palette.primary.dark} 100%)`,
+            WebkitBackgroundClip: 'text',
+            WebkitTextFillColor: 'transparent',
+          }}
+        >
+          Workplace AI that understands your workplace inside out
+        </Typography>
+
+      </Box>
+
+      {/* Chat Input - Modern & Minimal Style */}
+      <Box sx={{ width: { xs: '95%', sm: '80%', md: '70%', lg: '60%' } }}>
+        <Paper
+          elevation={0}
+          sx={{
             display: 'flex',
-            alignItems: 'center',
-            gap: 0.5,
-            opacity: 0.65,
-            transition: 'opacity 0.2s ease',
+            alignItems: 'flex-end',
+            p: '9px 14px',
+            borderRadius: '10px',
+            backgroundColor: isDark ? alpha('#131417', 0.5) : alpha('#f8f9fa', 0.6),
+            border: '1px solid',
+            borderColor: isDark ? alpha('#fff', 0.06) : alpha('#000', 0.04),
+            boxShadow: isDark ? '0 4px 16px rgba(0, 0, 0, 0.2)' : '0 2px 10px rgba(0, 0, 0, 0.03)',
+            transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
             '&:hover': {
-              opacity: 0.9,
+              borderColor: isDark ? alpha('#fff', 0.1) : alpha('#000', 0.07),
+              boxShadow: isDark
+                ? '0 6px 20px rgba(0, 0, 0, 0.25)'
+                : '0 4px 14px rgba(0, 0, 0, 0.05)',
+              backgroundColor: isDark ? alpha('#131417', 0.7) : alpha('#fff', 0.9),
             },
           }}
         >
-          <Icon icon={githubIcon} style={{ fontSize: '1rem' }} />
-          Open Source Workplace AI
-        </Typography>
+          <textarea
+            ref={inputRef}
+            placeholder="Ask anything..."
+            onChange={handleChange}
+            onKeyDown={handleKeyDown}
+            defaultValue=""
+            style={{
+              width: '100%',
+              border: 'none',
+              outline: 'none',
+              background: 'transparent',
+              color: isDark ? alpha('#fff', 0.95).toString() : alpha('#000', 0.85).toString(),
+              fontSize: '0.9rem',
+              lineHeight: 1.5,
+              minHeight: '46px',
+              maxHeight: '180px',
+              resize: 'none',
+              padding: '8px 8px',
+              fontFamily: 'Inter, system-ui, -apple-system, sans-serif',
+              margin: '0 6px 0 0',
+              overflowY: 'auto',
+              overflowX: 'hidden',
+              transition: 'all 0.15s ease',
+              letterSpacing: '0.01em',
+            }}
+          />
+
+          <IconButton
+            size="medium"
+            onClick={submitMessage}
+            disabled={isLoading || !hasText}
+            sx={{
+              backgroundColor:
+                !isLoading && hasText ? alpha(theme.palette.primary.main, 0.9) : 'transparent',
+              width: 34,
+              height: 34,
+              borderRadius: '8px',
+              mb: 0.5,
+              mr: -0.5,
+              transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+              color:
+                !isLoading && hasText ? '#fff' : isDark ? alpha('#fff', 0.4) : alpha('#000', 0.3),
+              opacity: !isLoading && hasText ? 1 : 0.6,
+              border:
+                !isLoading && hasText
+                  ? 'none'
+                  : `1px solid ${isDark ? alpha('#fff', 0.1) : alpha('#000', 0.05)}`,
+              '&:hover': {
+                backgroundColor:
+                  !isLoading && hasText
+                    ? theme.palette.primary.main
+                    : isDark
+                      ? alpha('#fff', 0.05)
+                      : alpha('#000', 0.04),
+                transform: !isLoading && hasText ? 'translateY(-1px)' : 'none',
+                boxShadow: !isLoading && hasText ? '0 4px 8px rgba(0, 0, 0, 0.15)' : 'none',
+              },
+              '&:active': {
+                transform: !isLoading && hasText ? 'translateY(0)' : 'none',
+                boxShadow: 'none',
+              },
+              '&.Mui-disabled': {
+                opacity: 0.4,
+                backgroundColor: 'transparent',
+                border: `1px solid ${isDark ? alpha('#fff', 0.05) : alpha('#000', 0.03)}`,
+              },
+            }}
+          >
+            <Icon
+              icon={sendIcon}
+              style={{
+                fontSize: '1rem',
+                transform: 'translateX(1px)',
+                filter: !isLoading && hasText ? 'drop-shadow(0 1px 1px rgba(0,0,0,0.1))' : 'none',
+              }}
+            />
+          </IconButton>
+        </Paper>
       </Box>
-    </Fade>
+
+      {/* Footer - More minimal */}
+      <Box
+        sx={{
+          display: 'flex',
+          justifyContent: 'center',
+          mt: 'auto',
+          pt: 2,
+          pb: 3,
+          width: '100%',
+          marginTop: 6,
+        }}
+      >
+        <Link
+          href="https://github.com/pipeshub-ai/pipeshub-ai"
+          target="_blank"
+          underline="none"
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 0.75,
+            fontSize: '0.7rem',
+            color: isDark ? alpha('#fff', 0.5) : alpha('#000', 0.4),
+            opacity: 0.85,
+            transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
+            padding: '6px 12px',
+            borderRadius: '6px',
+            '&:hover': {
+              color: theme.palette.primary.main,
+              opacity: 1,
+              backgroundColor: isDark ? alpha('#fff', 0.03) : alpha('#000', 0.02),
+              transform: 'translateY(-1px)',
+            },
+          }}
+        >
+          <Icon
+            icon={githubIcon}
+            style={{
+              fontSize: '0.9rem',
+              color: 'inherit',
+            }}
+          />
+          pipeshub-ai
+        </Link>
+      </Box>
+    </Container>
   );
 };
+
+const WelcomeMessage = React.memo(WelcomeMessageComponent);
+
+WelcomeMessage.displayName = 'WelcomeMessage';
 
 export default WelcomeMessage;
