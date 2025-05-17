@@ -441,7 +441,9 @@ class SyncKafkaRouteConsumer:
             if not org_id:
                 raise ValueError("orgId is required")
 
-            await self.resync_drive(payload)
+            org_apps = await self.arango_service.get_org_apps(org_id)
+            if Connectors.GOOGLE_DRIVE.value in org_apps:
+                await self.resync_drive(payload)
             return True
         except Exception as e:
             self.logger.error(
@@ -457,7 +459,9 @@ class SyncKafkaRouteConsumer:
             if not org_id:
                 raise ValueError("orgId is required")
 
-            await self.resync_gmail(payload)
+            org_apps = await self.arango_service.get_org_apps(org_id)
+            if Connectors.GOOGLE_MAIL.value in org_apps:
+                await self.resync_gmail(payload)
             return True
         except Exception as e:
             self.logger.error("Error handling Gmail updates enabled event: %s", str(e))

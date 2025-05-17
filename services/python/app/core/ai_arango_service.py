@@ -581,3 +581,149 @@ class ArangoService:
 
         cursor = self.db.aql.execute(query, bind_vars=bind_vars)
         return list(cursor)
+
+
+    async def delete_blocks_by_virtual_record_id(self, virtual_record_id: str) -> bool:
+        """
+        Delete all blocks that have the given virtualRecordId and their associated edges.
+        Uses a transaction to ensure atomicity of all operations.
+
+        Args:
+            virtual_record_id (str): Virtual record ID to delete blocks for
+
+        Returns:
+            bool: True if deletion was successful, False otherwise
+        """
+        try:
+            self.logger.info(
+                "🗑️ Deleting blocks with virtualRecordId: %s", virtual_record_id
+            )
+
+            # Define collections that will be accessed
+            edge_collections = [
+                CollectionNames.BELONGS_TO_DEPARTMENT.value,
+                CollectionNames.BELONGS_TO_CATEGORY.value,
+                CollectionNames.BELONGS_TO_LANGUAGE.value,
+                CollectionNames.BELONGS_TO_TOPIC.value
+            ]
+
+            # Start transaction with write access to necessary collections
+            transaction = self.db.begin_transaction(
+                write=[CollectionNames.BLOCKS.value] + edge_collections
+            )
+
+            try:
+                # Build query that handles deletion for each edge collection separately
+                query = f"""
+                LET block_keys = (
+                    FOR block IN {CollectionNames.BLOCKS.value}
+                        FILTER block.virtualRecordId == @virtual_record_id
+                        RETURN block._key
+                )
+
+                // Delete edges from each collection
+                LET dept_edges = (
+                    FOR block_key IN block_keys
+                        FOR edge IN {CollectionNames.BELONGS_TO_DEPARTMENT.value}
+                            FILTER edge._from == CONCAT("{CollectionNames.BLOCKS.value}/", block_key)
+                            REMOVE edge IN {CollectionNames.BELONGS_TO_DEPARTMENT.value}
+                )
+
+                LET cat_edges = (
+                    FOR block_key IN block_keys
+                        FOR edge IN {CollectionNames.BELONGS_TO_CATEGORY.value}
+                            FILTER edge._from == CONCAT("{CollectionNames.BLOCKS.value}/", block_key)
+                            REMOVE edge IN {CollectionNames.BELONGS_TO_CATEGORY.value}
+                )
+
+                LET lang_edges = (
+                    FOR block_key IN block_keys
+                        FOR edge IN {CollectionNames.BELONGS_TO_LANGUAGE.value}
+                            FILTER edge._from == CONCAT("{CollectionNames.BLOCKS.value}/", block_key)
+                            REMOVE edge IN {CollectionNames.BELONGS_TO_LANGUAGE.value}
+                )
+
+                LET topic_edges = (
+                    FOR block_key IN block_keys
+                        FOR edge IN {CollectionNames.BELONGS_TO_TOPIC.value}
+                            FILTER edge._from == CONCAT("{CollectionNames.BLOCKS.value}/", block_key)
+                            REMOVE edge IN {CollectionNames.BELONGS_TO_TOPIC.value}
+                )
+
+                // Delete the blocks themselves
+                LET deleted_blocks = (
+                    FOR block_key IN block_keys
+                        REMOVE block_key IN {CollectionNames.BLOCKS.value}
+                        RETURN OLD
+                )
+
+                RETURN LENGTH(deleted_blocks)
+                """
+                cursor = transaction.aql.execute(
+                    query,
+                    bind_vars={"virtual_record_id": virtual_record_id}
+                )
+                num_deleted = next(cursor)
+
+                # Commit the transaction
+                transaction.commit_transaction()
+
+                self.logger.info(
+                    "✅ Successfully deleted %d blocks with virtualRecordId %s",
+                    num_deleted,
+                    virtual_record_id
+                )
+                return True
+
+            except Exception as e:
+                # Abort transaction on any error
+                transaction.abort_transaction()
+                raise e
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to delete blocks with virtualRecordId %s: %s",
+                virtual_record_id,
+                str(e)
+            )
+            return False
+
+    async def get_summary_document_id(self, record_id: str) -> str | None:
+        """Get summary document ID from record ID
+
+        Args:
+            record_id (str): Record ID (key) of the document
+
+        Returns:
+            str | None: Summary document ID if found, None otherwise
+        """
+        try:
+            self.logger.debug("🔍 Getting summary document ID for record: %s", record_id)
+
+            # Query to get summaryDocumentId from records collection
+            query = f"""
+            FOR doc IN {CollectionNames.RECORDS.value}
+            FILTER doc._key == @record_id
+            RETURN doc.summaryDocumentId
+            """
+
+            cursor = self.db.aql.execute(
+                query,
+                bind_vars={"record_id": record_id}
+            )
+
+            try:
+                summary_doc_id = cursor.next()
+                if not summary_doc_id:
+                    self.logger.warning("⚠️ No summary document ID found for record: %s", record_id)
+                    return None
+
+                return summary_doc_id
+
+            except StopIteration:
+                self.logger.warning("⚠️ Record not found: %s", record_id)
+                return None
+
+        except Exception as e:
+            self.logger.error("❌ Error getting summary document ID: %s", str(e))
+            return None

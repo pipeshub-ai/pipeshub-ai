@@ -469,7 +469,7 @@ class GoogleSheetsParser:
                 table_summary = await self.get_table_summary(table)
                 # Process rows in batches of 20
                 processed_rows = []
-                batch_size = 20
+                batch_size = 10
                 for i in range(0, len(table["data"]), batch_size):
                     batch = table["data"][i : i + batch_size]
                     row_texts = await self.get_rows_text(batch, table_summary)
