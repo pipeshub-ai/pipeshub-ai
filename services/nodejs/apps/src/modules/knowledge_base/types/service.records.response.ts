@@ -51,10 +51,10 @@ export interface IServiceMailRecord {
 }
 
 export interface IServicePermissions {
-  id : string;
-  name : string;
-  type : string;
-  relationship : string;
+  id: string;
+  name: string;
+  type: string;
+  relationship: string;
 }
 
 export interface IServiceRecordsResponse {
@@ -65,4 +65,10 @@ export interface IServiceRecordsResponse {
     orgId: string;
   };
   permissions: IServicePermissions[];
+}
+
+export interface IServiceDeleteRecordResponse {
+  status: string;
+  message: string;
+  response: any;
 }

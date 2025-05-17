@@ -28,7 +28,7 @@ import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { AIServiceCommand } from '../../../libs/commands/ai_service/ai.service.command';
 import { AIServiceResponse } from '../../enterprise_search/types/conversation.interfaces';
-import { IServiceRecordsResponse } from '../types/service.records.response';
+import { IServiceDeleteRecordResponse, IServiceRecordsResponse } from '../types/service.records.response';
 import axios from 'axios';
 import { ArangoService } from '../../../libs/services/arango.service';
 import { Event, EventType } from '../services/records_events.service';
@@ -614,7 +614,7 @@ interface RecordPermission {
 export const performHardDelete = async (
   recordId: string,
   headers: Record<string, string>,
-  aiBackendUrl: string,
+  connectorBackendUrl: string,
   requestId?: string,
 ): Promise<boolean> => {
   logger.info('Performing hard delete operation', {
@@ -624,13 +624,13 @@ export const performHardDelete = async (
 
   try {
     const hardDeleteCommand = new AIServiceCommand({
-      uri: `${aiBackendUrl}/api/v1/delete/record/${recordId}`,
+      uri: `${connectorBackendUrl}/api/v1/delete/record/${recordId}`,
       method: HttpMethod.DELETE,
       headers: headers,
     });
 
     const hardDeleteResponse =
-      (await hardDeleteCommand.execute()) as AIServiceResponse<any>;
+      (await hardDeleteCommand.execute()) as AIServiceResponse<IServiceDeleteRecordResponse>;
 
     if (!hardDeleteResponse || hardDeleteResponse.statusCode !== 200) {
       logger.error('Failed to hard delete record', {
@@ -1452,76 +1452,6 @@ export const reindexRecord =
     }
   };
 
-export const hardDeleteRecord =
-  (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    try {
-      const { recordId } = req.params as { recordId: string };
-      const userId = req.user?.userId;
-      const aiBackendUrl = appConfig.aiBackend;
-
-      if (!userId) {
-        throw new BadRequestError('User not authenticated');
-      }
-
-      try {
-        const aiCommand = new AIServiceCommand({
-          uri: `${aiBackendUrl}/api/v1/delete/record/${recordId}`,
-          method: HttpMethod.GET, // Note: Using GET for delete is unconventional, but keeping as is
-          headers: req.headers as Record<string, string>,
-        });
-
-        let aiResponse;
-        try {
-          aiResponse =
-            (await aiCommand.execute()) as AIServiceResponse<IServiceRecordsResponse>;
-        } catch (error: any) {
-          if (error.cause && error.cause.code === 'ECONNREFUSED') {
-            throw new InternalServerError(
-              AI_SERVICE_UNAVAILABLE_MESSAGE,
-              error,
-            );
-          }
-          logger.error('Failed to execute AI command', error);
-          throw new InternalServerError('Failed to get AI response', error);
-        }
-
-        if (!aiResponse || aiResponse.statusCode !== 200 || !aiResponse.data) {
-          throw new UnauthorizedError(
-            'User has no access to this record',
-            aiResponse?.data,
-          );
-        }
-
-        // Send a proper response with information about the deleted record
-        res.status(200).json({
-          success: true,
-          message: 'Record successfully deleted',
-          recordId,
-          timestamp: new Date().toISOString(),
-        });
-
-        return;
-      } catch (error: any) {
-        if (error.message?.includes('not found')) {
-          throw new NotFoundError('Record not found');
-        }
-
-        if (error.message?.includes('User has no access to this record')) {
-          throw new UnauthorizedError('User has no access to this record');
-        }
-
-        throw error;
-      }
-    } catch (error: any) {
-      logger.error('Error deleting record', {
-        recordId: req.params.recordId,
-        userId: req.user?.userId,
-        error: error.message || error,
-      });
-      next(error);
-    }
-  };
 
 /**
  * Retrieves complete statistics for all connectors from ArangoDB
