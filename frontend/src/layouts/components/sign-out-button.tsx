@@ -116,7 +116,7 @@ export function SignOutButton({ onClose, ...other }: Props) {
             transition: 'all 0.3s ease',
             transform: isHovered ? 'translateX(-3px)' : 'translateX(0)',
             color: isDark 
-              ? alpha('#FF5252', isHovered ? 1 : 0.8) 
+              ? alpha(theme.palette.error.main, isDark ? 0.9 : 1)
               : theme.palette.error.main,
           }}
         >
