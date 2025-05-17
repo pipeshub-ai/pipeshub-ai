@@ -1,3 +1,4 @@
+// components/chat-message-area.tsx
 import type {
   Metadata,
   CustomCitation,
@@ -5,8 +6,7 @@ import type {
   ExpandedCitationsState,
 } from 'src/types/chat-bot';
 
-import React, { useMemo, useState, useEffect, useCallback } from 'react';
-
+import React, { useMemo, useState, useEffect, useCallback, useLayoutEffect } from 'react';
 import { Box, Fade, Stack, Typography, CircularProgress } from '@mui/material';
 
 import ChatMessage from './chat-message';
@@ -28,6 +28,11 @@ type ChatMessagesAreaProps = {
     isExcelFile?: boolean,
     buffer?: ArrayBuffer
   ) => void;
+  // New props for handling input in welcome screen
+  inputValue: string;
+  onInputChange: (e: string | React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => void;
+  onSubmit: () => Promise<void>;
+  showWelcome: boolean;
 };
 
 type ProcessingIndicatorProps = {
@@ -89,6 +94,8 @@ const ProcessingIndicator = ({ isLoadingConversation }: ProcessingIndicatorProps
   </Fade>
 );
 
+// ChatMessagesArea.tsx - updated version with specific fix
+
 const ChatMessagesArea = ({
   messages,
   isLoading,
@@ -99,8 +106,19 @@ const ChatMessagesArea = ({
   conversationId,
   isLoadingConversation,
   onViewPdf,
+  inputValue,
+  onInputChange,
+  onSubmit,
+  showWelcome,
 }: ChatMessagesAreaProps) => {
   const messagesEndRef = React.useRef<HTMLDivElement | null>(null);
+  const messagesContainerRef = React.useRef<HTMLDivElement | null>(null);
+  const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
+  const prevMessagesLength = React.useRef(messages.length);
+  
+  // Critical: Track whether we're in a 'sending message' state to prevent scroll jumps
+  const isSendingMessage = React.useRef(false);
+  const lastScrollTopRef = React.useRef(0);
 
   // Remove sorting and use messages directly to maintain order
   const displayMessages = useMemo(() => messages, [messages]);
@@ -111,29 +129,166 @@ const ChatMessagesArea = ({
       const botMessages = messages.filter((msg) => msg.type === 'bot');
       const lastBotMessage = botMessages[botMessages.length - 1];
       return (
-       ( message.type === 'bot' &&  message.messageType !== 'error') &&
+        message.type === 'bot' &&
+        message.messageType !== 'error' &&
         message.id === lastBotMessage?.id &&
         !message.id.startsWith('error-')
       );
     },
     [messages]
   );
-
-  const scrollToBottom = useCallback(() => {
-    if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+  
+  // NEW: Function to explicitly preserve scroll position
+  const preserveScrollPosition = useCallback(() => {
+    if (messagesContainerRef.current) {
+      // Save current position
+      lastScrollTopRef.current = messagesContainerRef.current.scrollTop;
+      
+      // Immediately set it back (prevents browser from resetting)
+      requestAnimationFrame(() => {
+        if (messagesContainerRef.current) {
+          messagesContainerRef.current.scrollTop = lastScrollTopRef.current;
+        }
+      });
     }
   }, []);
 
+  // FIXED: Don't let the scroll change on normal user input
+  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    if (isSendingMessage.current) {
+      // If we're sending a message, prevent any scroll position changes
+      preserveScrollPosition();
+      return;
+    }
+    
+    if (!messagesContainerRef.current) return;
+    
+    const { scrollTop, scrollHeight, clientHeight } = messagesContainerRef.current;
+    
+    // Update last known position
+    lastScrollTopRef.current = scrollTop;
+    
+    // If we're close to the bottom (within 150px), enable auto-scrolling
+    const isNearBottom = scrollHeight - scrollTop - clientHeight < 150;
+    setShouldAutoScroll(isNearBottom);
+  }, [preserveScrollPosition]);
+
+  // New function to immediately scroll to bottom without animations
+  // This prevents the visible "jump" effect
+  const immediateScrollToBottom = useCallback(() => {
+    if (!messagesEndRef.current || !messagesContainerRef.current) return;
+    
+    // Use instant scroll (no animation) to prevent visible jumps
+    messagesEndRef.current.scrollIntoView({ behavior: 'auto', block: 'end' });
+    
+    // Update our saved position
+    if (messagesContainerRef.current) {
+      lastScrollTopRef.current = messagesContainerRef.current.scrollTop;
+    }
+  }, []);
+
+  // Smooth scroll for non-critical operations
+  const smoothScrollToBottom = useCallback(() => {
+    if (!messagesEndRef.current) return;
+    
+    messagesEndRef.current.scrollIntoView({ 
+      behavior: 'smooth', 
+      block: 'end' 
+    });
+  }, []);
+
+  // CRITICAL: Execute this immediately before any render
+  // to temporarily disable scroll updates
+  useLayoutEffect(() => {
+    // Only preserve position during active sending
+    if (isSendingMessage.current) {
+      preserveScrollPosition();
+    }
+  });
+
+  // IMPORTANT: This setup ensures scroll position is maintained when messages array changes
   useEffect(() => {
-    scrollToBottom();
-  }, [messages, scrollToBottom]);
+    const isNewMessage = messages.length > prevMessagesLength.current;
+    
+    // CRITICAL: For new messages, we need to handle scroll properly
+    if (isNewMessage) {
+      const latestMessage = messages[messages.length - 1];
+      const isUserMessage = latestMessage?.type === 'user';
+      
+      if (isUserMessage) {
+        // When sending a message, we initially prevent scroll jumps
+        isSendingMessage.current = true;
+        
+        // First, preserve position
+        preserveScrollPosition();
+        
+        // Then, after a tiny delay (to allow render to complete), jump to bottom
+        requestAnimationFrame(() => {
+          immediateScrollToBottom();
+          
+          // Clear sending flag after we've handled it
+          setTimeout(() => {
+            isSendingMessage.current = false;
+          }, 100);
+        });
+      }
+      else if (shouldAutoScroll) {
+        // For bot messages, use smooth scroll if user hasn't scrolled up
+        requestAnimationFrame(() => {
+          smoothScrollToBottom();
+        });
+      }
+    }
+    
+    prevMessagesLength.current = messages.length;
+  }, [messages, shouldAutoScroll, immediateScrollToBottom, smoothScrollToBottom, preserveScrollPosition]);
+
+  // Scroll to bottom when loading completes
+  useEffect(() => {
+    if (!isLoading && shouldAutoScroll) {
+      requestAnimationFrame(() => {
+        smoothScrollToBottom();
+      });
+    }
+  }, [isLoading, shouldAutoScroll, smoothScrollToBottom]);
+
+  // Handle conversation changes
+  useEffect(() => {
+    if (conversationId) {
+      setShouldAutoScroll(true);
+      requestAnimationFrame(() => {
+        immediateScrollToBottom();
+      });
+    }
+  }, [conversationId, immediateScrollToBottom]);
 
   const shouldShowLoadingIndicator = (isLoading || isLoadingConversation) && messages.length > 0;
 
+  // Custom hook to enforce scroll position during critical renders
+  useEffect(() => {
+    let timer: NodeJS.Timeout | null = null;
+    
+    // Function to ensure we maintain scroll during updates
+    const maintainScrollPosition = () => {
+      if (messagesContainerRef.current) {
+        messagesContainerRef.current.scrollTop = lastScrollTopRef.current;
+      }
+    };
+    
+    // Set up interval to enforce position during rapid updates
+    if (isSendingMessage.current) {
+      timer = setInterval(maintainScrollPosition, 10);
+    }
+    
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, []);
 
   return (
     <Box
+      ref={messagesContainerRef}
+      onScroll={handleScroll}
       sx={{
         flexGrow: 1,
         overflow: 'auto',
@@ -141,7 +296,9 @@ const ChatMessagesArea = ({
         display: 'flex',
         flexDirection: 'column',
         minHeight: 0,
-        // ...scrollableContainerStyle,
+        // Critical: Remove any automatic scroll behavior
+        scrollBehavior: 'auto',
+        scrollPaddingBottom: '100px',
       }}
     >
       {isLoadingConversation && conversationId && messages.length === 0 ? (
@@ -166,16 +323,26 @@ const ChatMessagesArea = ({
             flexGrow: 1,
             display: 'flex',
             flexDirection: 'column',
-            justifyContent: 'flex-start',
+            justifyContent: showWelcome ? 'center' : 'flex-start',
+            height: '100%',
+            position: 'relative',
           }}
         >
-          {messages.length === 0  ? (
-            <WelcomeMessage />
+          {showWelcome ? (
+            <WelcomeMessage
+              inputValue={inputValue}
+              onInputChange={onInputChange}
+              onSubmit={onSubmit}
+              isLoading={isLoading}
+            />
           ) : (
             <>
+              {/* Force minimum height at top to prevent scroll jump */}
+              <Box sx={{ minHeight: 4 }} />
+              
               {displayMessages.map((message, index) => (
                 <MessageWithControls
-                  key={`${message.id}-${message.type}`}
+                  key={`msg-${message.id}`}
                   message={message}
                   index={index}
                   isExpanded={expandedCitations[index]}
@@ -187,12 +354,24 @@ const ChatMessagesArea = ({
                   onViewPdf={onViewPdf}
                 />
               ))}
-               {shouldShowLoadingIndicator && (
+              
+              {shouldShowLoadingIndicator && (
                 <Box sx={{ mt: 2, display: 'flex', justifyContent: 'flex-start' }}>
                   <ProcessingIndicator isLoadingConversation={false} />
                 </Box>
               )}
-              <div ref={messagesEndRef} />
+              
+              {/* Enhanced scroll anchor with proper height */}
+              <Box sx={{ minHeight: 20 }} />
+              <div 
+                ref={messagesEndRef} 
+                style={{ 
+                  float: 'left', 
+                  clear: 'both',
+                  height: 1,
+                  width: '100%',
+                }} 
+              />
             </>
           )}
         </Box>

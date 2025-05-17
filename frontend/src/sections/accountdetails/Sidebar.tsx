@@ -11,6 +11,7 @@ import accountGroupIcon from '@iconify-icons/mdi/account-group';
 import officeBuildingIcon from '@iconify-icons/mdi/office-building';
 import accountServiceIcon from '@iconify-icons/mdi/account-service-outline';
 
+import { alpha, useTheme } from '@mui/material/styles';
 import List from '@mui/material/List';
 import Drawer from '@mui/material/Drawer';
 import Divider from '@mui/material/Divider';
@@ -29,6 +30,7 @@ import { useAuthContext } from 'src/auth/hooks';
 const drawerWidth = 240;
 
 export default function Sidebar() {
+  const theme = useTheme();
   const { pathname } = useLocation();
   const navigate = useNavigate();
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -94,6 +96,10 @@ export default function Sidebar() {
         '& .MuiDrawer-paper': {
           width: drawerWidth,
           boxSizing: 'border-box',
+          borderRight: `1px solid ${theme.palette.divider}`,
+          backgroundColor: theme.palette.mode === 'dark' 
+            ? alpha(theme.palette.background.paper, 0.1)
+            : theme.palette.background.paper,
         },
       }}
       variant="permanent"
@@ -102,19 +108,54 @@ export default function Sidebar() {
       {/* Show Business section only for business accounts */}
       {isBusiness && (
         <>
-          <List sx={{ mt: 10 }}>
+          <List sx={{ mt: 8 }}>
             <ListItem>
-              <ListItemText primary="COMPANY" />
+              <ListItemText 
+                primary="COMPANY" 
+                primaryTypographyProps={{ 
+                  fontSize: '0.8125rem',
+                  fontWeight: 600,
+                  letterSpacing: '0.05em',
+                  color: theme.palette.text.secondary,
+                  marginBottom: '4px',
+                }}
+              />
             </ListItem>
             <ListItem disablePadding>
               <ListItemButton
                 onClick={() => navigate(`${baseUrl}/profile`)}
                 selected={pathname === `${baseUrl}/profile`}
+                sx={{
+                  py: 1,
+                  borderRadius: '0',
+                  '&.Mui-selected': {
+                    bgcolor: theme.palette.mode === 'dark' 
+                      ? alpha(theme.palette.primary.main, 0.15)
+                      : alpha(theme.palette.primary.main, 0.08),
+                    borderRight: `3px solid ${theme.palette.primary.main}`,
+                    '&:hover': {
+                      bgcolor: theme.palette.mode === 'dark' 
+                        ? alpha(theme.palette.primary.main, 0.2)
+                        : alpha(theme.palette.primary.main, 0.12),
+                    },
+                  },
+                  '&:hover': {
+                    bgcolor: theme.palette.mode === 'dark' 
+                      ? alpha(theme.palette.action.hover, 0.1)
+                      : alpha(theme.palette.action.hover, 0.05),
+                  },
+                }}
               >
-                <ListItemIcon>
-                  <Iconify icon={officeBuildingIcon} width="24" height="24" />
+                <ListItemIcon sx={{ minWidth: 40, color: theme.palette.text.secondary }}>
+                  <Iconify icon={officeBuildingIcon} width={22} height={22} />
                 </ListItemIcon>
-                <ListItemText primary="Profile" />
+                <ListItemText 
+                  primary="Profile" 
+                  primaryTypographyProps={{ 
+                    fontSize: '0.9375rem',
+                    fontWeight: pathname === `${baseUrl}/profile` ? 600 : 400,
+                  }}
+                />
               </ListItemButton>
             </ListItem>
             {isAdmin && (
@@ -123,11 +164,37 @@ export default function Sidebar() {
                   <ListItemButton
                     onClick={() => navigate(`${baseUrl}/users`)}
                     selected={pathname === `${baseUrl}/users`}
+                    sx={{
+                      py: 1,
+                      borderRadius: '0',
+                      '&.Mui-selected': {
+                        bgcolor: theme.palette.mode === 'dark' 
+                          ? alpha(theme.palette.primary.main, 0.15)
+                          : alpha(theme.palette.primary.main, 0.08),
+                        borderRight: `3px solid ${theme.palette.primary.main}`,
+                        '&:hover': {
+                          bgcolor: theme.palette.mode === 'dark' 
+                            ? alpha(theme.palette.primary.main, 0.2)
+                            : alpha(theme.palette.primary.main, 0.12),
+                        },
+                      },
+                      '&:hover': {
+                        bgcolor: theme.palette.mode === 'dark' 
+                          ? alpha(theme.palette.action.hover, 0.1)
+                          : alpha(theme.palette.action.hover, 0.05),
+                      },
+                    }}
                   >
-                    <ListItemIcon>
-                      <Iconify icon={accountGroupIcon} width="24" height="24" />
+                    <ListItemIcon sx={{ minWidth: 40, color: theme.palette.text.secondary }}>
+                      <Iconify icon={accountGroupIcon} width={22} height={22} />
                     </ListItemIcon>
-                    <ListItemText primary="Users & Groups" />
+                    <ListItemText 
+                      primary="Users & Groups" 
+                      primaryTypographyProps={{ 
+                        fontSize: '0.9375rem',
+                        fontWeight: pathname === `${baseUrl}/users` ? 600 : 400,
+                      }}
+                    />
                   </ListItemButton>
                 </ListItem>
 
@@ -135,29 +202,90 @@ export default function Sidebar() {
                   <ListItemButton
                     onClick={handleToggleSettings}
                     selected={isSettingsPath || settingsOpen}
+                    sx={{
+                      py: 1,
+                      borderRadius: '0',
+                      '&.Mui-selected': {
+                        bgcolor: theme.palette.mode === 'dark' 
+                          ? alpha(theme.palette.primary.main, 0.15)
+                          : alpha(theme.palette.primary.main, 0.08),
+                        borderRight: `3px solid ${theme.palette.primary.main}`,
+                        '&:hover': {
+                          bgcolor: theme.palette.mode === 'dark' 
+                            ? alpha(theme.palette.primary.main, 0.2)
+                            : alpha(theme.palette.primary.main, 0.12),
+                        },
+                      },
+                      '&:hover': {
+                        bgcolor: theme.palette.mode === 'dark' 
+                          ? alpha(theme.palette.action.hover, 0.1)
+                          : alpha(theme.palette.action.hover, 0.05),
+                      },
+                    }}
                   >
-                    <ListItemIcon>
-                      <Iconify icon={cogIcon} width="24" height="24" />
+                    <ListItemIcon sx={{ minWidth: 40, color: theme.palette.text.secondary }}>
+                      <Iconify icon={cogIcon} width={22} height={22} />
                     </ListItemIcon>
-                    <ListItemText primary="Settings" />
-                    <Iconify icon={settingsOpen ? upIcon : downIcon} width="20" height="20" />
+                    <ListItemText 
+                      primary="Settings" 
+                      primaryTypographyProps={{ 
+                        fontSize: '0.9375rem',
+                        fontWeight: (isSettingsPath || settingsOpen) ? 600 : 400,
+                      }}
+                    />
+                    <Iconify 
+                      icon={settingsOpen ? upIcon : downIcon} 
+                      width={18} 
+                      height={18} 
+                      sx={{ color: theme.palette.text.secondary }}
+                    />
                   </ListItemButton>
                 </ListItem>
                 <Collapse in={settingsOpen} timeout="auto" unmountOnExit>
-                  <List component="div" disablePadding>
+                  <List 
+                    component="div" 
+                    disablePadding
+                    sx={{
+                      bgcolor: theme.palette.mode === 'dark' 
+                        ? alpha(theme.palette.background.default, 0.3)
+                        : alpha(theme.palette.background.default, 0.5),
+                    }}
+                  >
                     {settingsOptions.map((option) => (
                       <ListItemButton
                         key={option.name}
-                        sx={{ pl: 4 }}
+                        sx={{ 
+                          pl: 5,
+                          py: 0.75,
+                          '&.Mui-selected': {
+                            bgcolor: theme.palette.mode === 'dark' 
+                              ? alpha(theme.palette.primary.main, 0.15)
+                              : alpha(theme.palette.primary.main, 0.08),
+                            borderRight: `3px solid ${theme.palette.primary.main}`,
+                            '&:hover': {
+                              bgcolor: theme.palette.mode === 'dark' 
+                                ? alpha(theme.palette.primary.main, 0.2)
+                                : alpha(theme.palette.primary.main, 0.12),
+                            },
+                          },
+                          '&:hover': {
+                            bgcolor: theme.palette.mode === 'dark' 
+                              ? alpha(theme.palette.action.hover, 0.1)
+                              : alpha(theme.palette.action.hover, 0.05),
+                          },
+                        }}
                         onClick={() => navigate(option.path)}
                         selected={pathname === option.path}
                       >
-                        <ListItemIcon sx={{ minWidth: 36 }}>
-                          <Iconify icon={option.icon} width="20" height="20" />
+                        <ListItemIcon sx={{ minWidth: 32, color: theme.palette.text.secondary }}>
+                          <Iconify icon={option.icon} width={20} height={20} />
                         </ListItemIcon>
                         <ListItemText
                           primary={option.name}
-                          primaryTypographyProps={{ fontSize: '0.9rem' }}
+                          primaryTypographyProps={{ 
+                            fontSize: '0.875rem',
+                            fontWeight: pathname === option.path ? 600 : 400,
+                          }}
                         />
                       </ListItemButton>
                     ))}
@@ -166,14 +294,23 @@ export default function Sidebar() {
               </>
             )}
           </List>
-          <Divider />
+          <Divider sx={{ borderColor: theme.palette.divider }} />
         </>
       )}
 
       {/* Personal section - for both account types */}
-      <List sx={{ mt: isBusiness ? 0 : 10 }}>
+      <List sx={{ mt: isBusiness ? 1 : 8 }}>
         <ListItem>
-          <ListItemText primary="PERSONAL" />
+          <ListItemText 
+            primary="PERSONAL" 
+            primaryTypographyProps={{ 
+              fontSize: '0.8125rem',
+              fontWeight: 600,
+              letterSpacing: '0.05em',
+              color: theme.palette.text.secondary,
+              marginBottom: '4px',
+            }}
+          />
         </ListItem>
         <ListItem disablePadding>
           <ListItemButton
@@ -183,11 +320,37 @@ export default function Sidebar() {
             selected={
               pathname === (isBusiness ? `${baseUrl}/personal-profile` : `${baseUrl}/profile`)
             }
+            sx={{
+              py: 1,
+              borderRadius: '0',
+              '&.Mui-selected': {
+                bgcolor: theme.palette.mode === 'dark' 
+                  ? alpha(theme.palette.primary.main, 0.15)
+                  : alpha(theme.palette.primary.main, 0.08),
+                borderRight: `3px solid ${theme.palette.primary.main}`,
+                '&:hover': {
+                  bgcolor: theme.palette.mode === 'dark' 
+                    ? alpha(theme.palette.primary.main, 0.2)
+                    : alpha(theme.palette.primary.main, 0.12),
+                },
+              },
+              '&:hover': {
+                bgcolor: theme.palette.mode === 'dark' 
+                  ? alpha(theme.palette.action.hover, 0.1)
+                  : alpha(theme.palette.action.hover, 0.05),
+              },
+            }}
           >
-            <ListItemIcon>
-              <Iconify icon={accountIcon} width="24" height="24" />
+            <ListItemIcon sx={{ minWidth: 40, color: theme.palette.text.secondary }}>
+              <Iconify icon={accountIcon} width={22} height={22} />
             </ListItemIcon>
-            <ListItemText primary="Profile" />
+            <ListItemText 
+              primary="Profile" 
+              primaryTypographyProps={{ 
+                fontSize: '0.9375rem',
+                fontWeight: pathname === (isBusiness ? `${baseUrl}/personal-profile` : `${baseUrl}/profile`) ? 600 : 400,
+              }}
+            />
           </ListItemButton>
         </ListItem>
 
@@ -198,29 +361,90 @@ export default function Sidebar() {
               <ListItemButton
                 onClick={handleToggleSettings}
                 selected={isSettingsPath || settingsOpen}
+                sx={{
+                  py: 1,
+                  borderRadius: '0',
+                  '&.Mui-selected': {
+                    bgcolor: theme.palette.mode === 'dark' 
+                      ? alpha(theme.palette.primary.main, 0.15)
+                      : alpha(theme.palette.primary.main, 0.08),
+                    borderRight: `3px solid ${theme.palette.primary.main}`,
+                    '&:hover': {
+                      bgcolor: theme.palette.mode === 'dark' 
+                        ? alpha(theme.palette.primary.main, 0.2)
+                        : alpha(theme.palette.primary.main, 0.12),
+                    },
+                  },
+                  '&:hover': {
+                    bgcolor: theme.palette.mode === 'dark' 
+                      ? alpha(theme.palette.action.hover, 0.1)
+                      : alpha(theme.palette.action.hover, 0.05),
+                  },
+                }}
               >
-                <ListItemIcon>
-                  <Iconify icon={cogIcon} width="24" height="24" />
+                <ListItemIcon sx={{ minWidth: 40, color: theme.palette.text.secondary }}>
+                  <Iconify icon={cogIcon} width={22} height={22} />
                 </ListItemIcon>
-                <ListItemText primary="Settings" />
-                <Iconify icon={settingsOpen ? upIcon : downIcon} width="20" height="20" />
+                <ListItemText 
+                  primary="Settings" 
+                  primaryTypographyProps={{ 
+                    fontSize: '0.9375rem',
+                    fontWeight: (isSettingsPath || settingsOpen) ? 600 : 400,
+                  }}
+                />
+                <Iconify 
+                  icon={settingsOpen ? upIcon : downIcon} 
+                  width={18} 
+                  height={18} 
+                  sx={{ color: theme.palette.text.secondary }}
+                />
               </ListItemButton>
             </ListItem>
             <Collapse in={settingsOpen} timeout="auto" unmountOnExit>
-              <List component="div" disablePadding>
+              <List 
+                component="div" 
+                disablePadding
+                sx={{
+                  bgcolor: theme.palette.mode === 'dark' 
+                    ? alpha(theme.palette.background.default, 0.3)
+                    : alpha(theme.palette.background.default, 0.5),
+                }}
+              >
                 {settingsOptions.map((option) => (
                   <ListItemButton
                     key={option.name}
-                    sx={{ pl: 4 }}
+                    sx={{ 
+                      pl: 5,
+                      py: 0.75,
+                      '&.Mui-selected': {
+                        bgcolor: theme.palette.mode === 'dark' 
+                          ? alpha(theme.palette.primary.main, 0.15)
+                          : alpha(theme.palette.primary.main, 0.08),
+                        borderRight: `3px solid ${theme.palette.primary.main}`,
+                        '&:hover': {
+                          bgcolor: theme.palette.mode === 'dark' 
+                            ? alpha(theme.palette.primary.main, 0.2)
+                            : alpha(theme.palette.primary.main, 0.12),
+                        },
+                      },
+                      '&:hover': {
+                        bgcolor: theme.palette.mode === 'dark' 
+                          ? alpha(theme.palette.action.hover, 0.1)
+                          : alpha(theme.palette.action.hover, 0.05),
+                      },
+                    }}
                     onClick={() => navigate(option.path)}
                     selected={pathname === option.path}
                   >
-                    <ListItemIcon sx={{ minWidth: 36 }}>
-                      <Iconify icon={option.icon} width="20" height="20" />
+                    <ListItemIcon sx={{ minWidth: 32, color: theme.palette.text.secondary }}>
+                      <Iconify icon={option.icon} width={20} height={20} />
                     </ListItemIcon>
                     <ListItemText
                       primary={option.name}
-                      primaryTypographyProps={{ fontSize: '0.9rem' }}
+                      primaryTypographyProps={{ 
+                        fontSize: '0.875rem',
+                        fontWeight: pathname === option.path ? 600 : 400,
+                      }}
                     />
                   </ListItemButton>
                 ))}

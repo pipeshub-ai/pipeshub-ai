@@ -626,7 +626,7 @@ const RecordSalesAgent = ({ initialContext, recordId }: RecordSalesAgentProps) =
             onDrawerToggle={() => setDrawerOpen(true)}
           />
 
-          <ChatMessagesArea
+          {/* <ChatMessagesArea
             messages={messages}
             isLoading={isLoading}
             expandedCitations={expandedCitations}
@@ -636,7 +636,7 @@ const RecordSalesAgent = ({ initialContext, recordId }: RecordSalesAgentProps) =
             conversationId={currentConversationId}
             onViewPdf={onViewPdf}
             isLoadingConversation={isLoadingConversation}
-          />
+          /> */}
 
           <Box
             sx={{

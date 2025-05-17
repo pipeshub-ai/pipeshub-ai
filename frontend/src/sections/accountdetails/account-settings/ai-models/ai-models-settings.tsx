@@ -166,17 +166,19 @@ const AiModelsSettings = () => {
   };
 
   return (
-    <Container maxWidth="lg">
+    <Container maxWidth="lg" sx={{ py: 3 }}>
       <Paper
+        elevation={0}
         sx={{
           overflow: 'hidden',
           position: 'relative',
-          p: 3,
-          borderRadius: 2,
-          boxShadow: (themeShadow) => `0 2px 20px ${alpha(themeShadow.palette.grey[500], 0.15)}`,
+          p: { xs: 2, md: 3 },
+          borderRadius: 1,
           border: '1px solid',
-          borderColor: 'divider',
-          mt: 4,
+          borderColor: theme.palette.divider,
+          backgroundColor: theme.palette.mode === 'dark' 
+            ? alpha(theme.palette.background.paper, 0.6)
+            : theme.palette.background.paper,
         }}
       >
         {/* Header section */}
@@ -186,7 +188,7 @@ const AiModelsSettings = () => {
             flexDirection: { xs: 'column', sm: 'row' },
             justifyContent: 'space-between',
             alignItems: { xs: 'flex-start', sm: 'center' },
-            mb: 4,
+            mb: 3,
             gap: 2,
           }}
         >
@@ -196,20 +198,28 @@ const AiModelsSettings = () => {
               component="h1"
               sx={{
                 fontWeight: 600,
-                mb: 1,
+                mb: 0.5,
+                fontSize: '1.25rem',
                 color: theme.palette.text.primary,
               }}
             >
               AI Models
             </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 500 }}>
+            <Typography 
+              variant="body2" 
+              color="text.secondary" 
+              sx={{ 
+                maxWidth: 500,
+                lineHeight: 1.5 
+              }}
+            >
               Configure AI models to enable intelligent features in your application
             </Typography>
           </Box>
         </Box>
 
         {/* AI Models Grid */}
-        <Grid container spacing={2} mb={4}>
+        <Grid container spacing={2} mb={3}>
           {aiModels.map((model) => {
             const displayName = MODEL_TYPE_NAMES[model.type] || model.type.toUpperCase();
             const description =
@@ -221,20 +231,27 @@ const AiModelsSettings = () => {
             return (
               <Grid item xs={12} key={model.type}>
                 <Paper
+                  elevation={0}
                   sx={{
-                    p: 2.5,
+                    p: 2,
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'space-between',
-                    borderRadius: 2,
+                    borderRadius: 1,
                     border: '1px solid',
-                    borderColor: 'divider',
-                    bgcolor: 'background.paper',
-                    transition: 'all 0.2s ease-in-out',
+                    borderColor: model.enabled 
+                      ? alpha(color, theme.palette.mode === 'dark' ? 0.2 : 0.3) 
+                      : theme.palette.divider,
+                    bgcolor: model.enabled 
+                      ? alpha(color, theme.palette.mode === 'dark' ? 0.05 : 0.03)
+                      : 'transparent',
+                    transition: 'all 0.15s ease-in-out',
                     '&:hover': {
                       transform: 'translateY(-2px)',
-                      boxShadow: 2,
-                      borderColor: alpha(color, 0.3),
+                      boxShadow: theme.palette.mode === 'dark'
+                        ? `0 4px 12px ${alpha('#000', 0.15)}`
+                        : `0 4px 12px ${alpha(theme.palette.grey[500], 0.1)}`,
+                      borderColor: alpha(color, theme.palette.mode === 'dark' ? 0.3 : 0.4),
                     },
                   }}
                 >
@@ -242,57 +259,87 @@ const AiModelsSettings = () => {
                   <Box sx={{ display: 'flex', alignItems: 'center', flexGrow: 1 }}>
                     <Box
                       sx={{
-                        width: 48,
-                        height: 48,
+                        width: 40,
+                        height: 40,
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
                         mr: 2,
-                        bgcolor: alpha(color, 0.1),
+                        bgcolor: alpha(color, theme.palette.mode === 'dark' ? 0.15 : 0.1),
                         color,
-                        borderRadius: 1.5,
+                        borderRadius: 1,
                       }}
                     >
-                      <Iconify icon={icon} width={26} height={26} />
+                      <Iconify icon={icon} width={22} height={22} />
                     </Box>
 
                     <Box>
-                      <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-                        {displayName}
+                      <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 1 }}>
+                        <Typography 
+                          variant="subtitle1" 
+                          sx={{ 
+                            fontWeight: 600,
+                            fontSize: '0.9375rem',
+                          }}
+                        >
+                          {displayName}
+                        </Typography>
+                        
                         {model.enabled && (
                           <Box
                             component="span"
                             sx={{
-                              ml: 1,
                               px: 1,
                               py: 0.25,
-                              borderRadius: 1,
-                              fontSize: '0.75rem',
-                              bgcolor: alpha(theme.palette.success.main, 0.1),
+                              borderRadius: 0.75,
+                              fontSize: '0.6875rem',
+                              fontWeight: 600,
+                              bgcolor: alpha(theme.palette.success.main, theme.palette.mode === 'dark' ? 0.15 : 0.1),
                               color: theme.palette.success.main,
+                              display: 'flex',
+                              alignItems: 'center',
                             }}
                           >
+                            <Box
+                              sx={{
+                                width: 6,
+                                height: 6,
+                                borderRadius: '50%',
+                                bgcolor: 'currentColor',
+                                mr: 0.5,
+                              }}
+                            />
                             Enabled
                           </Box>
                         )}
+                        
                         {configCount > 0 && (
                           <Box
                             component="span"
                             sx={{
-                              ml: 1,
                               px: 1,
                               py: 0.25,
-                              borderRadius: 1,
-                              fontSize: '0.75rem',
-                              bgcolor: alpha(theme.palette.info.main, 0.1),
+                              borderRadius: 0.75,
+                              fontSize: '0.6875rem',
+                              fontWeight: 600,
+                              bgcolor: alpha(theme.palette.info.main, theme.palette.mode === 'dark' ? 0.15 : 0.1),
                               color: theme.palette.info.main,
                             }}
                           >
                             {configCount} config{configCount !== 1 ? 's' : ''}
                           </Box>
                         )}
-                      </Typography>
-                      <Typography variant="body2" color="text.secondary">
+                      </Box>
+                      
+                      <Typography 
+                        variant="body2" 
+                        color="text.secondary"
+                        sx={{ 
+                          fontSize: '0.8125rem',
+                          lineHeight: 1.5,
+                          mt: 0.5 
+                        }}
+                      >
                         {description}
                       </Typography>
                     </Box>
@@ -306,16 +353,21 @@ const AiModelsSettings = () => {
                       handleConfigureModel(model.type);
                     }}
                     sx={{
-                      mr: 1,
+                      p: 0.75,
                       color: theme.palette.text.secondary,
+                      bgcolor: theme.palette.mode === 'dark' 
+                        ? alpha(theme.palette.background.paper, 0.3)
+                        : alpha(theme.palette.background.default, 0.8),
+                      border: '1px solid',
+                      borderColor: theme.palette.divider,
                       '&:hover': {
-                        bgcolor: alpha(theme.palette.primary.main, 0.08),
+                        bgcolor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.15 : 0.08),
                         color: theme.palette.primary.main,
                       },
                     }}
                     aria-label={`Configure ${displayName}`}
                   >
-                    <Iconify icon={settingsIcon} width={20} height={20} />
+                    <Iconify icon={settingsIcon} width={18} height={18} />
                   </IconButton>
                 </Paper>
               </Grid>
@@ -335,7 +387,7 @@ const AiModelsSettings = () => {
       {/* Success snackbar */}
       <Snackbar
         open={success}
-        autoHideDuration={5000}
+        autoHideDuration={4000}
         onClose={handleCloseSuccess}
         anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
         sx={{ mt: 6 }}
@@ -346,7 +398,13 @@ const AiModelsSettings = () => {
           variant="filled"
           sx={{
             width: '100%',
-            boxShadow: '0px 3px 8px rgba(0, 0, 0, 0.12)',
+            boxShadow: theme.palette.mode === 'dark'
+              ? '0px 3px 8px rgba(0, 0, 0, 0.3)'
+              : '0px 3px 8px rgba(0, 0, 0, 0.12)',
+            '& .MuiAlert-icon': {
+              opacity: 0.8,
+            },
+            fontSize: '0.8125rem',
           }}
         >
           {successMessage}
@@ -356,10 +414,10 @@ const AiModelsSettings = () => {
       {/* Error snackbar */}
       <Snackbar
         open={!!error}
-        autoHideDuration={5000}
+        autoHideDuration={4000}
         onClose={handleCloseError}
         anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
-        sx={{ mt: error && warning ? 22 : 14 }}
+        sx={{ mt: error && warning ? 20 : 12 }}
       >
         <Alert
           onClose={handleCloseError}
@@ -367,7 +425,13 @@ const AiModelsSettings = () => {
           variant="filled"
           sx={{
             width: '100%',
-            boxShadow: '0px 3px 8px rgba(0, 0, 0, 0.12)',
+            boxShadow: theme.palette.mode === 'dark'
+              ? '0px 3px 8px rgba(0, 0, 0, 0.3)'
+              : '0px 3px 8px rgba(0, 0, 0, 0.12)',
+            '& .MuiAlert-icon': {
+              opacity: 0.8,
+            },
+            fontSize: '0.8125rem',
           }}
         >
           {error}
@@ -377,31 +441,62 @@ const AiModelsSettings = () => {
       {/* Warning snackbar */}
       <Snackbar
         open={!!warning}
-        autoHideDuration={5000}
+        autoHideDuration={4000}
         onClose={handleCloseWarning}
         anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
-        sx={{ mt: 14 }}
+        sx={{ mt: 12 }}
       >
         <Alert
           onClose={handleCloseWarning}
           severity="warning"
           variant="filled"
           sx={{
-            width: '80%',
-            boxShadow: '0px 3px 8px rgba(0, 0, 0, 0.12)',
-            backgroundColor: theme.palette.warning.main,
-            color: theme.palette.warning.contrastText,
+            width: '100%',
+            boxShadow: theme.palette.mode === 'dark'
+              ? '0px 3px 8px rgba(0, 0, 0, 0.3)'
+              : '0px 3px 8px rgba(0, 0, 0, 0.12)',
+            '& .MuiAlert-icon': {
+              opacity: 0.8,
+            },
+            fontSize: '0.8125rem',
           }}
         >
           {warning}
         </Alert>
       </Snackbar>
-      <Alert variant="outlined" severity="info" sx={{ my: 3 }}>
-        Refer to{' '}
-        <Link href="https://docs.pipeshub.com/ai-models/overview" target="_blank" rel="noopener">
-          the documentation
-        </Link>{' '}
-        for more information.
+      
+      <Alert 
+        variant="outlined" 
+        severity="info" 
+        sx={{ 
+          mt: 3,
+          mb: 1,
+          borderRadius: 1,
+          borderColor: alpha(theme.palette.info.main, theme.palette.mode === 'dark' ? 0.3 : 0.2),
+          '& .MuiAlert-icon': {
+            color: theme.palette.info.main,
+          },
+        }}
+      >
+        <Typography variant="body2">
+          Refer to{' '}
+          <Link 
+            href="https://docs.pipeshub.com/ai-models/overview" 
+            target="_blank" 
+            rel="noopener"
+            sx={{
+              color: theme.palette.primary.main,
+              textDecoration: 'none',
+              fontWeight: 500,
+              '&:hover': {
+                textDecoration: 'underline',
+              },
+            }}
+          >
+            the documentation
+          </Link>{' '}
+          for more information.
+        </Typography>
       </Alert>
     </Container>
   );

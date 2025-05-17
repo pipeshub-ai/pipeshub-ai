@@ -24,6 +24,7 @@ import {
   useTheme,
   IconButton,
   CircularProgress,
+  alpha,
 } from '@mui/material';
 
 import axios from 'src/utils/axios';
@@ -42,6 +43,7 @@ import ChatMessagesArea from './components/chat-message-area';
 import PdfHighlighterComp from './components/pdf-highlighter';
 import MarkdownViewer from './components/markdown-highlighter';
 import DocxHighlighterComp from './components/docx-highlighter';
+import WelcomeMessage from './components/welcome-message';
 
 const DRAWER_WIDTH = 300;
 
@@ -128,7 +130,9 @@ const ChatInterface = () => {
   const [pendingResponseConversationId, setPendingResponseConversationId] = useState<string | null>(
     null
   );
-
+  const [showWelcome, setShowWelcome] = useState<boolean>(
+    () => messages.length === 0 && !currentConversationId
+  );
   const [activeRequestTracker, setActiveRequestTracker] = useState<{
     current: string | null;
     type: 'create' | 'continue' | null;
@@ -522,38 +526,38 @@ const ChatInterface = () => {
     });
   }, []);
 
+  const MemoizedChatMessagesArea = React.memo(ChatMessagesArea);
+  const MemoizedWelcomeMessage = React.memo(WelcomeMessage);
+
   // Handle new chat creation
   const handleNewChat = useCallback((): void => {
+    // First apply the critical state changes that would affect routing
     setPendingResponseConversationId(null);
-
-    setActiveRequestTracker({
-      current: null,
-      type: null,
-    });
-
-    // Clear all loading states and pending responses
-    setLoadingConversations({});
-    setPendingResponseConversationId(null);
-    setOpenPdfView(false);
-
+    setActiveRequestTracker({ current: null, type: null });
     currentConversationIdRef.current = null;
-
-    setIsLoadingConversation(false);
     setCurrentConversationId(null);
-    setSelectedChat(null);
-    setMessages([]);
-    setExpandedCitations({});
-    setInputValue('');
-    setShouldRefreshSidebar(true);
-    setConversationStatus({});
-    navigate(`/`); // Navigate to base chat route
-    setFileBuffer(null);
+    navigate('/');
+
+    // Then use setTimeout to delay non-critical UI updates
+    // This helps prevent multiple rapid state changes causing flickering
+    setTimeout(() => {
+      setMessages([]);
+      setInputValue('');
+      setExpandedCitations({});
+      setShouldRefreshSidebar(true);
+      setConversationStatus({});
+      setShowWelcome(true);
+      setLoadingConversations({});
+      setIsLoadingConversation(false);
+      setSelectedChat(null);
+      setFileBuffer(null);
+      setOpenPdfView(false);
+    }, 0);
   }, [navigate]);
 
   const handleSendMessage = useCallback(async (): Promise<void> => {
     const trimmedInput = inputValue.trim();
     if (!trimmedInput) return;
-
     const conversationKey = currentConversationId || 'new';
     const requestConversationId = currentConversationId;
     const wasCreatingNewConversation = currentConversationId === null;
@@ -583,7 +587,9 @@ const ChatInterface = () => {
       messageType: 'user_query',
       timestamp: new Date(),
     };
-
+    if (showWelcome) {
+      setShowWelcome(false);
+    }
     try {
       setInputValue('');
       setMessages((prev) => [...prev, tempUserMessage]);
@@ -606,7 +612,7 @@ const ChatInterface = () => {
 
         conversation = response.data.conversation;
         const convId = conversation._id;
-
+        
         // FIXED: Remove the confusing duplicate checks and set state immediately
         if (wasCreatingNewConversation) {
           setSelectedChat(conversation);
@@ -638,7 +644,6 @@ const ChatInterface = () => {
           { query: trimmedInput }
         );
 
-
         if (!response?.data?.conversation?.messages) {
           throw new Error('Invalid response format');
         }
@@ -649,7 +654,7 @@ const ChatInterface = () => {
         // FIXED: Simplified condition - just check if we're still on the same conversation
         if (
           currentConversationIdRef.current === responseConversationId &&
-          currentConversationId === responseConversationId 
+          currentConversationId === responseConversationId
         ) {
           if (conversation.status) {
             setConversationStatus((prev) => ({
@@ -672,7 +677,11 @@ const ChatInterface = () => {
       console.error('Error:', error);
 
       // Only show error if this request is still active
-      if (activeRequestTracker?.current === requestId) {
+      if (
+        (requestConversationId === currentConversationId &&
+          requestConversationId === currentConversationIdRef.current) ||
+        (wasCreatingNewConversation && !currentConversationId)
+      ) {
         const errorMessage: FormattedMessage = {
           type: 'bot',
           content: 'Sorry, I encountered an error processing your request.',
@@ -688,6 +697,12 @@ const ChatInterface = () => {
         };
 
         setMessages((prev) => [...prev, errorMessage]);
+        if (wasCreatingNewConversation && !currentConversationId) {
+          // User was trying to create a new conversation and it failed
+          // No need to navigate away, just stay in the "new conversation" state
+          setCurrentConversationId(null);
+          currentConversationIdRef.current = null;
+        }
       }
     } finally {
       // Clear loading states
@@ -704,7 +719,7 @@ const ChatInterface = () => {
         });
       }
     }
-  }, [inputValue, currentConversationId, formatMessage, activeRequestTracker]);
+  }, [inputValue, currentConversationId, formatMessage, activeRequestTracker, showWelcome]);
 
   // Update handleRegenerateMessage
   const handleRegenerateMessage = useCallback(
@@ -787,26 +802,25 @@ const ChatInterface = () => {
       if (!chat?._id) return;
 
       try {
-        // Cancel any active requests
-        setActiveRequestTracker({
-          current: null,
-          type: null,
-        });
+        // Critical state changes first
+        setShowWelcome(false);
+        setCurrentConversationId(chat._id);
+        currentConversationIdRef.current = chat._id;
+        navigate(`/${chat._id}`);
+        setIsLoadingConversation(true);
 
-        // Clear all loading states and pending responses
+        // Clear other states
+        setActiveRequestTracker({ current: null, type: null });
         setLoadingConversations({});
         setConversationStatus({});
         setPendingResponseConversationId(null);
-        setIsLoadingConversation(true);
-        setMessages([]);
-        setExpandedCitations({});
-        setOpenPdfView(false);
 
-        // Update the conversation ID immediately
-        setCurrentConversationId(chat._id);
-        currentConversationIdRef.current = chat._id;
-
-        navigate(`/${chat._id}`);
+        // Reset UI state with slight delay
+        setTimeout(() => {
+          setMessages([]);
+          setExpandedCitations({});
+          setOpenPdfView(false);
+        }, 0);
 
         // Get conversation details
         const response = await axios.get(`/api/v1/conversations/${chat._id}`);
@@ -879,9 +893,32 @@ const ChatInterface = () => {
     [currentConversationId]
   );
 
-  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>): void => {
-    setInputValue(e.target.value);
-  }, []);
+  const handleInputChange = (
+    input: string | React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
+  ): void => {
+    // Get the value directly and store it
+    // This ensures we capture the value regardless of what happens to the event object
+    if (typeof input === 'string') {
+      // If directly passed a string
+      setInputValue(input);
+    } else if (
+      input &&
+      typeof input === 'object' &&
+      'target' in input &&
+      input.target &&
+      'value' in input.target
+    ) {
+      // If passed an event object with target.value
+      setInputValue(input.target.value);
+    }
+  };
+
+  // const handleInputChange = (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+  //   // Make sure you are using event.target.value directly
+  //   // without any reversal logic.
+  //   console.log(event);
+  //   setInputValue(event.target.value);
+  // };
 
   useEffect(() => {
     if (conversationId && conversationId !== currentConversationId) {
@@ -1003,7 +1040,6 @@ const ChatInterface = () => {
           transition: 'grid-template-columns 0.3s ease',
         }}
       >
-        {/* Chat Interface */}
         <Box
           sx={{
             display: 'flex',
@@ -1013,44 +1049,59 @@ const ChatInterface = () => {
             borderRight: openPdfView ? 1 : 0,
             borderColor: 'divider',
             marginLeft: isDrawerOpen ? 0 : 4,
+            position: 'relative',
           }}
         >
-          {/* <Box sx={{ flexShrink: 0 }}>
-            <ChatHeader
-              isDrawerOpen={isDrawerOpen}
-              onDrawerOpen={() => setDrawerOpen(true)}
-              conversationId={currentConversationId}
-            />
-          </Box> */}
-
-          <ChatMessagesArea
-            messages={messages}
-            isLoading={isCurrentConversationLoading() || isCurrentConversationThinking()}
-            expandedCitations={expandedCitations}
-            onToggleCitations={toggleCitations}
-            onRegenerateMessage={handleRegenerateMessage}
-            onFeedbackSubmit={handleFeedbackSubmit}
-            conversationId={currentConversationId}
-            isLoadingConversation={isLoadingConversation}
-            onViewPdf={onViewPdf}
-          />
-
-          <Box
-            sx={{
-              flexShrink: 0,
-              borderTop: 1,
-              borderColor: 'divider',
-              bgcolor: 'background.paper',
-              mt: 'auto',
-            }}
-          >
-            <ChatInput
-              value={inputValue}
-              onChange={handleInputChange}
+          {showWelcome ? (
+            <MemoizedWelcomeMessage
+              key="welcome-screen" // Key helps React manage this component better
+              inputValue={inputValue}
+              onInputChange={handleInputChange}
               onSubmit={handleSendMessage}
-              isLoading={isCurrentConversationLoading()}
+              isLoading={isLoading}
             />
-          </Box>
+          ) : (
+            <>
+              <MemoizedChatMessagesArea
+                key={`chat-area-${currentConversationId || 'new'}`} // Key based on conversation ID
+                messages={messages}
+                isLoading={isCurrentConversationLoading() || isCurrentConversationThinking()}
+                expandedCitations={expandedCitations}
+                onToggleCitations={toggleCitations}
+                onRegenerateMessage={handleRegenerateMessage}
+                onFeedbackSubmit={handleFeedbackSubmit}
+                conversationId={currentConversationId}
+                isLoadingConversation={isLoadingConversation}
+                onViewPdf={onViewPdf}
+                // Add these new props:
+                inputValue={inputValue}
+                onInputChange={handleInputChange}
+                onSubmit={handleSendMessage}
+                showWelcome={showWelcome}
+              />
+
+              <Box
+                sx={{
+                  flexShrink: 0,
+                  borderTop: 1,
+                  borderColor: 'divider',
+                  backgroundColor:
+                    theme.palette.mode === 'dark'
+                      ? alpha(theme.palette.background.paper, 0.5)
+                      : theme.palette.background.paper,
+                  mt: 'auto',
+                  py: 1.5,
+                }}
+              >
+                <ChatInput
+                  value={inputValue}
+                  onChange={handleInputChange}
+                  onSubmit={handleSendMessage}
+                  isLoading={isCurrentConversationLoading()}
+                />
+              </Box>
+            </>
+          )}
         </Box>
 
         {/* PDF Viewer */}

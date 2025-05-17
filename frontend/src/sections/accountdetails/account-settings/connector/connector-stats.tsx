@@ -120,48 +120,62 @@ const CONNECTOR_ICONS: Record<string, IconifyIcon> = {
   UPLOAD: cloudUploadIcon,
 };
 
-// Connector color mapping
-const CONNECTOR_COLORS: Record<string, string> = {
-  DRIVE: '#4285F4',
-  GMAIL: '#EA4335',
-  SLACK: '#4A154B',
-  JIRA: '#0052CC',
-  TEAMS: '#6264A7',
-  ONEDRIVE: '#0078D4',
-  SHAREPOINT: '#036C70',
-  OUTLOOK: '#0078D4',
-  DROPBOX: '#0061FF',
-  BOX: '#0061D5',
-  UPLOAD: '#34A853',
+// Ultra-minimalistic SaaS color palette - monochromatic with a single accent
+const COLORS = {
+  primary: '#3E4DBA', // Single brand accent color
+  text: {
+    primary: '#1F2937',
+    secondary: '#6B7280',
+  },
+  status: {
+    success: '#4B5563', // Dark gray for success
+    error: '#6B7280', // Medium gray for error
+    warning: '#9CA3AF', // Light gray for warning
+    accent: '#3E4DBA', // Accent color for primary actions
+  },
+  backgrounds: {
+    paper: '#FFFFFF',
+    hover: '#F9FAFB',
+    stats: '#F5F7FA',
+  },
+  border: '#E5E7EB',
 };
+
+type SnackbarSeverity = 'success' | 'error' | 'warning' | 'info';
 
 /**
  * Component that displays statistics for a single connector in a square card
  */
 const ConnectorCard = ({ connector }: { connector: ConnectorData }): JSX.Element => {
   const theme = useTheme();
-  const [isReindexing, setIsReindexing] = useState(false);
-  const [isResyncing, setIsResyncing] = useState(false);
-  const [snackbar, setSnackbar] = useState({
+  const [isReindexing, setIsReindexing] = useState<boolean>(false);
+  const [isResyncing, setIsResyncing] = useState<boolean>(false);
+  const [snackbar, setSnackbar] = useState<{
+    open: boolean;
+    message: string;
+    severity: SnackbarSeverity;
+  }>({
     open: false,
     message: '',
-    severity: 'success' as 'success' | 'error' | 'warning' | 'info',
+    severity: 'success',
   });
 
   // Extract connector data
   const { connector: connectorName, total, indexing_status } = connector;
 
-  // Get display name, icon, and color
+  // Get display name and icon
   const displayName = CONNECTOR_DISPLAY_NAMES[connectorName] || connectorName;
   const iconName = CONNECTOR_ICONS[connectorName] || databaseIcon;
-  const iconColor = CONNECTOR_COLORS[connectorName] || theme.palette.primary.main;
 
   // Calculate percentage completed
   const percentComplete =
     total > 0 ? Math.round(((indexing_status.COMPLETED || 0) / total) * 100) : 0;
 
+  // Calculate if status is complete
+  const isComplete = percentComplete === 100;
+
   // Function to handle reindexing of failed documents
-  const handleReindex = async () => {
+  const handleReindex = async (): Promise<void> => {
     try {
       setIsReindexing(true);
 
@@ -189,7 +203,7 @@ const ConnectorCard = ({ connector }: { connector: ConnectorData }): JSX.Element
     }
   };
 
-  const handleResync = async () => {
+  const handleResync = async (): Promise<void> => {
     try {
       setIsResyncing(true);
 
@@ -227,29 +241,29 @@ const ConnectorCard = ({ connector }: { connector: ConnectorData }): JSX.Element
       label: 'Indexed',
       count: indexing_status.COMPLETED || 0,
       icon: checkCircleOutlineIcon,
-      color: theme.palette.success.main,
       tooltip: 'Indexed Records',
+      key: 'completed',
     },
     {
       label: 'Failed',
       count: indexing_status.FAILED || 0,
       icon: alertCircleOutlineIcon,
-      color: theme.palette.error.main,
       tooltip: 'Failed Records',
+      key: 'failed',
     },
     {
       label: 'In Progress',
       count: indexing_status.IN_PROGRESS || 0,
       icon: progressClockIcon,
-      color: theme.palette.warning.main,
       tooltip: 'In Progress Records',
+      key: 'inProgress',
     },
     {
       label: 'Not Started',
       count: indexing_status.NOT_STARTED || 0,
       icon: clockOutlineIcon,
-      color: theme.palette.grey[500],
       tooltip: 'Not Started Records',
+      key: 'notStarted',
     },
   ];
 
@@ -259,8 +273,8 @@ const ConnectorCard = ({ connector }: { connector: ConnectorData }): JSX.Element
       label: 'Unsupported',
       count: indexing_status.FILE_TYPE_NOT_SUPPORTED,
       icon: fileCancelOutlineIcon,
-      color: theme.palette.info.main,
       tooltip: 'Unsupported File Types',
+      key: 'unsupported',
     });
   }
 
@@ -269,13 +283,85 @@ const ConnectorCard = ({ connector }: { connector: ConnectorData }): JSX.Element
       label: 'Manual Sync',
       count: indexing_status.AUTO_INDEX_OFF,
       icon: fileCancelOutlineIcon,
-      color: theme.palette.grey[600],
       tooltip: 'Auto Index Off',
+      key: 'autoIndexOff',
     });
   }
 
   // Determine if we should show the reindex button (only when failed docs exist)
   const showReindexButton = indexing_status.FAILED > 0;
+
+  // Premium SaaS design system
+  const isDark = theme.palette.mode === 'dark';
+
+  // Base colors - more refined with subtle variations
+  const white = '#ffffff';
+
+  // Grayscale palette inspired by Vercel/Linear/Stripe design systems
+  const gray = {
+    50: isDark ? '#121212' : '#fafafa',
+    100: isDark ? '#1e1e1e' : '#f5f5f5',
+    150: isDark ? '#262626' : '#f0f0f0',
+    200: isDark ? '#2c2c2c' : '#e9e9e9',
+    300: isDark ? '#383838' : '#e2e2e2',
+    400: isDark ? '#525252' : '#c2c2c2',
+    500: isDark ? '#6e6e6e' : '#8f8f8f',
+    600: isDark ? '#909090' : '#6e6e6e',
+    700: isDark ? '#b3b3b3' : '#525252',
+    800: isDark ? '#d6d6d6' : '#383838',
+    900: isDark ? '#eeeeee' : '#2c2c2c',
+  };
+
+  // UI Specific colors
+  const bgCard = isDark ? gray[50] : white;
+  const bgHeader = isDark ? gray[100] : gray[50];
+  const bgHover = isDark ? gray[100] : gray[100];
+  const bgStats = isDark ? gray[100] : gray[50];
+  const bgStatHover = isDark ? gray[150] : gray[100];
+  const borderColor = isDark ? `rgba(255, 255, 255, 0.08)` : `rgba(0, 0, 0, 0.06)`;
+  const shadowColorRaw = isDark ? 'rgba(0, 0, 0, 0.5)' : 'rgba(0, 0, 0, 0.08)';
+  const shadowColorHover = isDark ? 'rgba(0, 0, 0, 0.7)' : 'rgba(0, 0, 0, 0.12)';
+  const textPrimary = isDark ? gray[900] : gray[900];
+  const textSecondary = isDark ? gray[600] : gray[600];
+  const iconColor = isDark ? gray[600] : gray[500];
+
+  // Progress ring colors
+  const progressBg = isDark ? gray[200] : gray[200];
+  const progressFill = isDark ? gray[600] : gray[700];
+
+  // Theme primary color
+  const primaryColor = theme.palette.primary.main;
+  const primaryDark = theme.palette.primary.dark;
+  const primaryLight = theme.palette.primary.light;
+
+  // Function to get connector-specific color
+  const getConnectorColor = (connectorType: string): string => {
+    switch (connectorType) {
+      case 'GMAIL':
+        return '#DB4437'; // Gmail red
+      case 'DRIVE':
+        return '#0078D4'; // Google Drive green
+      case 'ONEDRIVE':
+        return '#0078D4'; // OneDrive blue
+      case 'SHAREPOINT':
+        return '#036C70'; // SharePoint teal
+      case 'DROPBOX':
+        return '#0061FF'; // Dropbox blue
+      case 'SLACK':
+        return '#4A154B'; // Slack purple
+      case 'TEAMS':
+        return '#6264A7'; // Teams purple
+      case 'JIRA':
+        return '#0052CC'; // Jira blue
+      case 'BOX':
+        return '#0061D5'; // Box blue
+      default:
+        return primaryColor; // Use theme primary color as fallback
+    }
+  };
+
+  // Get connector-specific color
+  const connectorColor = getConnectorColor(connectorName);
 
   return (
     <>
@@ -285,131 +371,288 @@ const ConnectorCard = ({ connector }: { connector: ConnectorData }): JSX.Element
           height: '100%',
           display: 'flex',
           flexDirection: 'column',
-          borderRadius: 2,
+          borderRadius: '8px',
           overflow: 'hidden',
-          boxShadow: '0 2px 8px rgba(0, 0, 0, 0.04)',
+          boxShadow: `0 1px 2px ${shadowColorRaw}`,
           border: '1px solid',
-          borderColor:
-            theme.palette.mode === 'dark'
-              ? alpha(theme.palette.divider, 0.6)
-              : alpha(theme.palette.grey[200], 0.8),
-          transition: 'box-shadow 0.2s ease',
+          borderColor,
+          bgcolor: bgCard,
+          transition: 'all 0.2s ease-out',
+          position: 'relative',
           '&:hover': {
-            boxShadow: '0 4px 12px rgba(0, 0, 0, 0.06)',
+            boxShadow: `0 4px 8px ${shadowColorHover}`,
+            transform: 'translateY(-1px)',
           },
         }}
       >
-        {/* Connector Icon */}
+        {/* Connector Icon and Name - Clean header design */}
         <Box
           sx={{
-            display: 'flex',
-            justifyContent: 'center',
-            alignItems: 'center',
             py: 2,
-            bgcolor: alpha(iconColor, 0.06),
+            px: 2.5,
+            display: 'flex',
+            alignItems: 'center',
+            borderBottom: '1px solid',
+            borderColor,
+            background: bgHeader,
           }}
         >
           <Avatar
             sx={{
-              width: 48,
-              height: 48,
-              bgcolor: alpha(iconColor, 0.14),
-              color: iconColor,
-              borderRadius: '20%',
-            }}
-          >
-            <Iconify icon={iconName} width={26} height={26} />
-          </Avatar>
-        </Box>
-
-        {/* Stats */}
-        <Box
-          sx={{
-            p: 2,
-            pt: 1.5,
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            flex: 1,
-          }}
-        >
-          {/* Connector Name and Total */}
-          <Typography variant="subtitle1" sx={{ mb: 0.25, fontWeight: 600, textAlign: 'center' }}>
-            {displayName}
-          </Typography>
-
-          <Typography
-            variant="caption"
-            sx={{
-              mb: 1.5,
-              color: theme.palette.text.secondary,
-              fontWeight: 500,
-            }}
-          >
-            {total.toLocaleString()} records
-          </Typography>
-
-          {/* Progress Circle */}
-          <Box
-            sx={{
-              position: 'relative',
+              width: 32,
+              height: 32,
+              bgcolor: isDark ? 'rgba(255, 255, 255, 0.05)' : 'rgba(0, 0, 0, 0.03)',
+              color: connectorColor, // Use connector-specific color
+              borderRadius: '6px',
+              mr: 1.5,
               display: 'flex',
-              alignItems: 'center',
               justifyContent: 'center',
-              mb: 2,
+              alignItems: 'center',
+              boxShadow: isDark ? 'none' : '0 1px 2px rgba(0, 0, 0, 0.03)',
             }}
           >
-            <CircularProgress
-              variant="determinate"
-              value={percentComplete}
-              size={60}
-              thickness={4}
+            <Iconify icon={iconName} width={18} height={18} />
+          </Avatar>
+          <Box>
+            <Typography
+              variant="subtitle2"
               sx={{
-                color: iconColor,
-                '& .MuiCircularProgress-circle': {
-                  strokeLinecap: 'round',
-                },
-              }}
-            />
-            <Box
-              sx={{
-                position: 'absolute',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
+                fontWeight: 600,
+                color: textPrimary,
+                lineHeight: 1.3,
+                fontSize: '0.875rem',
+                letterSpacing: '-0.01em',
               }}
             >
-              <Typography variant="body2" fontWeight="bold" color={iconColor}>
-                {`${percentComplete}%`}
+              {displayName}
+            </Typography>
+            <Typography
+              variant="caption"
+              sx={{
+                color: textSecondary,
+                fontWeight: 400,
+                display: 'block',
+                fontSize: '0.75rem',
+              }}
+            >
+              {total.toLocaleString()} records
+            </Typography>
+          </Box>
+
+          {/* Status indicator */}
+          {isComplete ? (
+            <Box
+              sx={{
+                ml: 'auto',
+                px: 1.5,
+                py: 0.5,
+                borderRadius: '4px',
+                fontSize: '0.65rem',
+                fontWeight: 500,
+                letterSpacing: '0.02em',
+                textTransform: 'uppercase',
+                color: isDark ? gray[600] : gray[600],
+                border: '1px solid',
+                borderColor: isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.05)',
+                backgroundColor: isDark ? 'rgba(255, 255, 255, 0.05)' : 'rgba(0, 0, 0, 0.02)',
+              }}
+            >
+              Synced
+            </Box>
+          ) : (
+            <Box
+              sx={{
+                ml: 'auto',
+                width: 8,
+                height: 8,
+                borderRadius: '50%',
+                backgroundColor: '#9E9E9E',
+                boxShadow: isDark ? 'none' : '0 0 0 2px rgba(0, 0, 0, 0.03)',
+              }}
+            />
+          )}
+        </Box>
+
+        {/* Stats Section - Premium SaaS layout */}
+        <Box
+          sx={{
+            px: 2.5,
+            pt: 2,
+            pb: 2.5,
+            display: 'flex',
+            flexDirection: 'column',
+            flex: 1,
+            position: 'relative',
+            zIndex: 1,
+          }}
+        >
+          {/* Progress Circle - Cleaner, more refined visual */}
+          <Box
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              mb: 2.5,
+              pb: 2.5,
+              borderBottom: '1px solid',
+              borderColor,
+            }}
+          >
+            <Box
+              sx={{
+                position: 'relative',
+                display: 'flex',
+                alignItems: 'center',
+                mr: 2.5,
+              }}
+            >
+              <CircularProgress
+                variant="determinate"
+                value={100}
+                size={42}
+                thickness={3}
+                sx={{
+                  color: isDark ? 'rgba(255, 255, 255, 0.06)' : 'rgba(0, 0, 0, 0.06)',
+                }}
+              />
+              <CircularProgress
+                variant="determinate"
+                value={percentComplete}
+                size={42}
+                thickness={3}
+                sx={{
+                  color: progressFill,
+                  position: 'absolute',
+                  '& .MuiCircularProgress-circle': {
+                    strokeLinecap: 'round',
+                  },
+                }}
+              />
+              <Box
+                sx={{
+                  position: 'absolute',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: '100%',
+                }}
+              >
+                <Typography
+                  variant="caption"
+                  fontWeight="600"
+                  sx={{ color: textPrimary, fontSize: '0.75rem' }}
+                >
+                  {`${percentComplete}%`}
+                </Typography>
+              </Box>
+            </Box>
+            <Box>
+              <Typography
+                variant="body2"
+                sx={{
+                  color: textPrimary,
+                  mb: 0.5,
+                  fontSize: '0.75rem',
+                  fontWeight: 600,
+                  letterSpacing: '-0.01em',
+                }}
+              >
+                Indexing Progress
+              </Typography>
+              <Typography
+                variant="caption"
+                sx={{
+                  color: textSecondary,
+                  fontWeight: 400,
+                  fontSize: '0.7rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                }}
+              >
+                <Typography
+                  component="span"
+                  variant="caption"
+                  sx={{
+                    fontWeight: 600,
+                    color: isDark ? gray[600] : gray[700],
+                    mr: 0.5,
+                    fontSize: '0.7rem',
+                  }}
+                >
+                  {indexing_status.COMPLETED.toLocaleString()}
+                </Typography>
+                <Box component="span" sx={{ mx: 0.25, color: textSecondary }}>
+                  /
+                </Box>
+                <Typography
+                  component="span"
+                  variant="caption"
+                  sx={{
+                    color: textSecondary,
+                    fontSize: '0.7rem',
+                  }}
+                >
+                  {total.toLocaleString()}
+                </Typography>{' '}
+                records indexed
               </Typography>
             </Box>
           </Box>
 
-          {/* Stats Grid - Rendered dynamically for uniformity */}
-          <Grid container spacing={1.5} sx={{ mb: 2 }}>
-            {statusItems.map((item, index) => (
-              <Grid item xs={statusItems.length <= 4 ? 6 : 4} key={`status-${index}`}>
-                <Tooltip title={item.tooltip}>
+          {/* Stats Grid - Linear/Vercel inspired layout */}
+          <Grid container spacing={1.5} sx={{ mb: 2.5 }}>
+            {statusItems.map((item) => (
+              <Grid item xs={statusItems.length <= 4 ? 6 : 4} key={`status-${item.key}`}>
+                <Tooltip title={item.tooltip} placement="top">
                   <Box
                     sx={{
                       display: 'flex',
                       flexDirection: 'column',
                       alignItems: 'center',
-                      backgroundColor: alpha(item.color, 0.05),
-                      borderRadius: 1,
-                      py: 1,
+                      backgroundColor: bgStats,
+                      borderRadius: '6px',
+                      py: 1.25,
+                      px: 1,
+                      border: '1px solid',
+                      borderColor,
+                      height: '100%',
+                      justifyContent: 'center',
+                      transition: 'all 0.15s ease-in-out',
+                      '&:hover': {
+                        backgroundColor: bgStatHover,
+                      },
                     }}
                   >
                     <Iconify
                       icon={item.icon}
-                      width={18}
-                      height={18}
-                      sx={{ color: item.color, mb: 0.5 }}
+                      width={16}
+                      height={16}
+                      sx={{
+                        color: iconColor,
+                        mb: 0.75,
+                        opacity: 0.9,
+                      }}
                     />
-                    <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                    <Typography
+                      variant="subtitle2"
+                      sx={{
+                        fontWeight: 600,
+                        color: textPrimary,
+                        fontSize: '0.875rem',
+                        mb: 0.25,
+                        letterSpacing: '-0.01em',
+                      }}
+                    >
                       {item.count.toLocaleString()}
                     </Typography>
-                    <Typography variant="caption" color="text.secondary">
+                    <Typography
+                      variant="caption"
+                      sx={{
+                        color: textSecondary,
+                        fontSize: '0.675rem',
+                        textAlign: 'center',
+                        fontWeight: 400,
+                      }}
+                    >
                       {item.label}
                     </Typography>
                   </Box>
@@ -418,91 +661,101 @@ const ConnectorCard = ({ connector }: { connector: ConnectorData }): JSX.Element
             ))}
           </Grid>
 
-          {/* Action Buttons - Adaptive layout based on button count */}
+          {/* Action Buttons - Premium SaaS style */}
           <Box
             sx={{
               mt: 'auto',
               display: 'flex',
-              justifyContent: showReindexButton ? 'space-between' : 'center',
+              justifyContent:  'center',
               width: '100%',
               gap: 1.5,
+              pt: 1.5,
+              borderTop: '1px solid',
+              borderColor,
             }}
           >
             {/* Resync button */}
             <Button
               size="small"
-              color="primary"
               variant="outlined"
-              startIcon={<Iconify icon={syncIcon} />}
+              startIcon={<Iconify icon={syncIcon} width={14} height={14} />}
               onClick={handleResync}
               disabled={isResyncing}
-              fullWidth={showReindexButton}
               sx={{
-                borderRadius: '8px',
+                borderRadius: '6px',
                 textTransform: 'none',
-                minHeight: '36px',
-                fontSize: '0.8125rem',
+                height: '30px',
+                fontSize: '0.75rem',
                 fontWeight: 500,
-                border: `1px solid ${alpha(theme.palette.primary.main, 0.5)}`,
+                color: primaryColor, // Use theme primary color
+                borderColor: alpha(primaryColor, 0.5),
+                backgroundColor: 'transparent',
+                letterSpacing: '-0.01em',
+                boxShadow: 'none',
+                minWidth: '90px',
+                px: 1.5,
                 '&:hover': {
-                  borderColor: theme.palette.primary.main,
-                  backgroundColor: alpha(theme.palette.primary.main, 0.04),
+                  backgroundColor: alpha(primaryColor, 0.04),
+                  borderColor: primaryColor,
+                },
+                '&:focus': {
+                  boxShadow: `0 0 0 2px ${alpha(primaryColor, 0.2)}`,
                 },
                 '&:disabled': {
-                  color: alpha(theme.palette.primary.main, 0.4),
-                  borderColor: alpha(theme.palette.primary.main, 0.2),
+                  color: isDark ? 'rgba(255, 255, 255, 0.3)' : 'rgba(0, 0, 0, 0.3)',
+                  borderColor: isDark ? 'rgba(255, 255, 255, 0.06)' : 'rgba(0, 0, 0, 0.06)',
                 },
-                maxWidth: showReindexButton ? '48%' : '180px',
               }}
             >
               {isResyncing ? (
                 <>
-                  <CircularProgress size={16} color="primary" sx={{ mr: 1 }} />
-                  Syncing...
+                  <CircularProgress size={12} sx={{ mr: 1, color: 'inherit' }} />
+                  Syncing
                 </>
               ) : (
-                'Resync'
+                'Sync'
               )}
             </Button>
 
-            {/* Reindex button - Only show if there are failed records */}
-            {showReindexButton && (
-              <Button
-                size="small"
-                color="error"
-                variant="outlined"
-                startIcon={<Iconify icon={refreshIcon} />}
-                onClick={handleReindex}
-                disabled={isReindexing}
-                fullWidth
-                sx={{
-                  borderRadius: '8px',
-                  textTransform: 'none',
-                  minHeight: '36px',
-                  fontSize: '0.8125rem',
-                  fontWeight: 500,
-                  border: `1px solid ${alpha(theme.palette.error.main, 0.5)}`,
-                  '&:hover': {
-                    borderColor: theme.palette.error.main,
-                    backgroundColor: alpha(theme.palette.error.main, 0.04),
-                  },
-                  '&:disabled': {
-                    color: alpha(theme.palette.error.main, 0.4),
-                    borderColor: alpha(theme.palette.error.main, 0.2),
-                  },
-                  maxWidth: '48%',
-                }}
-              >
-                {isReindexing ? (
-                  <>
-                    <CircularProgress size={16} color="error" sx={{ mr: 1 }} />
-                    Indexing...
-                  </>
-                ) : (
-                  'Reindex Failed'
-                )}
-              </Button>
-            )}
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={<Iconify icon={refreshIcon} width={14} height={14} />}
+              onClick={handleReindex}
+              disabled={isReindexing}
+              sx={{
+                borderRadius: '6px',
+                textTransform: 'none',
+                height: '30px',
+                fontSize: '0.75rem',
+                fontWeight: 500,
+                color: primaryColor, // Use theme primary color
+                borderColor: alpha(primaryColor, 0.5),
+                letterSpacing: '-0.01em',
+                minWidth: '120px',
+                px: 1.5,
+                '&:hover': {
+                  backgroundColor: alpha(primaryColor, 0.04),
+                  borderColor: primaryColor,
+                },
+                '&:focus': {
+                  boxShadow: `0 0 0 2px ${alpha(primaryColor, 0.2)}`,
+                },
+                '&:disabled': {
+                  color: isDark ? 'rgba(255, 255, 255, 0.3)' : 'rgba(0, 0, 0, 0.3)',
+                  borderColor: isDark ? 'rgba(255, 255, 255, 0.06)' : 'rgba(0, 0, 0, 0.06)',
+                },
+              }}
+            >
+              {isReindexing ? (
+                <>
+                  <CircularProgress size={12} sx={{ mr: 1, color: 'inherit' }} />
+                  Indexing
+                </>
+              ) : (
+                'Reindex Failed'
+              )}
+            </Button>
           </Box>
         </Box>
       </Paper>
@@ -519,11 +772,17 @@ const ConnectorCard = ({ connector }: { connector: ConnectorData }): JSX.Element
           variant="filled"
           sx={{
             width: '100%',
-            borderRadius: 0.75,
-            boxShadow: theme.shadows[3],
-            '& .MuiAlert-icon': {
-              fontSize: '1.2rem',
-            },
+            borderRadius: '6px',
+            boxShadow: `0 4px 12px ${shadowColorRaw}`,
+            backgroundColor:
+              snackbar.severity === 'success'
+                ? primaryColor
+                : snackbar.severity === 'error'
+                  ? theme.palette.error.main
+                  : snackbar.severity === 'warning'
+                    ? theme.palette.warning.main
+                    : theme.palette.info.main,
+            fontSize: '0.8rem',
           }}
         >
           {snackbar.message}
@@ -553,7 +812,7 @@ const ConnectorStatistics = ({
   const [refreshing, setRefreshing] = useState<boolean>(false);
 
   // Create a ref to track if component is mounted
-  const isMounted = useRef(true);
+  const isMounted = useRef<boolean>(true);
 
   // Create a ref for the interval ID
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -669,7 +928,7 @@ const ConnectorStatistics = ({
             COMPLETED: Math.round(totalRecords * 0.7),
             FAILED: Math.round(totalRecords * 0.1),
             FILE_TYPE_NOT_SUPPORTED: 5, // Add some unsupported files for testing
-            AUTO_INDEX_OFF: 3, 
+            AUTO_INDEX_OFF: 3,
           },
         });
       } else {
@@ -683,7 +942,7 @@ const ConnectorStatistics = ({
             COMPLETED: 3,
             FAILED: 0,
             FILE_TYPE_NOT_SUPPORTED: 1, // Add an unsupported file for testing
-            AUTO_INDEX_OFF: 0, 
+            AUTO_INDEX_OFF: 0,
           },
           by_record_type: [],
         };
@@ -720,7 +979,7 @@ const ConnectorStatistics = ({
   }, []);
 
   // Function to handle manual refresh
-  const handleRefresh = () => {
+  const handleRefresh = (): void => {
     fetchConnectorStats(true);
   };
 
@@ -753,6 +1012,11 @@ const ConnectorStatistics = ({
     allStats.push(uploadStats);
   }
 
+  // Dark mode aware styles
+  const isDark = theme.palette.mode === 'dark';
+  const bgPaper = isDark ? '#1F2937' : COLORS.backgrounds.paper;
+  const borderColor = isDark ? alpha('#4B5563', 0.6) : COLORS.border;
+
   // If initial loading and no data yet, show centered spinner
   if (initialLoading && !allStats.length) {
     return (
@@ -760,12 +1024,12 @@ const ConnectorStatistics = ({
         sx={{
           overflow: 'hidden',
           position: 'relative',
-          borderRadius: 2,
-          boxShadow: theme.shadows[1],
+          borderRadius: 1,
+          boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)',
           border: '1px solid',
-          borderColor: 'divider',
-          minHeight: 200,
-          mt: 4,
+          borderColor,
+          bgcolor: bgPaper,
+          minHeight: 120,
         }}
       >
         <Box
@@ -773,74 +1037,27 @@ const ConnectorStatistics = ({
             display: 'flex',
             justifyContent: 'center',
             alignItems: 'center',
-            minHeight: 200,
+            minHeight: 120,
             width: '100%',
-            py: 4,
+            py: 3,
           }}
         >
-          <CircularProgress size={36} />
-          {/* <Typography>
-            Loading indexing statics
-          </Typography> */}
+          <CircularProgress size={24} sx={{ color: COLORS.primary }} />
         </Box>
       </Card>
     );
   }
 
   return (
-    <CardContent>
-      {/* Card Header with Title and Refresh Button */}
-      {/* <Box
-        sx={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          mb: 3,
-          pb: 2,
-          borderBottom: '1px solid',
-          borderColor: alpha(theme.palette.divider, 0.1),
-        }}
-      >
-        <Box sx={{ display: 'flex', alignItems: 'center' }}>
-          <Typography variant="h6" sx={{ fontWeight: 500 }}>
-            {title}
-          </Typography>
-        </Box>
-
-        <Tooltip title="Refresh statistics" arrow placement="left">
-          <Box>
-            <IconButton
-              size="small"
-              onClick={handleRefresh}
-              disabled={refreshing}
-              sx={{
-                color: theme.palette.primary.main,
-                backgroundColor: alpha(theme.palette.primary.main, 0.04),
-                width: 36,
-                height: 36,
-                border: `1px solid ${alpha(theme.palette.primary.main, 0.12)}`,
-                '&:hover': {
-                  backgroundColor: alpha(theme.palette.primary.main, 0.08),
-                },
-                transition: 'all 0.2s ease',
-              }}
-            >
-              {refreshing ? (
-                <CircularProgress size={18} color="inherit" />
-              ) : (
-                <Iconify icon={refreshIcon} width={20} height={20} />
-              )}
-            </IconButton>
-          </Box>
-        </Tooltip>
-      </Box> */}
-
+    <CardContent sx={{ p: { xs: 1, sm: 1.5 } }}>
       {/* Grid of Connector Cards */}
       {error ? (
         <Alert
           severity="error"
           sx={{
-            borderRadius: 2,
+            borderRadius: 1,
+            border: '1px solid',
+            borderColor: alpha(COLORS.status.error, 0.3),
           }}
         >
           <AlertTitle>Error Loading Data</AlertTitle>
@@ -850,10 +1067,12 @@ const ConnectorStatistics = ({
         <Alert
           severity="info"
           sx={{
-            borderRadius: 2,
+            borderRadius: 1,
+            border: '1px solid',
+            borderColor: alpha(COLORS.primary, 0.2),
           }}
         >
-          <AlertTitle>No records of Google Workspace indexed yet</AlertTitle>
+          <AlertTitle>No Records Found</AlertTitle>
           <Typography variant="body2">
             {normalizedConnectorNames.length > 0
               ? `No data found for the specified connector${normalizedConnectorNames.length > 1 ? 's' : ''}: ${normalizedConnectorNames.join(', ')}`
@@ -861,9 +1080,9 @@ const ConnectorStatistics = ({
           </Typography>
         </Alert>
       ) : (
-        <Grid container spacing={2}>
+        <Grid container spacing={1.5}>
           {allStats.map((stat, index) => (
-            <Grid item xs={12} sm={6} md={4} lg={4} key={`${stat.connector}-${index}`}>
+            <Grid item xs={12} sm={6} md={6} lg={4} key={`${stat.connector}-${index}`}>
               <ConnectorCard connector={stat} />
             </Grid>
           ))}
@@ -874,12 +1093,14 @@ const ConnectorStatistics = ({
       {loading && !initialLoading && !refreshing && (
         <Box
           sx={{
+            py: 2,
+            px: 2.5,
             display: 'flex',
             justifyContent: 'center',
             mt: 2,
           }}
         >
-          <CircularProgress size={24} />
+          <CircularProgress size={22} sx={{ color: COLORS.primary }} />
         </Box>
       )}
     </CardContent>

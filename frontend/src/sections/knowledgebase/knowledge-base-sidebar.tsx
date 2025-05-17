@@ -52,8 +52,8 @@ import type { RecordCategories } from './types/record-categories';
 import type { Filters, FilterHeaderProps, KnowledgeBaseSideBarProps } from './types/knowledge-base';
 
 // Constants
-const DRAWER_EXPANDED_WIDTH = 320;
-const DRAWER_COLLAPSED_WIDTH = 64;
+const DRAWER_EXPANDED_WIDTH = 280;
+const DRAWER_COLLAPSED_WIDTH = 60;
 
 // Define a subtle pulse animation
 const pulse = keyframes`
