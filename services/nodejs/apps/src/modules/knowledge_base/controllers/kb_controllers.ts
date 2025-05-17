@@ -31,12 +31,16 @@ import { AIServiceResponse } from '../../enterprise_search/types/conversation.in
 import { IServiceRecordsResponse } from '../types/service.records.response';
 import axios from 'axios';
 import { ArangoService } from '../../../libs/services/arango.service';
+import { Event, EventType } from '../services/records_events.service';
 
 const logger = Logger.getInstance({
   service: 'Knowledge Base Controller',
 });
 const AI_SERVICE_UNAVAILABLE_MESSAGE =
   'AI Service is currently unavailable. Please check your network connection or try again later.';
+
+const CONNECTOR_SERVICE_UNAVAILABLE_MESSAGE =
+  'Connector Service is currently unavailable. Please check your network connection or try again later.';
 
 export const createRecords =
   (
@@ -606,6 +610,77 @@ interface RecordPermission {
  * Controller function for deleting records via AI service
  * Handles both KB-type records and direct access records
  */
+// Separate utility function for performing hard delete
+export const performHardDelete = async (
+  recordId: string,
+  headers: Record<string, string>,
+  aiBackendUrl: string,
+  requestId?: string,
+): Promise<boolean> => {
+  logger.info('Performing hard delete operation', {
+    recordId,
+    requestId,
+  });
+
+  try {
+    const hardDeleteCommand = new AIServiceCommand({
+      uri: `${aiBackendUrl}/api/v1/delete/record/${recordId}`,
+      method: HttpMethod.DELETE,
+      headers: headers,
+    });
+
+    const hardDeleteResponse =
+      (await hardDeleteCommand.execute()) as AIServiceResponse<any>;
+
+    if (!hardDeleteResponse || hardDeleteResponse.statusCode !== 200) {
+      logger.error('Failed to hard delete record', {
+        recordId,
+        statusCode: hardDeleteResponse?.statusCode,
+        requestId,
+      });
+
+      throw new InternalServerError(
+        'Failed to hard delete record',
+        hardDeleteResponse?.data,
+      );
+    }
+
+    logger.info('Record hard-deleted successfully', {
+      recordId,
+      requestId,
+    });
+
+    return true;
+  } catch (error: any) {
+    logger.error('Error in hard delete operation', {
+      recordId,
+      error: error.message,
+      requestId,
+    });
+
+    if (error.cause && error.cause.code === 'ECONNREFUSED') {
+      throw new InternalServerError(
+        CONNECTOR_SERVICE_UNAVAILABLE_MESSAGE,
+        error,
+      );
+    }
+
+    if (error.message?.includes('not found')) {
+      throw new NotFoundError('Record not found');
+    }
+
+    if (error.message?.includes('User has no access to this record')) {
+      throw new UnauthorizedError('User has no access to this record');
+    }
+
+    throw error;
+  }
+};
+
+/**
+ * Controller function for deleting records via AI service
+ * Handles both KB-type records and direct access records
+ */
 export const deleteRecord =
   (recordRelationService: RecordRelationService, appConfig: AppConfig) =>
   async (
@@ -616,7 +691,8 @@ export const deleteRecord =
     try {
       const { recordId } = req.params as { recordId: string };
       const { userId, orgId } = req.user || {};
-      const aiBackendUrl = appConfig.aiBackend;
+      const queryBackendUrl = appConfig.aiBackend;
+      const connectorBackendUrl = appConfig.connectorBackend;
 
       if (!userId || !orgId) {
         throw new UnauthorizedError('User authentication is required');
@@ -634,7 +710,7 @@ export const deleteRecord =
       try {
         // Set up AI service command to fetch record details
         const aiCommand = new AIServiceCommand({
-          uri: `${aiBackendUrl}/api/v1/records/${recordId}`,
+          uri: `${queryBackendUrl}/api/v1/records/${recordId}`,
           method: HttpMethod.GET,
           headers: req.headers as Record<string, string>,
         });
@@ -693,6 +769,83 @@ export const deleteRecord =
               requestId: req.context?.requestId,
             });
             throw new ForbiddenError('Permission denied for record deletion');
+          }
+
+          // For non-connector records, use hard delete
+          logger.info('Non-connector record detected, using hard delete', {
+            recordId,
+            userId,
+            requestId: req.context?.requestId,
+          });
+
+          let hardDeleteSuccessful = false;
+          try {
+            // Perform hard delete
+            hardDeleteSuccessful = await performHardDelete(
+              recordId,
+              req.headers as Record<string, string>,
+              connectorBackendUrl,
+              req.context?.requestId,
+            );
+          } catch (hardDeleteError: any) {
+            logger.error(
+              'Hard delete operation failed, falling back to soft delete',
+              {
+                recordId,
+                error: hardDeleteError.message,
+                requestId: req.context?.requestId,
+              },
+            );
+            logger.error('Failed to hard-deleted record', {
+              recordId,
+              error: hardDeleteError,
+              requestId: req.context?.requestId,
+            });
+            throw hardDeleteError;
+          }
+
+          // If hard delete was successful, publish the event and send response
+          if (hardDeleteSuccessful) {
+            try {
+              const updatedRecord = existingRecord.record;
+
+              const deleteEventPayload =
+                recordRelationService.createDeletedRecordEventPayload(
+                  updatedRecord,
+                );
+
+              const event: Event = {
+                eventType: EventType.DeletedRecordEvent,
+                timestamp: Date.now(),
+                payload: deleteEventPayload,
+              };
+
+              await recordRelationService.eventProducer.publishEvent(event);
+              logger.info(
+                `Published delete event for hard-deleted record ${recordId}`,
+              );
+            } catch (eventError) {
+              logger.error(
+                'Failed to publish delete event for hard-deleted record',
+                {
+                  recordId,
+                  error: eventError,
+                  requestId: req.context?.requestId,
+                },
+              );
+              // Continue despite event publishing error
+            }
+
+            // Return success response for hard delete
+            res.status(200).json({
+              message: 'Record permanently deleted successfully',
+              meta: {
+                requestId: req.context?.requestId,
+                timestamp: new Date().toISOString(),
+              },
+            });
+
+            return; // Return early to avoid soft delete logic
           }
         }
         // For connector records, check direct permissions
@@ -762,29 +915,36 @@ export const deleteRecord =
         );
       }
 
-      // Extract the record's internal ID to pass to soft delete function
       const internalRecordId = existingRecord.record._key;
 
-      // Perform the soft delete operation
-      await recordRelationService.softDeleteRecord(internalRecordId, userId);
+      // Perform the soft delete operation for connector records
+      try {
+        await recordRelationService.softDeleteRecord(internalRecordId, userId);
 
-      // Log the successful deletion
-      logger.info('Record soft-deleted successfully', {
-        recordId,
-        internalRecordId,
-        userId,
-        orgId,
-        requestId: req.context?.requestId,
-      });
-
-      // Return success response
-      res.status(200).json({
-        message: 'Record deleted successfully',
-        meta: {
+        logger.info('Record soft-deleted successfully', {
+          recordId,
+          internalRecordId,
+          userId,
+          orgId,
           requestId: req.context?.requestId,
-          timestamp: new Date().toISOString(),
-        },
-      });
+        });
+
+        res.status(200).json({
+          message: 'Record deleted successfully',
+          meta: {
+            requestId: req.context?.requestId,
+            timestamp: new Date().toISOString(),
+          },
+        });
+      } catch (softDeleteError) {
+        logger.error('Soft delete operation failed', {
+          recordId,
+          internalRecordId,
+          error: softDeleteError,
+          requestId: req.context?.requestId,
+        });
+        throw softDeleteError;
+      }
     } catch (error: any) {
       // Log the error for debugging
       logger.error('Error in record deletion process', {
@@ -1292,6 +1452,77 @@ export const reindexRecord =
     }
   };
 
+export const hardDeleteRecord =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { recordId } = req.params as { recordId: string };
+      const userId = req.user?.userId;
+      const aiBackendUrl = appConfig.aiBackend;
+
+      if (!userId) {
+        throw new BadRequestError('User not authenticated');
+      }
+
+      try {
+        const aiCommand = new AIServiceCommand({
+          uri: `${aiBackendUrl}/api/v1/delete/record/${recordId}`,
+          method: HttpMethod.GET, // Note: Using GET for delete is unconventional, but keeping as is
+          headers: req.headers as Record<string, string>,
+        });
+
+        let aiResponse;
+        try {
+          aiResponse =
+            (await aiCommand.execute()) as AIServiceResponse<IServiceRecordsResponse>;
+        } catch (error: any) {
+          if (error.cause && error.cause.code === 'ECONNREFUSED') {
+            throw new InternalServerError(
+              AI_SERVICE_UNAVAILABLE_MESSAGE,
+              error,
+            );
+          }
+          logger.error('Failed to execute AI command', error);
+          throw new InternalServerError('Failed to get AI response', error);
+        }
+
+        if (!aiResponse || aiResponse.statusCode !== 200 || !aiResponse.data) {
+          throw new UnauthorizedError(
+            'User has no access to this record',
+            aiResponse?.data,
+          );
+        }
+
+        // Send a proper response with information about the deleted record
+        res.status(200).json({
+          success: true,
+          message: 'Record successfully deleted',
+          recordId,
+          timestamp: new Date().toISOString(),
+        });
+
+        return;
+      } catch (error: any) {
+        if (error.message?.includes('not found')) {
+          throw new NotFoundError('Record not found');
+        }
+
+        if (error.message?.includes('User has no access to this record')) {
+          throw new UnauthorizedError('User has no access to this record');
+        }
+
+        throw error;
+      }
+    } catch (error: any) {
+      logger.error('Error deleting record', {
+        recordId: req.params.recordId,
+        userId: req.user?.userId,
+        error: error.message || error,
+      });
+      next(error);
+    }
+  };
+
 /**
  * Retrieves complete statistics for all connectors from ArangoDB
  * @param {ArangoService} arangoService - The ArangoDB service instance
@@ -1646,7 +1877,7 @@ export const reindexAllRecords =
     }
   };
 
-  export const resyncConnectorRecords =
+export const resyncConnectorRecords =
   (recordRelationService: RecordRelationService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
@@ -1657,7 +1888,13 @@ export const reindexAllRecords =
         throw new BadRequestError('User not authenticated');
       }
 
-      const allowedConnectors = ['ONEDRIVE', 'DRIVE', 'GMAIL', 'CONFLUENCE', 'SLACK'];
+      const allowedConnectors = [
+        'ONEDRIVE',
+        'DRIVE',
+        'GMAIL',
+        'CONFLUENCE',
+        'SLACK',
+      ];
       if (!allowedConnectors.includes(connectorName)) {
         throw new BadRequestError(`Connector ${connectorName} not allowed`);
       }
@@ -1669,7 +1906,9 @@ export const reindexAllRecords =
       };
 
       const resyncConnectorResponse =
-        await recordRelationService.resyncConnectorRecords(resyncConnectorPayload);
+        await recordRelationService.resyncConnectorRecords(
+          resyncConnectorPayload,
+        );
 
       res.status(200).json({
         resyncConnectorResponse,
