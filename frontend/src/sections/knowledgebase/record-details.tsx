@@ -27,6 +27,7 @@ import fileCodeBoxIcon from '@iconify-icons/mdi/file-code-outline';
 import fileArchiveBoxIcon from '@iconify-icons/mdi/archive-outline';
 import fileDocumentBoxIcon from '@iconify-icons/mdi/file-document-box';
 import filePowerpointBoxIcon from '@iconify-icons/mdi/file-powerpoint-box';
+import descriptionIcon from '@iconify-icons/mdi/file-document-outline';
 
 import {
   Box,
@@ -49,10 +50,13 @@ import {
   CardContent,
   useMediaQuery,
   CircularProgress,
+  Dialog,
+  DialogContent,
+  DialogTitle,
 } from '@mui/material';
 
 import axios from 'src/utils/axios';
-
+import ReactMarkdown from 'react-markdown';
 import { CONFIG } from 'src/config-global';
 import { useUsers } from 'src/context/UserContext';
 
@@ -61,7 +65,6 @@ import RecordSalesAgent from './ask-me-anything';
 import RecordDocumentViewer from './show-documents';
 import EditRecordDialog from './edit-record-dialog';
 import DeleteRecordDialog from './delete-record-dialog';
-
 import type { Permissions, RecordDetailsResponse } from './types/record-details';
 
 const getIndexingStatusColor = (
@@ -150,6 +153,9 @@ export default function RecordDetails() {
     message: '',
     severity: 'success' as 'success' | 'error' | 'warning',
   });
+  const [isSummaryDialogOpen, setSummaryDialogOpen] = useState<boolean>(false);
+  const [summary, setSummary] = useState<string>('');
+  const [summaryLoading, setSummaryLoading] = useState<boolean>(false);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -206,6 +212,30 @@ export default function RecordDetails() {
       });
     } catch (error) {
       console.log('error in re indexing', error);
+    }
+  };
+
+  const handleShowSummary = async () => {
+    if (!record.summaryDocumentId) return;
+
+    setSummaryLoading(true);
+    setSummaryDialogOpen(true);
+
+    try {
+      const response = await axios.get(
+        `${CONFIG.backendUrl}/api/v1/document/${record.summaryDocumentId}/download`
+      );
+
+      if (response.data && response.data.summary) {
+        setSummary(response.data.summary);
+      } else {
+        setSummary('No summary available for this document.');
+      }
+    } catch (error) {
+      console.error('Error fetching document summary:', error);
+      setSummary('Failed to load document summary. Please try again later.');
+    } finally {
+      setSummaryLoading(false);
     }
   };
 
@@ -298,7 +328,7 @@ export default function RecordDetails() {
     if (!items || items.length === 0) return null;
 
     return (
-      <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+      <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
         {items.map((item: any) => (
           <Chip
             key={item.id || item._id}
@@ -308,10 +338,29 @@ export default function RecordDetails() {
               height: 22,
               fontSize: '0.75rem',
               fontWeight: 500,
-              bgcolor: alpha(theme.palette.primary.main, 0.08),
-              color: theme.palette.primary.main,
+              borderRadius: '4px',
+              // Clean, professional styling for both modes
+              bgcolor: (themeVal) =>
+                themeVal.palette.mode !== 'dark'
+                  ? alpha(themeVal.palette.grey[800], 0.1)
+                  : alpha(themeVal.palette.grey[100], 0.8),
+              color: (themeVal) =>
+                themeVal.palette.mode === 'dark'
+                  ? themeVal.palette.grey[100]
+                  : themeVal.palette.grey[800],
+              border: (themeVal) =>
+                themeVal.palette.mode === 'dark'
+                  ? `1px solid ${alpha(themeVal.palette.grey[700], 0.5)}`
+                  : `1px solid ${alpha(themeVal.palette.grey[300], 1)}`,
+              '& .MuiChip-label': {
+                px: 1,
+                py: 0.25,
+              },
               '&:hover': {
-                bgcolor: alpha(theme.palette.primary.main, 0.08), // Prevent color change on hover
+                bgcolor: (themeVal) =>
+                  themeVal.palette.mode !== 'dark'
+                    ? alpha(themeVal.palette.grey[700], 0.1)
+                    : alpha(themeVal.palette.grey[200], 0.1),
               },
             }}
           />
@@ -322,7 +371,7 @@ export default function RecordDetails() {
 
   return (
     <>
-      <Box sx={{ bgcolor: '#f8f9fb', width: '100%' }}>
+      <Box sx={{ width: '100%' }}>
         <Container sx={{ py: 3 }}>
           {/* Header */}
           <Card
@@ -386,102 +435,251 @@ export default function RecordDetails() {
               </Box>
               <Stack
                 direction={{ xs: 'column', sm: 'row' }}
-                spacing={{ xs: 1, sm: 2 }}
-                width="100%"
+                spacing={{ xs: 1.5, sm: 1.2 }}
+                width={{ xs: '100%', sm: 'auto' }}
                 alignItems={{ xs: 'stretch', sm: 'center' }}
                 justifyContent="flex-end"
               >
-                {!isRecordConnector && recordId && (
-                  <Tooltip title={getReindexTooltip(record.indexingStatus)} placement="top" arrow>
-                    <span>
-                      {' '}
-                      {/* Wrap with span to make tooltip work when button is disabled */}
-                      <Button
-                        startIcon={<Icon icon={refreshIcon} />}
-                        variant="outlined"
-                        size="small"
-                        color={getReindexButtonColor(record.indexingStatus)}
-                        onClick={() => handleRetryIndexing(recordId)}
-                        disabled={
-                          record.indexingStatus === 'FILE_TYPE_NOT_SUPPORTED' ||
-                          record.indexingStatus === 'IN_PROGRESS'
-                        }
-                        sx={{
-                          borderRadius: 1,
-                          textTransform: 'none',
-                          fontSize: '0.875rem',
-                          height: 36,
-                          fontWeight: 500,
-                          minWidth: { xs: '100%', sm: 130 },
-                          backgroundColor: 'background.paper',
-                          '&:hover': {
-                            backgroundColor:
-                              record.indexingStatus === 'FAILED'
-                                ? 'warning.lighter'
-                                : 'action.hover',
-                          },
-                        }}
-                      >
-                        {getReindexButtonText(record.indexingStatus)}
-                      </Button>
-                    </span>
-                  </Tooltip>
-                )}
-
-                {!isRecordConnector && (
-                  <Tooltip title="Edit document details" placement="top" arrow>
+                {/* Main actions */}
+                <Box
+                  sx={{
+                    display: 'flex',
+                    flexDirection: { xs: 'column', sm: 'row' },
+                    gap: { xs: 1, sm: 0.75 },
+                    width: { xs: '100%', sm: 'auto' },
+                  }}
+                >
+                  {/* Edit button - outlined instead of filled */}
+                  {!isRecordConnector && (
                     <Button
-                      startIcon={<Icon icon={pencilIcon} />}
                       variant="outlined"
-                      size="small"
+                      startIcon={<Icon icon={pencilIcon} style={{ fontSize: '1rem' }} />}
                       onClick={() => setIsEditDialogOpen(true)}
                       sx={{
-                        borderRadius: 1,
+                        height: 32,
+                        px: 1.75,
+                        py: 0.75,
+                        borderRadius: '4px',
                         textTransform: 'none',
-                        fontSize: '0.875rem',
-                        height: 36,
+                        fontSize: '0.8125rem',
                         fontWeight: 500,
-                        minWidth: { xs: '100%', sm: 110 },
-                        backgroundColor: 'background.paper',
+                        minWidth: { sm: 80 }, // Set minimum width for consistency
+                        borderColor: (themeVal) =>
+                          themeVal.palette.mode === 'dark'
+                            ? alpha(themeVal.palette.primary.main, 0.7)
+                            : themeVal.palette.primary.main,
+                        color: (themeVal) =>
+                          themeVal.palette.mode === 'dark'
+                            ? themeVal.palette.primary.light
+                            : themeVal.palette.primary.main,
+                        borderWidth: '1px',
+                        bgcolor: 'transparent',
                         '&:hover': {
-                          backgroundColor: 'action.hover',
+                          borderColor: (themeVal) =>
+                            themeVal.palette.mode === 'dark'
+                              ? themeVal.palette.primary.light
+                              : themeVal.palette.primary.dark,
+                          bgcolor: (themeVal) =>
+                            themeVal.palette.mode === 'dark'
+                              ? alpha(themeVal.palette.primary.main, 0.1)
+                              : alpha(themeVal.palette.primary.main, 0.05),
+                        },
+                        '&:focus': {
+                          boxShadow: (themeVal) =>
+                            themeVal.palette.mode === 'dark'
+                              ? `0 0 0 3px ${alpha(themeVal.palette.primary.main, 0.2)}`
+                              : `0 0 0 3px ${alpha(themeVal.palette.primary.main, 0.1)}`,
                         },
                       }}
                     >
                       Edit
                     </Button>
-                  </Tooltip>
-                )}
+                  )}
 
-                <Tooltip title="Delete this document" placement="top" arrow>
-                  <Button
-                    startIcon={<Icon icon={trashCanIcon} />}
-                    variant="outlined"
-                    color="error"
-                    size="small"
-                    onClick={() => setIsDeleteDialogOpen(true)}
-                    sx={{
-                      borderRadius: 1,
-                      textTransform: 'none',
-                      fontSize: '0.875rem',
-                      height: 36,
-                      fontWeight: 500,
-                      minWidth: { xs: '100%', sm: 110 },
-                      backgroundColor: 'background.paper',
-                      '&:hover': {
-                        backgroundColor: 'error.lighter',
-                      },
-                    }}
-                  >
-                    Delete
-                  </Button>
-                </Tooltip>
+                  {/* Summary button - outlined */}
+                  {record.summaryDocumentId && (
+                    <Button
+                      variant="outlined"
+                      startIcon={<Icon icon={descriptionIcon} style={{ fontSize: '1rem' }} />}
+                      onClick={handleShowSummary}
+                      sx={{
+                        height: 32,
+                        px: 1.75,
+                        py: 0.75,
+                        borderRadius: '4px',
+                        textTransform: 'none',
+                        fontSize: '0.8125rem',
+                        fontWeight: 500,
+                        minWidth: { sm: 0 }, // Allow button to size to content
+                        borderColor: (themeVal) =>
+                          themeVal.palette.mode === 'dark'
+                            ? 'rgba(255,255,255,0.23)'
+                            : 'rgba(0,0,0,0.23)',
+                        color: (themeVal) =>
+                          themeVal.palette.mode === 'dark' ? '#E0E0E0' : '#4B5563',
+                        borderWidth: '1px',
+                        bgcolor: 'transparent',
+                        '&:hover': {
+                          borderColor: (themeVal) =>
+                            themeVal.palette.mode === 'dark'
+                              ? 'rgba(255,255,255,0.4)'
+                              : 'rgba(0,0,0,0.4)',
+                          bgcolor: (themeVal) =>
+                            themeVal.palette.mode === 'dark'
+                              ? 'rgba(255,255,255,0.05)'
+                              : 'rgba(0,0,0,0.03)',
+                        },
+                      }}
+                    >
+                      Summary
+                    </Button>
+                  )}
+
+                  {/* Reindex button - outlined */}
+                  {!isRecordConnector && recordId && (
+                    <Tooltip title={getReindexTooltip(record.indexingStatus)} placement="top" arrow>
+                      <span>
+                        <Button
+                          variant="outlined"
+                          startIcon={<Icon icon={refreshIcon} style={{ fontSize: '1rem' }} />}
+                          disabled={
+                            record.indexingStatus === 'FILE_TYPE_NOT_SUPPORTED' ||
+                            record.indexingStatus === 'IN_PROGRESS'
+                          }
+                          onClick={() => handleRetryIndexing(recordId)}
+                          sx={{
+                            height: 32,
+                            px: 1.75,
+                            py: 0.75,
+                            borderRadius: '4px',
+                            textTransform: 'none',
+                            fontSize: '0.8125rem',
+                            fontWeight: 500,
+                            minWidth: { sm: 0 }, // Allow button to size to content
+                            borderColor: (themeVal) =>
+                              record.indexingStatus === 'FAILED'
+                                ? themeVal.palette.mode === 'dark'
+                                  ? '#FACC15'
+                                  : '#D97706'
+                                : themeVal.palette.mode === 'dark'
+                                  ? 'rgba(255,255,255,0.23)'
+                                  : 'rgba(0,0,0,0.23)',
+                            color: (themeVal) =>
+                              record.indexingStatus === 'FAILED'
+                                ? themeVal.palette.mode === 'dark'
+                                  ? '#FACC15'
+                                  : '#D97706'
+                                : themeVal.palette.mode === 'dark'
+                                  ? '#E0E0E0'
+                                  : '#4B5563',
+                            borderWidth: '1px',
+                            bgcolor: 'transparent',
+                            '&:hover': {
+                              borderColor: (themeVal) =>
+                                record.indexingStatus === 'FAILED'
+                                  ? themeVal.palette.mode === 'dark'
+                                    ? '#FDE68A'
+                                    : '#B45309'
+                                  : themeVal.palette.mode === 'dark'
+                                    ? 'rgba(255,255,255,0.4)'
+                                    : 'rgba(0,0,0,0.4)',
+                              bgcolor: (themeVal) =>
+                                record.indexingStatus === 'FAILED'
+                                  ? themeVal.palette.mode === 'dark'
+                                    ? 'rgba(250,204,21,0.08)'
+                                    : 'rgba(217,119,6,0.04)'
+                                  : themeVal.palette.mode === 'dark'
+                                    ? 'rgba(255,255,255,0.05)'
+                                    : 'rgba(0,0,0,0.03)',
+                            },
+                            '&.Mui-disabled': {
+                              borderColor: (themeVal) =>
+                                themeVal.palette.mode === 'dark'
+                                  ? 'rgba(255,255,255,0.12)'
+                                  : 'rgba(0,0,0,0.12)',
+                              color: (themeVal) =>
+                                themeVal.palette.mode === 'dark'
+                                  ? 'rgba(255,255,255,0.3)'
+                                  : 'rgba(0,0,0,0.38)',
+                            },
+                          }}
+                        >
+                          {getReindexButtonText(record.indexingStatus)}
+                        </Button>
+                      </span>
+                    </Tooltip>
+                  )}
+
+                  {/* Chat button - outlined */}
+                  {/* <Button
+      variant="outlined"
+      startIcon={<Icon icon={robotIcon} style={{ fontSize: '1rem' }} />}
+      onClick={toggleChat}
+      sx={{
+        height: 32,
+        px: 1.75,
+        py: 0.75,
+        borderRadius: '4px',
+        textTransform: 'none',
+        fontSize: '0.8125rem',
+        fontWeight: 500,
+        minWidth: { sm: 0 }, // Allow button to size to content
+        borderColor: (theme) => 
+          theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.23)' : 'rgba(0,0,0,0.23)',
+        color: (theme) => 
+          theme.palette.mode === 'dark' ? '#E0E0E0' : '#4B5563',
+        borderWidth: '1px',
+        bgcolor: 'transparent',
+        '&:hover': {
+          borderColor: (theme) => 
+            theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.4)',
+          bgcolor: (theme) => 
+            theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.03)',
+        },
+      }}
+    >
+      AI Chat
+    </Button> */}
+                </Box>
+
+                {/* Delete button - outline button with error color */}
+                <Button
+                  variant="outlined"
+                  color="error"
+                  startIcon={<Icon icon={trashCanIcon} style={{ fontSize: '1rem' }} />}
+                  onClick={() => setIsDeleteDialogOpen(true)}
+                  sx={{
+                    height: 32,
+                    px: 1.75,
+                    py: 0.75,
+                    borderRadius: '4px',
+                    textTransform: 'none',
+                    fontSize: '0.8125rem',
+                    fontWeight: 500,
+                    minWidth: { xs: '100%', sm: 0 }, // Full width on mobile, auto on desktop
+                    borderColor: (themeVal) =>
+                      themeVal.palette.mode === 'dark' ? '#EF4444' : '#DC2626',
+                    color: (themeVal) => (themeVal.palette.mode === 'dark' ? '#EF4444' : '#DC2626'),
+                    borderWidth: '1px',
+                    bgcolor: 'transparent',
+                    '&:hover': {
+                      borderColor: (themeVal) =>
+                        themeVal.palette.mode === 'dark' ? '#F87171' : '#B91C1C',
+                      bgcolor: (themeVal) =>
+                        themeVal.palette.mode === 'dark'
+                          ? 'rgba(239,68,68,0.08)'
+                          : 'rgba(220,38,38,0.04)',
+                    },
+                  }}
+                >
+                  Delete
+                </Button>
               </Stack>
             </Box>
 
             <Divider />
 
-            <Box sx={{ px: 3, py: 2, bgcolor: alpha('#f8f9fb', 0.7) }}>
+            <Box sx={{ px: 3, py: 2 }}>
               <Grid container spacing={3}>
                 <Grid item xs={12} sm={Boolean(true)}>
                   <Typography
@@ -642,10 +840,29 @@ export default function RecordDetails() {
                               height: 22,
                               fontSize: '0.75rem',
                               fontWeight: 500,
-                              bgcolor: alpha(theme.palette.primary.main, 0.08),
-                              color: theme.palette.primary.main,
+                              borderRadius: '4px',
+                              // Clean, professional styling for both modes
+                              bgcolor: (themeVal) =>
+                                themeVal.palette.mode !== 'dark'
+                                  ? alpha(themeVal.palette.grey[800], 0.1)
+                                  : alpha(themeVal.palette.grey[100], 0.8),
+                              color: (themeVal) =>
+                                themeVal.palette.mode === 'dark'
+                                  ? themeVal.palette.grey[100]
+                                  : themeVal.palette.grey[800],
+                              border: (themeVal) =>
+                                themeVal.palette.mode === 'dark'
+                                  ? `1px solid ${alpha(themeVal.palette.grey[700], 0.5)}`
+                                  : `1px solid ${alpha(themeVal.palette.grey[300], 1)}`,
+                              '& .MuiChip-label': {
+                                px: 1,
+                                py: 0.25,
+                              },
                               '&:hover': {
-                                bgcolor: alpha(theme.palette.primary.main, 0.08),
+                                bgcolor: (themeVal) =>
+                                  themeVal.palette.mode !== 'dark'
+                                    ? alpha(themeVal.palette.grey[700], 0.1)
+                                    : alpha(themeVal.palette.grey[200], 0.1),
                               },
                             }}
                           />
@@ -813,10 +1030,29 @@ export default function RecordDetails() {
                                     height: 22,
                                     fontSize: '0.75rem',
                                     fontWeight: 500,
-                                    bgcolor: alpha(theme.palette.primary.main, 0.08),
-                                    color: theme.palette.primary.main,
+                                    borderRadius: '4px',
+                                    // Clean, professional styling for both modes
+                                    bgcolor: (themeVal) =>
+                                      themeVal.palette.mode !== 'dark'
+                                        ? alpha(themeVal.palette.grey[800], 0.1)
+                                        : alpha(themeVal.palette.grey[100], 0.8),
+                                    color: (themeVal) =>
+                                      themeVal.palette.mode === 'dark'
+                                        ? themeVal.palette.grey[100]
+                                        : themeVal.palette.grey[800],
+                                    border: (themeVal) =>
+                                      themeVal.palette.mode === 'dark'
+                                        ? `1px solid ${alpha(themeVal.palette.grey[700], 0.5)}`
+                                        : `1px solid ${alpha(themeVal.palette.grey[300], 1)}`,
+                                    '& .MuiChip-label': {
+                                      px: 1,
+                                      py: 0.25,
+                                    },
                                     '&:hover': {
-                                      bgcolor: alpha(theme.palette.primary.main, 0.08),
+                                      bgcolor: (themeVal) =>
+                                        themeVal.palette.mode !== 'dark'
+                                          ? alpha(themeVal.palette.grey[700], 0.1)
+                                          : alpha(themeVal.palette.grey[200], 0.1),
                                     },
                                   }}
                                 />
@@ -902,10 +1138,29 @@ export default function RecordDetails() {
                                   height: 22,
                                   fontSize: '0.75rem',
                                   fontWeight: 500,
-                                  bgcolor: alpha(theme.palette.primary.main, 0.08),
-                                  color: theme.palette.primary.main,
+                                  borderRadius: '4px',
+                                  // Clean, professional styling for both modes
+                                  bgcolor: (themeVal) =>
+                                    themeVal.palette.mode !== 'dark'
+                                      ? alpha(themeVal.palette.grey[800], 0.1)
+                                      : alpha(themeVal.palette.grey[100], 0.8),
+                                  color: (themeVal) =>
+                                    themeVal.palette.mode === 'dark'
+                                      ? themeVal.palette.grey[100]
+                                      : themeVal.palette.grey[800],
+                                  border: (themeVal) =>
+                                    themeVal.palette.mode === 'dark'
+                                      ? `1px solid ${alpha(themeVal.palette.grey[700], 0.5)}`
+                                      : `1px solid ${alpha(themeVal.palette.grey[300], 1)}`,
+                                  '& .MuiChip-label': {
+                                    px: 1,
+                                    py: 0.25,
+                                  },
                                   '&:hover': {
-                                    bgcolor: alpha(theme.palette.primary.main, 0.08),
+                                    bgcolor: (themeVal) =>
+                                      themeVal.palette.mode !== 'dark'
+                                        ? alpha(themeVal.palette.grey[700], 0.1)
+                                        : alpha(themeVal.palette.grey[200], 0.1),
                                   },
                                 }}
                               />
@@ -1110,10 +1365,29 @@ export default function RecordDetails() {
                                 height: 22,
                                 fontSize: '0.75rem',
                                 fontWeight: 500,
-                                bgcolor: alpha(theme.palette.primary.main, 0.08),
-                                color: theme.palette.primary.main,
+                                borderRadius: '4px',
+                                // Clean, professional styling for both modes
+                                bgcolor: (themeVal) =>
+                                  themeVal.palette.mode !== 'dark'
+                                    ? alpha(themeVal.palette.grey[800], 0.1)
+                                    : alpha(themeVal.palette.grey[100], 0.8),
+                                color: (themeVal) =>
+                                  themeVal.palette.mode === 'dark'
+                                    ? themeVal.palette.grey[100]
+                                    : themeVal.palette.grey[800],
+                                border: (themeVal) =>
+                                  themeVal.palette.mode === 'dark'
+                                    ? `1px solid ${alpha(themeVal.palette.grey[700], 0.5)}`
+                                    : `1px solid ${alpha(themeVal.palette.grey[300], 1)}`,
+                                '& .MuiChip-label': {
+                                  px: 1,
+                                  py: 0.25,
+                                },
                                 '&:hover': {
-                                  bgcolor: alpha(theme.palette.primary.main, 0.08),
+                                  bgcolor: (themeVal) =>
+                                    themeVal.palette.mode !== 'dark'
+                                      ? alpha(themeVal.palette.grey[700], 0.1)
+                                      : alpha(themeVal.palette.grey[200], 0.1),
                                 },
                               }}
                             />
@@ -1149,10 +1423,29 @@ export default function RecordDetails() {
                                 height: 22,
                                 fontSize: '0.75rem',
                                 fontWeight: 500,
-                                bgcolor: alpha(theme.palette.primary.main, 0.08),
-                                color: theme.palette.primary.main,
+                                borderRadius: '4px',
+                                // Clean, professional styling for both modes
+                                bgcolor: (themeVal) =>
+                                  themeVal.palette.mode !== 'dark'
+                                    ? alpha(themeVal.palette.grey[800], 0.1)
+                                    : alpha(themeVal.palette.grey[100], 0.8),
+                                color: (themeVal) =>
+                                  themeVal.palette.mode === 'dark'
+                                    ? themeVal.palette.grey[100]
+                                    : themeVal.palette.grey[800],
+                                border: (themeVal) =>
+                                  themeVal.palette.mode === 'dark'
+                                    ? `1px solid ${alpha(themeVal.palette.grey[700], 0.5)}`
+                                    : `1px solid ${alpha(themeVal.palette.grey[300], 1)}`,
+                                '& .MuiChip-label': {
+                                  px: 1,
+                                  py: 0.25,
+                                },
                                 '&:hover': {
-                                  bgcolor: alpha(theme.palette.primary.main, 0.08),
+                                  bgcolor: (themeVal) =>
+                                    themeVal.palette.mode !== 'dark'
+                                      ? alpha(themeVal.palette.grey[700], 0.1)
+                                      : alpha(themeVal.palette.grey[200], 0.1),
                                 },
                               }}
                             />
@@ -1188,10 +1481,29 @@ export default function RecordDetails() {
                                 height: 22,
                                 fontSize: '0.75rem',
                                 fontWeight: 500,
-                                bgcolor: alpha(theme.palette.primary.main, 0.08),
-                                color: theme.palette.primary.main,
+                                borderRadius: '4px',
+                                // Clean, professional styling for both modes
+                                bgcolor: (themeVal) =>
+                                  themeVal.palette.mode !== 'dark'
+                                    ? alpha(themeVal.palette.grey[800], 0.1)
+                                    : alpha(themeVal.palette.grey[100], 0.8),
+                                color: (themeVal) =>
+                                  themeVal.palette.mode === 'dark'
+                                    ? themeVal.palette.grey[100]
+                                    : themeVal.palette.grey[800],
+                                border: (themeVal) =>
+                                  themeVal.palette.mode === 'dark'
+                                    ? `1px solid ${alpha(themeVal.palette.grey[700], 0.5)}`
+                                    : `1px solid ${alpha(themeVal.palette.grey[300], 1)}`,
+                                '& .MuiChip-label': {
+                                  px: 1,
+                                  py: 0.25,
+                                },
                                 '&:hover': {
-                                  bgcolor: alpha(theme.palette.primary.main, 0.08),
+                                  bgcolor: (themeVal) =>
+                                    themeVal.palette.mode !== 'dark'
+                                      ? alpha(themeVal.palette.grey[700], 0.1)
+                                      : alpha(themeVal.palette.grey[200], 0.1),
                                 },
                               }}
                             />
@@ -1257,6 +1569,299 @@ export default function RecordDetails() {
           />
         )}
       </Box>
+
+      <Dialog
+        open={isSummaryDialogOpen}
+        onClose={() => setSummaryDialogOpen(false)}
+        maxWidth="md"
+        fullWidth
+        PaperProps={{
+          sx: {
+            borderRadius: '8px',
+            boxShadow: (themeVal) =>
+              themeVal.palette.mode === 'dark'
+                ? '0 12px 28px rgba(0, 0, 0, 0.3), 0 5px 10px rgba(0, 0, 0, 0.2)'
+                : '0 12px 28px rgba(0, 0, 0, 0.15), 0 5px 10px rgba(0, 0, 0, 0.1)',
+            bgcolor: (themeVal) =>
+              themeVal.palette.mode === 'dark'
+                ? alpha(themeVal.palette.background.paper, 0.95)
+                : themeVal.palette.background.paper,
+            overflow: 'hidden',
+            backdropFilter: 'blur(8px)',
+            border: (themeVal) =>
+              themeVal.palette.mode === 'dark'
+                ? `1px solid ${alpha(themeVal.palette.divider, 0.1)}`
+                : 'none',
+          },
+        }}
+      >
+        {/* Header with close button */}
+        <Box
+          sx={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            p: 2.5,
+            pb: 2,
+            borderBottom: '1px solid',
+            borderColor: (themeVal) =>
+              themeVal.palette.mode === 'dark'
+                ? alpha(themeVal.palette.divider, 0.1)
+                : themeVal.palette.divider,
+          }}
+        >
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+            <Box
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: 36,
+                height: 36,
+                borderRadius: '6px',
+                bgcolor: (themeVal) =>
+                  themeVal.palette.mode === 'dark'
+                    ? alpha(themeVal.palette.primary.main, 0.15)
+                    : alpha(themeVal.palette.primary.main, 0.08),
+              }}
+            >
+              <Icon
+                icon={descriptionIcon}
+                style={{
+                  fontSize: '20px',
+                  
+                }}
+              />
+            </Box>
+            <Typography
+              variant="h6"
+              component="h2"
+              sx={{
+                fontWeight: 600,
+                fontSize: '1.125rem',
+                color: (themeVal) =>
+                  themeVal.palette.mode === 'dark'
+                    ? themeVal.palette.common.white
+                    : themeVal.palette.grey[800],
+              }}
+            >
+              Document Summary
+            </Typography>
+          </Box>
+          <IconButton
+            onClick={() => setSummaryDialogOpen(false)}
+            size="small"
+            edge="end"
+            aria-label="close"
+            sx={{
+              width: 32,
+              height: 32,
+              borderRadius: '6px',
+              color: (themeVal) =>
+                themeVal.palette.mode === 'dark' ? themeVal.palette.grey[400] : themeVal.palette.grey[600],
+              '&:hover': {
+                bgcolor: (themeVal) =>
+                  themeVal.palette.mode === 'dark'
+                    ? alpha(themeVal.palette.common.white, 0.05)
+                    : alpha(themeVal.palette.common.black, 0.04),
+              },
+            }}
+          >
+            <Icon icon="mdi:close" width={20} height={20} />
+          </IconButton>
+        </Box>
+
+        {/* Content area */}
+        <DialogContent
+          sx={{
+            p: { xs: 2, sm: 3 },
+            pb: 0,
+            '&::-webkit-scrollbar': {
+              width: '8px',
+              borderRadius: '4px',
+            },
+            '&::-webkit-scrollbar-track': {
+              background: 'transparent',
+            },
+            '&::-webkit-scrollbar-thumb': {
+              background: (themeVal) =>
+                themeVal.palette.mode === 'dark'
+                  ? alpha(themeVal.palette.grey[600], 0.4)
+                  : alpha(themeVal.palette.grey[400], 0.4),
+              borderRadius: '4px',
+            },
+            '&::-webkit-scrollbar-thumb:hover': {
+              background: (themeVal) =>
+                themeVal.palette.mode === 'dark'
+                  ? alpha(themeVal.palette.grey[600], 0.6)
+                  : alpha(themeVal.palette.grey[400], 0.6),
+            },
+          }}
+        >
+          {summaryLoading ? (
+            <Box
+              sx={{
+                display: 'flex',
+                justifyContent: 'center',
+                alignItems: 'center',
+                minHeight: '200px',
+              }}
+            >
+              <CircularProgress
+                size={28}
+                thickness={3}
+                sx={{
+                  color: (themeVal) =>
+                    themeVal.palette.mode === 'dark'
+                      ? themeVal.palette.primary.light
+                      : themeVal.palette.primary.main,
+                }}
+              />
+            </Box>
+          ) : (
+            <Box
+              sx={{
+                py: 3,
+                px: { xs: 2, sm: 3 },
+                borderRadius: '8px',
+                bgcolor: (themeVal) =>
+                  themeVal.palette.mode === 'dark'
+                    ? alpha(themeVal.palette.grey[900], 0.4)
+                    : alpha(themeVal.palette.grey[50], 1),
+                border: (themeVal) =>
+                  `1px solid ${
+                    themeVal.palette.mode === 'dark'
+                      ? alpha(themeVal.palette.divider, 0.08)
+                      : alpha(themeVal.palette.divider, 0.5)
+                  }`,
+                '& p': {
+                  mt: 0,
+                  mb: 2,
+                  color: (themeVal) =>
+                    themeVal.palette.mode === 'dark'
+                      ? themeVal.palette.grey[300]
+                      : themeVal.palette.grey[800],
+                  lineHeight: 1.6,
+                  fontSize: '0.9375rem',
+                },
+                '& p:last-of-type': { mb: 0 },
+                '& h1, & h2, & h3, & h4, & h5, & h6': {
+                  color: (themeVal) =>
+                    themeVal.palette.mode === 'dark'
+                      ? themeVal.palette.common.white
+                      : themeVal.palette.grey[900],
+                  fontWeight: 600,
+                },
+                '& h1': { fontSize: '1.5rem' },
+                '& h2': { fontSize: '1.25rem' },
+                '& h3': { fontSize: '1.125rem' },
+                '& ul, & ol': { mb: 2, pl: 2.5 },
+                '& li': {
+                  mb: 1,
+                  color: (themeVal) =>
+                    themeVal.palette.mode === 'dark'
+                      ? themeVal.palette.grey[300]
+                      : themeVal.palette.grey[800],
+                },
+                '& code': {
+                  fontFamily: 'monospace',
+                  padding: '0.2em 0.4em',
+                  fontSize: '0.875rem',
+                  borderRadius: '4px',
+                  backgroundColor: (themeVal) =>
+                    themeVal.palette.mode === 'dark'
+                      ? alpha(themeVal.palette.grey[800], 0.6)
+                      : alpha(themeVal.palette.grey[100], 1),
+                },
+              }}
+            >
+              <ReactMarkdown>{summary}</ReactMarkdown>
+            </Box>
+          )}
+        </DialogContent>
+
+        {/* Actions area with buttons */}
+        <Box
+          sx={{
+            display: 'flex',
+            justifyContent: 'flex-end',
+            alignItems: 'center',
+            gap: 1.5,
+            p: 2.5,
+            pt: 2,
+            borderTop: '1px solid',
+            borderColor: (themeVal) =>
+              themeVal.palette.mode === 'dark'
+                ? alpha(themeVal.palette.divider, 0.1)
+                : themeVal.palette.divider,
+          }}
+        >
+          <Button
+            variant="outlined"
+            color="inherit"
+            size="small"
+            onClick={() => setSummaryDialogOpen(false)}
+            sx={{
+              height: 32,
+              px: 2,
+              borderRadius: '6px',
+              textTransform: 'none',
+              fontSize: '0.8125rem',
+              fontWeight: 500,
+              borderColor: (themeVal) =>
+                themeVal.palette.mode === 'dark'
+                  ? alpha(themeVal.palette.grey[600], 0.5)
+                  : themeVal.palette.grey[300],
+              color: (themeVal) =>
+                themeVal.palette.mode === 'dark' ? themeVal.palette.grey[300] : themeVal.palette.grey[700],
+              '&:hover': {
+                borderColor: (themeVal) =>
+                  themeVal.palette.mode === 'dark'
+                    ? alpha(themeVal.palette.grey[500], 0.5)
+                    : themeVal.palette.grey[400],
+                bgcolor: (themeVal) =>
+                  themeVal.palette.mode === 'dark'
+                    ? alpha(themeVal.palette.common.white, 0.05)
+                    : alpha(themeVal.palette.common.black, 0.03),
+              },
+            }}
+          >
+            Close
+          </Button>
+          {/* <Button
+            variant="contained"
+            color="primary"
+            size="small"
+            onClick={() =>
+              window.open(
+                `${CONFIG.backendUrl}/api/v1/document/${record.summaryDocumentId}/download`,
+                '_blank'
+              )
+            }
+            disableElevation
+            sx={{
+              height: 32,
+              px: 2,
+              borderRadius: '6px',
+              textTransform: 'none',
+              fontSize: '0.8125rem',
+              fontWeight: 500,
+              bgcolor: (theme) =>
+                theme.palette.mode === 'dark'
+                  ? theme.palette.primary.dark
+                  : theme.palette.primary.main,
+              '&:hover': {
+                bgcolor: (theme) =>
+                  theme.palette.mode === 'dark'
+                    ? alpha(theme.palette.primary.dark, 0.9)
+                    : theme.palette.primary.dark,
+              },
+            }}
+          >
+            Download
+          </Button> */}
+        </Box>
+      </Dialog>
 
       {/* Chat Drawer */}
       <Drawer

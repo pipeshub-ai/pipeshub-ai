@@ -38,7 +38,7 @@ import axios from 'src/utils/axios';
 
 import { Iconify } from 'src/components/iconify';
 
-import scrollableContainerStyle from 'src/sections/qna/chatbot/utils/styles/scrollbar';
+import {scrollableContainerStyle} from 'src/sections/qna/chatbot/utils/styles/scrollbar';
 
 import { useAuthContext } from 'src/auth/hooks';
 

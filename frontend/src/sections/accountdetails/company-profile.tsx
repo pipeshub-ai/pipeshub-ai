@@ -302,6 +302,10 @@ export default function CompanyProfile() {
         sx={{
           borderRadius: 2,
           overflow: 'hidden',
+          backgroundColor:
+            theme.palette.mode === 'dark'
+              ? alpha(theme.palette.background.paper, 0.6)
+              : theme.palette.background.paper,
         }}
       >
         {/* Header */}
@@ -563,7 +567,7 @@ export default function CompanyProfile() {
                               <Switch
                                 checked={field.value === true}
                                 onChange={(e) => {
-                                  const {checked} = e.target;
+                                  const { checked } = e.target;
                                   handleConsentChange(checked);
                                 }}
                                 disabled={!isAdmin || consentLoading}

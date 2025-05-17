@@ -365,6 +365,10 @@ export default function PersonalProfile() {
         sx={{
           borderRadius: 2,
           overflow: 'hidden',
+          backgroundColor:
+            theme.palette.mode === 'dark'
+              ? alpha(theme.palette.background.paper, 0.6)
+              : theme.palette.background.paper,
         }}
       >
         {/* Header */}
@@ -389,11 +393,20 @@ export default function PersonalProfile() {
             onClick={() => setIsChangePasswordOpen(true)}
             startIcon={<Iconify icon={lockIcon} width={18} height={18} />}
             sx={{
-              textTransform: 'none',
               fontWeight: 500,
-              borderRadius: 2,
-              px: 2,
-              py: 0.8,
+              textTransform: 'none',
+              boxShadow: 'none',
+              padding: '6px 14px',
+              fontSize: '0.85rem',
+              transition: 'all 0.2s',
+              letterSpacing: '0.01em',
+              '&:hover': {
+                boxShadow:
+                  theme.palette.mode === 'dark'
+                    ? '0 5px 15px rgba(0, 0, 0, 0.3)'
+                    : '0 5px 15px rgba(0, 0, 0, 0.05)',
+                transform: 'translateY(-1px)',
+              },
             }}
           >
             Change Password
@@ -493,7 +506,7 @@ export default function PersonalProfile() {
                                     <Switch
                                       checked={field.value === true}
                                       onChange={(e) => {
-                                        const {checked} = e.target;
+                                        const { checked } = e.target;
                                         handleConsentChange(checked);
                                       }}
                                       disabled={consentLoading}

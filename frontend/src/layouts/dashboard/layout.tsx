@@ -200,7 +200,12 @@ export function DashboardLayout({ sx, children, header, data }: DashboardLayoutP
                   aria-label="GitHub Repository"
                   size="large"
                 >
-                  <Iconify icon={githubIcon} color="black" width={30} height={30} />
+                  <Iconify
+                    icon={githubIcon}
+                    color={theme.palette.mode === 'dark' ? 'white' : 'black'}
+                    width={30}
+                    height={30}
+                  />
                 </IconButton>
                 {/* task center remaining  */}
                 <SettingsButton />

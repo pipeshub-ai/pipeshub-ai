@@ -114,8 +114,8 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
   };
 
   return (
-    <Card sx={{ maxWidth: 800, width: '100%' }}>
-      <CardContent>
+    <Box sx={{ maxWidth: 800, width: '100%',p:2 }}>
+      <Box>
         {/* Document Header */}
         <Stack direction="row" spacing={2} alignItems="center" sx={{ mb: 3 }}>
           <Icon
@@ -216,8 +216,8 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
             </Stack>
           )}
         </Stack> */}
-      </CardContent>
-    </Card>
+      </Box>
+    </Box>
   );
 };
 

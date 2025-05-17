@@ -61,8 +61,8 @@ const apps = [
 ];
 
 // Constants
-const drawerWidth = 320;
-const closedDrawerWidth = 64;
+const drawerWidth = 280;
+const closedDrawerWidth = 60;
 
 // Types for styled components
 interface FilterHeaderProps {

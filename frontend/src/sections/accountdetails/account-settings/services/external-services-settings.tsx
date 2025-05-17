@@ -2,8 +2,8 @@ import { useState } from 'react';
 import { Icon } from '@iconify/react';
 import redisIcon from '@iconify-icons/logos/redis';
 import storageIcon from '@iconify-icons/mdi/storage';
-import settingsIcon from '@iconify-icons/mdi/settings';
-import kafkaIcon from '@iconify-icons/logos/kafka-icon';
+import settingsIcon from '@iconify-icons/mdi/settings-outline';
+import kafkaIcon from '@iconify-icons/mdi/apache-kafka';
 import qdrantIcon from '@iconify-icons/logos/qdrant-icon';
 import mongodbIcon from '@iconify-icons/logos/mongodb-icon';
 import arangodbIcon from '@iconify-icons/logos/arangodb-icon';
@@ -21,6 +21,7 @@ import {
   IconButton,
 } from '@mui/material';
 
+import { Iconify } from 'src/components/iconify';
 import ConfigureServiceDialog from './configure-services-dialog';
 
 // Service configuration list
@@ -31,13 +32,15 @@ const SERVICES_LIST = [
     title: 'Redis',
     description: 'In-memory data structure store used as a database, cache, and message broker',
     color: '#DC382D',
+    darkModeColor: '#DC382D', // Same color for dark mode
   },
   {
     id: 'kafka',
     icon: kafkaIcon,
     description: 'Distributed event streaming platform for high-performance data pipelines',
     title: 'Kafka',
-    color: '#231F20',
+    color: '#00000',
+    darkModeColor: '#BFB0BF', // Light gray for dark mode
   },
   {
     id: 'mongoDb',
@@ -45,6 +48,7 @@ const SERVICES_LIST = [
     description: 'NoSQL document database for modern applications',
     title: 'MongoDB',
     color: '#47A248',
+    darkModeColor: '#47A048', // Same color for dark mode
   },
   {
     id: 'arangoDb',
@@ -52,6 +56,7 @@ const SERVICES_LIST = [
     description: 'Multi-model database system for graphs, documents and key-values',
     title: 'ArangoDB',
     color: '#D12C2F',
+    darkModeColor: '#D12C2F', // Same color for dark mode
   },
   {
     id: 'qdrant',
@@ -59,6 +64,7 @@ const SERVICES_LIST = [
     description: 'Vector database for similarity search and machine learning',
     title: 'Qdrant',
     color: '#FF9800',
+    darkModeColor: '#FF9800', // Same color for dark mode
   },
   {
     id: 'storage',
@@ -66,6 +72,7 @@ const SERVICES_LIST = [
     description: 'Configure storage options for your application (Local, S3, Azure Blob)',
     title: 'Storage Service',
     color: '#0078D4',
+    darkModeColor: '#0078D4', // Same color for dark mode
   },
 ];
 
@@ -145,17 +152,25 @@ const ExternalServicesSettings = () => {
     return service ? service.title : 'Service';
   };
 
+  // Helper function to get the appropriate color based on theme mode
+  const getServiceColor = (service: (typeof SERVICES_LIST)[0]) =>
+    theme.palette.mode === 'dark' && service.darkModeColor ? service.darkModeColor : service.color;
+
   return (
-    <Container maxWidth="lg">
+    <Container maxWidth="lg" sx={{ py: 3 }}>
       <Paper
+        elevation={0}
         sx={{
           overflow: 'hidden',
           position: 'relative',
-          p: 3,
-          borderRadius: 2,
-          boxShadow: (themeShadow) => `0 2px 20px ${alpha(themeShadow.palette.grey[500], 0.15)}`,
+          p: { xs: 2, md: 3 },
+          borderRadius: 1,
           border: '1px solid',
-          borderColor: 'divider',
+          borderColor: theme.palette.divider,
+          backgroundColor:
+            theme.palette.mode === 'dark'
+              ? alpha(theme.palette.background.paper, 0.6)
+              : theme.palette.background.paper,
         }}
       >
         {/* Header section */}
@@ -165,7 +180,7 @@ const ExternalServicesSettings = () => {
             flexDirection: { xs: 'column', sm: 'row' },
             justifyContent: 'space-between',
             alignItems: { xs: 'flex-start', sm: 'center' },
-            mb: 4,
+            mb: 3,
             gap: 2,
           }}
         >
@@ -175,94 +190,137 @@ const ExternalServicesSettings = () => {
               component="h1"
               sx={{
                 fontWeight: 600,
-                mb: 1,
+                mb: 0.5,
+                fontSize: '1.25rem',
                 color: theme.palette.text.primary,
               }}
             >
               External Services
             </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 500 }}>
+            <Typography
+              variant="body2"
+              color="text.secondary"
+              sx={{
+                maxWidth: 500,
+                lineHeight: 1.5,
+              }}
+            >
               Configure connections to external services and databases
             </Typography>
           </Box>
         </Box>
 
         {/* Services Grid */}
-        <Grid container spacing={2} mb={4}>
-          {SERVICES_LIST.map((service) => (
-            <Grid item xs={12} key={service.id}>
-              <Paper
-                sx={{
-                  p: 2.5,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  borderRadius: 2,
-                  border: '1px solid',
-                  borderColor: 'divider',
-                  bgcolor: 'background.paper',
-                  transition: 'all 0.2s ease-in-out',
-                  '&:hover': {
-                    transform: 'translateY(-2px)',
-                    boxShadow: 2,
-                    borderColor: alpha(service.color, 0.3),
-                  },
-                }}
-              >
-                {/* Service info */}
-                <Box sx={{ display: 'flex', alignItems: 'center', flexGrow: 1 }}>
-                  <Box
-                    sx={{
-                      width: 48,
-                      height: 48,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      mr: 2,
-                      bgcolor: alpha(service.color, 0.1),
-                      color: service.color,
-                      borderRadius: 1.5,
-                    }}
-                  >
-                    <Icon icon={service.icon} width="24" height="24" />
-                  </Box>
+        <Grid container spacing={2} mb={3}>
+          {SERVICES_LIST.map((service) => {
+            const serviceColor = getServiceColor(service);
+            const needsBorder = theme.palette.mode === 'dark' && service.id === 'kafka';
 
-                  <Box>
-                    <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-                      {service.title}
-                    </Typography>
-                    <Typography variant="body2" color="text.secondary">
-                      {service.description}
-                    </Typography>
-                  </Box>
-                </Box>
-
-                {/* Settings icon */}
-                <IconButton
-                  size="small"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleConfigureService(service.id);
-                  }}
+            return (
+              <Grid item xs={12} key={service.id}>
+                <Paper
+                  elevation={0}
                   sx={{
-                    mr: 1,
-                    color: theme.palette.text.secondary,
+                    p: 2,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    borderRadius: 1,
+                    border: '1px solid',
+                    borderColor: theme.palette.divider,
+                    bgcolor: 'transparent',
+                    transition: 'all 0.15s ease-in-out',
                     '&:hover': {
-                      bgcolor: alpha(theme.palette.primary.main, 0.08),
-                      color: theme.palette.primary.main,
+                      transform: 'translateY(-2px)',
+                      boxShadow:
+                        theme.palette.mode === 'dark'
+                          ? `0 4px 12px ${alpha('#000', 0.15)}`
+                          : `0 4px 12px ${alpha(theme.palette.grey[500], 0.1)}`,
+                      borderColor: alpha(serviceColor, theme.palette.mode === 'dark' ? 0.4 : 0.4),
                     },
                   }}
-                  aria-label={`Configure ${service.title}`}
                 >
-                  <Icon icon={settingsIcon} width="20" height="20" />
-                </IconButton>
-              </Paper>
-            </Grid>
-          ))}
+                  {/* Service info */}
+                  <Box sx={{ display: 'flex', alignItems: 'center', flexGrow: 1 }}>
+                    <Box
+                      sx={{
+                        width: 40,
+                        height: 40,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        mr: 2,
+                        bgcolor: needsBorder
+                          ? alpha('#000', 0.5) // Darker background for Kafka in dark mode
+                          : alpha(serviceColor, theme.palette.mode === 'dark' ? 0.2 : 0.1),
+                        color: serviceColor,
+                        borderRadius: 1,
+                        flexShrink: 0,
+                        border: needsBorder ? `1px solid ${alpha(serviceColor, 0.6)}` : 'none',
+                      }}
+                    >
+                      <Icon icon={service.icon} width={22} height={22} />
+                    </Box>
+
+                    <Box>
+                      <Typography
+                        variant="subtitle1"
+                        sx={{
+                          fontWeight: 600,
+                          fontSize: '0.9375rem',
+                        }}
+                      >
+                        {service.title}
+                      </Typography>
+                      <Typography
+                        variant="body2"
+                        color="text.secondary"
+                        sx={{
+                          fontSize: '0.8125rem',
+                          lineHeight: 1.5,
+                        }}
+                      >
+                        {service.description}
+                      </Typography>
+                    </Box>
+                  </Box>
+
+                  {/* Settings icon */}
+                  <IconButton
+                    size="small"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleConfigureService(service.id);
+                    }}
+                    sx={{
+                      p: 0.75,
+                      color: theme.palette.text.secondary,
+                      bgcolor:
+                        theme.palette.mode === 'dark'
+                          ? alpha(theme.palette.background.paper, 0.3)
+                          : alpha(theme.palette.background.default, 0.8),
+                      border: '1px solid',
+                      borderColor: theme.palette.divider,
+                      '&:hover': {
+                        bgcolor: alpha(
+                          theme.palette.primary.main,
+                          theme.palette.mode === 'dark' ? 0.15 : 0.08
+                        ),
+                        color: theme.palette.primary.main,
+                      },
+                    }}
+                    aria-label={`Configure ${service.title}`}
+                  >
+                    <Iconify icon={settingsIcon} width={18} height={18} />
+                  </IconButton>
+                </Paper>
+              </Grid>
+            );
+          })}
         </Grid>
       </Paper>
 
-      {/* Service Configuration Dialog */}
+      {/* Configure Service Dialog */}
       <ConfigureServiceDialog
         open={configDialogOpen}
         onClose={() => setConfigDialogOpen(false)}
@@ -273,7 +331,7 @@ const ExternalServicesSettings = () => {
       {/* Success snackbar */}
       <Snackbar
         open={success}
-        autoHideDuration={5000}
+        autoHideDuration={4000}
         onClose={handleCloseSuccess}
         anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
         sx={{ mt: 6 }}
@@ -284,7 +342,14 @@ const ExternalServicesSettings = () => {
           variant="filled"
           sx={{
             width: '100%',
-            boxShadow: '0px 3px 8px rgba(0, 0, 0, 0.12)',
+            boxShadow:
+              theme.palette.mode === 'dark'
+                ? '0px 3px 8px rgba(0, 0, 0, 0.3)'
+                : '0px 3px 8px rgba(0, 0, 0, 0.12)',
+            '& .MuiAlert-icon': {
+              opacity: 0.8,
+            },
+            fontSize: '0.8125rem',
           }}
         >
           {successMessage}
@@ -294,20 +359,25 @@ const ExternalServicesSettings = () => {
       {/* Warning snackbar */}
       <Snackbar
         open={!!warning}
-        autoHideDuration={5000}
+        autoHideDuration={4000}
         onClose={handleCloseWarning}
         anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
-        sx={{ mt: 14 }}
+        sx={{ mt: 12 }}
       >
         <Alert
           onClose={handleCloseWarning}
           severity="warning"
           variant="filled"
           sx={{
-            width: '80%',
-            boxShadow: '0px 3px 8px rgba(0, 0, 0, 0.12)',
-            backgroundColor: theme.palette.warning.main,
-            color: theme.palette.warning.contrastText,
+            width: '100%',
+            boxShadow:
+              theme.palette.mode === 'dark'
+                ? '0px 3px 8px rgba(0, 0, 0, 0.3)'
+                : '0px 3px 8px rgba(0, 0, 0, 0.12)',
+            '& .MuiAlert-icon': {
+              opacity: 0.8,
+            },
+            fontSize: '0.8125rem',
           }}
         >
           {warning}
@@ -317,33 +387,63 @@ const ExternalServicesSettings = () => {
       {/* Error snackbar */}
       <Snackbar
         open={!!error}
-        autoHideDuration={6000}
+        autoHideDuration={4000}
         onClose={handleCloseError}
         anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
-        sx={{ mt: 22 }}
+        sx={{ mt: 18 }}
       >
         <Alert
           onClose={handleCloseError}
           severity="error"
           variant="filled"
           sx={{
-            width: '80%',
-            boxShadow: '0px 3px 8px rgba(0, 0, 0, 0.12)',
+            width: '100%',
+            boxShadow:
+              theme.palette.mode === 'dark'
+                ? '0px 3px 8px rgba(0, 0, 0, 0.3)'
+                : '0px 3px 8px rgba(0, 0, 0, 0.12)',
+            '& .MuiAlert-icon': {
+              opacity: 0.8,
+            },
+            fontSize: '0.8125rem',
           }}
         >
           {error}
         </Alert>
       </Snackbar>
-      <Alert variant="outlined" severity="info" sx={{ my: 3 }}>
-        Refer to{' '}
-        <Link
-          href="https://docs.pipeshub.com/services/externalServices"
-          target="_blank"
-          rel="noopener"
-        >
-          the documentation
-        </Link>{' '}
-        for more information.
+
+      <Alert
+        variant="outlined"
+        severity="info"
+        sx={{
+          mt: 3,
+          mb: 1,
+          borderRadius: 1,
+          borderColor: alpha(theme.palette.info.main, theme.palette.mode === 'dark' ? 0.3 : 0.2),
+          '& .MuiAlert-icon': {
+            color: theme.palette.info.main,
+          },
+        }}
+      >
+        <Typography variant="body2">
+          Refer to{' '}
+          <Link
+            href="https://docs.pipeshub.com/services/externalServices"
+            target="_blank"
+            rel="noopener"
+            sx={{
+              color: theme.palette.primary.main,
+              textDecoration: 'none',
+              fontWeight: 500,
+              '&:hover': {
+                textDecoration: 'underline',
+              },
+            }}
+          >
+            the documentation
+          </Link>{' '}
+          for more information.
+        </Typography>
       </Alert>
     </Container>
   );

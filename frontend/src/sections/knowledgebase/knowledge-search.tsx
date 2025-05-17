@@ -1,4 +1,4 @@
-import { Icon } from '@iconify/react';
+import { Icon, IconifyIcon } from '@iconify/react';
 import { useNavigate } from 'react-router';
 import jiraIcon from '@iconify-icons/mdi/jira';
 import slackIcon from '@iconify-icons/mdi/slack';
@@ -148,6 +148,30 @@ function isDocViewable(extension: string) {
   const viewableExtensions = ['pdf', 'xlsx', 'xls', 'csv', 'docx', 'html', 'txt', 'md'];
   return viewableExtensions.includes(extension);
 }
+
+interface ActionButtonProps {
+  icon: string | IconifyIcon;
+  label: string;
+  onClick?: () => void;
+}
+
+const ActionButton: React.FC<ActionButtonProps> = ({ icon, label, onClick }) => (
+  <Button
+    variant="outlined"
+    onClick={onClick}
+    startIcon={<Icon icon={icon} />}
+    sx={{
+      borderRadius: 1,
+      textTransform: 'none',
+      fontWeight: 500,
+      py: 0.75,
+      px: 2,
+      fontSize: '0.875rem',
+    }}
+  >
+    {label}
+  </Button>
+);
 
 // Main KnowledgeSearch component
 const KnowledgeSearch = ({
@@ -334,14 +358,17 @@ const KnowledgeSearch = ({
           {/* Search Bar */}
           <Paper
             sx={{
-              p: 1.5,
+              p: 1,
               mb: 2,
-              boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
-              borderRadius: '8px',
-              border: `1px solid ${alpha(theme.palette.divider, 0.5)}`,
+              boxShadow: 'none',
+              borderRadius: 1, // More minimalistic border radius (4px)
+              border: `1px solid ${theme.palette.divider}`, // Direct use of divider color
+              backgroundColor: theme.palette.background.paper,
             }}
           >
-            <Box sx={{ display: 'flex', gap: 1.5 }}>
+            <Box sx={{ display: 'flex', gap: 1 }}>
+              {' '}
+              {/* Reduced gap for tighter layout */}
               <TextField
                 fullWidth
                 value={searchInputValue}
@@ -352,13 +379,26 @@ const KnowledgeSearch = ({
                 size="small"
                 sx={{
                   '& .MuiOutlinedInput-root': {
-                    borderRadius: '6px',
+                    borderRadius: 1, // Match the Paper border radius
+                    fontSize: '0.9rem', // Slightly smaller font size
+                  },
+                  '& .MuiOutlinedInput-notchedOutline': {
+                    borderColor: theme.palette.divider, // Consistent border color
+                  },
+                  '& .MuiInputBase-input': {
+                    py: 1.25, // Better vertical padding
                   },
                 }}
                 InputProps={{
                   startAdornment: (
                     <InputAdornment position="start">
-                      <Icon icon={magnifyIcon} style={{ color: theme.palette.text.secondary }} />
+                      <Icon
+                        icon={magnifyIcon}
+                        style={{
+                          color: theme.palette.text.secondary,
+                          fontSize: '1.25rem', // Slightly larger for visibility
+                        }}
+                      />
                     </InputAdornment>
                   ),
                   endAdornment: searchInputValue && (
@@ -366,9 +406,17 @@ const KnowledgeSearch = ({
                       <IconButton
                         size="small"
                         onClick={() => setSearchInputValue('')}
-                        sx={{ color: theme.palette.text.secondary }}
+                        sx={{
+                          color: theme.palette.text.secondary,
+                          padding: '2px', // Smaller padding for better fit
+                        }}
                       >
-                        <Icon icon={closeIcon} fontSize="small" />
+                        <Icon
+                          icon={closeIcon}
+                          style={{
+                            fontSize: '1rem', // Slightly smaller for better fit
+                          }}
+                        />
                       </IconButton>
                     </InputAdornment>
                   ),
@@ -379,17 +427,28 @@ const KnowledgeSearch = ({
                 onClick={handleSearch}
                 disabled={!searchInputValue.trim() || loading}
                 sx={{
-                  minWidth: '100px',
-                  borderRadius: '6px',
+                  minWidth: '90px', // Slightly narrower
+                  borderRadius: 1, // Match the Paper border radius
                   boxShadow: 'none',
                   textTransform: 'none',
                   fontWeight: 500,
+                  fontSize: '0.875rem', // Consistent font size
+                  py: 0.75, // Better vertical padding
+                  px: 2, // Better horizontal padding
                   '&:hover': {
                     boxShadow: 'none',
+                    backgroundColor: theme.palette.primary.dark, // Darker on hover
+                  },
+                  '&:disabled': {
+                    opacity: 0.7, // More subtle disabled state
                   },
                 }}
               >
-                {loading ? <CircularProgress size={20} color="inherit" sx={{ mx: 1 }} /> : 'Search'}
+                {loading ? (
+                  <CircularProgress size={18} color="inherit" sx={{ mx: 0.5 }} />
+                ) : (
+                  'Search'
+                )}
               </Button>
             </Box>
           </Paper>
@@ -498,51 +557,52 @@ const KnowledgeSearch = ({
                   display: 'flex',
                   flexDirection: 'column',
                   alignItems: 'center',
-                  p: 4,
+                  p: 3,
                   mt: 2,
-                  border: `1px solid ${alpha(theme.palette.divider, 0.5)}`,
-                  borderRadius: '8px',
-                  bgcolor: alpha(theme.palette.background.paper, 0.5),
+                  border: `1px solid ${theme.palette.divider}`,
+                  borderRadius: 1,
+                  bgcolor: 'transparent',
+                  maxWidth: '520px',
+                  mx: 'auto',
                 }}
               >
                 <Icon
                   icon={lightBulbIcon}
-                  style={{ fontSize: 48, color: theme.palette.primary.main, marginBottom: 16 }}
+                  style={{
+                    fontSize: '2rem',
+                    color: theme.palette.primary.main,
+                    marginBottom: '16px',
+                  }}
                 />
-                <Typography variant="h6" sx={{ mb: 1, fontWeight: 500 }}>
+
+                <Typography
+                  variant="h6"
+                  sx={{
+                    mb: 1,
+                    fontWeight: 500,
+                    fontSize: '1rem',
+                  }}
+                >
                   Start exploring knowledge
                 </Typography>
+
                 <Typography
                   variant="body2"
                   color="text.secondary"
-                  sx={{ textAlign: 'center', mb: 3, maxWidth: '400px' }}
+                  sx={{
+                    textAlign: 'center',
+                    mb: 3,
+                    maxWidth: '400px',
+                    lineHeight: 1.5,
+                  }}
                 >
                   Enter a search term above to discover documents, FAQs, and other resources from
                   your organization&apos;s knowledge base.
                 </Typography>
+
                 <Box sx={{ display: 'flex', gap: 2 }}>
-                  <Button
-                    variant="outlined"
-                    startIcon={<Icon icon={starIcon} />}
-                    sx={{
-                      borderRadius: '6px',
-                      textTransform: 'none',
-                      fontWeight: 500,
-                    }}
-                  >
-                    Popular topics
-                  </Button>
-                  <Button
-                    variant="outlined"
-                    startIcon={<Icon icon={historyIcon} />}
-                    sx={{
-                      borderRadius: '6px',
-                      textTransform: 'none',
-                      fontWeight: 500,
-                    }}
-                  >
-                    Recent searches
-                  </Button>
+                  <ActionButton icon={starIcon} label="Popular topics" />
+                  <ActionButton icon={historyIcon} label="Recent searches" />
                 </Box>
               </Box>
             )}

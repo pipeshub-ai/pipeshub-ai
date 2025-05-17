@@ -1413,11 +1413,11 @@ export default function KnowledgeBaseDetails({
   return (
     <Box sx={{ height: 'calc(100vh - 100px)', width: '100%', px: 1 }}>
       {/* Header section */}
-      <Paper
-        elevation={0}
+      <Box
         sx={{
           mb: 2.5,
           borderRadius: '12px',
+          pl:2
         }}
       >
         <Stack direction="row" justifyContent="space-between" alignItems="center">
@@ -1466,7 +1466,7 @@ export default function KnowledgeBaseDetails({
             </StyledButton>
           </Stack>
         </Stack>
-      </Paper>
+      </Box>
 
       {/* Main content area */}
       <Paper
