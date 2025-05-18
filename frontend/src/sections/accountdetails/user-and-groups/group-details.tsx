@@ -71,6 +71,7 @@ import type {
 
 export default function GroupDetails() {
   const theme = useTheme();
+  const isDark = theme.palette.mode === 'dark';
   const navigate = useNavigate();
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -362,11 +363,33 @@ export default function GroupDetails() {
                   size="small"
                   label={`${groupUsers.length} ${groupUsers.length === 1 ? 'Member' : 'Members'}`}
                   sx={{
-                    height: 24,
+                    height: 22,
                     fontSize: '0.75rem',
-                    fontWeight: 600,
-                    bgcolor: alpha(theme.palette.primary.main, 0.1),
-                    color: theme.palette.primary.main,
+                    fontWeight: 500,
+                    borderRadius: '4px',
+                    // Clean, professional styling for both modes
+                    bgcolor: (themeVal) =>
+                      themeVal.palette.mode !== 'dark'
+                        ? alpha(themeVal.palette.grey[800], 0.1)
+                        : alpha(themeVal.palette.grey[100], 0.8),
+                    color: (themeVal) =>
+                      themeVal.palette.mode === 'dark'
+                        ? themeVal.palette.grey[100]
+                        : themeVal.palette.grey[800],
+                    border: (themeVal) =>
+                      themeVal.palette.mode === 'dark'
+                        ? `1px solid ${alpha(themeVal.palette.grey[700], 0.5)}`
+                        : `1px solid ${alpha(themeVal.palette.grey[300], 1)}`,
+                    '& .MuiChip-label': {
+                      px: 1,
+                      py: 0.25,
+                    },
+                    '&:hover': {
+                      bgcolor: (themeVal) =>
+                        themeVal.palette.mode !== 'dark'
+                          ? alpha(themeVal.palette.grey[700], 0.1)
+                          : alpha(themeVal.palette.grey[200], 0.1),
+                    },
                   }}
                 />
                 {group.type && (
@@ -374,11 +397,33 @@ export default function GroupDetails() {
                     size="small"
                     label={group.type === 'custom' ? 'Custom Group' : group.type}
                     sx={{
-                      height: 24,
+                      height: 22,
                       fontSize: '0.75rem',
-                      fontWeight: 600,
-                      bgcolor: alpha(theme.palette.info.main, 0.1),
-                      color: theme.palette.info.main,
+                      fontWeight: 500,
+                      borderRadius: '4px',
+                      // Clean, professional styling for both modes
+                      bgcolor: (themeVal) =>
+                        themeVal.palette.mode !== 'dark'
+                          ? alpha(themeVal.palette.grey[800], 0.1)
+                          : alpha(themeVal.palette.grey[100], 0.8),
+                      color: (themeVal) =>
+                        themeVal.palette.mode === 'dark'
+                          ? themeVal.palette.grey[100]
+                          : themeVal.palette.grey[800],
+                      border: (themeVal) =>
+                        themeVal.palette.mode === 'dark'
+                          ? `1px solid ${alpha(themeVal.palette.grey[700], 0.5)}`
+                          : `1px solid ${alpha(themeVal.palette.grey[300], 1)}`,
+                      '& .MuiChip-label': {
+                        px: 1,
+                        py: 0.25,
+                      },
+                      '&:hover': {
+                        bgcolor: (themeVal) =>
+                          themeVal.palette.mode !== 'dark'
+                            ? alpha(themeVal.palette.grey[700], 0.1)
+                            : alpha(themeVal.palette.grey[200], 0.1),
+                      },
                     }}
                   />
                 )}
@@ -787,6 +832,12 @@ export default function GroupDetails() {
       <Dialog
         open={isConfirmDialogOpen}
         onClose={() => setIsConfirmDialogOpen(false)}
+        BackdropProps={{
+          sx: {
+            backdropFilter: 'blur(1px)',
+            backgroundColor: alpha(theme.palette.common.black, 0.3),
+          },
+        }}
         PaperProps={{
           sx: {
             borderRadius: 2,
@@ -895,6 +946,12 @@ function EditGroupModal({
       onClose={onClose}
       maxWidth="sm"
       fullWidth
+      BackdropProps={{
+        sx: {
+          backdropFilter: 'blur(1px)',
+          backgroundColor: alpha(theme.palette.common.black, 0.3),
+        },
+      }}
       PaperProps={{
         sx: {
           borderRadius: 2,
@@ -1060,6 +1117,12 @@ function AddUsersToGroupsModal({
       onClose={onClose}
       maxWidth="sm"
       fullWidth
+      BackdropProps={{
+        sx: {
+          backdropFilter: 'blur(1px)',
+          backgroundColor: alpha(theme.palette.common.black, 0.3),
+        },
+      }}
       PaperProps={{
         sx: {
           borderRadius: 2,

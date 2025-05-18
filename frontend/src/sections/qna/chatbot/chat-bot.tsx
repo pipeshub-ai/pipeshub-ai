@@ -49,7 +49,7 @@ const DRAWER_WIDTH = 300;
 
 const StyledCloseButton = styled(Button)(({ theme }) => ({
   position: 'fixed',
-  top: 60,
+  top: 72,
   right: 32,
   backgroundColor: theme.palette.primary.main,
   color: theme.palette.primary.contrastText,
@@ -1091,6 +1091,9 @@ const ChatInterface = () => {
                       : theme.palette.background.paper,
                   mt: 'auto',
                   py: 1.5,
+                  minWidth:'95%',
+                  mx:'auto',
+                  borderRadius:2
                 }}
               >
                 <ChatInput

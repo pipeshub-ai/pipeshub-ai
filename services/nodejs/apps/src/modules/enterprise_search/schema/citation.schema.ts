@@ -32,6 +32,7 @@ export interface ICitationMetadata {
   _id?: string;
   _collection_name?: string;
   score?: number;
+  webUrl: string;
 }
 
 export interface ICitation extends Document {
@@ -83,6 +84,7 @@ const citationMetadataSchema = new Schema<ICitationMetadata>({
   _id: { type: String },
   score: { type: Number },
   _collection_name: { type: String },
+  webUrl: { type: String },
 });
 
 const citationSchema = new Schema<ICitation, ICitationModel>(

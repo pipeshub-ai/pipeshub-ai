@@ -64,6 +64,7 @@ type CreateGroupFormData = zod.infer<typeof CreateGroupSchema>;
 
 export default function Groups() {
   const theme = useTheme();
+  const isDark = theme.palette.mode === 'dark';
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [groups, setGroups] = useState<AppUserGroup[]>([]);
   const [page, setPage] = useState<number>(0);
@@ -255,11 +256,18 @@ export default function Groups() {
             display: 'flex',
             alignItems: 'center',
             width: { xs: '100%', sm: '40%' },
-            px: 2,
-            py: 0.5,
-            borderRadius: 1.5,
-            bgcolor: alpha(theme.palette.grey[500], 0.08),
-            border: `1px solid ${alpha(theme.palette.grey[500], 0.16)}`,
+            p: 1,
+            borderRadius: 2,
+            bgcolor: isDark
+              ? alpha(theme.palette.background.paper, 0.6)
+              : alpha(theme.palette.grey[100], 0.7),
+            border: `1px solid ${isDark ? alpha(theme.palette.divider, 0.1) : alpha(theme.palette.divider, 0.08)}`,
+            '&:hover': {
+              bgcolor: isDark
+                ? alpha(theme.palette.background.paper, 0.8)
+                : alpha(theme.palette.grey[100], 0.9),
+            },
+            transition: 'background-color 0.2s ease',
           }}
         >
           <Iconify
@@ -283,15 +291,24 @@ export default function Groups() {
         </Paper>
 
         <Button
-          variant="contained"
+          variant='outlined'
           color="primary"
-          startIcon={<Iconify icon={plusIcon} />}
           onClick={handleCreateGroup}
+          startIcon={<Iconify icon={accountGroupIcon} width={18} height={18} />}
           size="medium"
           sx={{
             borderRadius: 1.5,
             fontSize: '0.8125rem',
-            height: 40,
+            height: 38,
+            fontWeight: 500,
+            px: 2,
+            border: isDark ? `1px solid ${alpha(theme.palette.primary.main, 0.5)}` : 'none',
+            bgcolor: isDark ? 'transparent' : alpha(theme.palette.primary.lighter, 0.1),
+            '&:hover': {
+              bgcolor: isDark
+                ? alpha(theme.palette.primary.main, 0.1)
+                : alpha(theme.palette.primary.lighter, 0.2),
+            },
           }}
         >
           Create Group
@@ -304,17 +321,61 @@ export default function Groups() {
         elevation={0}
         sx={{
           borderRadius: 2,
-          border: `1px solid ${alpha(theme.palette.grey[500], 0.16)}`,
-          mb: 2,
           overflow: 'hidden',
+          border: `1px solid ${isDark ? alpha(theme.palette.divider, 0.1) : alpha(theme.palette.divider, 0.08)}`,
+          mb: 2,
+          bgcolor: isDark
+            ? alpha(theme.palette.background.paper, 0.6)
+            : theme.palette.background.paper,
+          backdropFilter: 'blur(8px)',
         }}
       >
         <Table sx={{ minWidth: 650 }} aria-label="groups table">
           <TableHead>
-            <TableRow sx={{ backgroundColor: alpha(theme.palette.primary.main, 0.04) }}>
-              <TableCell sx={{ fontWeight: 600, py: 2 }}>GROUP</TableCell>
-              <TableCell sx={{ fontWeight: 600, py: 2 }}>MEMBERS</TableCell>
-              <TableCell align="right" sx={{ fontWeight: 600, py: 2, width: 80 }}>
+            <TableRow
+              sx={{
+                bgcolor: isDark
+                  ? alpha(theme.palette.background.paper, 0.8)
+                  : alpha(theme.palette.grey[50], 0.8),
+                '& th': {
+                  borderBottom: `1px solid ${isDark ? alpha(theme.palette.divider, 0.1) : alpha(theme.palette.divider, 0.08)}`,
+                },
+              }}
+            >
+              {' '}
+              <TableCell
+                sx={{
+                  fontWeight: 600,
+                  py: 1.5,
+                  fontSize: '0.75rem',
+                  letterSpacing: '0.5px',
+                  opacity: 0.8,
+                }}
+              >
+                GROUP
+              </TableCell>
+              <TableCell
+                sx={{
+                  fontWeight: 600,
+                  py: 1.5,
+                  fontSize: '0.75rem',
+                  letterSpacing: '0.5px',
+                  opacity: 0.8,
+                }}
+              >
+                MEMBERS
+              </TableCell>
+              <TableCell
+                align="right"
+                sx={{
+                  fontWeight: 600,
+                  py: 1.5,
+                  width: 80,
+                  fontSize: '0.75rem',
+                  letterSpacing: '0.5px',
+                  opacity: 0.8,
+                }}
+              >
                 ACTIONS
               </TableCell>
             </TableRow>
@@ -328,13 +389,16 @@ export default function Groups() {
                     key={group._id}
                     sx={{
                       '&:last-child td, &:last-child th': { border: 0 },
-                      '&:hover': { bgcolor: alpha(theme.palette.primary.main, 0.02) },
+                      '&:hover': {
+                        bgcolor: isDark
+                          ? alpha(theme.palette.primary.dark, 0.05)
+                          : alpha(theme.palette.primary.lighter, 0.05),
+                      },
                       transition: 'background-color 0.2s ease',
-                      cursor: 'pointer',
                     }}
                     onClick={() => navigate(`/account/company-settings/groups/${group._id}`)}
                   >
-                    <TableCell component="th" scope="row">
+                  <TableCell component="th" scope="row" sx={{ py: 1.5 }}>
                       <Stack direction="row" alignItems="center" spacing={2}>
                         <Avatar
                           sx={{
@@ -363,12 +427,33 @@ export default function Groups() {
                           label={group.users.length}
                           size="small"
                           sx={{
+                            height: 22,
                             fontSize: '0.75rem',
-                            fontWeight: 600,
-                            bgcolor: alpha(theme.palette.info.main, 0.08),
-                            color: theme.palette.info.main,
-                            height: 24,
-                            borderRadius: '6px',
+                            fontWeight: 500,
+                            borderRadius: '4px',
+                            // Clean, professional styling for both modes
+                            bgcolor: (themeVal) =>
+                              themeVal.palette.mode !== 'dark'
+                                ? alpha(themeVal.palette.grey[800], 0.1)
+                                : alpha(themeVal.palette.grey[100], 0.8),
+                            color: (themeVal) =>
+                              themeVal.palette.mode === 'dark'
+                                ? themeVal.palette.grey[100]
+                                : themeVal.palette.grey[800],
+                            border: (themeVal) =>
+                              themeVal.palette.mode === 'dark'
+                                ? `1px solid ${alpha(themeVal.palette.grey[700], 0.5)}`
+                                : `1px solid ${alpha(themeVal.palette.grey[300], 1)}`,
+                            '& .MuiChip-label': {
+                              px: 1,
+                              py: 0.25,
+                            },
+                            '&:hover': {
+                              bgcolor: (themeVal) =>
+                                themeVal.palette.mode !== 'dark'
+                                  ? alpha(themeVal.palette.grey[700], 0.1)
+                                  : alpha(themeVal.palette.grey[200], 0.1),
+                            },
                           }}
                         />
                         <Typography variant="body2">
@@ -499,6 +584,12 @@ export default function Groups() {
       <Dialog
         open={isCreateModalOpen}
         onClose={handleCloseCreateModal}
+        BackdropProps={{
+          sx: {
+            backdropFilter: 'blur(1px)',
+            backgroundColor: alpha(theme.palette.common.black, 0.3),
+          },
+        }}
         PaperProps={{
           sx: {
             borderRadius: 2,
@@ -626,6 +717,12 @@ export default function Groups() {
       <Dialog
         open={isConfirmDialogOpen}
         onClose={() => setIsConfirmDialogOpen(false)}
+        BackdropProps={{
+          sx: {
+            backdropFilter: 'blur(1px)',
+            backgroundColor: alpha(theme.palette.common.black, 0.3),
+          },
+        }}
         PaperProps={{
           sx: {
             borderRadius: 2,
@@ -676,7 +773,7 @@ export default function Groups() {
         autoHideDuration={6000}
         onClose={handleSnackbarClose}
         anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
-        sx={{mt:6}}
+        sx={{ mt: 6 }}
       >
         <Alert
           onClose={handleSnackbarClose}

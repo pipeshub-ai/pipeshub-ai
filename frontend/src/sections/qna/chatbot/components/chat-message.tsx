@@ -33,6 +33,8 @@ import {
   DialogContent,
   CircularProgress,
   ClickAwayListener,
+  alpha,
+  useTheme,
 } from '@mui/material';
 
 import RecordDetails from './record-details';
@@ -529,6 +531,7 @@ const ChatMessage = ({
 }: ChatMessageProps) => {
   const [selectedRecord, setSelectedRecord] = useState<Record | null>(null);
   const [isRecordDialogOpen, setRecordDialogOpen] = useState<boolean>(false);
+  const theme = useTheme();
   const aggregatedCitations = useMemo(() => {
     if (!message.citations) return {};
 
@@ -626,11 +629,27 @@ const ChatMessage = ({
                   height: '20px',
                   fontSize: '0.60rem',
                   fontWeight: 600,
-                  backgroundColor:
+                  backgroundColor: (themeVal) =>
                     message.confidence === 'Very High'
-                      ? 'rgba(46, 125, 50, 0.08)'
-                      : 'rgba(237, 108, 2, 0.08)',
-                  color: message.confidence === 'Very High' ? '#2e7d32' : '#ed6c02',
+                      ? themeVal.palette.success.dark
+                      : themeVal.palette.warning.dark,
+                  color: (themeVal) => themeVal.palette.common.white,
+                  border: (themeVal) =>
+                    `1px solid ${
+                      message.confidence === 'Very High'
+                        ? themeVal.palette.success.main
+                        : themeVal.palette.warning.main
+                    }`,
+                  '& .MuiChip-label': {
+                    px: 1,
+                    py: 0.25,
+                  },
+                  '&:hover': {
+                    backgroundColor: (themeVal) =>
+                      message.confidence === 'Very High'
+                        ? themeVal.palette.success.main
+                        : themeVal.palette.warning.main,
+                  },
                 }}
               />
             </Tooltip>
@@ -961,6 +980,12 @@ const ChatMessage = ({
         onClose={handleCloseRecordDetails}
         maxWidth="md"
         fullWidth
+        BackdropProps={{
+          sx: {
+            backdropFilter: 'blur(1px)',
+            backgroundColor: alpha(theme.palette.common.black, 0.3),
+          },
+        }}
         PaperProps={{
           elevation: 1,
           sx: {

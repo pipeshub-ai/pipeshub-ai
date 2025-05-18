@@ -1575,6 +1575,12 @@ export default function RecordDetails() {
         onClose={() => setSummaryDialogOpen(false)}
         maxWidth="md"
         fullWidth
+        BackdropProps={{
+          sx: {
+            backdropFilter: 'blur(1px)',
+            backgroundColor: alpha(theme.palette.common.black, 0.3),
+          },
+        }}
         PaperProps={{
           sx: {
             borderRadius: '8px',
@@ -1629,7 +1635,6 @@ export default function RecordDetails() {
                 icon={descriptionIcon}
                 style={{
                   fontSize: '20px',
-                  
                 }}
               />
             </Box>
@@ -1658,7 +1663,9 @@ export default function RecordDetails() {
               height: 32,
               borderRadius: '6px',
               color: (themeVal) =>
-                themeVal.palette.mode === 'dark' ? themeVal.palette.grey[400] : themeVal.palette.grey[600],
+                themeVal.palette.mode === 'dark'
+                  ? themeVal.palette.grey[400]
+                  : themeVal.palette.grey[600],
               '&:hover': {
                 bgcolor: (themeVal) =>
                   themeVal.palette.mode === 'dark'
@@ -1813,7 +1820,9 @@ export default function RecordDetails() {
                   ? alpha(themeVal.palette.grey[600], 0.5)
                   : themeVal.palette.grey[300],
               color: (themeVal) =>
-                themeVal.palette.mode === 'dark' ? themeVal.palette.grey[300] : themeVal.palette.grey[700],
+                themeVal.palette.mode === 'dark'
+                  ? themeVal.palette.grey[300]
+                  : themeVal.palette.grey[700],
               '&:hover': {
                 borderColor: (themeVal) =>
                   themeVal.palette.mode === 'dark'

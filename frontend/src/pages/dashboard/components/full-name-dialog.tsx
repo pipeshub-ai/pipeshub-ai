@@ -16,6 +16,8 @@ import {
   DialogContent,
   DialogActions,
   CircularProgress,
+  useTheme,
+  alpha
 } from '@mui/material';
 
 import axios from 'src/utils/axios';
@@ -46,7 +48,7 @@ export default function FullNameDialog({ open, onClose, onSuccess, onError }: Fu
   const [refreshCountdown, setRefreshCountdown] = useState<number>(5);
   const [snackbarOpen, setSnackbarOpen] = useState<boolean>(false);
   const [snackbarMessage, setSnackbarMessage] = useState<string>('');
-
+  const theme = useTheme();
   // Form setup
   const {
     register,
@@ -195,6 +197,12 @@ export default function FullNameDialog({ open, onClose, onSuccess, onError }: Fu
     <>
       <Dialog
         open={open}
+        BackdropProps={{
+          sx: {
+            backdropFilter: 'blur(1px)',
+            backgroundColor: alpha(theme.palette.common.black, 0.3),
+          },
+        }}
         onClose={(event, reason) => {
           // Prevent closing by backdrop click or escape key
           if (reason === 'backdropClick' || reason === 'escapeKeyDown') {
@@ -255,6 +263,12 @@ export default function FullNameDialog({ open, onClose, onSuccess, onError }: Fu
       {/* Session refresh message dialog */}
       <Dialog
         open={showRefreshMessage}
+        BackdropProps={{
+          sx: {
+            backdropFilter: 'blur(1px)',
+            backgroundColor: alpha(theme.palette.common.black, 0.3),
+          },
+        }}
         PaperProps={{
           sx: {
             borderRadius: 2,

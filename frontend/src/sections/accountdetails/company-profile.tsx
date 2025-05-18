@@ -317,6 +317,7 @@ export default function CompanyProfile() {
             justifyContent: 'space-between',
             borderBottom: `1px solid ${alpha(theme.palette.divider, 0.1)}`,
             bgcolor: alpha(theme.palette.primary.main, 0.02),
+            pt: 2,
           }}
         >
           <Typography variant="h6" fontWeight={500} fontSize="1.25rem">
@@ -735,22 +736,40 @@ export default function CompanyProfile() {
                         width: 150,
                         height: 150,
                         borderRadius: 2,
-                        overflow: 'hidden',
                         border: `1px solid ${alpha(theme.palette.divider, 0.2)}`,
                         boxShadow: theme.shadows[2],
                         position: 'relative',
                         margin: '0 auto',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        backgroundColor: 'transparent',
+                        padding: 2, // Add padding to ensure logo doesn't touch the borders
                       }}
                     >
-                      <img
-                        src={logo}
-                        alt="Company Logo"
-                        style={{
+                      <Box
+                        sx={{
                           width: '100%',
                           height: '100%',
-                          objectFit: 'cover',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          position: 'relative',
                         }}
-                      />
+                      >
+                        <img
+                          src={logo}
+                          alt="Company Logo"
+                          style={{
+                            maxWidth: '100%',
+                            maxHeight: '100%',
+                            width: 'auto',
+                            height: 'auto',
+                            objectFit: 'contain',
+                            display: 'block',
+                          }}
+                        />
+                      </Box>
                     </Box>
                   ) : (
                     <Box

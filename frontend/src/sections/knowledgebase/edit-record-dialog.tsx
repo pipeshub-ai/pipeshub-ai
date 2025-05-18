@@ -31,6 +31,7 @@ import {
   DialogContent,
   DialogActions,
   CircularProgress,
+  useTheme,
 } from '@mui/material';
 
 import axios from 'src/utils/axios';
@@ -64,7 +65,7 @@ const SingleFileUploadDialog: React.FC<SingleFileUploadDialogProps> = ({
   const [dragActive, setDragActive] = useState(false);
   const [nameChanged, setNameChanged] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
-
+  const theme = useTheme();
   // Create a ref for the file input to reset it when needed
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -348,6 +349,12 @@ const SingleFileUploadDialog: React.FC<SingleFileUploadDialogProps> = ({
       onClose={onClose}
       fullWidth
       maxWidth="sm"
+      BackdropProps={{
+        sx: {
+          backdropFilter: 'blur(1px)',
+          backgroundColor: alpha(theme.palette.common.black, 0.3),
+        },
+      }}
       PaperProps={{
         sx: {
           borderRadius: '16px',

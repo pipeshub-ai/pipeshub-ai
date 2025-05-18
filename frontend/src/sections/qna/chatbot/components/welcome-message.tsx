@@ -247,7 +247,7 @@ const WelcomeMessageComponent = ({
           elevation={0}
           sx={{
             display: 'flex',
-            alignItems: 'flex-end',
+            alignItems: 'center', // Change from 'flex-end' to 'center' for better alignment
             p: '9px 14px',
             borderRadius: '10px',
             backgroundColor: isDark ? alpha('#131417', 0.5) : alpha('#f8f9fa', 0.6),
@@ -301,8 +301,8 @@ const WelcomeMessageComponent = ({
               width: 34,
               height: 34,
               borderRadius: '8px',
-              mb: 0.5,
-              mr: -0.5,
+              flexShrink: 0, // Add to prevent button from shrinking
+              alignSelf: 'center', // Add to ensure vertical alignment
               transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
               color:
                 !isLoading && hasText ? '#fff' : isDark ? alpha('#fff', 0.4) : alpha('#000', 0.3),
@@ -397,3 +397,4 @@ const WelcomeMessage = React.memo(WelcomeMessageComponent);
 WelcomeMessage.displayName = 'WelcomeMessage';
 
 export default WelcomeMessage;
+ 

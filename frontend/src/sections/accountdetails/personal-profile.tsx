@@ -670,6 +670,12 @@ export default function PersonalProfile() {
       <Dialog
         open={isEmailConfirmOpen}
         onClose={handleCancelEmailChange}
+        BackdropProps={{
+          sx: {
+            backdropFilter: 'blur(1px)',
+            backgroundColor: alpha(theme.palette.common.black, 0.3),
+          },
+        }}
         PaperProps={{
           sx: {
             borderRadius: 1,
@@ -753,6 +759,12 @@ export default function PersonalProfile() {
       <Dialog
         open={isChangePasswordOpen}
         onClose={handleClosePasswordDialog}
+        BackdropProps={{
+          sx: {
+            backdropFilter: 'blur(1px)',
+            backgroundColor: alpha(theme.palette.common.black, 0.3),
+          },
+        }}
         PaperProps={{
           sx: {
             borderRadius: 1,

@@ -37,6 +37,7 @@ import {
   ListItemButton,
   CircularProgress,
   useTheme,
+  alpha,
 } from '@mui/material';
 
 import axiosInstance from 'src/utils/axios';
@@ -78,7 +79,7 @@ const ChatSidebar = ({
 
   const [archiveDialogOpen, setArchiveDialogOpen] = useState<boolean>(false);
   const theme = useTheme();
-
+  const isDark = theme.palette.mode === 'dark';
   const scrollableStyles = createScrollableContainerStyle(theme);
   // Memoize fetch function to prevent recreation on each render
   const fetchConversations = useCallback(
@@ -416,26 +417,70 @@ const ChatSidebar = ({
       >
         <Icon
           icon={emptyIcon}
-          style={{ fontSize: '72px', color: 'rgba(0, 0, 0, 0.2)', marginBottom: '16px' }}
+          style={{
+            fontSize: '68px',
+            color: isDark
+              ? alpha(theme.palette.common.white, 0.15)
+              : alpha(theme.palette.common.black, 0.15),
+            marginBottom: '16px',
+          }}
         />
-        <Typography variant="h6" sx={{ mb: 1 }}>
+        <Typography
+          variant="h6"
+          sx={{
+            mb: 1,
+            fontWeight: 500,
+            color: theme.palette.text.primary,
+            fontSize: '1.125rem',
+          }}
+        >
           {activeTab === 'my' ? 'No conversations yet' : 'No shared conversations'}
         </Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 3, maxWidth: '240px' }}>
+        <Typography
+          variant="body2"
+          color="text.secondary"
+          sx={{
+            mb: 3,
+            maxWidth: '240px',
+            opacity: isDark ? 0.7 : 0.8,
+            lineHeight: 1.5,
+          }}
+        >
           {activeTab === 'my'
             ? 'Start a new conversation to begin chatting with PipesHub Agent'
             : 'When someone shares a conversation with you, it will appear here'}
         </Typography>
         {activeTab === 'my' && (
-          <Button variant="contained" startIcon={<Icon icon={chatIcon} />} onClick={handleNewChat}>
+          <Button
+            variant="contained"
+            disableElevation
+            startIcon={<Icon icon={chatIcon} style={{ fontSize: '18px' }} />}
+            onClick={handleNewChat}
+            sx={{
+              textTransform: 'none',
+              borderRadius: 1,
+              px: 2.5,
+              py: 0.75,
+              fontWeight: 500,
+              fontSize: '0.875rem',
+              boxShadow: 'none',
+              bgcolor: isDark ? theme.palette.primary.dark : theme.palette.primary.main,
+              '&:hover': {
+                boxShadow: 'none',
+                bgcolor: isDark
+                  ? alpha(theme.palette.primary.main, 0.8)
+                  : alpha(theme.palette.primary.main, 0.9),
+              },
+            }}
+          >
             Start a conversation
           </Button>
         )}
       </Box>
     ),
+    // eslint-disable-next-line
     [activeTab, handleNewChat]
   );
-
   // Memoize the ChatItem component to prevent unnecessary re-renders
   const renderChatItem = useCallback(
     (chat: Conversation) => (
@@ -585,20 +630,18 @@ const ChatSidebar = ({
         <Typography variant="h6" sx={{ flex: 1 }}>
           PipesHub Agent
         </Typography>
-        {activeTab === 'my' && (
-          <>
-            <Tooltip title="Archived Chats">
-              <IconButton size="small" onClick={() => setArchiveDialogOpen(true)}>
-                <Icon icon={archiveIcon} />
-              </IconButton>
-            </Tooltip>
-            <Tooltip title="New Chat">
-              <IconButton size="small" onClick={handleNewChat}>
-                <Icon icon={chatIcon} />
-              </IconButton>
-            </Tooltip>
-          </>
-        )}
+        <>
+          <Tooltip title="Archived Chats">
+            <IconButton size="small" onClick={() => setArchiveDialogOpen(true)}>
+              <Icon icon={archiveIcon} />
+            </IconButton>
+          </Tooltip>
+          <Tooltip title="New Chat">
+            <IconButton size="small" onClick={handleNewChat}>
+              <Icon icon={chatIcon} />
+            </IconButton>
+          </Tooltip>
+        </>
       </Box>
       <Box>
         <Box

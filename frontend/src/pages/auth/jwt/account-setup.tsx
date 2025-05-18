@@ -1,9 +1,9 @@
-import { Icon } from '@iconify/react';
 import { useNavigate } from 'react-router';
 import { useState, useEffect } from 'react';
 import { Helmet } from 'react-helmet-async';
-import domainIcon from '@iconify-icons/mdi/domain';
-import accountIcon from '@iconify-icons/mdi/account';
+import { Icon } from '@iconify/react';
+import personIcon from '@iconify-icons/mdi/account-outline';
+import buildingIcon from '@iconify-icons/mdi/domain';
 
 import {
   Card,
@@ -14,10 +14,14 @@ import {
   DialogTitle,
   CardContent,
   DialogContent,
+  Box,
+  useTheme,
+  useMediaQuery,
 } from '@mui/material';
 
 import { OrgExists } from 'src/auth/context/jwt';
 import AccountSetUpForm from 'src/auth/view/auth/account-setup';
+
 // Account type interface
 export type AccountType = 'individual' | 'business';
 
@@ -29,6 +33,10 @@ export default function Page() {
   const [open, setOpen] = useState(true);
   const [accountType, setAccountType] = useState<AccountType | null>(null);
   const navigate = useNavigate();
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
+  const isDarkMode = theme.palette.mode === 'dark';
+  
   const [snackbar, setSnackbar] = useState({
     open: false,
     message: '',
@@ -80,31 +88,68 @@ export default function Page() {
       </Helmet>
 
       {/* Account Type Selection Dialog */}
-      <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth>
-        <DialogTitle sx={{ textAlign: 'center', pt: 3 }}>
-          <Typography variant="h4" sx={{ fontWeight: 600, mb: 1 }}>
+      <Dialog 
+        open={open} 
+        onClose={handleClose} 
+        maxWidth="sm" 
+        fullWidth
+        PaperProps={{
+          sx: {
+            borderRadius: 1,
+            bgcolor: isDarkMode ? 'background.paper' : '#fff',
+            boxShadow: isDarkMode ? '0 4px 20px rgba(0, 0, 0, 0.3)' : '0 4px 20px rgba(0, 0, 0, 0.1)',
+          }
+        }}
+      >
+        <DialogTitle 
+          sx={{ 
+            textAlign: 'center', 
+            pt: 4,
+            pb: 2,
+          }}
+        >
+          <Typography 
+            variant="h5" 
+            sx={{ 
+              fontWeight: 600, 
+              mb: 1,
+              color: 'text.primary',
+            }}
+          >
             Choose Account Type
           </Typography>
-          <Typography variant="body2" color="text.secondary">
+          <Typography 
+            variant="body2" 
+            color="text.secondary"
+          >
             Select the type of account you want to create
           </Typography>
         </DialogTitle>
 
-        <DialogContent sx={{ pb: 3 }}>
-          <Stack spacing={2} direction={{ xs: 'column', sm: 'row' }} sx={{ mt: 2 }}>
+        <DialogContent sx={{ px: 3, pb: 4 }}>
+          <Stack 
+            spacing={2} 
+            direction={{ xs: 'column', sm: 'row' }} 
+            sx={{ mt: 1 }}
+          >
             <Card
               sx={{
                 flex: 1,
                 cursor: 'pointer',
                 transition: 'all 0.2s',
+                borderRadius: 1,
+                bgcolor: 'background.paper',
                 border: '1px solid',
-                borderColor: 'divider',
+                borderColor: isDarkMode ? 'divider' : theme.palette.grey[200],
                 '&:hover': {
                   borderColor: 'primary.main',
-                  boxShadow: (theme) => `0 8px 16px 0 ${alpha(theme.palette.primary.main, 0.1)}`,
+                  boxShadow: isDarkMode ? 
+                    `0 4px 12px 0 ${alpha(theme.palette.primary.main, 0.15)}` : 
+                    `0 4px 12px 0 ${alpha(theme.palette.primary.main, 0.08)}`,
                 },
               }}
               onClick={() => handleAccountTypeSelect('individual')}
+              elevation={0}
             >
               <CardContent
                 sx={{
@@ -115,11 +160,38 @@ export default function Page() {
                   p: 3,
                 }}
               >
-                <Icon icon={accountIcon} width={48} height={48} color="#0C4A6E" />
-                <Typography variant="h6" sx={{ mt: 2, mb: 1 }}>
+                <Box
+                  sx={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    width: 48,
+                    height: 48,
+                    borderRadius: '12px',
+                    bgcolor: isDarkMode ? alpha(theme.palette.primary.main, 0.08) : alpha(theme.palette.primary.main, 0.04),
+                    mb: 2,
+                  }}
+                >
+                  <Icon 
+                    icon={personIcon}
+                    width={24}
+                    height={24}
+                    color={theme.palette.primary.main} 
+                  />
+                </Box>
+                <Typography 
+                  variant="subtitle1" 
+                  sx={{ 
+                    fontWeight: 600, 
+                    mb: 0.5,
+                  }}
+                >
                   Individual
                 </Typography>
-                <Typography variant="body2" color="text.secondary">
+                <Typography 
+                  variant="body2" 
+                  color="text.secondary"
+                >
                   For personal use or freelancers
                 </Typography>
               </CardContent>
@@ -130,14 +202,19 @@ export default function Page() {
                 flex: 1,
                 cursor: 'pointer',
                 transition: 'all 0.2s',
+                borderRadius: 1,
+                bgcolor: 'background.paper',
                 border: '1px solid',
-                borderColor: 'divider',
+                borderColor: isDarkMode ? 'divider' : theme.palette.grey[200],
                 '&:hover': {
                   borderColor: 'primary.main',
-                  boxShadow: (theme) => `0 8px 16px 0 ${alpha(theme.palette.primary.main, 0.1)}`,
+                  boxShadow: isDarkMode ? 
+                    `0 4px 12px 0 ${alpha(theme.palette.primary.main, 0.15)}` : 
+                    `0 4px 12px 0 ${alpha(theme.palette.primary.main, 0.08)}`,
                 },
               }}
               onClick={() => handleAccountTypeSelect('business')}
+              elevation={0}
             >
               <CardContent
                 sx={{
@@ -148,11 +225,38 @@ export default function Page() {
                   p: 3,
                 }}
               >
-                <Icon icon={domainIcon} width={48} height={48} color="#0C4A6E" />
-                <Typography variant="h6" sx={{ mt: 2, mb: 1 }}>
+                <Box
+                  sx={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    width: 48,
+                    height: 48,
+                    borderRadius: '12px',
+                    bgcolor: isDarkMode ? alpha(theme.palette.primary.main, 0.08) : alpha(theme.palette.primary.main, 0.04),
+                    mb: 2,
+                  }}
+                >
+                  <Icon 
+                    icon={buildingIcon}
+                    width={24}
+                    height={24}
+                    color={theme.palette.primary.main} 
+                  />
+                </Box>
+                <Typography 
+                  variant="subtitle1" 
+                  sx={{ 
+                    fontWeight: 600, 
+                    mb: 0.5,
+                  }}
+                >
                   Organization
                 </Typography>
-                <Typography variant="body2" color="text.secondary">
+                <Typography 
+                  variant="body2" 
+                  color="text.secondary"
+                >
                   For companies and teams
                 </Typography>
               </CardContent>

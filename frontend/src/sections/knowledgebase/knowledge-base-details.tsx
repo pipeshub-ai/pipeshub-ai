@@ -75,6 +75,7 @@ import {
   LinearProgress,
   FormControlLabel,
   CircularProgress,
+  Fade,
 } from '@mui/material';
 
 import axios from 'src/utils/axios';
@@ -149,6 +150,7 @@ export default function KnowledgeBaseDetails({
     severity: 'success' as 'success' | 'error' | 'warning',
   });
   const theme = useTheme();
+  const isDark = theme.palette.mode === 'dark';
 
   // State for action menu
   const [menuAnchorEl, setMenuAnchorEl] = useState<HTMLElement | null>(null);
@@ -1098,18 +1100,24 @@ export default function KnowledgeBaseDetails({
         <Box
           {...getRootProps()}
           sx={{
-            border: '2px dashed',
-            borderColor: isDragActive ? 'primary.main' : alpha('#000', 0.15),
-            borderRadius: '12px',
-            p: 4,
+            border: '1px dashed',
+            borderColor: isDragActive
+              ? theme.palette.primary.main
+              : isDark
+                ? alpha(theme.palette.grey[300], 0.2)
+                : alpha(theme.palette.grey[500], 0.3),
+            borderRadius: 1,
+            p: 3,
             textAlign: 'center',
             cursor: 'pointer',
             mb: 3,
             transition: 'all 0.2s ease-in-out',
-            bgcolor: isDragActive ? alpha('#1976d2', 0.04) : 'transparent',
+            bgcolor: isDragActive
+              ? alpha(theme.palette.primary.main, isDark ? 0.08 : 0.04)
+              : 'transparent',
             '&:hover': {
-              borderColor: 'primary.main',
-              bgcolor: alpha('#1976d2', 0.04),
+              borderColor: theme.palette.primary.main,
+              bgcolor: alpha(theme.palette.primary.main, isDark ? 0.08 : 0.04),
             },
           }}
         >
@@ -1117,9 +1125,13 @@ export default function KnowledgeBaseDetails({
           <Icon
             icon={cloudIcon}
             style={{
-              fontSize: '48px',
-              marginBottom: '16px',
-              color: isDragActive ? '#1976d2' : '#757575',
+              fontSize: '36px',
+              marginBottom: '12px',
+              color: isDragActive
+                ? theme.palette.primary.main
+                : isDark
+                  ? theme.palette.grey[400]
+                  : theme.palette.grey[600],
             }}
           />
           <Typography variant="h6" sx={{ mb: 1, fontWeight: 500 }}>
@@ -1132,7 +1144,16 @@ export default function KnowledgeBaseDetails({
             variant="outlined"
             size="small"
             startIcon={<Icon icon={filePlusIcon} />}
-            sx={{ borderRadius: '8px' }}
+            sx={{
+              borderRadius: 1,
+              textTransform: 'none',
+              fontSize: '0.8125rem',
+              fontWeight: 500,
+              boxShadow: 'none',
+              borderColor: isDark
+                ? alpha(theme.palette.primary.main, 0.5)
+                : theme.palette.primary.main,
+            }}
           >
             Select Files
           </Button>
@@ -1162,7 +1183,19 @@ export default function KnowledgeBaseDetails({
                 variant="text"
                 onClick={() => setFiles([])}
                 startIcon={<Icon icon={trashCanIcon} />}
-                sx={{ borderRadius: '8px' }}
+                sx={{
+                  borderRadius: 1,
+                  textTransform: 'none',
+                  fontSize: '0.75rem',
+                  fontWeight: 500,
+                  minWidth: 'auto',
+                  color: isDark ? theme.palette.error.light : theme.palette.error.main,
+                  '&:hover': {
+                    backgroundColor: isDark
+                      ? alpha(theme.palette.error.dark, 0.1)
+                      : alpha(theme.palette.error.light, 0.1),
+                  },
+                }}
               >
                 Clear All
               </Button>
@@ -1170,14 +1203,20 @@ export default function KnowledgeBaseDetails({
 
             <Box
               sx={{
-                maxHeight: '200px',
+                maxHeight: '180px',
                 overflow: 'auto',
+                pr: 0.5,
                 '&::-webkit-scrollbar': {
                   width: '4px',
                 },
                 '&::-webkit-scrollbar-thumb': {
-                  backgroundColor: 'rgba(0,0,0,.2)',
+                  backgroundColor: isDark
+                    ? alpha(theme.palette.common.white, 0.2)
+                    : alpha(theme.palette.common.black, 0.2),
                   borderRadius: '4px',
+                },
+                '&::-webkit-scrollbar-track': {
+                  backgroundColor: 'transparent',
                 },
               }}
             >
@@ -1348,8 +1387,8 @@ export default function KnowledgeBaseDetails({
         setSnackbar({
           open: true,
           message: hasErrors
-            ? `Uploaded ${successfulUploads} of ${files.length} files successfully. Some files failed.`
-            : `Successfully uploaded ${files.length} files.`,
+            ? `Uploaded ${successfulUploads} of ${files.length}  ${files.length > 1 ? 'files' : 'file'} successfully. Some files failed.`
+            : `Successfully uploaded ${files.length}  ${files.length > 1 ? 'files' : 'file'}.`,
           severity: hasErrors ? 'warning' : 'success',
         });
 
@@ -1417,7 +1456,7 @@ export default function KnowledgeBaseDetails({
         sx={{
           mb: 2.5,
           borderRadius: '12px',
-          pl:2
+          pl: 2,
         }}
       >
         <Stack direction="row" justifyContent="space-between" alignItems="center">
@@ -1721,12 +1760,25 @@ export default function KnowledgeBaseDetails({
       <Dialog
         open={openUploadDialog}
         onClose={handleUploadDialogClose}
-        maxWidth="md"
+        maxWidth="sm"
         fullWidth
-        PaperProps={{
-          elevation: 3,
-          sx: { borderRadius: '12px' },
+        TransitionComponent={Fade}
+        BackdropProps={{
+          sx: {
+            backdropFilter: 'blur(5px)',
+            backgroundColor: alpha(theme.palette.common.black, isDark ? 0.7 : 0.5),
+          },
         }}
+        // PaperProps={{
+        //   elevation: isDark ? 8 : 4,
+        //   sx: {
+        //     borderRadius: 1,
+        //     bgcolor: theme.palette.background.paper,
+        //     boxShadow: isDark
+        //       ? `0 8px 28px 0 ${alpha(theme.palette.common.black, 0.6)}`
+        //       : `0 8px 28px -4px ${alpha(theme.palette.common.black, 0.15)}`,
+        //   },
+        // }}
       >
         <DialogTitle
           sx={{ px: 3, py: 2.5, borderBottom: '1px solid', borderColor: alpha('#000', 0.08) }}
@@ -1902,22 +1954,54 @@ export default function KnowledgeBaseDetails({
         )}
           */}
         <DialogActions
-          sx={{ px: 3, py: 2.5, borderTop: '1px solid', borderColor: alpha('#000', 0.08) }}
+          sx={{
+            px: 3,
+            py: 2,
+            borderTop: '1px solid',
+            borderColor: alpha(theme.palette.divider, isDark ? 0.1 : 0.08),
+            bgcolor: isDark
+              ? alpha(theme.palette.background.default, 0.4)
+              : alpha(theme.palette.background.default, 0.3),
+          }}
         >
           <Button
             onClick={handleUploadDialogClose}
             disabled={uploading}
+            variant="text"
             color="inherit"
-            sx={{ borderRadius: '8px' }}
+            sx={{
+              borderRadius: 1,
+              textTransform: 'none',
+              fontWeight: 500,
+              fontSize: '0.875rem',
+              color: theme.palette.text.secondary,
+              '&:hover': {
+                backgroundColor: alpha(theme.palette.action.hover, 0.05),
+                color: theme.palette.text.primary,
+              },
+            }}
           >
             Cancel
           </Button>
           <Button
             onClick={handleUpload}
             variant="contained"
+            disableElevation
             disabled={files.length === 0 || uploading}
-            startIcon={<Icon icon={cloudIcon} />}
-            sx={{ borderRadius: '8px' }}
+            startIcon={<Icon icon={cloudIcon} fontSize={18} />}
+            sx={{
+              borderRadius: 1,
+              textTransform: 'none',
+              fontWeight: 500,
+              fontSize: '0.875rem',
+              boxShadow: 'none',
+              px: 2,
+              '&:hover': {
+                boxShadow: isDark
+                  ? `0 2px 8px ${alpha(theme.palette.primary.main, 0.3)}`
+                  : `0 2px 4px ${alpha(theme.palette.primary.main, 0.2)}`,
+              },
+            }}
           >
             Upload
           </Button>

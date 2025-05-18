@@ -170,9 +170,10 @@ const ConnectorSettings = () => {
           borderRadius: 1,
           border: '1px solid',
           borderColor: 'divider',
-          backgroundColor: theme.palette.mode === 'dark' 
-            ? alpha(theme.palette.background.paper, 0.6)
-            : theme.palette.background.paper,
+          backgroundColor:
+            theme.palette.mode === 'dark'
+              ? alpha(theme.palette.background.paper, 0.6)
+              : theme.palette.background.paper,
         }}
       >
         {/* Loading overlay */}
@@ -220,12 +221,12 @@ const ConnectorSettings = () => {
             >
               Connectors
             </Typography>
-            <Typography 
-              variant="body2" 
-              color="text.secondary" 
-              sx={{ 
+            <Typography
+              variant="body2"
+              color="text.secondary"
+              sx={{
                 maxWidth: 500,
-                lineHeight: 1.5 
+                lineHeight: 1.5,
               }}
             >
               Connect and manage integrations with external services and platforms
@@ -269,19 +270,23 @@ const ConnectorSettings = () => {
                     justifyContent: 'space-between',
                     borderRadius: 1,
                     border: '1px solid',
-                    borderColor: isEnabled 
-                      ? alpha(connector.color, theme.palette.mode === 'dark' ? 0.2 : 0.3) 
+                    borderColor: isEnabled
+                      ? alpha(connector.color, theme.palette.mode === 'dark' ? 0.2 : 0.3)
                       : theme.palette.divider,
-                    bgcolor: isEnabled 
+                    bgcolor: isEnabled
                       ? alpha(connector.color, theme.palette.mode === 'dark' ? 0.05 : 0.03)
                       : 'transparent',
                     transition: 'all 0.15s ease-in-out',
                     '&:hover': {
                       transform: 'translateY(-2px)',
-                      boxShadow: theme.palette.mode === 'dark'
-                        ? `0 4px 12px ${alpha('#000', 0.15)}`
-                        : `0 4px 12px ${alpha(theme.palette.grey[500], 0.1)}`,
-                      borderColor: alpha(connector.color, theme.palette.mode === 'dark' ? 0.3 : 0.4),
+                      boxShadow:
+                        theme.palette.mode === 'dark'
+                          ? `0 4px 12px ${alpha('#000', 0.15)}`
+                          : `0 4px 12px ${alpha(theme.palette.grey[500], 0.1)}`,
+                      borderColor: alpha(
+                        connector.color,
+                        theme.palette.mode === 'dark' ? 0.3 : 0.4
+                      ),
                     },
                   }}
                 >
@@ -304,21 +309,21 @@ const ConnectorSettings = () => {
                     </Box>
 
                     <Box>
-                      <Typography 
-                        variant="subtitle1" 
-                        sx={{ 
+                      <Typography
+                        variant="subtitle1"
+                        sx={{
                           fontWeight: 600,
                           fontSize: '0.9375rem',
                         }}
                       >
                         {connector.title}
                       </Typography>
-                      <Typography 
-                        variant="body2" 
+                      <Typography
+                        variant="body2"
                         color="text.secondary"
-                        sx={{ 
+                        sx={{
                           fontSize: '0.8125rem',
-                          lineHeight: 1.5 
+                          lineHeight: 1.5,
                         }}
                       >
                         {connector.description}
@@ -407,21 +412,44 @@ const ConnectorSettings = () => {
                   <Box
                     onClick={() => handleConfigureConnector(connector.id)}
                     sx={{
-                      px: 2,
-                      py: 0.75,
+                      display: 'flex',
+                      alignItems: 'center',
+                      px: 1,
+                      py: 0.5,
                       borderRadius: 0.75,
                       cursor: 'pointer',
-                      bgcolor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.15 : 0.08),
+                      bgcolor: alpha(
+                        theme.palette.primary.main,
+                        theme.palette.mode === 'dark' ? 0.15 : 0.08
+                      ),
                       color: theme.palette.primary.main,
-                      fontSize: '0.75rem',
-                      fontWeight: 600,
                       transition: 'all 0.2s',
                       '&:hover': {
-                        bgcolor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.25 : 0.15),
+                        bgcolor: alpha(
+                          theme.palette.primary.main,
+                          theme.palette.mode === 'dark' ? 0.25 : 0.15
+                        ),
                       },
                     }}
                   >
-                    View Details
+                    <Box
+                      sx={{
+                        width: 6,
+                        height: 6,
+                        borderRadius: '50%',
+                        bgcolor: 'currentColor',
+                        mr: 0.5,
+                      }}
+                    />
+                    <Typography
+                      variant="caption"
+                      sx={{
+                        fontWeight: 600,
+                        fontSize: '0.6875rem',
+                      }}
+                    >
+                      View Details
+                    </Typography>
                   </Box>
                 </Paper>
               </Grid>
@@ -435,9 +463,10 @@ const ConnectorSettings = () => {
             mt: 3,
             p: 2.5,
             borderRadius: 1,
-            bgcolor: theme.palette.mode === 'dark' 
-              ? alpha(theme.palette.info.main, 0.08)
-              : alpha(theme.palette.info.main, 0.04),
+            bgcolor:
+              theme.palette.mode === 'dark'
+                ? alpha(theme.palette.info.main, 0.08)
+                : alpha(theme.palette.info.main, 0.04),
             border: `1px solid ${alpha(theme.palette.info.main, theme.palette.mode === 'dark' ? 0.2 : 0.1)}`,
             display: 'flex',
             alignItems: 'flex-start',
@@ -448,36 +477,37 @@ const ConnectorSettings = () => {
             <Iconify icon={infoIcon} width={18} height={18} />
           </Box>
           <Box>
-            <Typography 
-              variant="subtitle2" 
-              color="text.primary" 
-              sx={{ 
-                mb: 0.5, 
+            <Typography
+              variant="subtitle2"
+              color="text.primary"
+              sx={{
+                mb: 0.5,
                 fontWeight: 600,
-                fontSize: '0.875rem' 
+                fontSize: '0.875rem',
               }}
             >
               Connector Configuration
             </Typography>
-            <Typography 
-              variant="body2" 
+            <Typography
+              variant="body2"
               color="text.secondary"
               sx={{
                 fontSize: '0.8125rem',
-                lineHeight: 1.5
+                lineHeight: 1.5,
               }}
             >
-              Connectors must be properly configured before they can be enabled. Click &quot;View Details&quot; to set up the necessary credentials and authentication for each service.
+              Connectors must be properly configured before they can be enabled. Click &quot;View
+              Details&quot; to set up the necessary credentials and authentication for each service.
               Configured connectors will display their status as Active when enabled.
             </Typography>
           </Box>
         </Box>
       </Paper>
-      
-      <Alert 
-        variant="outlined" 
-        severity="info" 
-        sx={{ 
+
+      <Alert
+        variant="outlined"
+        severity="info"
+        sx={{
           mt: 3,
           mb: 1,
           borderRadius: 1,

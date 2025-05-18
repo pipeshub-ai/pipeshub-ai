@@ -592,8 +592,8 @@ const ConnectorCard = ({ connector }: { connector: ConnectorData }): JSX.Element
                   }}
                 >
                   {total.toLocaleString()}
-                </Typography>{' '}
-                records indexed
+                  {` records indexed`}
+                </Typography>
               </Typography>
             </Box>
           </Box>
@@ -666,7 +666,7 @@ const ConnectorCard = ({ connector }: { connector: ConnectorData }): JSX.Element
             sx={{
               mt: 'auto',
               display: 'flex',
-              justifyContent:  'center',
+              justifyContent: 'center',
               width: '100%',
               gap: 1.5,
               pt: 1.5,

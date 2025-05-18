@@ -7,6 +7,9 @@ import * as XLSX from 'xlsx';
 import { Icon } from '@iconify/react';
 import fullScreenIcon from '@iconify-icons/mdi/fullscreen';
 import fullScreenExitIcon from '@iconify-icons/mdi/fullscreen-exit';
+import citationIcon from '@iconify-icons/mdi/format-quote-close';
+import fileExcelIcon from '@iconify-icons/mdi/file-excel-outline';
+import tableRowIcon from '@iconify-icons/mdi/table-row';
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 
 import {
@@ -14,6 +17,7 @@ import {
   List,
   Table,
   Alert,
+  alpha,
   styled,
   Tooltip,
   TableRow,
@@ -25,9 +29,8 @@ import {
   IconButton,
   TableContainer,
   CircularProgress,
+  useTheme,
 } from '@mui/material';
-
-import scrollableContainerStyle from '../../utils/styles/scrollbar';
 
 type ExcelViewerprops = {
   citations: DocumentContent[] | CustomCitation[];
@@ -73,20 +76,35 @@ interface CellData {
   s?: any;
 }
 
-// Styled components for the table
+// Styled components for the table with improved dark mode support
 const StyledTableCell = styled(TableCell, {
   shouldForwardProp: (prop) => prop !== 'highlighted',
 })<StyleProps>(({ theme, highlighted }) => ({
-  backgroundColor: highlighted ? 'rgba(46, 125, 50, 0.1)' : 'inherit',
+  backgroundColor:
+    theme.palette.mode === 'dark'
+      ? highlighted
+        ? alpha(theme.palette.primary.dark, 0.15)
+        : alpha(theme.palette.background.paper, 0.8)
+      : highlighted
+        ? 'rgba(46, 125, 50, 0.1)'
+        : 'inherit',
   minWidth: '100px',
   maxWidth: '400px',
   padding: theme.spacing(2),
-  borderBottom: `1px solid ${theme.palette.divider}`,
+  borderBottom: `1px solid ${
+    theme.palette.mode === 'dark' ? alpha(theme.palette.divider, 0.1) : theme.palette.divider
+  }`,
   whiteSpace: 'pre-wrap',
   wordBreak: 'break-word',
   verticalAlign: 'top',
   lineHeight: '1.5',
   fontSize: '14px',
+  color:
+    theme.palette.mode === 'dark'
+      ? highlighted
+        ? alpha(theme.palette.primary.light, 0.9)
+        : theme.palette.text.primary
+      : theme.palette.text.primary,
   '& p': {
     margin: 0,
   },
@@ -95,16 +113,30 @@ const StyledTableCell = styled(TableCell, {
   },
   transition: 'background-color 0.2s ease',
   '&:hover': {
-    backgroundColor: highlighted ? 'rgba(46, 125, 50, 0.2)' : theme.palette.action.hover,
+    backgroundColor:
+      theme.palette.mode === 'dark'
+        ? highlighted
+          ? alpha(theme.palette.primary.dark, 0.25)
+          : alpha(theme.palette.action.hover, 0.15)
+        : highlighted
+          ? 'rgba(46, 125, 50, 0.2)'
+          : theme.palette.action.hover,
   },
 }));
 
 const HeaderRowNumberCell = styled(TableCell)(({ theme }) => ({
-  backgroundColor: theme.palette.grey[100],
+  backgroundColor:
+    theme.palette.mode === 'dark'
+      ? alpha(theme.palette.background.default, 0.5)
+      : theme.palette.grey[100],
+  color: theme.palette.mode === 'dark' ? theme.palette.text.secondary : theme.palette.text.primary,
   minWidth: '60px',
   maxWidth: '80px',
   padding: theme.spacing(2),
-  borderBottom: `2px solid ${theme.palette.divider}`,
+  borderBottom:
+    theme.palette.mode === 'dark'
+      ? `2px solid ${alpha(theme.palette.divider, 0.2)}`
+      : `2px solid ${theme.palette.divider}`,
   position: 'sticky',
   left: 0,
   top: 0,
@@ -112,12 +144,20 @@ const HeaderRowNumberCell = styled(TableCell)(({ theme }) => ({
   textAlign: 'center',
   fontWeight: 600,
 }));
+
 const RowNumberCell = styled(TableCell)(({ theme }) => ({
-  backgroundColor: theme.palette.grey[50],
+  backgroundColor:
+    theme.palette.mode === 'dark'
+      ? alpha(theme.palette.background.default, 0.3)
+      : theme.palette.grey[50],
+  color: theme.palette.mode === 'dark' ? theme.palette.text.secondary : theme.palette.text.primary,
   minWidth: '60px',
   maxWidth: '80px',
   padding: theme.spacing(2),
-  borderBottom: `1px solid ${theme.palette.divider}`,
+  borderBottom:
+    theme.palette.mode === 'dark'
+      ? `1px solid ${alpha(theme.palette.divider, 0.1)}`
+      : `1px solid ${theme.palette.divider}`,
   position: 'sticky',
   left: 0,
   zIndex: 2,
@@ -128,17 +168,38 @@ const RowNumberCell = styled(TableCell)(({ theme }) => ({
 const StyledTableRow = styled(TableRow, {
   shouldForwardProp: (prop) => prop !== 'highlighted',
 })<StyleProps>(({ theme, highlighted }) => ({
-  backgroundColor: highlighted ? 'rgba(46, 125, 50, 0.1)' : 'inherit',
+  backgroundColor:
+    theme.palette.mode === 'dark'
+      ? highlighted
+        ? alpha(theme.palette.primary.dark, 0.15)
+        : 'transparent'
+      : highlighted
+        ? 'rgba(46, 125, 50, 0.1)'
+        : 'inherit',
   transition: 'background-color 0.2s ease',
   '&:hover': {
-    backgroundColor: highlighted ? 'rgba(46, 125, 50, 0.2)' : theme.palette.action.hover,
+    backgroundColor:
+      theme.palette.mode === 'dark'
+        ? highlighted
+          ? alpha(theme.palette.primary.dark, 0.25)
+          : alpha(theme.palette.action.hover, 0.15)
+        : highlighted
+          ? 'rgba(46, 125, 50, 0.2)'
+          : theme.palette.action.hover,
   },
 }));
 
 const HeaderCell = styled(TableCell)(({ theme }) => ({
   fontWeight: 600,
-  backgroundColor: theme.palette.background.paper,
-  borderBottom: `2px solid ${theme.palette.divider}`,
+  backgroundColor:
+    theme.palette.mode === 'dark'
+      ? alpha(theme.palette.background.paper, 0.8)
+      : theme.palette.background.paper,
+  color: theme.palette.mode === 'dark' ? theme.palette.primary.lighter : theme.palette.text.primary,
+  borderBottom:
+    theme.palette.mode === 'dark'
+      ? `2px solid ${alpha(theme.palette.divider, 0.2)}`
+      : `2px solid ${theme.palette.divider}`,
   padding: theme.spacing(2),
   position: 'sticky',
   top: 0,
@@ -148,31 +209,133 @@ const HeaderCell = styled(TableCell)(({ theme }) => ({
   fontSize: '14px',
 }));
 
-const StyledSidebar = (props: BoxProps) => (
-  <Box
-    {...props}
-    sx={{
-      borderLeft: (theme) => `1px solid ${theme.palette.divider}`,
-      height: '100%',
-      display: 'flex',
-      flexDirection: 'column',
-      backgroundColor: (theme) => theme.palette.background.paper,
-      overflow: 'auto',
-      width: '300px',
-      flexShrink: 0,
-      ...scrollableContainerStyle,
-    }}
-  />
-);
+// Improved sidebar styling with dark mode support
+// Instead of using BoxProps as a generic parameter, we should go back to the original approach
+// but fix the issue with spreading scrollableContainerStyle
+
+// Original format that works with styled-components
+const StyledSidebar = styled(Box)(({ theme }) => ({
+  borderLeft:
+    theme.palette.mode === 'dark'
+      ? `1px solid ${alpha(theme.palette.divider, 0.1)}`
+      : `1px solid ${theme.palette.divider}`,
+  height: '100%',
+  display: 'flex',
+  flexDirection: 'column',
+  backgroundColor:
+    theme.palette.mode === 'dark'
+      ? alpha(theme.palette.background.paper, 0.8)
+      : theme.palette.background.paper,
+  overflow: 'auto',
+  width: '300px',
+  flexShrink: 0,
+  // Instead of spreading scrollableContainerStyle, which may be causing type issues,
+  // apply the specific styles from that object directly
+  overflowY: 'auto',
+  '&::-webkit-scrollbar': {
+    width: '8px',
+    height: '8px',
+    display: 'block',
+  },
+  '&::-webkit-scrollbar-track': {
+    background: 'transparent',
+  },
+  '&::-webkit-scrollbar-thumb': {
+    backgroundColor:
+      theme.palette.mode === 'dark'
+        ? alpha(theme.palette.grey[600], 0.48)
+        : alpha(theme.palette.grey[600], 0.28),
+    borderRadius: '4px',
+  },
+  '&::-webkit-scrollbar-thumb:hover': {
+    backgroundColor:
+      theme.palette.mode === 'dark'
+        ? alpha(theme.palette.grey[600], 0.58)
+        : alpha(theme.palette.grey[600], 0.38),
+  },
+}));
+
+const SidebarHeader = styled(Box)(({ theme }) => ({
+  padding: theme.spacing(2),
+  borderBottom:
+    theme.palette.mode === 'dark'
+      ? `1px solid ${alpha(theme.palette.divider, 0.1)}`
+      : `1px solid ${theme.palette.divider}`,
+  display: 'flex',
+  alignItems: 'center',
+  gap: theme.spacing(1),
+}));
+
+const StyledListItem = styled(ListItem)(({ theme }) => ({
+  cursor: 'pointer',
+  position: 'relative',
+  padding: theme.spacing(1.5, 2),
+  borderRadius: theme.shape.borderRadius,
+  margin: theme.spacing(0.5, 0),
+  transition: 'all 0.2s ease',
+  '&:hover': {
+    backgroundColor:
+      theme.palette.mode === 'dark'
+        ? alpha(theme.palette.action.hover, 0.1)
+        : theme.palette.action.hover,
+  },
+}));
+
+const CitationContent = styled(Typography)(({ theme }) => ({
+  color:
+    theme.palette.mode === 'dark'
+      ? alpha(theme.palette.text.secondary, 0.9)
+      : theme.palette.text.secondary,
+  fontSize: '0.875rem',
+  lineHeight: 1.5,
+  marginTop: theme.spacing(0.5),
+  position: 'relative',
+  paddingLeft: theme.spacing(1),
+  '&::before': {
+    content: '""',
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: '2px',
+    backgroundColor:
+      theme.palette.mode === 'dark'
+        ? alpha(theme.palette.primary.main, 0.4)
+        : alpha(theme.palette.primary.main, 0.6),
+  },
+}));
+
+const MetaLabel = styled(Typography)(({ theme }) => ({
+  marginTop: theme.spacing(1),
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: theme.spacing(0.5),
+  fontSize: '0.75rem',
+  padding: theme.spacing(0.25, 0.75),
+  borderRadius: '4px',
+  backgroundColor:
+    theme.palette.mode === 'dark'
+      ? alpha(theme.palette.primary.dark, 0.2)
+      : alpha(theme.palette.primary.lighter, 0.4),
+  color: theme.palette.mode === 'dark' ? theme.palette.primary.light : theme.palette.primary.dark,
+  fontWeight: 500,
+  marginRight: theme.spacing(1),
+}));
 
 const ViewerContainer = styled(Box)(({ theme }) => ({
   display: 'flex',
   height: '100%',
   width: '100%',
   overflow: 'hidden',
-  backgroundColor: theme.palette.background.paper, // Add explicit background color
+  backgroundColor:
+    theme.palette.mode === 'dark'
+      ? alpha(theme.palette.background.paper, 0.7)
+      : theme.palette.background.paper,
   '&:fullscreen': {
-    backgroundColor: theme.palette.background.paper,
+    backgroundColor:
+      theme.palette.mode === 'dark'
+        ? alpha(theme.palette.background.paper, 0.7)
+        : theme.palette.background.paper,
     padding: theme.spacing(2),
   },
 }));
@@ -181,15 +344,14 @@ const MainContainer = styled(Box)(({ theme }) => ({
   flex: 1,
   display: 'flex',
   flexDirection: 'column',
-  // overflow: 'auto',
-  backgroundColor: theme.palette.background.paper,
+  backgroundColor: theme.palette.mode === 'dark' ? 'transparent' : theme.palette.background.paper,
   '& .MuiTableContainer-root': {
     overflow: 'visible',
   },
   '& table': {
     width: 'max-content',
     maxWidth: 'none',
-    backgroundColor: theme.palette.background.paper,
+    backgroundColor: theme.palette.mode === 'dark' ? 'transparent' : theme.palette.background.paper,
   },
 }));
 
@@ -213,6 +375,8 @@ const ExcelViewer = ({ citations, fileUrl, excelBuffer }: ExcelViewerprops) => {
   const processingRef = useRef<boolean>(false);
   const mountedRef = useRef<boolean>(true);
   const containerRef = useRef<HTMLDivElement>(null);
+  const theme = useTheme();
+  const isDarkMode = theme.palette.mode === 'dark';
 
   // Store mapping between original Excel row numbers and displayed indices
   const [rowMapping, setRowMapping] = useState<Map<number, number>>(new Map());
@@ -304,7 +468,15 @@ const ExcelViewer = ({ citations, fileUrl, excelBuffer }: ExcelViewerprops) => {
               if (fragment.s.italic) styles.fontStyle = 'italic';
               if (fragment.s.underline) styles.textDecoration = 'underline';
               if (fragment.s.strike) styles.textDecoration = 'line-through';
-              if (fragment.s.color?.rgb) styles.color = `#${fragment.s.color.rgb}`;
+              if (fragment.s.color?.rgb) {
+                // Adjust color for dark mode if needed
+                if (isDarkMode && fragment.s.color.rgb.toLowerCase() === '000000') {
+                  // If text is black in dark mode, make it light
+                  styles.color = theme.palette.text.primary;
+                } else {
+                  styles.color = `#${fragment.s.color.rgb}`;
+                }
+              }
             }
             return (
               <span key={index} style={styles}>
@@ -319,75 +491,79 @@ const ExcelViewer = ({ citations, fileUrl, excelBuffer }: ExcelViewerprops) => {
     return cell.w || cell.v || '';
   };
 
-  const processExcelData = useCallback(async (workbook: XLSX.WorkBook): Promise<void> => {
-    if (processingRef.current || !mountedRef.current) return;
-    processingRef.current = true;
+  const processExcelData = useCallback(
+    async (workbook: XLSX.WorkBook): Promise<void> => {
+      if (processingRef.current || !mountedRef.current) return;
+      processingRef.current = true;
 
-    try {
-      const firstSheet = workbook.SheetNames[0];
-      const worksheet = workbook.Sheets[firstSheet];
-      const range = XLSX.utils.decode_range(worksheet['!ref'] || 'A1');
+      try {
+        const firstSheet = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[firstSheet];
+        const range = XLSX.utils.decode_range(worksheet['!ref'] || 'A1');
 
-      // Track hidden rows
-      const hiddenRows = new Set<number>();
-      if (worksheet['!rows']) {
-        worksheet['!rows'].forEach((row, index) => {
-          if (row?.hidden) hiddenRows.add(index + range.s.r);
-        });
-      }
-
-      const newHeaders = Array.from({ length: range.e.c - range.s.c + 1 }, (_, colIndex) => {
-        const cellAddress = XLSX.utils.encode_cell({ r: range.s.r, c: colIndex + range.s.c });
-        const cell = worksheet[cellAddress] as CellData;
-        return processRichText(cell)?.toString() || `Column${colIndex + 1}`;
-      });
-
-      // Create a new mapping between original Excel row numbers and display indices
-      const newRowMapping = new Map<number, number>();
-      let displayIndex = 0;
-
-      // Process data rows
-      const newData = Array.from({ length: range.e.r - range.s.r }, (_, rowIndex) => {
-        // Calculate the actual Excel row number (1-based)
-        const excelRowNum = rowIndex + range.s.r + 1;
-
-        // Skip hidden rows but keep tracking original row numbers
-        if (hiddenRows.has(excelRowNum - 1)) return null;
-
-        const rowData: Record<string, React.ReactNode> = {
-          __rowNum: excelRowNum, // Store the original Excel row number
-        };
-
-        newHeaders.forEach((header, colIndex) => {
-          const cellAddress = XLSX.utils.encode_cell({
-            r: excelRowNum - 1, // Convert back to 0-based for cell lookup
-            c: colIndex + range.s.c,
+        // Track hidden rows
+        const hiddenRows = new Set<number>();
+        if (worksheet['!rows']) {
+          worksheet['!rows'].forEach((row, index) => {
+            if (row?.hidden) hiddenRows.add(index + range.s.r);
           });
+        }
+
+        const newHeaders = Array.from({ length: range.e.c - range.s.c + 1 }, (_, colIndex) => {
+          const cellAddress = XLSX.utils.encode_cell({ r: range.s.r, c: colIndex + range.s.c });
           const cell = worksheet[cellAddress] as CellData;
-          rowData[header] = processRichText(cell);
+          return processRichText(cell)?.toString() || `Column${colIndex + 1}`;
         });
 
-        // Map the original Excel row number to the display index
-        newRowMapping.set(excelRowNum, displayIndex);
-        displayIndex += 1;
+        // Create a new mapping between original Excel row numbers and display indices
+        const newRowMapping = new Map<number, number>();
+        let displayIndex = 0;
 
-        return rowData;
-      }).filter(Boolean) as TableRowType[];
+        // Process data rows
+        const newData = Array.from({ length: range.e.r - range.s.r }, (_, rowIndex) => {
+          // Calculate the actual Excel row number (1-based)
+          const excelRowNum = rowIndex + range.s.r + 1;
 
-      if (mountedRef.current) {
-        setHeaders(newHeaders);
-        setTableData(newData);
-        setRowMapping(newRowMapping);
-        setIsInitialized(true);
+          // Skip hidden rows but keep tracking original row numbers
+          if (hiddenRows.has(excelRowNum - 1)) return null;
+
+          const rowData: Record<string, React.ReactNode> = {
+            __rowNum: excelRowNum, // Store the original Excel row number
+          };
+
+          newHeaders.forEach((header, colIndex) => {
+            const cellAddress = XLSX.utils.encode_cell({
+              r: excelRowNum - 1, // Convert back to 0-based for cell lookup
+              c: colIndex + range.s.c,
+            });
+            const cell = worksheet[cellAddress] as CellData;
+            rowData[header] = processRichText(cell);
+          });
+
+          // Map the original Excel row number to the display index
+          newRowMapping.set(excelRowNum, displayIndex);
+          displayIndex += 1;
+
+          return rowData;
+        }).filter(Boolean) as TableRowType[];
+
+        if (mountedRef.current) {
+          setHeaders(newHeaders);
+          setTableData(newData);
+          setRowMapping(newRowMapping);
+          setIsInitialized(true);
+        }
+      } catch (err) {
+        if (mountedRef.current) {
+          throw new Error(`Error processing Excel data: ${err.message}`);
+        }
+      } finally {
+        processingRef.current = false;
       }
-    } catch (err) {
-      if (mountedRef.current) {
-        throw new Error(`Error processing Excel data: ${err.message}`);
-      }
-    } finally {
-      processingRef.current = false;
-    }
-  }, []);
+    },
+    // eslint-disable-next-line
+    [isDarkMode, theme.palette.text.primary]
+  );
 
   const loadExcelFile = useCallback(async (): Promise<void> => {
     if (!fileUrl && !excelBuffer) return;
@@ -496,15 +672,35 @@ const ExcelViewer = ({ citations, fileUrl, excelBuffer }: ExcelViewerprops) => {
 
   if (loading) {
     return (
-      <Box display="flex" justifyContent="center" alignItems="center" minHeight={400}>
-        <CircularProgress />
+      <Box
+        display="flex"
+        flexDirection="column"
+        justifyContent="center"
+        alignItems="center"
+        minHeight={400}
+        gap={2}
+      >
+        <CircularProgress size={32} thickness={3} />
+        <Typography variant="body2" color="text.secondary">
+          Loading Excel data...
+        </Typography>
       </Box>
     );
   }
 
   if (error) {
     return (
-      <Alert severity="error" sx={{ mt: 2 }}>
+      <Alert
+        severity="error"
+        sx={{
+          mt: 2,
+          backgroundColor: isDarkMode ? alpha(theme.palette.error.dark, 0.15) : undefined,
+          color: isDarkMode ? theme.palette.error.light : undefined,
+          '& .MuiAlert-icon': {
+            color: isDarkMode ? theme.palette.error.light : undefined,
+          },
+        }}
+      >
         {error}
       </Alert>
     );
@@ -516,9 +712,13 @@ const ExcelViewer = ({ citations, fileUrl, excelBuffer }: ExcelViewerprops) => {
       sx={{
         position: 'relative',
         height: '100%',
-        backgroundColor: 'background.paper',
+        backgroundColor: isDarkMode
+          ? alpha(theme.palette.background.paper, 0.7)
+          : 'background.paper',
         '&:fullscreen': {
-          backgroundColor: 'background.paper',
+          backgroundColor: isDarkMode
+            ? alpha(theme.palette.background.paper, 0.7)
+            : 'background.paper',
           padding: 2,
         },
       }}
@@ -529,10 +729,15 @@ const ExcelViewer = ({ citations, fileUrl, excelBuffer }: ExcelViewerprops) => {
             onClick={toggleFullscreen}
             size="large"
             sx={{
-              backgroundColor: 'background.paper',
-              boxShadow: 2,
+              backgroundColor: isDarkMode
+                ? alpha(theme.palette.background.paper, 0.9)
+                : 'background.paper',
+              color: 'primary.main',
+              boxShadow: isDarkMode ? '0 4px 12px rgba(0, 0, 0, 0.3)' : 2,
               '&:hover': {
-                backgroundColor: 'background.paper',
+                backgroundColor: isDarkMode
+                  ? alpha(theme.palette.background.paper, 1)
+                  : 'background.paper',
                 opacity: 0.9,
               },
               mt: 2,
@@ -591,54 +796,101 @@ const ExcelViewer = ({ citations, fileUrl, excelBuffer }: ExcelViewerprops) => {
         </Box>
 
         <StyledSidebar>
-          <Box sx={{ p: 2, borderBottom: 1, borderColor: 'divider' }}>
-            <Typography variant="h6">Citations</Typography>
-          </Box>
-          <List sx={{ flex: 1, overflow: 'auto', px: 2 }}>
+          <SidebarHeader>
+            <Icon
+              icon={citationIcon}
+              width={20}
+              height={20}
+              style={{
+                color: isDarkMode ? theme.palette.primary.light : theme.palette.primary.main,
+              }}
+            />
+            <Typography
+              variant="h6"
+              sx={{
+                fontSize: '1rem',
+                fontWeight: 600,
+                color: isDarkMode
+                  ? alpha(theme.palette.text.primary, 0.9)
+                  : theme.palette.text.primary,
+              }}
+            >
+              Citations
+            </Typography>
+          </SidebarHeader>
+
+          <List sx={{ flex: 1, overflow: 'auto', p: 1.5 }}>
             {citations.map((citation, index) => (
-              <ListItem
+              <StyledListItem
                 key={citation.metadata._id || index}
                 onClick={() => handleCitationClick(citation)}
                 sx={{
-                  cursor: 'pointer',
-                  position: 'relative',
-                  px: 2,
-                  py: 1.5,
-                  mb: 1,
-                  borderRadius: 1,
-                  '&:hover': {
-                    bgcolor: 'action.hover',
-                  },
-                  ...(selectedCitation === citation.metadata._id && {
-                    '&::before': {
-                      content: '""',
-                      position: 'absolute',
-                      top: 0,
-                      left: 0,
-                      right: 0,
-                      bottom: 0,
-                      border: '2px solid #2e7d32',
-                      borderRadius: 1,
-                      pointerEvents: 'none',
-                    },
-                  }),
+                  bgcolor:
+                    selectedCitation === citation.metadata._id
+                      ? isDarkMode
+                        ? alpha(theme.palette.primary.dark, 0.15)
+                        : alpha(theme.palette.primary.lighter, 0.3)
+                      : 'transparent',
+                  boxShadow:
+                    selectedCitation === citation.metadata._id
+                      ? isDarkMode
+                        ? `0 0 0 1px ${alpha(theme.palette.primary.main, 0.3)}`
+                        : `0 0 0 1px ${alpha(theme.palette.primary.main, 0.3)}`
+                      : 'none',
                 }}
               >
                 <Box>
-                  <Typography variant="subtitle2" gutterBottom>
+                  <Typography
+                    variant="subtitle2"
+                    sx={{
+                      fontWeight: 600,
+                      fontSize: '0.875rem',
+                      color:
+                        selectedCitation === citation.metadata._id
+                          ? theme.palette.primary.main
+                          : theme.palette.text.primary,
+                    }}
+                  >
                     Citation {citation.chunkIndex ? citation.chunkIndex : index + 1}
                   </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    {citation.content}
-                  </Typography>
-                  <Typography variant="caption" color="primary" sx={{ mt: 1, display: 'block' }}>
-                    {citation.metadata.sheetName}
-                  </Typography>
-                  <Typography variant="caption" color="primary" sx={{ mt: 1, display: 'block' }}>
-                    Row {citation.metadata.blockNum[0]}
-                  </Typography>
+
+                  <CitationContent>{citation.content}</CitationContent>
+
+                  <Box sx={{ mt: 1.5, display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                    {citation.metadata.sheetName && (
+                      <MetaLabel>
+                        <Icon
+                          icon={fileExcelIcon}
+                          width={12}
+                          height={12}
+                          style={{
+                            color: isDarkMode
+                              ? theme.palette.primary.light
+                              : theme.palette.primary.dark,
+                          }}
+                        />
+                        {citation.metadata.sheetName}
+                      </MetaLabel>
+                    )}
+
+                    {citation.metadata.blockNum[0] && (
+                      <MetaLabel>
+                        <Icon
+                          icon={tableRowIcon}
+                          width={12}
+                          height={12}
+                          style={{
+                            color: isDarkMode
+                              ? theme.palette.primary.light
+                              : theme.palette.primary.dark,
+                          }}
+                        />
+                        Row {citation.metadata.blockNum[0]}
+                      </MetaLabel>
+                    )}
+                  </Box>
                 </Box>
-              </ListItem>
+              </StyledListItem>
             ))}
           </List>
         </StyledSidebar>

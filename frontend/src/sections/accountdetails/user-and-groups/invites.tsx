@@ -47,6 +47,8 @@ import type { SnackbarState } from '../types/organization-data';
 
 export default function Invites() {
   const theme = useTheme();
+  const isDark = theme.palette.mode === 'dark';
+
   const [users, setUsers] = useState<GroupUser[]>([]);
   const [page, setPage] = useState<number>(0);
   const [rowsPerPage, setRowsPerPage] = useState<number>(10);
@@ -212,11 +214,18 @@ export default function Invites() {
             display: 'flex',
             alignItems: 'center',
             width: { xs: '100%', sm: '40%' },
-            px: 2,
-            py: 0.5,
-            borderRadius: 1.5,
-            bgcolor: alpha(theme.palette.grey[500], 0.08),
-            border: `1px solid ${alpha(theme.palette.grey[500], 0.16)}`,
+            p: 1,
+            borderRadius: 2,
+            bgcolor: isDark
+              ? alpha(theme.palette.background.paper, 0.6)
+              : alpha(theme.palette.grey[100], 0.7),
+            border: `1px solid ${isDark ? alpha(theme.palette.divider, 0.1) : alpha(theme.palette.divider, 0.08)}`,
+            '&:hover': {
+              bgcolor: isDark
+                ? alpha(theme.palette.background.paper, 0.8)
+                : alpha(theme.palette.grey[100], 0.9),
+            },
+            transition: 'background-color 0.2s ease',
           }}
         >
           <Iconify
@@ -275,17 +284,63 @@ export default function Invites() {
           elevation={0}
           sx={{
             borderRadius: 2,
-            border: `1px solid ${alpha(theme.palette.grey[500], 0.16)}`,
-            mb: 2,
             overflow: 'hidden',
+            border: `1px solid ${isDark ? alpha(theme.palette.divider, 0.1) : alpha(theme.palette.divider, 0.08)}`,
+            mb: 2,
+            bgcolor: isDark
+              ? alpha(theme.palette.background.paper, 0.6)
+              : theme.palette.background.paper,
+            backdropFilter: 'blur(8px)',
           }}
         >
           <Table sx={{ minWidth: 650 }} aria-label="pending invitations table">
             <TableHead>
-              <TableRow sx={{ backgroundColor: alpha(theme.palette.primary.main, 0.04) }}>
-                <TableCell sx={{ fontWeight: 600, py: 2 }}>EMAIL</TableCell>
-                <TableCell sx={{ fontWeight: 600, py: 2 }}>GROUPS</TableCell>
-                <TableCell sx={{ fontWeight: 600, py: 2 }}>ACTIONS</TableCell>
+              <TableRow
+                sx={{
+                  bgcolor: isDark
+                    ? alpha(theme.palette.background.paper, 0.8)
+                    : alpha(theme.palette.grey[50], 0.8),
+                  '& th': {
+                    borderBottom: `1px solid ${isDark ? alpha(theme.palette.divider, 0.1) : alpha(theme.palette.divider, 0.08)}`,
+                  },
+                }}
+              >
+                {' '}
+                <TableCell
+                  sx={{
+                    fontWeight: 600,
+                    py: 1.5,
+                    fontSize: '0.75rem',
+                    letterSpacing: '0.5px',
+                    opacity: 0.8,
+                  }}
+                >
+                  EMAIL
+                </TableCell>
+                <TableCell
+                  sx={{
+                    fontWeight: 600,
+                    py: 1.5,
+                    fontSize: '0.75rem',
+                    letterSpacing: '0.5px',
+                    opacity: 0.8,
+                  }}
+                >
+                  GROUPS
+                </TableCell>
+                <TableCell
+                  align="right"
+                  sx={{
+                    fontWeight: 600,
+                    py: 1.5,
+                    width: 80,
+                    fontSize: '0.75rem',
+                    letterSpacing: '0.5px',
+                    opacity: 0.8,
+                  }}
+                >
+                  ACTIONS
+                </TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -296,11 +351,15 @@ export default function Invites() {
                     key={user._id}
                     sx={{
                       '&:last-child td, &:last-child th': { border: 0 },
-                      '&:hover': { bgcolor: alpha(theme.palette.primary.main, 0.02) },
+                      '&:hover': {
+                        bgcolor: isDark
+                          ? alpha(theme.palette.primary.dark, 0.05)
+                          : alpha(theme.palette.primary.lighter, 0.05),
+                      },
                       transition: 'background-color 0.2s ease',
                     }}
                   >
-                    <TableCell component="th" scope="row">
+                    <TableCell component="th" scope="row" sx={{ py: 1.5 }}>
                       <Stack direction="row" alignItems="center" spacing={2}>
                         <Box
                           sx={{
@@ -345,12 +404,33 @@ export default function Invites() {
                               label={group.name}
                               size="small"
                               sx={{
+                                height: 22,
                                 fontSize: '0.75rem',
                                 fontWeight: 500,
-                                bgcolor: alpha(getGroupColor(group.name), 0.08),
-                                color: getGroupColor(group.name),
-                                height: 24,
-                                borderRadius: '6px',
+                                borderRadius: '4px',
+                                // Clean, professional styling for both modes
+                                bgcolor: (themeVal) =>
+                                  themeVal.palette.mode !== 'dark'
+                                    ? alpha(themeVal.palette.grey[800], 0.1)
+                                    : alpha(themeVal.palette.grey[100], 0.8),
+                                color: (themeVal) =>
+                                  themeVal.palette.mode === 'dark'
+                                    ? themeVal.palette.grey[100]
+                                    : themeVal.palette.grey[800],
+                                border: (themeVal) =>
+                                  themeVal.palette.mode === 'dark'
+                                    ? `1px solid ${alpha(themeVal.palette.grey[700], 0.5)}`
+                                    : `1px solid ${alpha(themeVal.palette.grey[300], 1)}`,
+                                '& .MuiChip-label': {
+                                  px: 1,
+                                  py: 0.25,
+                                },
+                                '&:hover': {
+                                  bgcolor: (themeVal) =>
+                                    themeVal.palette.mode !== 'dark'
+                                      ? alpha(themeVal.palette.grey[700], 0.1)
+                                      : alpha(themeVal.palette.grey[200], 0.1),
+                                },
                               }}
                             />
                           ))
@@ -443,6 +523,12 @@ export default function Invites() {
       <Dialog
         open={confirmDialog.open}
         onClose={handleCloseConfirm}
+        BackdropProps={{
+          sx: {
+            backdropFilter: 'blur(1px)',
+            backgroundColor: alpha(theme.palette.common.black, 0.3),
+          },
+        }}
         PaperProps={{
           sx: {
             borderRadius: 2,
