@@ -24,6 +24,7 @@ class EmbeddingProvider(Enum):
     SENTENCE_TRANSFOMERS = "sentenceTransformers"
     GEMINI = "gemini"
     COHERE = "cohere"
+    DEFAULT = "default"
 
 class AzureOpenAILLM(Enum):
     AZURE_OPENAI_VERSION = "2023-07-01-preview"

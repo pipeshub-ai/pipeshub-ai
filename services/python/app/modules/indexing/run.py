@@ -487,11 +487,13 @@ class IndexingPipeline:
                         model=config['configuration']['model'],
                         api_key=config['configuration']['apiKey'],
                     )
+                elif provider == EmbeddingProvider.DEFAULT.value:
+                    embedding_model = DEFAULT_EMBEDDING_MODEL
 
             try:
-                if not embedding_model:
+                if not embedding_model or embedding_model == DEFAULT_EMBEDDING_MODEL:
                     self.logger.info(
-                        "No embedding model found in configuration, using default embedding model"
+                        "Using default embedding model"
                     )
                     embedding_model = DEFAULT_EMBEDDING_MODEL
                     self.dense_embeddings = await get_default_embedding_model()
