@@ -141,40 +141,56 @@ export function DashboardLayout({ sx, children, header, data }: DashboardLayoutP
                   cssVars={navColorVars.section}
                 />
                 {/* -- Logo -- */}
-                {isNavHorizontal &&
-                  (customLogo ? (
+                {isNavHorizontal && customLogo ? (
+                  <Box
+                    onClick={() => navigate('/')}
+                    sx={{
+                      display: 'none',
+                      [theme.breakpoints.up(layoutQuery)]: {
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      },
+                      width: 60,
+                      height: 30,
+                      cursor: 'pointer',
+                      position: 'relative',
+                    }}
+                  >
                     <Box
                       component="img"
-                      onClick={() => navigate('/')}
                       src={customLogo}
                       alt="Logo"
                       sx={{
-                        display: 'none',
-                        [theme.breakpoints.up(layoutQuery)]: {
-                          display: 'inline-flex',
-                        },
-                        width: 60,
-                        height: 30,
-                        cursor: 'pointer',
+                        maxWidth: '100%',
+                        maxHeight: '100%',
+                        width: 'auto',
+                        height: 'auto',
+                        objectFit: 'contain',
+                        position: 'absolute',
+                        top: '50%',
+                        left: '50%',
+                        transform: 'translate(-50%, -50%)',
                       }}
                     />
-                  ) : (
-                    <Box
-                      component="img"
-                      onClick={() => navigate('/')}
-                      src="/logo/logo-blue.svg"
-                      alt="Logo"
-                      sx={{
-                        display: 'none',
-                        [theme.breakpoints.up(layoutQuery)]: {
-                          display: 'inline-flex',
-                        },
-                        width: 60,
-                        height: 30,
-                        cursor: 'pointer',
-                      }}
-                    />
-                  ))}
+                  </Box>
+                ) : (
+                  <Box
+                    component="img"
+                    onClick={() => navigate('/')}
+                    src="/logo/logo-blue.svg"
+                    alt="Logo"
+                    sx={{
+                      display: 'none',
+                      [theme.breakpoints.up(layoutQuery)]: {
+                        display: 'inline-flex',
+                      },
+                      width: 60,
+                      height: 30,
+                      cursor: 'pointer',
+                    }}
+                  />
+                )}
                 {/* -- Divider -- */}
                 {isNavHorizontal && (
                   <StyledDivider

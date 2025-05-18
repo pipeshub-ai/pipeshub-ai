@@ -9,7 +9,7 @@ import Stack from '@mui/material/Stack';
 import Drawer from '@mui/material/Drawer';
 import SvgIcon from '@mui/material/SvgIcon';
 import MenuItem from '@mui/material/MenuItem';
-import { alpha, useTheme } from '@mui/material/styles';
+import { alpha, useTheme, styled } from '@mui/material/styles';
 import Typography from '@mui/material/Typography';
 import IconButton from '@mui/material/IconButton';
 import Divider from '@mui/material/Divider';
@@ -29,6 +29,99 @@ import { useAuthContext } from 'src/auth/hooks';
 import { AccountButton } from './account-button';
 import { SignOutButton } from './sign-out-button';
 // ----------------------------------------------------------------------
+
+// Styled components to reduce inline styling and improve readability
+const CloseButton = styled(IconButton)(({ theme }) => {
+  const isDark = theme.palette.mode === 'dark';
+  return {
+    top: 16,
+    left: 16,
+    zIndex: 9,
+    position: 'absolute',
+    color: theme.palette.text.secondary,
+    backgroundColor: alpha(theme.palette.background.paper, isDark ? 0.3 : 0.8),
+    boxShadow: isDark
+      ? `0 2px 6px ${alpha(theme.palette.common.black, 0.2)}`
+      : `0 2px 8px ${alpha(theme.palette.common.black, 0.05)}`,
+    backdropFilter: 'blur(8px)',
+    '&:hover': {
+      backgroundColor: alpha(theme.palette.background.paper, isDark ? 0.5 : 1),
+    },
+    transition: 'all 0.2s ease-in-out',
+  };
+});
+
+const AccountLabel = styled(Label)(({ theme }) => {
+  const isDark = theme.palette.mode === 'dark';
+  return {
+    marginTop: 1.5,
+    padding: '0px 8px',
+    paddingTop: '4px',
+    paddingBottom: '4px',
+    fontSize: '0.7rem',
+    fontWeight: 500,
+    borderRadius: '4px',
+    letterSpacing: '0.02em',
+    textTransform: 'uppercase',
+    backgroundColor: isDark
+      ? alpha(theme.palette.primary.main, 0.16)
+      : alpha(theme.palette.primary.main, 0.08),
+    color: isDark
+      ? alpha(theme.palette.primary.main, 0.9)
+      : theme.palette.primary.main,
+  };
+});
+
+const MenuItemStyled = styled(MenuItem, {
+  shouldForwardProp: (prop) => prop !== 'isActive' && prop !== 'isDark',
+})<{ isActive: boolean; isDark: boolean }>(({ theme, isActive, isDark }) => ({
+  height: 44,
+  borderRadius: 1.5,
+  marginBottom: 0.5,
+  padding: '8px 12px',
+  color: isActive ? theme.palette.primary.main : theme.palette.text.secondary,
+  backgroundColor: isActive
+    ? isDark
+      ? alpha(theme.palette.primary.main, 0.16)
+      : alpha(theme.palette.primary.main, 0.08)
+    : 'transparent',
+  '& svg': {
+    width: 20,
+    height: 20,
+    color: isActive ? theme.palette.primary.main : theme.palette.text.secondary,
+    opacity: isDark ? 0.9 : 0.7,
+  },
+  '&:hover': {
+    backgroundColor: isActive
+      ? isDark
+        ? alpha(theme.palette.primary.main, 0.24)
+        : alpha(theme.palette.primary.main, 0.12)
+      : isDark
+        ? alpha(theme.palette.action.hover, 0.4)
+        : theme.palette.action.hover,
+    color: isActive ? theme.palette.primary.main : theme.palette.text.primary,
+  },
+  transition: 'all 0.2s ease-in-out',
+}));
+
+const IconContainer = styled(Box, {
+  shouldForwardProp: (prop) => prop !== 'isActive' && prop !== 'isDark',
+})<{ isActive: boolean; isDark: boolean }>(({ theme, isActive, isDark }) => ({
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  width: 32,
+  height: 32,
+  marginRight: 1.5,
+  borderRadius: 1,
+  backgroundColor: isActive
+    ? isDark
+      ? alpha(theme.palette.primary.main, 0.24)
+      : alpha(theme.palette.primary.main, 0.12)
+    : isDark
+      ? alpha(theme.palette.action.hover, 0.2)
+      : alpha(theme.palette.action.hover, 0.4),
+}));
 
 // Base account menu items
 const baseAccountItems = [
@@ -147,6 +240,9 @@ export function AccountDrawer({ data = [], sx, ...other }: AccountDrawerProps) {
     </AnimateAvatar>
   );
 
+  // Use a theme-derived background color for dark mode
+  const darkModeGradient = `linear-gradient(180deg, ${alpha(theme.palette.grey[900], 0.8)} 0%, ${alpha(theme.palette.grey[900], 0.95)} 100%)`;
+
   return (
     <>
       <AccountButton
@@ -165,8 +261,10 @@ export function AccountDrawer({ data = [], sx, ...other }: AccountDrawerProps) {
           backdrop: { 
             invisible: false,
             sx: { 
-              backdropFilter: 'blur(1px)',
-              backgroundColor: isDark ? alpha(theme.palette.common.black, 0.1) : alpha(theme.palette.common.white, 0.1)
+              backdropFilter: 'blur(0.5px)',
+              backgroundColor: isDark 
+                ? alpha(theme.palette.common.black, 0.1) 
+                : alpha(theme.palette.common.white, 0.1)
             }
           } 
         }}
@@ -175,36 +273,18 @@ export function AccountDrawer({ data = [], sx, ...other }: AccountDrawerProps) {
             width: 300,
             borderRadius: isDark ? '12px 0 0 12px' : '16px 0 0 16px',
             boxShadow: isDark 
-              ? '0 0 24px rgba(0, 0, 0, 0.3)'
-              : '0 0 24px rgba(0, 0, 0, 0.1)',
-            backgroundColor: isDark ? alpha(theme.palette.background.default, 0.95) : theme.palette.background.default,
-            backgroundImage: isDark 
-              ? 'linear-gradient(180deg, rgba(22, 28, 36, 0.8) 0%, rgba(22, 28, 36, 0.95) 100%)' 
-              : 'none',
+              ? `0 0 24px ${alpha(theme.palette.common.black, 0.3)}`
+              : `0 0 24px ${alpha(theme.palette.common.black, 0.1)}`,
+            backgroundColor: isDark 
+              ? alpha(theme.palette.background.default, 0.95) 
+              : theme.palette.background.default,
+            backgroundImage: isDark ? darkModeGradient : 'none',
           } 
         }}
       >
-        <IconButton
-          onClick={handleCloseDrawer}
-          sx={{ 
-            top: 16, 
-            left: 16, 
-            zIndex: 9, 
-            position: 'absolute',
-            color: 'text.secondary',
-            backgroundColor: isDark ? alpha(theme.palette.background.paper, 0.3) : alpha(theme.palette.background.paper, 0.8),
-            boxShadow: isDark 
-              ? '0 2px 6px rgba(0, 0, 0, 0.2)'
-              : '0 2px 8px rgba(0, 0, 0, 0.05)',
-            backdropFilter: 'blur(8px)',
-            '&:hover': {
-              backgroundColor: isDark ? alpha(theme.palette.background.paper, 0.5) : alpha(theme.palette.background.paper, 1),
-            },
-            transition: 'all 0.2s ease-in-out',
-          }}
-        >
+        <CloseButton onClick={handleCloseDrawer}>
           <Iconify icon={closeIcon} />
-        </IconButton>
+        </CloseButton>
 
         <Scrollbar>
           <Stack alignItems="center" sx={{ pt: 9, pb: 2 }}>
@@ -237,33 +317,17 @@ export function AccountDrawer({ data = [], sx, ...other }: AccountDrawerProps) {
 
             {/* Show account type if available */}
             {user?.accountType && (
-              <Label
+              <AccountLabel
                 color={
                   user.accountType === 'business' || user.accountType === 'organization'
                     ? 'primary'
                     : 'info'
                 }
-                sx={{ 
-                  mt: 1.5,
-                  px: 1,
-                  py: 0.5,
-                  fontSize: '0.7rem',
-                  fontWeight: 500,
-                  borderRadius: '4px',
-                  letterSpacing: '0.02em',
-                  textTransform: 'uppercase',
-                  backgroundColor: isDark 
-                    ? alpha(theme.palette.primary.main, 0.16)
-                    : alpha(theme.palette.primary.main, 0.08),
-                  color: isDark
-                    ? alpha(theme.palette.primary.main, 0.9)
-                    : theme.palette.primary.main,
-                }}
               >
                 {user.accountType === 'business' || user.accountType === 'organization'
                   ? 'Business Account'
                   : 'Individual Account'}
-              </Label>
+              </AccountLabel>
             )}
           </Stack>
 
@@ -283,58 +347,15 @@ export function AccountDrawer({ data = [], sx, ...other }: AccountDrawerProps) {
                 const isActive = pathname === (option.label === 'Home' ? rootHref : option.href);
 
                 return (
-                  <MenuItem
+                  <MenuItemStyled
                     key={option.label}
                     onClick={() => handleClickItem(option.label === 'Home' ? rootHref : option.href)}
-                    sx={{
-                      height: 44,
-                      borderRadius: 1.5,
-                      mb: 0.5,
-                      py: 1,
-                      px: 1.5,
-                      color: isActive ? 'primary.main' : 'text.secondary',
-                      backgroundColor: isActive 
-                        ? isDark 
-                          ? alpha(theme.palette.primary.main, 0.16) 
-                          : alpha(theme.palette.primary.main, 0.08)
-                        : 'transparent',
-                      '& svg': { 
-                        width: 20, 
-                        height: 20,
-                        color: isActive ? 'primary.main' : 'text.secondary',
-                        opacity: isDark ? 0.9 : 0.7,
-                      },
-                      '&:hover': { 
-                        backgroundColor: isActive 
-                          ? isDark 
-                            ? alpha(theme.palette.primary.main, 0.24) 
-                            : alpha(theme.palette.primary.main, 0.12)
-                          : isDark 
-                            ? alpha(theme.palette.action.hover, 0.4) 
-                            : theme.palette.action.hover,
-                        color: isActive ? 'primary.main' : 'text.primary',
-                      },
-                      transition: 'all 0.2s ease-in-out',
-                    }}
+                    isActive={isActive}
+                    isDark={isDark}
                   >
-                    <Box sx={{ 
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      width: 32,
-                      height: 32,
-                      mr: 1.5,
-                      borderRadius: 1,
-                      backgroundColor: isActive 
-                        ? isDark 
-                          ? alpha(theme.palette.primary.main, 0.24) 
-                          : alpha(theme.palette.primary.main, 0.12)
-                        : isDark
-                          ? alpha(theme.palette.action.hover, 0.2)
-                          : alpha(theme.palette.action.hover, 0.4),
-                    }}>
+                    <IconContainer isActive={isActive} isDark={isDark}>
                       {option.icon}
-                    </Box>
+                    </IconContainer>
 
                     <Typography
                       variant="body2"
@@ -358,7 +379,7 @@ export function AccountDrawer({ data = [], sx, ...other }: AccountDrawerProps) {
                         {option.info}
                       </Label>
                     )}
-                  </MenuItem>
+                  </MenuItemStyled>
                 );
               })}
             </Stack>
