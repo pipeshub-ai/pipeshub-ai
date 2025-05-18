@@ -16,6 +16,7 @@ import {
   DialogContent,
   DialogActions,
   CircularProgress,
+  alpha,
 } from '@mui/material';
 
 import axios from 'src/utils/axios';
@@ -24,7 +25,7 @@ import { CONFIG } from 'src/config-global';
 
 import { Iconify } from 'src/components/iconify';
 
-import scrollableContainerStyle from 'src/sections/qna/chatbot/utils/styles/scrollbar';
+import { scrollableContainerStyle } from 'src/sections/qna/chatbot/utils/styles/scrollbar';
 
 import { useAuthContext } from 'src/auth/hooks';
 
@@ -1436,6 +1437,12 @@ const ConfigurationStepper: React.FC<ConfigurationStepperProps> = ({ open, onClo
   return (
     <Dialog
       open={open}
+      BackdropProps={{
+        sx: {
+          backdropFilter: 'blur(1px)',
+          backgroundColor: alpha(theme.palette.common.black, 0.3),
+        },
+      }}
       onClose={(event, reason) => {
         // Only close if not clicking outside
         if (reason !== 'backdropClick') {

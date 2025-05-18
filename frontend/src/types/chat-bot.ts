@@ -69,6 +69,7 @@ export interface Metadata {
   sheetNum?:number;
   sheetName?:string;
   _collection_name: string;
+  webUrl?:string;
 }
 
 // The Citation interface as specified

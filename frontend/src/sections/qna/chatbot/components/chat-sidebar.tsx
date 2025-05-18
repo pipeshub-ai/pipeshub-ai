@@ -36,12 +36,14 @@ import {
   IconButton,
   ListItemButton,
   CircularProgress,
+  useTheme,
+  alpha,
 } from '@mui/material';
 
 import axiosInstance from 'src/utils/axios';
 
 import ArchivedChatsDialog from './dialogs/archieve-chat-dialog';
-import scrollableContainerStyle from '../utils/styles/scrollbar';
+import { createScrollableContainerStyle } from '../utils/styles/scrollbar';
 import ShareConversationDialog from './dialogs/share-conversation-dialog';
 import DeleteConversationDialog from './dialogs/delete-conversation-dialog';
 
@@ -76,7 +78,9 @@ const ChatSidebar = ({
   });
 
   const [archiveDialogOpen, setArchiveDialogOpen] = useState<boolean>(false);
-
+  const theme = useTheme();
+  const isDark = theme.palette.mode === 'dark';
+  const scrollableStyles = createScrollableContainerStyle(theme);
   // Memoize fetch function to prevent recreation on each render
   const fetchConversations = useCallback(
     async (pageNum: number): Promise<void> => {
@@ -311,7 +315,7 @@ const ChatSidebar = ({
 
       // Check if the deleted chat is the currently selected one
       const isCurrentChatDeleted = selectedId === deleteDialog.chat._id;
-      
+
       // Send API request in the background
       await axiosInstance.delete(`/api/v1/conversations/${deleteDialog.chat._id}`);
 
@@ -328,7 +332,7 @@ const ChatSidebar = ({
     } catch (error) {
       // If the API request fails, fetch conversations again to restore the correct state
       fetchConversations(1);
-      
+
       // setSnackbar({
       //   open: true,
       //   message: 'Failed to delete conversation. Please try again.',
@@ -345,20 +349,20 @@ const ChatSidebar = ({
       try {
         // First update UI optimistically
         setConversations((prev) => prev.filter((c) => c._id !== chat._id));
-        
+
         // Check if the archived chat is the currently selected one
         const isCurrentChatArchived = selectedId === chat._id;
-        
+
         // Make API call in background
         await axiosInstance.patch(`/api/v1/conversations/${chat._id}/archive`);
-        
+
         // If we archived the current chat, navigate to a new conversation
         if (isCurrentChatArchived && onNewChat) {
           onNewChat();
         }
 
         handleMenuClose();
-        
+
         setSnackbar({
           open: true,
           message: 'Conversation archived successfully',
@@ -367,7 +371,7 @@ const ChatSidebar = ({
       } catch (error) {
         // If API request fails, restore the list
         fetchConversations(1);
-        
+
         // setSnackbar({
         //   open: true,
         //   message: 'Failed to archive conversation. Please try again.',
@@ -413,26 +417,70 @@ const ChatSidebar = ({
       >
         <Icon
           icon={emptyIcon}
-          style={{ fontSize: '72px', color: 'rgba(0, 0, 0, 0.2)', marginBottom: '16px' }}
+          style={{
+            fontSize: '68px',
+            color: isDark
+              ? alpha(theme.palette.common.white, 0.15)
+              : alpha(theme.palette.common.black, 0.15),
+            marginBottom: '16px',
+          }}
         />
-        <Typography variant="h6" sx={{ mb: 1 }}>
+        <Typography
+          variant="h6"
+          sx={{
+            mb: 1,
+            fontWeight: 500,
+            color: theme.palette.text.primary,
+            fontSize: '1.125rem',
+          }}
+        >
           {activeTab === 'my' ? 'No conversations yet' : 'No shared conversations'}
         </Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 3, maxWidth: '240px' }}>
+        <Typography
+          variant="body2"
+          color="text.secondary"
+          sx={{
+            mb: 3,
+            maxWidth: '240px',
+            opacity: isDark ? 0.7 : 0.8,
+            lineHeight: 1.5,
+          }}
+        >
           {activeTab === 'my'
             ? 'Start a new conversation to begin chatting with PipesHub Agent'
             : 'When someone shares a conversation with you, it will appear here'}
         </Typography>
         {activeTab === 'my' && (
-          <Button variant="contained" startIcon={<Icon icon={chatIcon} />} onClick={handleNewChat}>
+          <Button
+            variant="contained"
+            disableElevation
+            startIcon={<Icon icon={chatIcon} style={{ fontSize: '18px' }} />}
+            onClick={handleNewChat}
+            sx={{
+              textTransform: 'none',
+              borderRadius: 1,
+              px: 2.5,
+              py: 0.75,
+              fontWeight: 500,
+              fontSize: '0.875rem',
+              boxShadow: 'none',
+              bgcolor: isDark ? theme.palette.primary.dark : theme.palette.primary.main,
+              '&:hover': {
+                boxShadow: 'none',
+                bgcolor: isDark
+                  ? alpha(theme.palette.primary.main, 0.8)
+                  : alpha(theme.palette.primary.main, 0.9),
+              },
+            }}
+          >
             Start a conversation
           </Button>
         )}
       </Box>
     ),
+    // eslint-disable-next-line
     [activeTab, handleNewChat]
   );
-
   // Memoize the ChatItem component to prevent unnecessary re-renders
   const renderChatItem = useCallback(
     (chat: Conversation) => (
@@ -571,7 +619,7 @@ const ChatSidebar = ({
         display: 'flex',
         flexDirection: 'column',
         bgcolor: 'background.default',
-        ...scrollableContainerStyle,
+        ...scrollableStyles,
       }}
     >
       {/* Header */}
@@ -582,20 +630,18 @@ const ChatSidebar = ({
         <Typography variant="h6" sx={{ flex: 1 }}>
           PipesHub Agent
         </Typography>
-        {activeTab === 'my' && (
-          <>
-            <Tooltip title="Archived Chats">
-              <IconButton size="small" onClick={() => setArchiveDialogOpen(true)}>
-                <Icon icon={archiveIcon} />
-              </IconButton>
-            </Tooltip>
-            <Tooltip title="New Chat">
-              <IconButton size="small" onClick={handleNewChat}>
-                <Icon icon={chatIcon} />
-              </IconButton>
-            </Tooltip>
-          </>
-        )}
+        <>
+          <Tooltip title="Archived Chats">
+            <IconButton size="small" onClick={() => setArchiveDialogOpen(true)}>
+              <Icon icon={archiveIcon} />
+            </IconButton>
+          </Tooltip>
+          <Tooltip title="New Chat">
+            <IconButton size="small" onClick={handleNewChat}>
+              <Icon icon={chatIcon} />
+            </IconButton>
+          </Tooltip>
+        </>
       </Box>
       <Box>
         <Box
@@ -651,10 +697,10 @@ const ChatSidebar = ({
       <Box
         sx={{
           flexGrow: 1,
-          overflowY: 'auto',
           px: 1,
           display: 'flex',
           flexDirection: 'column',
+          ...scrollableStyles,
         }}
         onScroll={handleScroll}
       >
@@ -663,7 +709,7 @@ const ChatSidebar = ({
             sx={{
               display: 'flex',
               justifyContent: 'center',
-              alignItems: 'center', 
+              alignItems: 'center',
               minHeight: 200,
               width: '100%',
               py: 4,

@@ -320,16 +320,19 @@ const GoogleWorkspaceIndividualPage = () => {
   }, [searchParams, fetchConnectorStatuses]);
 
   return (
-    <Container maxWidth="lg">
+    <Container maxWidth="lg" sx={{ py: 3 }}>
       <Paper
+        elevation={0}
         sx={{
           overflow: 'hidden',
           position: 'relative',
-          p: 3,
-          borderRadius: 2,
-          boxShadow: (themeShadow) => `0 2px 20px ${alpha(themeShadow.palette.grey[500], 0.15)}`,
+          p: { xs: 2, md: 3 },
+          borderRadius: 1,
           border: '1px solid',
-          borderColor: 'divider',
+          borderColor: theme.palette.divider,
+          backgroundColor: theme.palette.mode === 'dark' 
+            ? alpha(theme.palette.background.paper, 0.6)
+            : theme.palette.background.paper,
         }}
       >
         {/* Loading overlay */}
@@ -345,10 +348,11 @@ const GoogleWorkspaceIndividualPage = () => {
               alignItems: 'center',
               justifyContent: 'center',
               backgroundColor: alpha(theme.palette.background.paper, 0.7),
+              backdropFilter: 'blur(4px)',
               zIndex: 10,
             }}
           >
-            <CircularProgress size={32} />
+            <CircularProgress size={28} />
           </Box>
         )}
 
@@ -360,14 +364,14 @@ const GoogleWorkspaceIndividualPage = () => {
             sx={{
               mb: 3,
               borderRadius: 1,
-              border: `1px solid ${alpha(theme.palette.error.main, 0.2)}`,
+              border: 'none',
               '& .MuiAlert-icon': {
                 color: theme.palette.error.main,
               },
             }}
           >
-            <AlertTitle sx={{ fontWeight: 500 }}>Error</AlertTitle>
-            {errorMessage}
+            <AlertTitle sx={{ fontWeight: 500, fontSize: '0.875rem' }}>Error</AlertTitle>
+            <Typography variant="body2">{errorMessage}</Typography>
           </Alert>
         )}
 
@@ -377,6 +381,7 @@ const GoogleWorkspaceIndividualPage = () => {
             const isEnabled = connectorStatus[connector.id] || false;
             const isConfigured = configuredStatus[connector.id] || false;
             const isDisabled = !isConfigured && !isEnabled;
+            
             // Determine status color and text
             const getStatusColor = () => {
               if (isEnabled) return connector.color;
@@ -400,20 +405,27 @@ const GoogleWorkspaceIndividualPage = () => {
             return (
               <Grid item xs={12} key={connector.id}>
                 <Paper
+                  elevation={0}
                   sx={{
-                    p: 2.5,
+                    p: 2,
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'space-between',
-                    borderRadius: 2,
+                    borderRadius: 1,
                     border: '1px solid',
-                    borderColor: isEnabled ? alpha(connector.color, 0.3) : 'divider',
-                    bgcolor: isEnabled ? alpha(connector.color, 0.03) : 'background.paper',
-                    transition: 'all 0.2s ease-in-out',
+                    borderColor: isEnabled 
+                      ? alpha(connector.color, theme.palette.mode === 'dark' ? 0.2 : 0.3) 
+                      : theme.palette.divider,
+                    bgcolor: isEnabled 
+                      ? alpha(connector.color, theme.palette.mode === 'dark' ? 0.05 : 0.03)
+                      : 'transparent',
+                    transition: 'all 0.15s ease-in-out',
                     '&:hover': {
                       transform: 'translateY(-2px)',
-                      boxShadow: 2,
-                      borderColor: alpha(connector.color, 0.5),
+                      boxShadow: theme.palette.mode === 'dark'
+                        ? `0 4px 12px ${alpha('#000', 0.15)}`
+                        : `0 4px 12px ${alpha(theme.palette.grey[500], 0.1)}`,
+                      borderColor: alpha(connector.color, theme.palette.mode === 'dark' ? 0.3 : 0.4),
                     },
                   }}
                 >
@@ -421,25 +433,38 @@ const GoogleWorkspaceIndividualPage = () => {
                   <Box sx={{ display: 'flex', alignItems: 'center', flexGrow: 1 }}>
                     <Box
                       sx={{
-                        width: 48,
-                        height: 48,
+                        width: 40,
+                        height: 40,
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
                         mr: 2,
-                        bgcolor: alpha(connector.color, 0.1),
+                        bgcolor: alpha(connector.color, theme.palette.mode === 'dark' ? 0.15 : 0.1),
                         color: connector.color,
-                        borderRadius: 1.5,
+                        borderRadius: 1,
                       }}
                     >
-                      <Iconify icon={connector.icon} width={26} height={26} />
+                      <Iconify icon={connector.icon} width={22} height={22} />
                     </Box>
 
                     <Box>
-                      <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+                      <Typography 
+                        variant="subtitle1" 
+                        sx={{ 
+                          fontWeight: 600,
+                          fontSize: '0.9375rem',
+                        }}
+                      >
                         {connector.title}
                       </Typography>
-                      <Typography variant="body2" color="text.secondary">
+                      <Typography 
+                        variant="body2" 
+                        color="text.secondary"
+                        sx={{ 
+                          fontSize: '0.8125rem',
+                          lineHeight: 1.5 
+                        }}
+                      >
                         {connector.description}
                       </Typography>
                     </Box>
@@ -453,15 +478,18 @@ const GoogleWorkspaceIndividualPage = () => {
                       mr: 2,
                       px: 1,
                       py: 0.5,
-                      borderRadius: 1,
-                      bgcolor: alpha(getStatusColor(), 0.08),
+                      borderRadius: 0.75,
+                      bgcolor: alpha(
+                        getStatusColor(), 
+                        theme.palette.mode === 'dark' ? 0.15 : 0.08
+                      ),
                       color: getStatusColor(),
                     }}
                   >
                     <Box
                       sx={{
-                        width: 8,
-                        height: 8,
+                        width: 6,
+                        height: 6,
                         borderRadius: '50%',
                         bgcolor: 'currentColor',
                         mr: 0.5,
@@ -471,30 +499,33 @@ const GoogleWorkspaceIndividualPage = () => {
                       variant="caption"
                       sx={{
                         fontWeight: 600,
+                        fontSize: '0.6875rem',
                       }}
                     >
                       {getStatusText()}
                     </Typography>
                   </Box>
 
-                  {/* Configure button */}
-
                   <IconButton
                     size="small"
                     onClick={() => handleConfigureConnector(connector.id)}
                     sx={{
-                      mr: 1,
+                      mr: 1.5,
+                      p: 0.75,
                       color: theme.palette.text.secondary,
+                      bgcolor: theme.palette.mode === 'dark' 
+                        ? alpha(theme.palette.background.paper, 0.3)
+                        : alpha(theme.palette.background.default, 0.8),
+                      border: '1px solid',
+                      borderColor: theme.palette.divider,
                       '&:hover': {
-                        bgcolor: isEnabled
-                          ? 'transparent'
-                          : alpha(theme.palette.primary.main, 0.08),
-                        color: isEnabled ? theme.palette.text.disabled : theme.palette.primary.main,
+                        bgcolor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.15 : 0.08),
+                        color: theme.palette.primary.main,
                       },
                     }}
                     aria-label={`Configure ${connector.title}`}
                   >
-                    <Iconify icon={settingsIcon} width={20} height={20} />
+                    <Iconify icon={settingsIcon} width={18} height={18} />
                   </IconButton>
 
                   <Tooltip
@@ -503,23 +534,25 @@ const GoogleWorkspaceIndividualPage = () => {
                     arrow
                     disableHoverListener={!isDisabled}
                   >
-                    <div>
-                      {' '}
-                      {/* Wrapper div needed for disabled elements */}
+                    <div> {/* Wrapper div needed for disabled elements */}
                       <Switch
                         checked={isEnabled}
                         onChange={() => handleToggleConnector(connector.id)}
                         disabled={isDisabled}
                         color="primary"
+                        size="small"
                         sx={{
                           '& .MuiSwitch-switchBase.Mui-checked': {
                             color: connector.color,
                             '&:hover': {
-                              backgroundColor: alpha(connector.color, 0.1),
+                              backgroundColor: alpha(connector.color, theme.palette.mode === 'dark' ? 0.15 : 0.1),
                             },
                           },
                           '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': {
                             backgroundColor: connector.color,
+                          },
+                          '& .MuiSwitch-track': {
+                            opacity: 0.8,
                           },
                         }}
                       />
@@ -534,24 +567,41 @@ const GoogleWorkspaceIndividualPage = () => {
         {/* Info box */}
         <Box
           sx={{
-            mt: 4,
-            p: 3,
-            borderRadius: 2,
-            bgcolor: alpha(theme.palette.info.main, 0.04),
-            border: `1px solid ${alpha(theme.palette.info.main, 0.1)}`,
+            mt: 3,
+            p: 2.5,
+            borderRadius: 1,
+            bgcolor: theme.palette.mode === 'dark' 
+              ? alpha(theme.palette.info.main, 0.08)
+              : alpha(theme.palette.info.main, 0.04),
+            border: `1px solid ${alpha(theme.palette.info.main, theme.palette.mode === 'dark' ? 0.2 : 0.1)}`,
             display: 'flex',
             alignItems: 'flex-start',
-            gap: 2,
+            gap: 1.5,
           }}
         >
           <Box sx={{ color: theme.palette.info.main, mt: 0.5 }}>
-            <Iconify icon={infoIcon} width={20} height={20} />
+            <Iconify icon={infoIcon} width={18} height={18} />
           </Box>
           <Box>
-            <Typography variant="subtitle2" color="text.primary" sx={{ mb: 0.5, fontWeight: 500 }}>
+            <Typography 
+              variant="subtitle2" 
+              color="text.primary" 
+              sx={{ 
+                mb: 0.5, 
+                fontWeight: 600,
+                fontSize: '0.875rem' 
+              }}
+            >
               Connector Configuration
             </Typography>
-            <Typography variant="body2" color="text.secondary">
+            <Typography 
+              variant="body2" 
+              color="text.secondary"
+              sx={{
+                fontSize: '0.8125rem',
+                lineHeight: 1.5
+              }}
+            >
               Connectors must be properly configured before they can be enabled. Click the settings
               icon to set up the necessary credentials and authentication for each service. Once
               configured, you can enable or disable the connector as needed.
@@ -574,7 +624,7 @@ const GoogleWorkspaceIndividualPage = () => {
       {/* Success snackbar */}
       <Snackbar
         open={success}
-        autoHideDuration={5000}
+        autoHideDuration={4000}
         onClose={handleCloseSuccess}
         anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
         sx={{ mt: 6 }}
@@ -585,7 +635,13 @@ const GoogleWorkspaceIndividualPage = () => {
           variant="filled"
           sx={{
             width: '100%',
-            boxShadow: '0px 3px 8px rgba(0, 0, 0, 0.12)',
+            boxShadow: theme.palette.mode === 'dark'
+              ? '0px 3px 8px rgba(0, 0, 0, 0.3)'
+              : '0px 3px 8px rgba(0, 0, 0, 0.12)',
+            '& .MuiAlert-icon': {
+              opacity: 0.8,
+            },
+            fontSize: '0.8125rem',
           }}
         >
           {successMessage}

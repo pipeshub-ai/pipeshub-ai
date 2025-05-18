@@ -15,6 +15,7 @@ import {
   DialogContent,
   DialogActions,
   CircularProgress,
+  useTheme,
 } from '@mui/material';
 
 import axios from 'src/utils/axios';
@@ -37,7 +38,7 @@ const DeleteRecordDialog = ({
   const [isDeleting, setIsDeleting] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmText, setConfirmText] = useState<string>('');
-
+  const theme = useTheme();
   const handleConfirmChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     setConfirmText(event.target.value);
   };
@@ -76,6 +77,12 @@ const DeleteRecordDialog = ({
       onClose={handleClose}
       fullWidth
       maxWidth="sm"
+      BackdropProps={{
+        sx: {
+          backdropFilter: 'blur(1px)',
+          backgroundColor: alpha(theme.palette.common.black, 0.3),
+        },
+      }}
       PaperProps={{
         sx: {
           borderRadius: 1,
@@ -154,7 +161,7 @@ const DeleteRecordDialog = ({
       <DialogActions
         sx={{
           p: 2.5,
-          bgcolor: (theme) => alpha(theme.palette.background.default, 0.5),
+          bgcolor: (themeVal) => alpha(themeVal.palette.background.default, 0.5),
         }}
       >
         <Button

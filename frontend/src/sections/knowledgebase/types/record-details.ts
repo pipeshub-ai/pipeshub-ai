@@ -101,6 +101,7 @@ export interface Record {
   modules?: Array<{ _id: string; name: string }>;
   searchTags?: Array<{ _id: string; name: string }>;
   createdBy?: string;
+  summaryDocumentId?: string;
 }
 
 export interface FileRecord {

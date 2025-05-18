@@ -46,6 +46,7 @@ import {
   TableContainer,
   TablePagination,
   CircularProgress,
+  Fade
 } from '@mui/material';
 
 import { useAdmin } from 'src/context/AdminContext';
@@ -87,6 +88,7 @@ const getInitials = (fullName: string) =>
 
 const Users = () => {
   const theme = useTheme();
+  const isDark = theme.palette.mode === 'dark';
   const [users, setUsers] = useState<GroupUser[]>([]);
   const [groups, setGroups] = useState<AppUserGroup[]>([]);
   const [page, setPage] = useState<number>(0);
@@ -131,7 +133,7 @@ const Users = () => {
         dispatch(
           setCounts({
             usersCount: loggedInUsers.length,
-            groupsCount: groups.length,
+            groupsCount: groupsData.length,
             invitesCount: pendingUsers.length,
           })
         );
@@ -315,11 +317,18 @@ const Users = () => {
             display: 'flex',
             alignItems: 'center',
             width: { xs: '100%', sm: '40%' },
-            px: 2,
-            py: 0.5,
-            borderRadius: 1.5,
-            bgcolor: alpha(theme.palette.grey[500], 0.08),
-            border: `1px solid ${alpha(theme.palette.grey[500], 0.16)}`,
+            p: 1,
+            borderRadius: 2,
+            bgcolor: isDark
+              ? alpha(theme.palette.background.paper, 0.6)
+              : alpha(theme.palette.grey[100], 0.7),
+            border: `1px solid ${isDark ? alpha(theme.palette.divider, 0.1) : alpha(theme.palette.divider, 0.08)}`,
+            '&:hover': {
+              bgcolor: isDark
+                ? alpha(theme.palette.background.paper, 0.8)
+                : alpha(theme.palette.grey[100], 0.9),
+            },
+            transition: 'background-color 0.2s ease',
           }}
         >
           <Iconify
@@ -366,7 +375,13 @@ const Users = () => {
             sx={{
               borderRadius: 1.5,
               fontSize: '0.8125rem',
-              height: 40,
+              height: 38,
+              fontWeight: 500,
+              px: 2,
+              boxShadow: 'none',
+              '&:hover': {
+                boxShadow: isDark ? '0 4px 10px 0 rgba(0,0,0,0.3)' : '0 4px 10px 0 rgba(0,0,0,0.1)',
+              },
             }}
           >
             Invite User
@@ -380,17 +395,61 @@ const Users = () => {
         elevation={0}
         sx={{
           borderRadius: 2,
-          border: `1px solid ${alpha(theme.palette.grey[500], 0.16)}`,
-          mb: 2,
           overflow: 'hidden',
+          border: `1px solid ${isDark ? alpha(theme.palette.divider, 0.1) : alpha(theme.palette.divider, 0.08)}`,
+          mb: 2,
+          bgcolor: isDark
+            ? alpha(theme.palette.background.paper, 0.6)
+            : theme.palette.background.paper,
+          backdropFilter: 'blur(8px)',
         }}
       >
         <Table sx={{ minWidth: 650 }} aria-label="users table">
           <TableHead>
-            <TableRow sx={{ backgroundColor: alpha(theme.palette.primary.main, 0.04) }}>
-              <TableCell sx={{ fontWeight: 600, py: 2 }}>USER</TableCell>
-              <TableCell sx={{ fontWeight: 600, py: 2 }}>GROUPS</TableCell>
-              <TableCell align="right" sx={{ fontWeight: 600, py: 2, width: 80 }}>
+            <TableRow
+              sx={{
+                bgcolor: isDark
+                  ? alpha(theme.palette.background.paper, 0.8)
+                  : alpha(theme.palette.grey[50], 0.8),
+                '& th': {
+                  borderBottom: `1px solid ${isDark ? alpha(theme.palette.divider, 0.1) : alpha(theme.palette.divider, 0.08)}`,
+                },
+              }}
+            >
+              {' '}
+              <TableCell
+                sx={{
+                  fontWeight: 600,
+                  py: 1.5,
+                  fontSize: '0.75rem',
+                  letterSpacing: '0.5px',
+                  opacity: 0.8,
+                }}
+              >
+                USER
+              </TableCell>
+              <TableCell
+                sx={{
+                  fontWeight: 600,
+                  py: 1.5,
+                  fontSize: '0.75rem',
+                  letterSpacing: '0.5px',
+                  opacity: 0.8,
+                }}
+              >
+                GROUPS
+              </TableCell>
+              <TableCell
+                align="right"
+                sx={{
+                  fontWeight: 600,
+                  py: 1.5,
+                  width: 80,
+                  fontSize: '0.75rem',
+                  letterSpacing: '0.5px',
+                  opacity: 0.8,
+                }}
+              >
                 ACTIONS
               </TableCell>
             </TableRow>
@@ -404,11 +463,15 @@ const Users = () => {
                     key={user._id}
                     sx={{
                       '&:last-child td, &:last-child th': { border: 0 },
-                      '&:hover': { bgcolor: alpha(theme.palette.primary.main, 0.02) },
+                      '&:hover': {
+                        bgcolor: isDark
+                          ? alpha(theme.palette.primary.dark, 0.05)
+                          : alpha(theme.palette.primary.lighter, 0.05),
+                      },
                       transition: 'background-color 0.2s ease',
                     }}
                   >
-                    <TableCell component="th" scope="row">
+                  <TableCell component="th" scope="row" sx={{ py: 1.5 }}>
                       {user._id && (
                         <Stack direction="row" alignItems="center" spacing={2}>
                           <Tooltip title="View user details">
@@ -449,12 +512,33 @@ const Users = () => {
                               label={group.name}
                               size="small"
                               sx={{
+                                height: 22,
                                 fontSize: '0.75rem',
                                 fontWeight: 500,
-                                bgcolor: alpha(theme.palette.primary.main, 0.08),
-                                color: theme.palette.primary.main,
-                                height: 24,
-                                borderRadius: '6px',
+                                borderRadius: '4px',
+                                // Clean, professional styling for both modes
+                                bgcolor: (themeVal) =>
+                                  themeVal.palette.mode !== 'dark'
+                                    ? alpha(themeVal.palette.grey[800], 0.1)
+                                    : alpha(themeVal.palette.grey[100], 0.8),
+                                color: (themeVal) =>
+                                  themeVal.palette.mode === 'dark'
+                                    ? themeVal.palette.grey[100]
+                                    : themeVal.palette.grey[800],
+                                border: (themeVal) =>
+                                  themeVal.palette.mode === 'dark'
+                                    ? `1px solid ${alpha(themeVal.palette.grey[700], 0.5)}`
+                                    : `1px solid ${alpha(themeVal.palette.grey[300], 1)}`,
+                                '& .MuiChip-label': {
+                                  px: 1,
+                                  py: 0.25,
+                                },
+                                '&:hover': {
+                                  bgcolor: (themeVal) =>
+                                    themeVal.palette.mode !== 'dark'
+                                      ? alpha(themeVal.palette.grey[700], 0.1)
+                                      : alpha(themeVal.palette.grey[200], 0.1),
+                                },
                               }}
                             />
                           ))
@@ -664,9 +748,33 @@ const Users = () => {
                       label={group.name || 'Unnamed Group'}
                       size="small"
                       sx={{
+                        height: 22,
                         fontSize: '0.75rem',
-                        bgcolor: alpha(theme.palette.primary.main, 0.08),
-                        color: theme.palette.primary.main,
+                        fontWeight: 500,
+                        borderRadius: '4px',
+                        // Clean, professional styling for both modes
+                        bgcolor: (themeVal) =>
+                          themeVal.palette.mode !== 'dark'
+                            ? alpha(themeVal.palette.grey[800], 0.1)
+                            : alpha(themeVal.palette.grey[100], 0.8),
+                        color: (themeVal) =>
+                          themeVal.palette.mode === 'dark'
+                            ? themeVal.palette.grey[100]
+                            : themeVal.palette.grey[800],
+                        border: (themeVal) =>
+                          themeVal.palette.mode === 'dark'
+                            ? `1px solid ${alpha(themeVal.palette.grey[700], 0.5)}`
+                            : `1px solid ${alpha(themeVal.palette.grey[300], 1)}`,
+                        '& .MuiChip-label': {
+                          px: 1,
+                          py: 0.25,
+                        },
+                        '&:hover': {
+                          bgcolor: (themeVal) =>
+                            themeVal.palette.mode !== 'dark'
+                              ? alpha(themeVal.palette.grey[700], 0.1)
+                              : alpha(themeVal.palette.grey[200], 0.1),
+                        },
                       }}
                     />
                   ))}
@@ -703,6 +811,12 @@ const Users = () => {
       <Dialog
         open={isConfirmDialogOpen}
         onClose={() => setIsConfirmDialogOpen(false)}
+        BackdropProps={{
+          sx: {
+            backdropFilter: 'blur(1px)',
+            backgroundColor: alpha(theme.palette.common.black, 0.3),
+          },
+        }}
         PaperProps={{
           sx: {
             borderRadius: 2,
@@ -789,6 +903,8 @@ const Users = () => {
 
 function AddUserModal({ open, onClose, groups, onUsersAdded }: AddUserModalProps) {
   const theme = useTheme();
+  const isDark = theme.palette.mode === 'dark';
+
   const [emails, setEmails] = useState<string[]>([]);
   const [inputValue, setInputValue] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -844,6 +960,7 @@ function AddUserModal({ open, onClose, groups, onUsersAdded }: AddUserModalProps
       handleAddEmail();
     }
   };
+
   const handleAddUsers = async (): Promise<void> => {
     try {
       if (emails.length === 0) {
@@ -896,174 +1013,565 @@ function AddUserModal({ open, onClose, groups, onUsersAdded }: AddUserModalProps
     }
   };
 
+  const emailChipStyle = {
+    borderRadius: 0.75,
+    height: 24,
+    fontSize: '0.75rem',
+    fontWeight: 500,
+    bgcolor: isDark
+      ? alpha(theme.palette.common.white, 0.85)
+      : alpha(theme.palette.primary.main, 0.75),
+    color: isDark
+      ? alpha(theme.palette.primary.light, 0.1)
+      : alpha(theme.palette.common.white, 0.9),
+    border: isDark ? `1px solid ${alpha(theme.palette.primary.main, 0.4)}` : 'none',
+    '& .MuiChip-deleteIcon': {
+      color: isDark
+        ? alpha(theme.palette.primary.dark, 0.7)
+        : alpha(theme.palette.common.white, 0.7),
+      '&:hover': {
+        color: isDark ? theme.palette.primary.darker : theme.palette.primary.light,
+      },
+    },
+  };
+
+  const groupChipStyle = {
+    borderRadius: 0.75,
+    height: 24,
+    fontSize: '0.75rem',
+    fontWeight: 500,
+    bgcolor: isDark
+      ? alpha(theme.palette.info.main, 0.85)
+      : alpha(theme.palette.common.white, 0.45),
+    color: isDark ? alpha(theme.palette.info.light, 0.9) : theme.palette.primary.lighter,
+    border: isDark ? `1px solid ${alpha(theme.palette.info.main, 0.4)}` : 'none',
+    '& .MuiChip-deleteIcon': {
+      color: isDark ? alpha(theme.palette.info.dark, 0.7) : alpha(theme.palette.common.white, 0.4),
+      '&:hover': {
+        color: isDark ? theme.palette.info.light : theme.palette.info.dark,
+      },
+    },
+  };
+
   return (
-    <Dialog
-      open={open}
-      onClose={onClose}
-      maxWidth="sm"
-      fullWidth
-      PaperProps={{
-        sx: {
-          borderRadius: 2,
-          padding: 1,
-        },
-      }}
-    >
-      <DialogTitle sx={{ pb: 1 }}>
-        <Stack direction="row" alignItems="center" spacing={1}>
-          <Iconify
-            icon={personIcon}
-            width={24}
-            height={24}
-            sx={{ color: theme.palette.primary.main }}
-          />
-          <Typography variant="h6">Invite users</Typography>
-        </Stack>
-      </DialogTitle>
-      <DialogContent>
-        <Box sx={{ mt: 2 }}>
-          <Box
+    <>
+      <Dialog
+        open={open}
+        onClose={onClose}
+        maxWidth="sm"
+        fullWidth
+        TransitionComponent={Fade}
+        BackdropProps={{
+          sx: {
+            backdropFilter: 'blur(4px)',
+            backgroundColor: alpha(theme.palette.common.black, isDark ? 0.6 : 0.4),
+          },
+        }}
+        PaperProps={{
+          elevation: isDark ? 6 : 2,
+          sx: {
+            borderRadius: 1.5,
+            overflow: 'hidden',
+            bgcolor: isDark
+              ? alpha(theme.palette.background.paper, 0.9)
+              : theme.palette.background.paper,
+          },
+        }}
+      >
+        <DialogTitle
+          sx={{
+            px: 3,
+            py: 2,
+            borderBottom: '1px solid',
+            borderColor: alpha(theme.palette.divider, 0.08),
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+          }}
+        >
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+            <Box
+              sx={{
+                width: 32,
+                height: 32,
+                borderRadius: '50%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                bgcolor: isDark
+                  ? alpha(theme.palette.primary.main, 0.15)
+                  : alpha(theme.palette.primary.main, 0.1),
+              }}
+            >
+              <Iconify
+                icon={personIcon}
+                width={18}
+                height={18}
+                sx={{ color: theme.palette.primary.main }}
+              />
+            </Box>
+            <Typography
+              variant="h6"
+              sx={{
+                fontWeight: 500,
+                fontSize: '1rem',
+                color: theme.palette.text.primary,
+              }}
+            >
+              Invite Users
+            </Typography>
+          </Box>
+
+          <IconButton
+            onClick={onClose}
+            size="small"
+            aria-label="close"
             sx={{
-              border: error
-                ? `1px solid ${theme.palette.error.main}`
-                : '1px solid rgba(0, 0, 0, 0.23)',
-              borderRadius: 1,
-              p: 1,
-              mb: error ? 0.5 : 2,
-              minHeight: '100px',
-              display: 'flex',
-              flexWrap: 'wrap',
-              alignItems: 'flex-start',
-              gap: 1,
-              '&:focus-within': {
-                borderColor: error ? theme.palette.error.main : theme.palette.primary.main,
-                boxShadow: error
-                  ? `0 0 0 2px ${theme.palette.error.main}14`
-                  : `0 0 0 2px ${theme.palette.primary.main}14`,
+              color: theme.palette.text.secondary,
+              width: 28,
+              height: 28,
+              '&:hover': {
+                color: theme.palette.text.primary,
+                bgcolor: alpha(theme.palette.action.hover, isDark ? 0.2 : 0.1),
               },
             }}
           >
-            {/* Email chips */}
-            {emails.map((email, index) => (
-              <Chip
-                key={index}
-                label={email}
-                onDelete={() => handleRemoveEmail(email)}
-                deleteIcon={<Iconify icon={closeIcon} />}
+            <Iconify icon="mdi:close" width={18} height={18} />
+          </IconButton>
+        </DialogTitle>
+
+        <DialogContent sx={{ px: 3, py: 2.5 }}>
+          <Box sx={{ mt: 0.5, mb: 3 }}>
+            {/* Email Input Container with Enhanced Scrolling */}
+            <Box
+              sx={{
+                border: error
+                  ? `1px solid ${theme.palette.error.main}`
+                  : `1px solid ${alpha(theme.palette.divider, isDark ? 0.8 : 0.23)}`,
+                borderRadius: 1,
+                p: 1,
+                mt: 4,
+                mb: error ? 0.5 : 2,
+                minHeight: '120px',
+                maxHeight: '180px',
+                display: 'flex',
+                flexDirection: 'column',
+                overflow: 'hidden',
+                bgcolor: isDark
+                  ? alpha(theme.palette.background.paper, 0.6)
+                  : theme.palette.background.paper,
+                boxShadow: error
+                  ? `0 0 0 2px ${alpha(theme.palette.error.main, isDark ? 0.8 : 0.14)}`
+                  : `0 0 0 2px ${alpha(theme.palette.primary.main, isDark ? 0.4 : 0.14)}`,
+                '&:focus-within': {
+                  borderColor: error ? theme.palette.error.main : theme.palette.primary.main,
+                  boxShadow: error
+                    ? `0 0 0 2px ${alpha(theme.palette.error.main, isDark ? 0.8 : 0.14)}`
+                    : `0 0 0 2px ${alpha(theme.palette.primary.main, isDark ? 0.8 : 0.14)}`,
+                },
+              }}
+            >
+              {/* Scrollable Email Chips Container */}
+              <Box
                 sx={{
-                  m: 0.5,
-                  bgcolor: theme.palette.primary.main,
-                  color: theme.palette.primary.contrastText,
-                  '& .MuiChip-deleteIcon': {
-                    color: theme.palette.primary.contrastText,
-                    '&:hover': {
-                      color: theme.palette.primary.light,
-                    },
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  alignContent: 'flex-start',
+                  overflowY: 'auto',
+                  flexGrow: 1,
+                  mb: 1,
+                  p: 0.5,
+                  maxHeight: '130px',
+                  '&::-webkit-scrollbar': {
+                    width: '6px',
+                  },
+                  '&::-webkit-scrollbar-track': {
+                    backgroundColor: 'transparent',
+                  },
+                  '&::-webkit-scrollbar-thumb': {
+                    backgroundColor: isDark
+                      ? alpha(theme.palette.common.white, 0.2)
+                      : alpha(theme.palette.common.black, 0.2),
+                    borderRadius: '6px',
                   },
                 }}
-              />
-            ))}
+              >
+                {emails.map((email, index) => (
+                  <Chip
+                    key={index}
+                    label={email}
+                    onDelete={() => handleRemoveEmail(email)}
+                    deleteIcon={<Iconify icon={closeIcon} width={14} />}
+                    sx={emailChipStyle}
+                  />
+                ))}
+              </Box>
 
-            {/* Input field and Add button in a row */}
-            <Box sx={{ display: 'flex', flexGrow: 1, alignItems: 'center', gap: 1 }}>
-              <TextField
-                value={inputValue}
-                onChange={(e) => setInputValue(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder={emails.length === 0 ? 'name@example.com' : ''}
-                variant="standard"
-                error={!!error}
-                aria-invalid={!!error}
-                inputProps={{
-                  'aria-label': 'Add email addresses',
-                }}
+              {/* Input Row (Fixed at Bottom) */}
+              <Box
                 sx={{
-                  flexGrow: 1,
-                  m: 0.5,
-                  '& .MuiInput-underline:before': { borderBottom: 'none' },
-                  '& .MuiInput-underline:hover:before': { borderBottom: 'none' },
-                  '& .MuiInput-underline:after': { borderBottom: 'none' },
-                }}
-              />
-              <Button
-                size="small"
-                variant="outlined"
-                onClick={handleAddEmail}
-                sx={{
-                  minWidth: 'auto',
-                  height: 32,
-                  borderRadius: 1,
-                  ml: 1,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 1,
+                  borderTop:
+                    emails.length > 0 ? `1px solid ${alpha(theme.palette.divider, 0.08)}` : 'none',
+                  pt: emails.length > 0 ? 1 : 0,
+                  mt: emails.length > 0 ? 0.5 : 0,
                 }}
               >
-                Add
-              </Button>
+                <Box
+                  sx={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    flexGrow: 1,
+                    gap: 0.5,
+                  }}
+                >
+                  {emails.length === 0 && (
+                    <Iconify
+                      icon="mdi:email-outline"
+                      width={18}
+                      height={18}
+                      sx={{ color: theme.palette.text.secondary, ml: 0.5 }}
+                    />
+                  )}
+                  <TextField
+                    value={inputValue}
+                    onChange={(e) => setInputValue(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    placeholder={emails.length === 0 ? 'name@example.com' : 'Add another email...'}
+                    variant="standard"
+                    error={!!error}
+                    aria-invalid={!!error}
+                    fullWidth
+                    inputProps={{
+                      'aria-label': 'Add email addresses',
+                    }}
+                    sx={{
+                      flexGrow: 1,
+                      '& .MuiInput-underline:before': { borderBottom: 'none' },
+                      '& .MuiInput-underline:hover:before': { borderBottom: 'none' },
+                      '& .MuiInput-underline:after': { borderBottom: 'none' },
+                      '& .MuiInputBase-input': {
+                        color: theme.palette.text.primary,
+                        py: 0.5,
+                        fontSize: '0.875rem',
+                      },
+                    }}
+                  />
+                </Box>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  onClick={handleAddEmail}
+                  sx={{
+                    minWidth: 'auto',
+                    height: 32,
+                    borderRadius: 1,
+                    textTransform: 'none',
+                    borderColor: alpha(theme.palette.primary.main, isDark ? 0.5 : 0.3),
+                    color: theme.palette.primary.main,
+                    px: 2,
+                    '&:hover': {
+                      backgroundColor: alpha(theme.palette.primary.main, 0.08),
+                      borderColor: theme.palette.primary.main,
+                    },
+                  }}
+                >
+                  Add
+                </Button>
+              </Box>
             </Box>
-          </Box>
 
-          {/* Error message */}
-          {error && (
-            <Typography variant="caption" color="error" sx={{ ml: 1, display: 'block', mb: 1 }}>
-              {error}
+            {/* Email Count Badge */}
+            {emails.length > 0 && (
+              <Box
+                sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  mb: error ? 0.5 : 2,
+                  mt: error ? 0 : -1,
+                  gap: 0.75,
+                }}
+              >
+                <Box
+                  sx={{
+                    borderRadius: 5,
+                    height: 20,
+                    minWidth: 20,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    bgcolor: isDark
+                      ? alpha(theme.palette.primary.main, 0.2)
+                      : alpha(theme.palette.primary.light, 0.15),
+                    px: 0.75,
+                  }}
+                >
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      fontSize: '0.6875rem',
+                      fontWeight: 600,
+                      color: isDark
+                        ? alpha(theme.palette.primary.light, 0.9)
+                        : theme.palette.primary.main,
+                    }}
+                  >
+                    {emails.length}
+                  </Typography>
+                </Box>
+                <Typography
+                  variant="caption"
+                  sx={{
+                    fontSize: '0.75rem',
+                    color: theme.palette.text.secondary,
+                  }}
+                >
+                  {emails.length === 1 ? 'email address added' : 'email addresses added'}
+                </Typography>
+              </Box>
+            )}
+
+            {/* Error message */}
+            {error && (
+              <Typography
+                variant="caption"
+                color="error"
+                sx={{
+                  ml: 1,
+                  display: 'block',
+                  mb: 1,
+                  fontWeight: 500,
+                }}
+              >
+                {error}
+              </Typography>
+            )}
+
+            <Typography
+              variant="body2"
+              color="text.secondary"
+              sx={{
+                mb: 2,
+                fontSize: '0.875rem',
+                opacity: isDark ? 0.8 : 0.7,
+              }}
+            >
+              Your team members will receive an email with instructions to access the system.
             </Typography>
-          )}
 
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            Your team members will receive an email with instructions to access the system.
-          </Typography>
-          <Autocomplete
-            multiple
-            options={groups}
-            getOptionLabel={(option) => option.name}
-            renderInput={(params) => <TextField {...params} label="Add to groups" />}
-            onChange={(event, newValue) => setSelectedGroups(newValue)}
+            <Autocomplete
+              multiple
+              limitTags={3}
+              options={groups}
+              getOptionLabel={(option) => option.name}
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  placeholder="Add to groups"
+                  sx={{
+                    '& .MuiOutlinedInput-root': {
+                      borderRadius: 1,
+                      backgroundColor: isDark
+                        ? alpha(theme.palette.background.paper, 0.6)
+                        : theme.palette.background.paper,
+                      '& fieldset': {
+                        borderColor: alpha(theme.palette.divider, isDark ? 0.2 : 0.1),
+                      },
+                      '&:hover fieldset': {
+                        borderColor: alpha(theme.palette.primary.main, 0.5),
+                      },
+                      '& .MuiOutlinedInput-input': {
+                        padding: '10px 12px',
+                      },
+                    },
+                  }}
+                  InputProps={{
+                    ...params.InputProps,
+                    startAdornment: (
+                      <>
+                        <Box mr={1} display="flex" alignItems="center">
+                          <Iconify
+                            icon="mdi:folder-account"
+                            width={18}
+                            height={18}
+                            sx={{ color: theme.palette.text.secondary }}
+                          />
+                        </Box>
+                        {params.InputProps.startAdornment}
+                      </>
+                    ),
+                  }}
+                />
+              )}
+              onChange={(event, newValue) => setSelectedGroups(newValue)}
+              renderTags={(value, getTagProps) =>
+                value.map((option, index) => (
+                  <Chip
+                    label={option.name}
+                    {...getTagProps({ index })}
+                    size="small"
+                    sx={groupChipStyle}
+                  />
+                ))
+              }
+              renderOption={(props, option) => (
+                <MenuItem
+                  {...props}
+                  sx={{
+                    py: 1,
+                    px: 1.5,
+                    borderRadius: 1,
+                    my: 0.25,
+                    '&:hover': {
+                      bgcolor: isDark
+                        ? alpha(theme.palette.action.hover, 0.1)
+                        : theme.palette.action.hover,
+                    },
+                    '&.Mui-selected': {
+                      bgcolor: isDark
+                        ? alpha(theme.palette.info.main, 0.2)
+                        : alpha(theme.palette.info.light, 0.1),
+                      '&:hover': {
+                        bgcolor: isDark
+                          ? alpha(theme.palette.info.main, 0.25)
+                          : alpha(theme.palette.info.light, 0.15),
+                      },
+                    },
+                  }}
+                >
+                  <Stack direction="row" alignItems="center" spacing={1.5}>
+                    <Box
+                      sx={{
+                        width: 24,
+                        height: 24,
+                        borderRadius: '50%',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        bgcolor: isDark
+                          ? alpha(theme.palette.info.main, 0.3)
+                          : alpha(theme.palette.info.light, 0.2),
+                      }}
+                    >
+                      <Iconify
+                        icon="mdi:account-group"
+                        width={14}
+                        height={14}
+                        sx={{
+                          color: isDark ? theme.palette.info.light : theme.palette.info.main,
+                        }}
+                      />
+                    </Box>
+                    <Typography
+                      variant="body2"
+                      sx={{
+                        fontWeight: 500,
+                        color: theme.palette.text.primary,
+                      }}
+                    >
+                      {option.name}
+                    </Typography>
+                  </Stack>
+                </MenuItem>
+              )}
+              PaperComponent={({ children }) => (
+                <Paper
+                  sx={{
+                    maxHeight: 220,
+                    overflow: 'auto',
+                    mt: 0.5,
+                    borderRadius: 1,
+                    boxShadow: isDark
+                      ? `0 4px 20px ${alpha(theme.palette.common.black, 0.3)}`
+                      : `0 4px 20px ${alpha(theme.palette.common.black, 0.1)}`,
+                    border: `1px solid ${alpha(theme.palette.divider, 0.05)}`,
+                  }}
+                >
+                  {children}
+                </Paper>
+              )}
+            />
+
+            <Typography
+              variant="body2"
+              color="text.secondary"
+              sx={{
+                mt: 1.5,
+                fontSize: '0.875rem',
+                opacity: isDark ? 0.8 : 0.7,
+              }}
+            >
+              New users will inherit the permissions given to the selected groups.
+            </Typography>
+          </Box>
+        </DialogContent>
+
+        <DialogActions
+          sx={{
+            px: 3,
+            py: 2,
+            borderTop: '1px solid',
+            borderColor: alpha(theme.palette.divider, 0.08),
+            bgcolor: isDark
+              ? alpha(theme.palette.background.default, 0.3)
+              : alpha(theme.palette.background.default, 0.2),
+            gap: 1.5,
+          }}
+        >
+          <Button
+            onClick={onClose}
+            variant="text"
+            color="inherit"
             sx={{
-              '& .MuiOutlinedInput-root': {
-                p: 1,
+              borderRadius: 1,
+              textTransform: 'none',
+              fontWeight: 500,
+              fontSize: '0.875rem',
+              color: theme.palette.text.secondary,
+              '&:hover': {
+                backgroundColor: alpha(theme.palette.action.hover, isDark ? 0.1 : 0.05),
+                color: theme.palette.text.primary,
               },
             }}
-          />
-          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-            New users will inherit the permissions given to the selected groups.
-          </Typography>
-        </Box>
-      </DialogContent>
-      <DialogActions sx={{ px: 3, pb: 2, pt: 1 }}>
-        <Button onClick={onClose} variant="outlined" sx={{ borderRadius: 1 }}>
-          Cancel
-        </Button>
-        <Button
-          onClick={handleAddUsers}
-          variant="contained"
-          color="primary"
-          startIcon={
-            isLoading ? (
-              <CircularProgress size={16} color="inherit" />
-            ) : (
-              <Iconify icon={emailIcon} />
-            )
-          }
-          sx={{ borderRadius: 1 }}
-          disabled={emails.length === 0 || isLoading}
-        >
-          {isLoading ? 'Sending...' : 'Send Invites'}
-        </Button>
-      </DialogActions>
-      <Snackbar
-        open={snackbarState.open}
-        autoHideDuration={6000}
-        onClose={handleSnackbarClose}
-        sx={{ mt: 6 }}
-      >
-        <Alert
-          onClose={handleSnackbarClose}
-          severity={snackbarState.severity}
-          sx={{ width: '100%' }}
-        >
-          {snackbarState.message}
-        </Alert>
-      </Snackbar>
-    </Dialog>
+          >
+            Cancel
+          </Button>
+
+          <Button
+            onClick={handleAddUsers}
+            variant="contained"
+            disableElevation
+            disabled={emails.length === 0 || isLoading}
+            startIcon={
+              isLoading ? (
+                <CircularProgress size={16} color="inherit" />
+              ) : (
+                <Iconify icon={emailIcon} width={18} height={18} />
+              )
+            }
+            sx={{
+              borderRadius: 1,
+              textTransform: 'none',
+              fontWeight: 500,
+              fontSize: '0.875rem',
+              boxShadow: 'none',
+              px: 2,
+              py: 0.75,
+              '&:hover': {
+                boxShadow: 'none',
+                bgcolor: isDark
+                  ? alpha(theme.palette.primary.main, 0.8)
+                  : alpha(theme.palette.primary.main, 0.9),
+              },
+            }}
+          >
+            {isLoading ? 'Sending...' : 'Send Invites'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+    </>
   );
 }
 
@@ -1075,8 +1583,11 @@ function AddUsersToGroupsModal({
   groups,
 }: AddUsersToGroupsModalProps) {
   const theme = useTheme();
+  const isDark = theme.palette.mode === 'dark';
+
   const [selectedUsers, setSelectedUsers] = useState<GroupUser[]>([]);
   const [selectedGroups, setSelectedGroups] = useState<AppUserGroup[]>([]);
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [snackbarState, setSnackbarState] = useState<SnackbarState>({
     open: false,
     message: '',
@@ -1088,6 +1599,9 @@ function AddUsersToGroupsModal({
   };
 
   const handleAddUsersToGroups = async () => {
+    if (selectedUsers.length === 0 || selectedGroups.length === 0) return;
+
+    setIsSubmitting(true);
     try {
       const userIds = selectedUsers
         .filter((user): user is GroupUser => user._id !== null)
@@ -1104,134 +1618,489 @@ function AddUsersToGroupsModal({
       onUsersAdded();
       onClose();
     } catch (error) {
-      // setSnackbarState({ open: true, message: error.errorMessage, severity: 'error' });
+      setSnackbarState({
+        open: true,
+        message: 'Failed to add users to groups',
+        severity: 'error',
+      });
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
+  const userChipStyle = {
+    borderRadius: 0.75,
+    height: 24,
+    fontSize: '0.75rem',
+    fontWeight: 500,
+    bgcolor: isDark
+      ? alpha(theme.palette.common.white, 0.85)
+      : alpha(theme.palette.primary.main, 0.75),
+    color: isDark
+      ? alpha(theme.palette.primary.light, 0.1)
+      : alpha(theme.palette.common.white, 0.9),
+    border: isDark ? `1px solid ${alpha(theme.palette.primary.main, 0.4)}` : 'none',
+    '& .MuiChip-deleteIcon': {
+      color: isDark
+        ? alpha(theme.palette.primary.dark, 0.7)
+        : alpha(theme.palette.common.white, 0.7),
+      '&:hover': {
+        color: isDark ? theme.palette.primary.darker : theme.palette.primary.light,
+      },
+    },
+  };
+
+  const groupChipStyle = {
+    borderRadius: 0.75,
+    height: 24,
+    fontSize: '0.75rem',
+    fontWeight: 500,
+    bgcolor: isDark ? alpha(theme.palette.info.main, 0.85) : alpha(theme.palette.info.light, 0.45),
+    color: isDark ? alpha(theme.palette.info.light, 0.9) : theme.palette.info.dark,
+    border: isDark ? `1px solid ${alpha(theme.palette.info.main, 0.4)}` : 'none',
+    '& .MuiChip-deleteIcon': {
+      color: isDark ? alpha(theme.palette.info.dark, 0.7) : alpha(theme.palette.info.main, 0.7),
+      '&:hover': {
+        color: isDark ? theme.palette.info.light : theme.palette.info.dark,
+      },
+    },
+  };
+
   return (
-    <Dialog
-      open={open}
-      onClose={onClose}
-      maxWidth="sm"
-      fullWidth
-      PaperProps={{
-        sx: {
-          borderRadius: 2,
-          padding: 1,
-        },
-      }}
-    >
-      <DialogTitle sx={{ pb: 1 }}>
-        <Stack direction="row" alignItems="center" spacing={1}>
-          <Iconify
-            icon={accountGroupIcon}
-            width={24}
-            height={24}
-            sx={{ color: theme.palette.primary.main }}
-          />
-          <Typography variant="h6">Add Users to Groups</Typography>
-        </Stack>
-      </DialogTitle>
-      <DialogContent>
-        <Box sx={{ mt: 2 }}>
-          {allUsers && (
-            <Autocomplete<GroupUser, true>
-              multiple
-              options={allUsers.filter((user) => Boolean(user?._id && user?.fullName))}
-              getOptionLabel={(option) => {
-                if (!option._id || !option.fullName) return 'Unknown User';
-                return option.fullName;
+    <>
+      <Dialog
+        open={open}
+        onClose={onClose}
+        maxWidth="sm"
+        fullWidth
+        TransitionComponent={Fade}
+        BackdropProps={{
+          sx: {
+            backdropFilter: 'blur(4px)',
+            backgroundColor: alpha(theme.palette.common.black, isDark ? 0.6 : 0.4),
+          },
+        }}
+        PaperProps={{
+          elevation: isDark ? 6 : 2,
+          sx: {
+            borderRadius: 1.5,
+            overflow: 'hidden',
+            bgcolor: isDark
+              ? alpha(theme.palette.background.paper, 0.9)
+              : theme.palette.background.paper,
+          },
+        }}
+      >
+        <DialogTitle
+          sx={{
+            px: 3,
+            py: 2,
+            borderBottom: '1px solid',
+            borderColor: alpha(theme.palette.divider, 0.08),
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+          }}
+        >
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+            <Box
+              sx={{
+                width: 32,
+                height: 32,
+                borderRadius: '50%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                bgcolor: isDark
+                  ? alpha(theme.palette.primary.main, 0.15)
+                  : alpha(theme.palette.primary.main, 0.1),
               }}
-              renderInput={(params) => <TextField {...params} label="Select Users" />}
-              onChange={(_event, newValue) => setSelectedUsers(newValue)}
-              sx={{ mb: 2 }}
+            >
+              <Iconify
+                icon={accountGroupIcon}
+                width={18}
+                height={18}
+                sx={{ color: theme.palette.primary.main }}
+              />
+            </Box>
+            <Typography
+              variant="h6"
+              sx={{
+                fontWeight: 500,
+                fontSize: '1rem',
+                color: theme.palette.text.primary,
+              }}
+            >
+              Add Users to Groups
+            </Typography>
+          </Box>
+
+          <IconButton
+            onClick={onClose}
+            size="small"
+            aria-label="close"
+            sx={{
+              color: theme.palette.text.secondary,
+              width: 28,
+              height: 28,
+              '&:hover': {
+                color: theme.palette.text.primary,
+                bgcolor: alpha(theme.palette.action.hover, isDark ? 0.2 : 0.1),
+              },
+            }}
+          >
+            <Iconify icon="mdi:close" width={18} height={18} />
+          </IconButton>
+        </DialogTitle>
+
+        <DialogContent sx={{ px: 3, py: 2.5 }}>
+          <Box sx={{ mt: 0.5, mb: 3 }}>
+            <Typography
+              variant="body2"
+              color="text.secondary"
+              sx={{
+                mb: 2,
+                fontWeight: 400,
+                fontSize: '0.875rem',
+              }}
+            >
+              Select users and groups to manage permissions
+            </Typography>
+
+            {allUsers && (
+              <Autocomplete<GroupUser, true>
+                multiple
+                limitTags={3}
+                options={allUsers.filter((user) => Boolean(user?._id && user?.fullName))}
+                getOptionLabel={(option) => {
+                  if (!option._id || !option.fullName) return 'Unknown User';
+                  return option.fullName;
+                }}
+                renderInput={(params) => (
+                  <TextField
+                    {...params}
+                    placeholder="Select users"
+                    sx={{
+                      '& .MuiOutlinedInput-root': {
+                        borderRadius: 1,
+                        backgroundColor: isDark
+                          ? alpha(theme.palette.background.paper, 0.6)
+                          : theme.palette.background.paper,
+                        '& fieldset': {
+                          borderColor: alpha(theme.palette.divider, isDark ? 0.2 : 0.1),
+                        },
+                        '&:hover fieldset': {
+                          borderColor: alpha(theme.palette.primary.main, 0.5),
+                        },
+                        '& .MuiOutlinedInput-input': {
+                          padding: '10px 12px',
+                        },
+                      },
+                    }}
+                    InputProps={{
+                      ...params.InputProps,
+                      startAdornment: (
+                        <>
+                          <Box mr={1} display="flex" alignItems="center">
+                            <Iconify
+                              icon="mdi:account-search"
+                              width={18}
+                              height={18}
+                              sx={{ color: theme.palette.text.secondary }}
+                            />
+                          </Box>
+                          {params.InputProps.startAdornment}
+                        </>
+                      ),
+                    }}
+                  />
+                )}
+                onChange={(_event, newValue) => setSelectedUsers(newValue)}
+                sx={{ mb: 2 }}
+                renderTags={(value, getTagProps) =>
+                  value.map((option, index) => (
+                    <Chip
+                      label={option.fullName || 'Unnamed User'}
+                      {...getTagProps({ index })}
+                      size="small"
+                      sx={userChipStyle}
+                    />
+                  ))
+                }
+                renderOption={(props, option) => (
+                  <MenuItem
+                    {...props}
+                    sx={{
+                      py: 1,
+                      px: 1.5,
+                      borderRadius: 1,
+                      my: 0.25,
+                      '&:hover': {
+                        bgcolor: isDark
+                          ? alpha(theme.palette.action.hover, 0.1)
+                          : theme.palette.action.hover,
+                      },
+                      '&.Mui-selected': {
+                        bgcolor: isDark
+                          ? alpha(theme.palette.primary.main, 0.2)
+                          : alpha(theme.palette.primary.light, 0.1),
+                        '&:hover': {
+                          bgcolor: isDark
+                            ? alpha(theme.palette.primary.main, 0.25)
+                            : alpha(theme.palette.primary.light, 0.15),
+                        },
+                      },
+                    }}
+                  >
+                    <Stack direction="row" alignItems="center" spacing={1.5}>
+                      <Avatar
+                        sx={{
+                          width: 24,
+                          height: 24,
+                          fontSize: '0.75rem',
+                          bgcolor: isDark
+                            ? alpha(theme.palette.primary.main, 0.3)
+                            : alpha(theme.palette.primary.light, 0.2),
+                          color: isDark ? theme.palette.primary.light : theme.palette.primary.main,
+                        }}
+                      >
+                        {getInitials(option.fullName)}
+                      </Avatar>
+                      <Box>
+                        <Typography
+                          variant="body2"
+                          sx={{
+                            fontWeight: 500,
+                            color: theme.palette.text.primary,
+                          }}
+                        >
+                          {option.fullName || 'Unnamed User'}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          {option.email || 'No email'}
+                        </Typography>
+                      </Box>
+                    </Stack>
+                  </MenuItem>
+                )}
+                PaperComponent={({ children }) => (
+                  <Paper
+                    sx={{
+                      maxHeight: 220,
+                      overflow: 'auto',
+                      mt: 0.5,
+                      borderRadius: 1,
+                      boxShadow: isDark
+                        ? `0 4px 20px ${alpha(theme.palette.common.black, 0.3)}`
+                        : `0 4px 20px ${alpha(theme.palette.common.black, 0.1)}`,
+                      border: `1px solid ${alpha(theme.palette.divider, 0.05)}`,
+                    }}
+                  >
+                    {children}
+                  </Paper>
+                )}
+              />
+            )}
+
+            <Autocomplete
+              multiple
+              limitTags={3}
+              options={groups}
+              getOptionLabel={(option) => option.name}
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  placeholder="Select groups"
+                  sx={{
+                    '& .MuiOutlinedInput-root': {
+                      borderRadius: 1,
+                      backgroundColor: isDark
+                        ? alpha(theme.palette.background.paper, 0.6)
+                        : theme.palette.background.paper,
+                      '& fieldset': {
+                        borderColor: alpha(theme.palette.divider, isDark ? 0.2 : 0.1),
+                      },
+                      '&:hover fieldset': {
+                        borderColor: alpha(theme.palette.primary.main, 0.5),
+                      },
+                      '& .MuiOutlinedInput-input': {
+                        padding: '10px 12px',
+                      },
+                    },
+                  }}
+                  InputProps={{
+                    ...params.InputProps,
+                    startAdornment: (
+                      <>
+                        <Box mr={1} display="flex" alignItems="center">
+                          <Iconify
+                            icon="mdi:folder-account"
+                            width={18}
+                            height={18}
+                            sx={{ color: theme.palette.text.secondary }}
+                          />
+                        </Box>
+                        {params.InputProps.startAdornment}
+                      </>
+                    ),
+                  }}
+                />
+              )}
+              onChange={(event, newValue) => setSelectedGroups(newValue)}
               renderTags={(value, getTagProps) =>
                 value.map((option, index) => (
                   <Chip
-                    label={option.fullName || 'Unnamed User'}
+                    label={option.name}
                     {...getTagProps({ index })}
-                    sx={{
-                      bgcolor: alpha(theme.palette.primary.main, 0.08),
-                      color: theme.palette.primary.main,
-                    }}
+                    size="small"
+                    sx={groupChipStyle}
                   />
                 ))
               }
               renderOption={(props, option) => (
-                <li {...props}>
+                <MenuItem
+                  {...props}
+                  sx={{
+                    py: 1,
+                    px: 1.5,
+                    borderRadius: 1,
+                    my: 0.25,
+                    '&:hover': {
+                      bgcolor: isDark
+                        ? alpha(theme.palette.action.hover, 0.1)
+                        : theme.palette.action.hover,
+                    },
+                    '&.Mui-selected': {
+                      bgcolor: isDark
+                        ? alpha(theme.palette.info.main, 0.2)
+                        : alpha(theme.palette.info.light, 0.1),
+                      '&:hover': {
+                        bgcolor: isDark
+                          ? alpha(theme.palette.info.main, 0.25)
+                          : alpha(theme.palette.info.light, 0.15),
+                      },
+                    },
+                  }}
+                >
                   <Stack direction="row" alignItems="center" spacing={1.5}>
-                    <Avatar
+                    <Box
                       sx={{
                         width: 24,
                         height: 24,
-                        fontSize: '0.75rem',
-                        bgcolor: alpha(theme.palette.primary.main, 0.08),
-                        color: theme.palette.primary.main,
+                        borderRadius: '50%',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        bgcolor: isDark
+                          ? alpha(theme.palette.info.main, 0.3)
+                          : alpha(theme.palette.info.light, 0.2),
                       }}
                     >
-                      {getInitials(option.fullName)}
-                    </Avatar>
-                    <Box>
-                      <Typography variant="body2">{option.fullName || 'Unnamed User'}</Typography>
-                      <Typography variant="caption" color="text.secondary">
-                        {option.email || 'No email'}
-                      </Typography>
+                      <Iconify
+                        icon="mdi:account-group"
+                        width={14}
+                        height={14}
+                        sx={{
+                          color: isDark ? theme.palette.info.light : theme.palette.info.main,
+                        }}
+                      />
                     </Box>
+                    <Typography
+                      variant="body2"
+                      sx={{
+                        fontWeight: 500,
+                        color: theme.palette.text.primary,
+                      }}
+                    >
+                      {option.name}
+                    </Typography>
                   </Stack>
-                </li>
+                </MenuItem>
+              )}
+              PaperComponent={({ children }) => (
+                <Paper
+                  sx={{
+                    maxHeight: 220,
+                    overflow: 'auto',
+                    mt: 0.5,
+                    borderRadius: 1,
+                    boxShadow: isDark
+                      ? `0 4px 20px ${alpha(theme.palette.common.black, 0.3)}`
+                      : `0 4px 20px ${alpha(theme.palette.common.black, 0.1)}`,
+                    border: `1px solid ${alpha(theme.palette.divider, 0.05)}`,
+                  }}
+                >
+                  {children}
+                </Paper>
               )}
             />
-          )}
-          <Autocomplete
-            multiple
-            options={groups}
-            getOptionLabel={(option) => option.name}
-            renderInput={(params) => <TextField {...params} label="Select Groups" />}
-            onChange={(event, newValue) => setSelectedGroups(newValue)}
-            renderTags={(value, getTagProps) =>
-              value.map((option, index) => (
-                <Chip
-                  label={option.name}
-                  {...getTagProps({ index })}
-                  sx={{
-                    bgcolor: alpha(theme.palette.info.main, 0.08),
-                    color: theme.palette.info.main,
-                  }}
-                />
-              ))
+          </Box>
+        </DialogContent>
+
+        <DialogActions
+          sx={{
+            px: 3,
+            py: 2,
+            borderTop: '1px solid',
+            borderColor: alpha(theme.palette.divider, 0.08),
+            bgcolor: isDark
+              ? alpha(theme.palette.background.default, 0.3)
+              : alpha(theme.palette.background.default, 0.2),
+            gap: 1.5,
+          }}
+        >
+          <Button
+            onClick={onClose}
+            variant="text"
+            color="inherit"
+            sx={{
+              borderRadius: 1,
+              textTransform: 'none',
+              fontWeight: 500,
+              fontSize: '0.875rem',
+              color: theme.palette.text.secondary,
+              '&:hover': {
+                backgroundColor: alpha(theme.palette.action.hover, isDark ? 0.1 : 0.05),
+                color: theme.palette.text.primary,
+              },
+            }}
+          >
+            Cancel
+          </Button>
+
+          <Button
+            onClick={handleAddUsersToGroups}
+            variant="contained"
+            disableElevation
+            disabled={selectedUsers.length === 0 || selectedGroups.length === 0 || isSubmitting}
+            startIcon={
+              isSubmitting ? (
+                <CircularProgress size={16} color="inherit" />
+              ) : (
+                <Iconify icon={peopleIcon} width={18} height={18} />
+              )
             }
-          />
-        </Box>
-      </DialogContent>
-      <DialogActions sx={{ px: 3, pb: 2, pt: 1 }}>
-        <Button onClick={onClose} variant="outlined" sx={{ borderRadius: 1 }}>
-          Cancel
-        </Button>
-        <Button
-          onClick={handleAddUsersToGroups}
-          variant="contained"
-          color="primary"
-          startIcon={<Iconify icon={peopleIcon} />}
-          sx={{ borderRadius: 1 }}
-        >
-          Add to Groups
-        </Button>
-      </DialogActions>
-      <Snackbar
-        open={snackbarState.open}
-        autoHideDuration={6000}
-        onClose={handleSnackbarClose}
-        sx={{ mt: 6 }}
-      >
-        <Alert
-          onClose={handleSnackbarClose}
-          severity={snackbarState.severity}
-          sx={{ width: '100%' }}
-        >
-          {snackbarState.message}
-        </Alert>
-      </Snackbar>
-    </Dialog>
+            sx={{
+              borderRadius: 1,
+              textTransform: 'none',
+              fontWeight: 500,
+              fontSize: '0.875rem',
+              boxShadow: 'none',
+              px: 2,
+              py: 0.75,
+              '&:hover': {
+                boxShadow: 'none',
+                bgcolor: isDark
+                  ? alpha(theme.palette.primary.main, 0.8)
+                  : alpha(theme.palette.primary.main, 0.9),
+              },
+            }}
+          >
+            {isSubmitting ? 'Adding...' : 'Add to Groups'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+    </>
   );
 }
 

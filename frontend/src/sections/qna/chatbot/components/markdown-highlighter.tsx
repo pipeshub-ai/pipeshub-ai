@@ -12,7 +12,7 @@ import alertCircleIcon from '@iconify-icons/mdi/alert-circle-outline';
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 
 import { styled } from '@mui/material/styles';
-import { Box, Paper, Typography, CircularProgress } from '@mui/material';
+import { Box, Paper, Typography, CircularProgress, alpha } from '@mui/material';
 
 import CitationSidebar from './highlighter-sidebar';
 
@@ -66,27 +66,145 @@ const ErrorOverlay = styled(Box)(({ theme }) => ({
   zIndex: 10,
 }));
 
-const DocumentContainer = styled(Box)({
+const DocumentContainer = styled(Box)(({ theme }) => ({
   width: '100%',
   height: '100%',
   overflow: 'auto',
   minHeight: '100px',
   padding: '1rem 1.5rem',
-  '& p, & li, & blockquote': { lineHeight: 1.6 },
-  '& h1, & h2, & h3, & h4, & h5, & h6': { marginTop: '1.5em', marginBottom: '0.8em' },
-  '& table': { borderCollapse: 'collapse', marginBottom: '1em', width: 'auto' },
-  '& th, & td': { border: '1px solid #ddd', padding: '0.5em', textAlign: 'left' },
-  '& th': { backgroundColor: '#f2f2f2' },
-  '& strong, & b': { fontWeight: 'bold' },
-  '& em, & i': { fontStyle: 'italic' },
+  backgroundColor: theme.palette.mode === 'dark' ? 'transparent' : theme.palette.background.paper,
+  // color: theme.palette.text.primary,
+
+  // Text formatting
+  '& p, & li, & blockquote': {
+    lineHeight: 1.6,
+    color:
+      theme.palette.mode === 'dark'
+        ? alpha(theme.palette.common.white, 0.9)
+        : theme.palette.text.primary,
+  },
+
+  // Headings
+  '& h1, & h2, & h3, & h4, & h5, & h6': {
+    marginTop: '1.5em',
+    marginBottom: '0.8em',
+    color: theme.palette.mode === 'dark' ?  alpha(theme.palette.primary.light, 1) : theme.palette.text.primary,
+  },
+
+  // Tables
+  '& table': {
+    borderCollapse: 'collapse',
+    marginBottom: '1em',
+    width: 'auto',
+    borderColor:
+      theme.palette.mode === 'dark' ? alpha(theme.palette.divider, 0.1) : theme.palette.divider,
+  },
+
+  '& th, & td': {
+    border:
+      theme.palette.mode === 'dark'
+        ? `1px solid ${alpha(theme.palette.divider, 0.1)}`
+        : '1px solid #ddd',
+    padding: '0.5em',
+    textAlign: 'left',
+  },
+
+  '& th': {
+    backgroundColor:
+      theme.palette.mode === 'dark' ? alpha(theme.palette.background.default, 0.4) : '#f2f2f2',
+    color:
+      theme.palette.mode === 'dark' ? theme.palette.primary.lighter : theme.palette.text.primary,
+  },
+
+  // Text formatting
+  '& strong, & b': {
+    fontWeight: 'bold',
+    color: theme.palette.mode === 'dark' ? theme.palette.primary.lighter : 'inherit',
+  },
+
+  '& em, & i': {
+    fontStyle: 'italic',
+  },
+
+  // Code blocks
   '& code': {
     fontFamily: 'monospace',
-    backgroundColor: 'rgba(0, 0, 0, 0.05)',
+    backgroundColor:
+      theme.palette.mode === 'dark'
+        ? alpha(theme.palette.grey[700], 0.6) 
+        : 'rgba(0, 0, 0, 0.05)',
     padding: '0.2em 0.4em',
     borderRadius: '3px',
+    color: theme.palette.mode === 'dark' ? theme.palette.primary.light : 'inherit',
   },
-  '& pre > code': { display: 'block', padding: '1em', overflowX: 'auto' },
-});
+
+  '& pre': {
+    backgroundColor:
+      theme.palette.mode === 'dark'
+        ? alpha(theme.palette.grey[700], 0.6) 
+        : 'rgba(0, 0, 0, 0.03)',
+    borderRadius: '4px',
+    border:
+      theme.palette.mode === 'dark'
+        ? `1px solid ${alpha(theme.palette.divider, 0.2)}`
+        : `1px solid ${alpha(theme.palette.divider, 0.1)}`,
+    margin: '1em 0',
+  },
+
+  '& pre > code': {
+    display: 'block',
+    padding: '1em',
+    overflowX: 'auto',
+    backgroundColor: 'transparent', 
+    border: 'none', 
+    color:
+      theme.palette.mode === 'dark'
+        ? alpha(theme.palette.common.white, 0.85) 
+        : 'inherit',
+  },
+
+  // Syntax highlighting enhancement for dark mode
+  '& pre .token.comment': {
+    color: theme.palette.mode === 'dark' ? '#6a9955' : 'inherit',
+  },
+  '& pre .token.string': {
+    color: theme.palette.mode === 'dark' ? '#ce9178' : 'inherit',
+  },
+  '& pre .token.keyword': {
+    color: theme.palette.mode === 'dark' ? '#569cd6' : 'inherit',
+  },
+  '& pre .token.function': {
+    color: theme.palette.mode === 'dark' ? '#dcdcaa' : 'inherit',
+  },
+  '& pre .token.number': {
+    color: theme.palette.mode === 'dark' ? '#b5cea8' : 'inherit',
+  },
+
+  // Blockquotes
+  '& blockquote': {
+    borderLeft:
+      theme.palette.mode === 'dark'
+        ? `4px solid ${alpha(theme.palette.primary.main, 0.6)}`
+        : '4px solid #ddd',
+    padding: '0.5em 1em',
+    margin: '1em 0',
+    backgroundColor:
+      theme.palette.mode === 'dark'
+        ? alpha(theme.palette.background.default, 0.2)
+        : 'rgba(0, 0, 0, 0.02)',
+  },
+
+  // Links
+  '& a': {
+    color: theme.palette.primary.main,
+    textDecoration: 'none',
+    '&:hover': {
+      textDecoration: 'underline',
+      color:
+        theme.palette.mode === 'dark' ? theme.palette.primary.light : theme.palette.primary.dark,
+    },
+  },
+}));
 // --- End Styled components ---
 
 // Custom renderer (Usually not needed when rehypeRaw is used for standard HTML)
@@ -273,7 +391,7 @@ const MarkdownViewer: React.FC<MarkdownViewerProps> = ({
     if (words1.size === 0 || words2.size === 0) return 0;
     let intersectionSize = 0;
     words1.forEach((word) => {
-      if (words2.has(word)) intersectionSize+=1;
+      if (words2.has(word)) intersectionSize += 1;
     });
     const unionSize = words1.size + words2.size - intersectionSize;
     // Using Jaccard Index for potentially better results with varying lengths

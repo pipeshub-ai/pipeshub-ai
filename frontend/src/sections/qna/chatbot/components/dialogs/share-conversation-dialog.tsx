@@ -5,8 +5,11 @@ import { Icon } from '@iconify/react';
 import React, { useState } from 'react';
 import magnifyIcon from '@iconify-icons/mdi/magnify';
 import contentCopyIcon from '@iconify-icons/mdi/content-copy';
+import shareIcon from '@iconify-icons/mdi/share-variant-outline';
+import closeIcon from '@iconify-icons/mdi/close';
+import checkCircleIcon from '@iconify-icons/mdi/check-circle-outline';
 
-import {
+import { 
   Box,
   Paper,
   Alert,
@@ -18,14 +21,18 @@ import {
   TextField,
   Typography,
   IconButton,
-  DialogTitle,
   Autocomplete,
+  DialogTitle,
   DialogContent,
   DialogActions,
+  useTheme,
+  alpha,
+  Fade,
+  Tooltip,
+  CircularProgress,
 } from '@mui/material';
 
 import axiosInstance from 'src/utils/axios';
-
 import { useUsers } from 'src/context/UserContext';
 
 interface ShareConversationDialogProps {
@@ -40,23 +47,30 @@ const ShareConversationDialog = ({
   conversationId,
 }: ShareConversationDialogProps) => {
   const users = useUsers();
+  const theme = useTheme();
+  const isDark = theme.palette.mode === 'dark';
+  
   const [selectedUsers, setSelectedUsers] = useState<User[]>([]);
   const [shareLink, setShareLink] = useState<string>('');
   const [isShared, setIsShared] = useState<boolean>(false);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [copySuccess, setCopySuccess] = useState<boolean>(false);
   const [snackbarState, setSnackbarState] = useState<SnackbarState>({
     open: false,
     message: '',
     severity: 'success',
   });
-
+  
   const handleShareConversation = async () => {
+    if (selectedUsers.length === 0) return;
+    
+    setIsLoading(true);
     try {
       const response = await axiosInstance.post(`/api/v1/conversations/${conversationId}/share`, {
         isPublic: true,
         userIds: selectedUsers.map((user) => user._id),
       });
 
-      // const { shareLink } = response.data;
       setShareLink(response.data.shareLink);
       setIsShared(true);
       setSnackbarState({
@@ -65,28 +79,32 @@ const ShareConversationDialog = ({
         severity: 'success',
       });
     } catch (error) {
-      // setSnackbarState({
-      //   open: true,
-      //   message: 'Failed to share conversation',
-      //   severity: 'error',
-      // });
+      setSnackbarState({
+        open: true,
+        message: 'Failed to share conversation',
+        severity: 'error',
+      });
+    } finally {
+      setIsLoading(false);
     }
   };
 
   const handleCopyLink = async () => {
     try {
       await navigator.clipboard.writeText(shareLink);
+      setCopySuccess(true);
+      setTimeout(() => setCopySuccess(false), 2000);
       setSnackbarState({
         open: true,
         message: 'Link copied to clipboard',
         severity: 'success',
       });
     } catch (error) {
-      // setSnackbarState({
-      //   open: true,
-      //   message: 'Failed to copy link',
-      //   severity: 'error',
-      // });
+      setSnackbarState({
+        open: true,
+        message: 'Failed to copy link',
+        severity: 'error',
+      });
     }
   };
 
@@ -99,15 +117,91 @@ const ShareConversationDialog = ({
 
   return (
     <>
-      <Dialog open={open} onClose={handleDialogClose} maxWidth="sm" fullWidth>
-        <DialogTitle>
-          <Typography variant="h6">Share Conversation</Typography>
+      <Dialog
+        open={open}
+        onClose={handleDialogClose}
+        maxWidth="sm"
+        fullWidth
+        TransitionComponent={Fade}
+        BackdropProps={{
+          sx: {
+            backdropFilter: 'blur(1px)',
+            backgroundColor: alpha(theme.palette.common.black, isDark ? 0.6 : 0.4),
+          },
+        }}
+        PaperProps={{
+          elevation: isDark ? 6 : 2,
+          sx: { 
+            borderRadius: 1.5,
+            overflow: 'hidden',
+          },
+        }}
+      >
+        <DialogTitle
+          sx={{ 
+            px: 3, 
+            py: 2, 
+            borderBottom: '1px solid', 
+            borderColor: alpha(theme.palette.divider, 0.08),
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between'
+          }}
+        >
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+            <Icon 
+              icon={shareIcon} 
+              style={{
+                fontSize: "18px",
+                color: theme.palette.primary.main
+              }}
+            />
+            <Typography 
+              variant="h6" 
+              sx={{ 
+                fontWeight: 500, 
+                fontSize: '1rem',
+              }}
+            >
+              Share Conversation
+            </Typography>
+          </Box>
+          <IconButton 
+            onClick={handleDialogClose} 
+            size="small"
+            sx={{
+              color: theme.palette.text.secondary,
+              '&:hover': {
+                color: theme.palette.text.primary,
+                bgcolor: alpha(theme.palette.action.hover, isDark ? 0.2 : 0.1),
+              }
+            }}
+          >
+            <Icon icon={closeIcon} style={{ fontSize: "18px" }} />
+          </IconButton>
         </DialogTitle>
-        <DialogContent dividers>
+        
+        <DialogContent sx={{ px: 3, py: 2.5 }}>
           {/* Share Link Section */}
-          {(isShared || shareLink) && (
-            <Box mb={3} sx={{ backgroundColor: 'background.neutral', p: 2, borderRadius: 1 }}>
-              <Typography variant="subtitle2" gutterBottom>
+          {/* {(isShared || shareLink) && (
+            <Box 
+              sx={{ 
+                bgcolor: isDark 
+                  ? alpha(theme.palette.primary.dark, 0.05)
+                  : alpha(theme.palette.primary.light, 0.05),
+                p: 2, 
+                borderRadius: 1.5,
+                border: `1px solid ${alpha(theme.palette.primary.main, isDark ? 0.1 : 0.1)}`,
+                mb: 3,
+              }}
+            >
+              <Typography 
+                variant="subtitle2" 
+                sx={{ 
+                  mb: 1.5,
+                  fontWeight: 500,
+                }}
+              >
                 Share Link
               </Typography>
               <Box
@@ -115,11 +209,14 @@ const ShareConversationDialog = ({
                   display: 'flex',
                   alignItems: 'center',
                   gap: 1,
-                  backgroundColor: 'background.paper',
+                  backgroundColor: isDark 
+                    ? alpha(theme.palette.background.paper, 0.7)
+                    : theme.palette.background.paper,
                   borderRadius: 1,
                   border: '1px solid',
-                  borderColor: 'divider',
-                  p: 1,
+                  borderColor: alpha(theme.palette.divider, 0.1),
+                  px: 1.5,
+                  py: 1,
                 }}
               >
                 <Typography
@@ -133,26 +230,43 @@ const ShareConversationDialog = ({
                 >
                   {shareLink}
                 </Typography>
-                <IconButton
-                  size="small"
-                  onClick={handleCopyLink}
-                  sx={{
-                    '&:hover': {
-                      backgroundColor: 'action.hover',
-                    },
-                  }}
-                >
-                  <Icon icon={contentCopyIcon} />
-                </IconButton>
+                <Tooltip title={copySuccess ? "Copied!" : "Copy link"}>
+                  <IconButton
+                    size="small"
+                    onClick={handleCopyLink}
+                    sx={{
+                      color: copySuccess ? theme.palette.success.main : theme.palette.primary.main,
+                      '&:hover': {
+                        bgcolor: copySuccess
+                          ? alpha(theme.palette.success.main, isDark ? 0.15 : 0.1)
+                          : alpha(theme.palette.primary.main, isDark ? 0.15 : 0.1),
+                      },
+                    }}
+                  >
+                    <Icon 
+                      icon={copySuccess ? checkCircleIcon : contentCopyIcon} 
+                      style={{ fontSize: "18px" }} 
+                    />
+                  </IconButton>
+                </Tooltip>
               </Box>
             </Box>
-          )}
+          )} */}
 
           {/* User Selection Section */}
-          <Box mb={2}>
+          <Box>
+            <Typography 
+              variant="subtitle2" 
+              sx={{ 
+                my: 1.5,
+                fontWeight: 500,
+              }}
+            >
+              Share with Team Members
+            </Typography>
             <Autocomplete
               multiple
-              limitTags={2}
+              limitTags={3}
               options={users}
               getOptionLabel={(user) => user.fullName}
               value={selectedUsers}
@@ -160,11 +274,31 @@ const ShareConversationDialog = ({
                 setSelectedUsers(newValue);
               }}
               renderOption={(props, user, { selected }) => (
-                <MenuItem {...props}>
-                  <Checkbox checked={selected} color="primary" />
-                  <Box ml={1}>
-                    <Typography>{user.fullName}</Typography>
-                    <Typography variant="body2" color="textSecondary">
+                <MenuItem 
+                  {...props}
+                  sx={{
+                    py: 1,
+                    px: 1.5,
+                    borderRadius: 1,
+                    my: 0.25,
+                    '&:hover': {
+                      bgcolor: isDark
+                        ? alpha(theme.palette.action.hover, 0.1)
+                        : theme.palette.action.hover,
+                    }
+                  }}
+                >
+                  <Checkbox 
+                    checked={selected} 
+                    color="primary" 
+                    size="small"
+                    sx={{ mr: 1 }}
+                  />
+                  <Box>
+                    <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                      {user.fullName}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
                       {user.email}
                     </Typography>
                   </Box>
@@ -174,13 +308,46 @@ const ShareConversationDialog = ({
                 <TextField
                   {...params}
                   variant="outlined"
-                  placeholder="Search users"
+                  placeholder="Search users by name or email"
+                  fullWidth
+                  sx={{
+                    '& .MuiOutlinedInput-root': {
+                      borderRadius: 1,
+                      backgroundColor: isDark 
+                        ? alpha(theme.palette.background.paper, 0.6)
+                        : theme.palette.background.paper,
+                      '& fieldset': {
+                        borderColor: alpha(theme.palette.divider, 0.1),
+                      },
+                      '&:hover fieldset': {
+                        borderColor: alpha(theme.palette.primary.main, 0.5),
+                      },
+                      '& .MuiOutlinedInput-input': {
+                        padding: '10px 12px',
+                      },
+                      '& .MuiChip-root': {
+                        borderRadius: 0.75,
+                        height: 24,
+                        fontSize: '0.75rem',
+                        bgcolor: isDark 
+                          ? alpha(theme.palette.primary.dark, 0.15)
+                          : alpha(theme.palette.primary.light, 0.1),
+                        color: theme.palette.primary.main,
+                      }
+                    },
+                  }}
                   InputProps={{
                     ...params.InputProps,
                     startAdornment: (
                       <>
                         <Box mr={1} display="flex" alignItems="center">
-                          <Icon icon={magnifyIcon} />
+                          <Icon 
+                            icon={magnifyIcon} 
+                            style={{
+                              fontSize: "18px",
+                              color: theme.palette.text.secondary
+                            }}
+                          />
                         </Box>
                         {params.InputProps.startAdornment}
                       </>
@@ -191,51 +358,111 @@ const ShareConversationDialog = ({
               PaperComponent={({ children }) => (
                 <Paper
                   sx={{
-                    maxHeight: 200,
+                    maxHeight: 220,
                     overflow: 'auto',
-                    '&::-webkit-scrollbar': {
-                      width: '8px',
-                    },
-                    '&::-webkit-scrollbar-track': {
-                      backgroundColor: 'background.neutral',
-                      borderRadius: '8px',
-                    },
-                    '&::-webkit-scrollbar-thumb': {
-                      backgroundColor: 'grey.400',
-                      borderRadius: '8px',
-                      '&:hover': {
-                        backgroundColor: 'grey.500',
-                      },
-                    },
+                    mt: 0.5,
+                    borderRadius: 1,
+                    boxShadow: isDark
+                      ? `0 4px 20px ${alpha(theme.palette.common.black, 0.3)}`
+                      : `0 4px 20px ${alpha(theme.palette.common.black, 0.1)}`,
+                    border: `1px solid ${alpha(theme.palette.divider, 0.05)}`,
                   }}
                 >
                   {children}
                 </Paper>
               )}
-              ListboxProps={{
-                style: {
-                  maxHeight: 'none', // Remove the default listbox scrolling
-                },
-              }}
             />
           </Box>
 
-          <Box mt={2}>
-            <Typography variant="caption" color="textSecondary">
-              Sharing conversations with user uploaded images is not yet supported
+          <Box mt={3} pt={1.5} sx={{ borderTop: `1px solid ${alpha(theme.palette.divider, 0.08)}` }}>
+            <Typography 
+              variant="caption" 
+              color="text.secondary"
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 0.5,
+              }}
+            >
+              <Box
+                component="span"
+                sx={{
+                  display: 'inline-block',
+                  width: 4,
+                  height: 4,
+                  borderRadius: '50%',
+                  bgcolor: theme.palette.warning.main,
+                }}
+              />
+              Sharing conversations with uploaded images is not supported
             </Typography>
           </Box>
         </DialogContent>
-        <DialogActions>
-          <Button onClick={handleDialogClose}>Close</Button>
+        
+        <DialogActions
+          sx={{ 
+            px: 3, 
+            py: 2, 
+            borderTop: '1px solid', 
+            borderColor: alpha(theme.palette.divider, 0.08),
+            bgcolor: isDark 
+              ? alpha(theme.palette.background.default, 0.3)
+              : alpha(theme.palette.background.default, 0.2),
+            gap: 1.5,
+          }}
+        >
+          <Button
+            onClick={handleDialogClose}
+            variant="text"
+            color="inherit"
+            sx={{ 
+              borderRadius: 1,
+              textTransform: 'none',
+              fontWeight: 500,
+              fontSize: '0.875rem',
+              color: theme.palette.text.secondary,
+              '&:hover': {
+                backgroundColor: alpha(theme.palette.action.hover, isDark ? 0.1 : 0.05),
+                color: theme.palette.text.primary,
+              }
+            }}
+          >
+            Cancel
+          </Button>
+          
           {(!isShared || !shareLink) && (
             <Button
               onClick={handleShareConversation}
               variant="contained"
-              color="primary"
-              disabled={selectedUsers.length === 0}
+              disableElevation
+              disabled={selectedUsers.length === 0 || isLoading}
+              startIcon={
+                isLoading ? (
+                  <CircularProgress size={16} color="inherit" />
+                ) : (
+                  <Icon 
+                    icon={shareIcon} 
+                    style={{ fontSize: "18px" }} 
+                  />
+                )
+              }
+              sx={{ 
+                borderRadius: 1,
+                textTransform: 'none',
+                fontWeight: 500,
+                fontSize: '0.875rem',
+                boxShadow: 'none',
+                px: 2,
+                py: 0.75,
+                '&:hover': {
+                  boxShadow: 'none',
+                  bgcolor: isDark 
+                    ? alpha(theme.palette.primary.main, 0.8)
+                    : alpha(theme.palette.primary.main, 0.9),
+                },
+              }}
             >
-              Share
+              {isLoading ? 'Sharing...' : 'Share'}
             </Button>
           )}
         </DialogActions>
@@ -246,18 +473,25 @@ const ShareConversationDialog = ({
         autoHideDuration={3000}
         onClose={() => setSnackbarState((prev) => ({ ...prev, open: false }))}
         anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
+        TransitionComponent={Fade}
       >
         <Alert
           onClose={() => setSnackbarState((prev) => ({ ...prev, open: false }))}
           severity={snackbarState.severity}
           variant="filled"
-          elevation={6}
+          elevation={2}
+          sx={{ 
+            borderRadius: 1,
+            boxShadow: isDark
+              ? `0 4px 16px ${alpha(theme.palette.common.black, 0.4)}`
+              : `0 4px 16px ${alpha(theme.palette.common.black, 0.15)}`,
+          }}
         >
           {snackbarState.message}
         </Alert>
       </Snackbar>
     </>
   );
-};
+}
 
 export default ShareConversationDialog;

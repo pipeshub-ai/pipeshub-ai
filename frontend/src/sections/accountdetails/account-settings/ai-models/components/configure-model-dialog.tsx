@@ -120,9 +120,9 @@ const ConfigureModelDialog = ({ open, onClose, onSave, modelType }: ConfigureMod
       case 'llm':
         currentRef = llmConfigFormRef;
         break;
-        case 'embedding':
-          currentRef = embeddingConfigFormRef;
-          break;
+      case 'embedding':
+        currentRef = embeddingConfigFormRef;
+        break;
       //   case 'ocr':
       //     currentRef = ocrConfigFormRef;
       //     break;
@@ -195,6 +195,12 @@ const ConfigureModelDialog = ({ open, onClose, onSave, modelType }: ConfigureMod
       onClose={onClose}
       maxWidth="md"
       fullWidth
+      BackdropProps={{
+        sx: {
+          backdropFilter: 'blur(1px)',
+          backgroundColor: alpha(theme.palette.common.black, 0.3),
+        },
+      }}
       PaperProps={{
         sx: {
           borderRadius: 1,
@@ -272,19 +278,19 @@ const ConfigureModelDialog = ({ open, onClose, onSave, modelType }: ConfigureMod
           {modelType === 'llm' && (
             <LlmConfigForm onValidationChange={handleValidationChange} ref={llmConfigFormRef} />
           )}
-            {modelType === 'embedding' && (
-              <EmbeddingConfigForm
-                onValidationChange={handleValidationChange}
-                ref={embeddingConfigFormRef}
-              />
-            )}
+          {modelType === 'embedding' && (
+            <EmbeddingConfigForm
+              onValidationChange={handleValidationChange}
+              ref={embeddingConfigFormRef}
+            />
+          )}
           {/* {modelType === 'ocr' && (
             <OcrConfigForm
               onValidationChange={handleValidationChange}
               ref={ocrConfigFormRef}
             />
           )} */}
-           {/*
+          {/*
           {modelType === 'slm' && (
             <SlmConfigForm
               onValidationChange={handleValidationChange}

@@ -51,7 +51,7 @@ const modelPlaceholders = {
   openai: 'e.g., text-embedding-3-small, text-embedding-3-large',
   gemini: 'e.g., gemini-embedding-exp-03-07',
   cohere: 'e.g., embed-v4.0',
-  azureOpenAI: 'e.g., text-embedding-ada-002',
+  azureOpenAI: 'e.g., text-embedding-3-small',
   sentenceTransformers: 'e.g., all-MiniLM-L6-v2',
 };
 

@@ -45,7 +45,7 @@ export default function UsersAndGroups() {
   const userCount = useSelector((state: RootState) => state.counts.usersCount);
   const groupCount = useSelector((state: RootState) => state.counts.groupsCount);
   const invitesCount = useSelector((state: RootState) => state.counts.invitesCount);
-
+  console.log(groupCount)
   useEffect(() => {
     const fetchCounts = async (): Promise<void> => {
       dispatch(setLoading(true));
@@ -54,7 +54,7 @@ export default function UsersAndGroups() {
         const groups: AppUserGroup[] = await allGroups();
         const loggedInUsers = response.filter((user) => user.hasLoggedIn===true);
         const pendingUsers = response.filter((user) => user.hasLoggedIn===false);
-
+        console.log(groups)
         dispatch(
           setCounts({
             usersCount: loggedInUsers.length,

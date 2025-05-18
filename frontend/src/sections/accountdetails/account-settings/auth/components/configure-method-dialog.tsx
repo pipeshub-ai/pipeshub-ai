@@ -179,6 +179,12 @@ const ConfigureMethodDialog: React.FC<ConfigureMethodDialogProps> = ({
       onClose={onClose}
       maxWidth="md"
       fullWidth
+      BackdropProps={{
+        sx: {
+          backdropFilter: 'blur(1px)',
+          backgroundColor: alpha(theme.palette.common.black, 0.3),
+        },
+      }}
       PaperProps={{
         sx: {
           borderRadius: 1,
