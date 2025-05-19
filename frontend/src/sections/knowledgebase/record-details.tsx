@@ -65,7 +65,7 @@ import RecordSalesAgent from './ask-me-anything';
 import RecordDocumentViewer from './show-documents';
 import EditRecordDialog from './edit-record-dialog';
 import DeleteRecordDialog from './delete-record-dialog';
-import type { Permissions, RecordDetailsResponse } from './types/record-details';
+import type { MetadataItem, Permissions, RecordDetailsResponse } from './types/record-details';
 
 const getIndexingStatusColor = (
   status: string
@@ -323,15 +323,22 @@ export default function RecordDetails() {
     webUrl = record.fileRecord?.webUrl || record.mailRecord?.webUrl;
   }
 
+  const hasValidNames = (items: MetadataItem[]) => {
+    if (!items || items.length === 0) return false;
+    return items.some((item: MetadataItem) => item && item.name);
+  };
+
   // Render chips function for metadata items
-  const renderChips = (items: any) => {
+  const renderChips = (items: MetadataItem[]) => {
     if (!items || items.length === 0) return null;
+    const validItems = items.filter((item : MetadataItem) => item && item.name);
+    if (validItems.length === 0) return null;
 
     return (
       <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
-        {items.map((item: any) => (
+        {validItems.map((item: MetadataItem) => (
           <Chip
-            key={item.id || item._id}
+            key={item.id}
             label={item.name}
             size="small"
             sx={{
@@ -1190,7 +1197,7 @@ export default function RecordDetails() {
                     )}
 
                     {/* Departments */}
-                    {metadata?.departments && metadata.departments.length > 0 && (
+                    {metadata?.departments && metadata.departments.length > 0 && hasValidNames(metadata.departments) &&(
                       <Box>
                         <Typography
                           variant="caption"
@@ -1210,92 +1217,99 @@ export default function RecordDetails() {
                       </Box>
                     )}
 
-                    {/* Categories */}
-                    {metadata?.categories && metadata.categories.length > 0 && (
-                      <Box>
-                        <Typography
-                          variant="caption"
-                          color="text.secondary"
-                          gutterBottom
-                          sx={{
-                            textTransform: 'uppercase',
-                            fontWeight: 500,
-                            letterSpacing: '0.5px',
-                            display: 'block',
-                            mb: 0.75,
-                          }}
-                        >
-                          Document Category
-                        </Typography>
-                        {renderChips(metadata.categories)}
-                      </Box>
-                    )}
+                    {metadata?.categories &&
+                      metadata.categories.length > 0 &&
+                      hasValidNames(metadata.categories) && (
+                        <Box>
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            gutterBottom
+                            sx={{
+                              textTransform: 'uppercase',
+                              fontWeight: 500,
+                              letterSpacing: '0.5px',
+                              display: 'block',
+                              mb: 0.75,
+                            }}
+                          >
+                            Document Category
+                          </Typography>
+                          {renderChips(metadata.categories)}
+                        </Box>
+                      )}
 
                     {/* Subcategories1 */}
-                    {metadata?.subcategories1 && metadata.subcategories1.length > 0 && (
-                      <Box>
-                        <Typography
-                          variant="caption"
-                          color="text.secondary"
-                          gutterBottom
-                          sx={{
-                            textTransform: 'uppercase',
-                            fontWeight: 500,
-                            letterSpacing: '0.5px',
-                            display: 'block',
-                            mb: 0.75,
-                          }}
-                        >
-                          Document Sub-category Level 1
-                        </Typography>
-                        {renderChips(metadata.subcategories1)}
-                      </Box>
-                    )}
+                    {metadata?.subcategories1 &&
+                      metadata.subcategories1.length > 0 &&
+                      hasValidNames(metadata.subcategories1) && (
+                        <Box>
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            gutterBottom
+                            sx={{
+                              textTransform: 'uppercase',
+                              fontWeight: 500,
+                              letterSpacing: '0.5px',
+                              display: 'block',
+                              mb: 0.75,
+                            }}
+                          >
+                            Document Sub-category Level 1
+                          </Typography>
+                          {renderChips(metadata.subcategories1)}
+                        </Box>
+                      )}
 
                     {/* Subcategories2 */}
-                    {metadata?.subcategories2 && metadata.subcategories2.length > 0 && (
-                      <Box>
-                        <Typography
-                          variant="caption"
-                          color="text.secondary"
-                          gutterBottom
-                          sx={{
-                            textTransform: 'uppercase',
-                            fontWeight: 500,
-                            letterSpacing: '0.5px',
-                            display: 'block',
-                            mb: 0.75,
-                          }}
-                        >
-                          Document Sub-category Level 2
-                        </Typography>
-                        {renderChips(metadata.subcategories2)}
-                      </Box>
-                    )}
+                    {metadata?.subcategories2 &&
+                      metadata.subcategories2.length > 0 &&
+                      hasValidNames(metadata.subcategories2) && (
+                        <Box>
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            gutterBottom
+                            sx={{
+                              textTransform: 'uppercase',
+                              fontWeight: 500,
+                              letterSpacing: '0.5px',
+                              display: 'block',
+                              mb: 0.75,
+                            }}
+                          >
+                            Document Sub-category Level 2
+                          </Typography>
+                          {renderChips(metadata.subcategories2)}
+                        </Box>
+                      )}
 
                     {/* Subcategories3 */}
-                    {metadata?.subcategories3 && metadata.subcategories3.length > 0 && (
-                      <Box>
-                        <Typography
-                          variant="caption"
-                          color="text.secondary"
-                          gutterBottom
-                          sx={{
-                            textTransform: 'uppercase',
-                            fontWeight: 500,
-                            letterSpacing: '0.5px',
-                            display: 'block',
-                            mb: 0.75,
-                          }}
-                        >
-                          Document Sub-category Level 3
-                        </Typography>
-                        {renderChips(metadata.subcategories3)}
-                      </Box>
-                    )}
+                    {metadata?.subcategories3 &&
+                      metadata.subcategories3.length > 0 &&
+                      hasValidNames(metadata.subcategories3) && (
+                        <Box>
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            gutterBottom
+                            sx={{
+                              textTransform: 'uppercase',
+                              fontWeight: 500,
+                              letterSpacing: '0.5px',
+                              display: 'block',
+                              mb: 0.75,
+                            }}
+                          >
+                            Document Sub-category Level 3
+                          </Typography>
+                          {renderChips(metadata.subcategories3)}
+                        </Box>
+                      )}
 
                     {/* Topics */}
-                    {metadata?.topics && metadata.topics.length > 0 && (
+                    {metadata?.topics && metadata.topics.length > 0 && hasValidNames(metadata.topics) && (
                       <Box>
                         <Typography
                           variant="caption"
@@ -1316,7 +1330,7 @@ export default function RecordDetails() {
                     )}
 
                     {/* Languages */}
-                    {metadata?.languages && metadata.languages.length > 0 && (
+                    {metadata?.languages && metadata.languages.length > 0 && hasValidNames(metadata.languages) && (
                       <Box>
                         <Typography
                           variant="caption"

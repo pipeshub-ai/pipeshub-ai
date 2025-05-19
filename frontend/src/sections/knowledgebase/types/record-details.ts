@@ -44,38 +44,21 @@ export interface RecordDetailsResponse {
   knowledgeBase: KnowledgeBase;
   permissions: Permissions[];
   relatedRecords: any[];
-  metadata: metadata;
+  metadata: Metadata;
 }
 
-export interface metadata {
-  departments: {
-    id: string;
-    name: string;
-  }[];
-  categories: {
-    id: string;
-    name: string;
-  }[];
-  subcategories1: {
-    id: string;
-    name: string;
-  }[];
-  subcategories2: {
-    id: string;
-    name: string;
-  }[];
-  subcategories3: {
-    id: string;
-    name: string;
-  }[];
-  topics: {
-    id: string;
-    name: string;
-  }[];
-  languages: {
-    id: string;
-    name: string;
-  }[];
+export interface MetadataItem {
+  id: string;
+  name: string;
+}
+export interface Metadata {
+  departments: MetadataItem[];
+  categories: MetadataItem[];
+  subcategories1: MetadataItem[];
+  subcategories2: MetadataItem[];
+  subcategories3: MetadataItem[];
+  topics: MetadataItem[];
+  languages: MetadataItem[];
 }
 
 export interface Record {
