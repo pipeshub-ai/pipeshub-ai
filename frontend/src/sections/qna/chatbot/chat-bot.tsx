@@ -601,10 +601,7 @@ const ChatInterface = () => {
         // This was the first message from WelcomeScreen
         setShowWelcome(false);
         // The WelcomeMessage's internal TextInput clears itself.
-      } else if (typeof messageOverride !== 'string') {
-        // This was a message from the regular ChatInput
-        setInputValue('');
-      }
+      } 
       try {
         setInputValue('');
         setMessages((prev) => [...prev, tempUserMessage]);

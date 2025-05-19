@@ -24,6 +24,7 @@ import {
   alpha,
   styled,
 } from '@mui/material';
+import {createScrollableContainerStyle} from '../utils/styles/scrollbar';
 
 // Styled components for consistent design
 const StyledCard = styled(Card)(({ theme }) => ({
@@ -32,11 +33,11 @@ const StyledCard = styled(Card)(({ theme }) => ({
   marginTop: theme.spacing(0.5),
   boxShadow:
     theme.palette.mode === 'dark'
-      ? '0 8px 24px rgba(0, 0, 0, 0.3)'
+      ? '8px 8px 24px rgba(f, f, f, 0.8)'
       : '0 8px 24px rgba(0, 0, 0, 0.08)',
   borderRadius: theme.shape.borderRadius,
-  border: theme.palette.mode === 'dark' ? `1px solid ${alpha(theme.palette.divider, 0.1)}` : 'none',
-  backgroundColor: theme.palette.background.paper,
+  border: theme.palette.mode === 'dark' ? `1px solid ${alpha(theme.palette.common.white, 0.3)}` : `1px solid ${alpha(theme.palette.common.black, 0.2)}`,
+  backgroundColor: theme.palette.mode === 'dark' ? alpha( theme.palette.background.default,1): theme.palette.background.paper,
   overflow: 'auto',
   position: 'relative',
   transformOrigin: 'top left',
@@ -173,6 +174,7 @@ const CitationHoverCard = ({
   const hasRecordId = Boolean(citation?.metadata?.recordId);
   const theme = useTheme();
   const isDarkMode = theme.palette.mode === 'dark';
+  const scrollableStyles = createScrollableContainerStyle(theme);
 
   const handleClick = (e: React.MouseEvent): void => {
     e.preventDefault();
@@ -230,8 +232,8 @@ const CitationHoverCard = ({
 
   return (
     <Fade in={isVisible} timeout={150}>
-      <StyledCard>
-        <Stack spacing={2} sx={{ position: 'relative', zIndex: 0 }}>
+      <StyledCard sx={{...scrollableStyles}}>
+        <Stack spacing={2} sx={{ position: 'relative', zIndex: 0, }}>
           {/* Document Header with View Button */}
           <Box
             sx={{
@@ -340,7 +342,6 @@ const CitationHoverCard = ({
                     icon={bookmarkIcon}
                     width={12}
                     height={12}
-                    style={{ color: theme.palette.primary.main }}
                   />
                   Topics
                 </SectionHeading>
@@ -363,7 +364,6 @@ const CitationHoverCard = ({
                     icon={departmentIcon}
                     width={12}
                     height={12}
-                    style={{ color: theme.palette.primary.main }}
                   />
                   Departments
                 </SectionHeading>
