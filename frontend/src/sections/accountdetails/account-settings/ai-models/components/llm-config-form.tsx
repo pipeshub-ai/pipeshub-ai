@@ -138,7 +138,7 @@ const openAICompatibleSchema = z.object({
   endpoint: z
     .string()
     .min(1, 'Endpoint is required')
-    .startsWith('http', 'Endpoint must start with http'),
+    .startsWith('http', 'Endpoint must start with http:// or https://'),
   apiKey: z.string().min(1, 'API Key is required'),
   model: z.string().min(1, 'Model is required'),
 });
