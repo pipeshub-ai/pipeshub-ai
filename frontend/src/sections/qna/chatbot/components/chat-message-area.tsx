@@ -30,10 +30,10 @@ type ChatMessagesAreaProps = {
     buffer?: ArrayBuffer
   ) => void;
   // New props for handling input in welcome screen
-  inputValue: string;
-  onInputChange: (e: string | React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => void;
-  onSubmit: () => Promise<void>;
-  showWelcome: boolean;
+  // inputValue: string;
+  // onInputChange: (e: string | React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => void;
+  // onSubmit: () => Promise<void>;
+  // showWelcome: boolean;
 };
 
 type ProcessingIndicatorProps = {
@@ -107,10 +107,10 @@ const ChatMessagesArea = ({
   conversationId,
   isLoadingConversation,
   onViewPdf,
-  inputValue,
-  onInputChange,
-  onSubmit,
-  showWelcome,
+  // inputValue,
+  // onInputChange,
+  // onSubmit,
+  // showWelcome,
 }: ChatMessagesAreaProps) => {
   const messagesEndRef = React.useRef<HTMLDivElement | null>(null);
   const messagesContainerRef = React.useRef<HTMLDivElement | null>(null);
@@ -335,12 +335,12 @@ const ChatMessagesArea = ({
             flexGrow: 1,
             display: 'flex',
             flexDirection: 'column',
-            justifyContent: showWelcome ? 'center' : 'flex-start',
+            // justifyContent: showWelcome ? 'center' : 'flex-start',
             height: '100%',
             position: 'relative',
           }}
         >
-          {showWelcome ? (
+          {/* {showWelcome ? (
             <WelcomeMessage
               inputValue={inputValue}
               onInputChange={onInputChange}
@@ -348,6 +348,7 @@ const ChatMessagesArea = ({
               isLoading={isLoading}
             />
           ) : (
+          )} */}
             <>
               {/* Force minimum height at top to prevent scroll jump */}
               <Box sx={{ minHeight: 4 }} />
@@ -385,7 +386,6 @@ const ChatMessagesArea = ({
                 }}
               />
             </>
-          )}
         </Box>
       )}
     </Box>

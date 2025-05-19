@@ -555,171 +555,189 @@ const ChatInterface = () => {
     }, 0);
   }, [navigate]);
 
-  const handleSendMessage = useCallback(async (): Promise<void> => {
-    const trimmedInput = inputValue.trim();
-    if (!trimmedInput) return;
-    const conversationKey = currentConversationId || 'new';
-    const requestConversationId = currentConversationId;
-    const wasCreatingNewConversation = currentConversationId === null;
+  const handleSendMessage = useCallback(
+    async (messageOverride?: string): Promise<void> => {
+      let trimmedInput = '';
 
-    // Track this request as active
-    const requestId = `${Date.now()}-${Math.random()}`;
-    setActiveRequestTracker({
-      current: requestId,
-      type: currentConversationId ? 'continue' : 'create',
-    });
-
-    setLoadingConversations((prev) => ({
-      ...prev,
-      [conversationKey]: true,
-    }));
-
-    const tempUserMessage = {
-      type: 'user',
-      content: trimmedInput,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      id: `temp-${Date.now()}`,
-      contentFormat: 'MARKDOWN',
-      followUpQuestions: [],
-      citations: [],
-      feedback: [],
-      messageType: 'user_query',
-      timestamp: new Date(),
-    };
-    if (showWelcome) {
-      setShowWelcome(false);
-    }
-    try {
-      setInputValue('');
-      setMessages((prev) => [...prev, tempUserMessage]);
-
-      let response;
-      let conversation: any;
-
-      if (!currentConversationId) {
-        // Create new conversation
-        response = await axios.post<{ conversation: Conversation }>(
-          '/api/v1/conversations/create',
-          {
-            query: trimmedInput,
-          }
-        );
-
-        if (!response?.data?.conversation) {
-          throw new Error('Invalid response format');
-        }
-
-        conversation = response.data.conversation;
-        const convId = conversation._id;
-        
-        // FIXED: Remove the confusing duplicate checks and set state immediately
-        if (wasCreatingNewConversation) {
-          setSelectedChat(conversation);
-          setCurrentConversationId(convId);
-          currentConversationIdRef.current = convId;
-          setShouldRefreshSidebar(true);
-          // navigate(`/${convId}`);
-
-          if (conversation.status) {
-            setConversationStatus((prev) => ({
-              ...prev,
-              [convId]: conversation.status,
-            }));
-          }
-
-          // If conversation is already complete, update messages immediately
-          if (conversation.status === 'Complete') {
-            const allMessages = conversation.messages
-              .map(formatMessage)
-              .filter(Boolean) as FormattedMessage[];
-
-            setMessages(allMessages);
-          }
-        }
+      if (typeof messageOverride === 'string') {
+        // Message is coming from WelcomeMessage or a direct call
+        trimmedInput = messageOverride.trim();
       } else {
-        // Continue existing conversation
-        response = await axios.post<{ conversation: Conversation }>(
-          `/api/v1/conversations/${currentConversationId}/messages`,
-          { query: trimmedInput }
-        );
-
-        if (!response?.data?.conversation?.messages) {
-          throw new Error('Invalid response format');
-        }
-
-        conversation = response.data.conversation;
-        const responseConversationId = conversation._id;
-
-        // FIXED: Simplified condition - just check if we're still on the same conversation
-        if (
-          currentConversationIdRef.current === responseConversationId &&
-          currentConversationId === responseConversationId
-        ) {
-          if (conversation.status) {
-            setConversationStatus((prev) => ({
-              ...prev,
-              [responseConversationId]: conversation.status,
-            }));
-          }
-
-          // If conversation is complete, update messages immediately
-          if (conversation.status === 'Complete') {
-            const allMessages = conversation.messages
-              .map(formatMessage)
-              .filter(Boolean) as FormattedMessage[];
-
-            setMessages(allMessages);
-          }
-        }
+        // Message is coming from the regular ChatInput
+        trimmedInput = inputValue.trim();
       }
-    } catch (error) {
-      console.error('Error:', error);
+      if (!trimmedInput) return;
+      const conversationKey = currentConversationId || 'new';
+      const requestConversationId = currentConversationId;
+      const wasCreatingNewConversation = currentConversationId === null;
 
-      // Only show error if this request is still active
-      if (
-        (requestConversationId === currentConversationId &&
-          requestConversationId === currentConversationIdRef.current) ||
-        (wasCreatingNewConversation && !currentConversationId)
-      ) {
-        const errorMessage: FormattedMessage = {
-          type: 'bot',
-          content: 'Sorry, I encountered an error processing your request.',
-          createdAt: new Date(),
-          updatedAt: new Date(),
-          id: `error-${Date.now()}`,
-          contentFormat: 'MARKDOWN',
-          followUpQuestions: [],
-          citations: [],
-          confidence: '',
-          messageType: 'bot_response',
-          timestamp: new Date(),
-        };
+      // Track this request as active
+      const requestId = `${Date.now()}-${Math.random()}`;
+      setActiveRequestTracker({
+        current: requestId,
+        type: currentConversationId ? 'continue' : 'create',
+      });
 
-        setMessages((prev) => [...prev, errorMessage]);
-        if (wasCreatingNewConversation && !currentConversationId) {
-          // User was trying to create a new conversation and it failed
-          // No need to navigate away, just stay in the "new conversation" state
-          setCurrentConversationId(null);
-          currentConversationIdRef.current = null;
-        }
-      }
-    } finally {
-      // Clear loading states
       setLoadingConversations((prev) => ({
         ...prev,
-        [conversationKey]: false,
+        [conversationKey]: true,
       }));
 
-      // Clear active request tracker if this was the active request
-      if (activeRequestTracker?.current === requestId) {
-        setActiveRequestTracker({
-          current: null,
-          type: null,
-        });
+      const tempUserMessage = {
+        type: 'user',
+        content: trimmedInput,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        id: `temp-${Date.now()}`,
+        contentFormat: 'MARKDOWN',
+        followUpQuestions: [],
+        citations: [],
+        feedback: [],
+        messageType: 'user_query',
+        timestamp: new Date(),
+      };
+      // Clear input based on source
+      if (typeof messageOverride === 'string' && showWelcome) {
+        // This was the first message from WelcomeScreen
+        setShowWelcome(false);
+        // The WelcomeMessage's internal TextInput clears itself.
+      } else if (typeof messageOverride !== 'string') {
+        // This was a message from the regular ChatInput
+        setInputValue('');
       }
-    }
-  }, [inputValue, currentConversationId, formatMessage, activeRequestTracker, showWelcome]);
+      try {
+        setInputValue('');
+        setMessages((prev) => [...prev, tempUserMessage]);
+        const messageToSend = trimmedInput;
+
+        let response;
+        let conversation: any;
+
+        if (!currentConversationId) {
+          // Create new conversation
+          response = await axios.post<{ conversation: Conversation }>(
+            '/api/v1/conversations/create',
+            {
+              query: messageToSend,
+            }
+          );
+
+          if (!response?.data?.conversation) {
+            throw new Error('Invalid response format');
+          }
+
+          conversation = response.data.conversation;
+          const convId = conversation._id;
+
+          // FIXED: Remove the confusing duplicate checks and set state immediately
+          if (wasCreatingNewConversation) {
+            setSelectedChat(conversation);
+            setCurrentConversationId(convId);
+            currentConversationIdRef.current = convId;
+            setShouldRefreshSidebar(true);
+            // navigate(`/${convId}`);
+
+            if (conversation.status) {
+              setConversationStatus((prev) => ({
+                ...prev,
+                [convId]: conversation.status,
+              }));
+            }
+
+            // If conversation is already complete, update messages immediately
+            if (conversation.status === 'Complete') {
+              const allMessages = conversation.messages
+                .map(formatMessage)
+                .filter(Boolean) as FormattedMessage[];
+
+              setMessages(allMessages);
+            }
+          }
+        } else {
+          // Continue existing conversation
+          response = await axios.post<{ conversation: Conversation }>(
+            `/api/v1/conversations/${currentConversationId}/messages`,
+            { query: messageToSend }
+          );
+
+          if (!response?.data?.conversation?.messages) {
+            throw new Error('Invalid response format');
+          }
+
+          conversation = response.data.conversation;
+          const responseConversationId = conversation._id;
+
+          // FIXED: Simplified condition - just check if we're still on the same conversation
+          if (
+            currentConversationIdRef.current === responseConversationId &&
+            currentConversationId === responseConversationId
+          ) {
+            if (conversation.status) {
+              setConversationStatus((prev) => ({
+                ...prev,
+                [responseConversationId]: conversation.status,
+              }));
+            }
+
+            // If conversation is complete, update messages immediately
+            if (conversation.status === 'Complete') {
+              const allMessages = conversation.messages
+                .map(formatMessage)
+                .filter(Boolean) as FormattedMessage[];
+
+              setMessages(allMessages);
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Error:', error);
+
+        // Only show error if this request is still active
+        if (
+          (requestConversationId === currentConversationId &&
+            requestConversationId === currentConversationIdRef.current) ||
+          (wasCreatingNewConversation && !currentConversationId)
+        ) {
+          const errorMessage: FormattedMessage = {
+            type: 'bot',
+            content: 'Sorry, I encountered an error processing your request.',
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            id: `error-${Date.now()}`,
+            contentFormat: 'MARKDOWN',
+            followUpQuestions: [],
+            citations: [],
+            confidence: '',
+            messageType: 'bot_response',
+            timestamp: new Date(),
+          };
+
+          setMessages((prev) => [...prev, errorMessage]);
+          if (wasCreatingNewConversation && !currentConversationId) {
+            // User was trying to create a new conversation and it failed
+            // No need to navigate away, just stay in the "new conversation" state
+            setCurrentConversationId(null);
+            currentConversationIdRef.current = null;
+          }
+        }
+      } finally {
+        // Clear loading states
+        setLoadingConversations((prev) => ({
+          ...prev,
+          [conversationKey]: false,
+        }));
+
+        // Clear active request tracker if this was the active request
+        if (activeRequestTracker?.current === requestId) {
+          setActiveRequestTracker({
+            current: null,
+            type: null,
+          });
+        }
+      }
+    },
+    [inputValue, currentConversationId, formatMessage, activeRequestTracker, showWelcome]
+  );
 
   // Update handleRegenerateMessage
   const handleRegenerateMessage = useCallback(
@@ -893,27 +911,28 @@ const ChatInterface = () => {
     [currentConversationId]
   );
 
-  const handleInputChange = (
-    input: string | React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
-  ): void => {
-    // Get the value directly and store it
-    // This ensures we capture the value regardless of what happens to the event object
-    if (typeof input === 'string') {
-      // If directly passed a string
-      setInputValue(input);
-    } else if (
-      input &&
-      typeof input === 'object' &&
-      'target' in input &&
-      input.target &&
-      'value' in input.target
-    ) {
-      // If passed an event object with target.value
-      setInputValue(input.target.value);
-    }
-  };
+  const handleInputChange = useCallback(
+    (input: string | React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>): void => {
+      let newValue: string;
+      if (typeof input === 'string') {
+        newValue = input;
+      } else if (
+        input &&
+        typeof input === 'object' &&
+        'target' in input &&
+        input.target &&
+        'value' in input.target
+      ) {
+        newValue = input.target.value;
+      } else {
+        return;
+      }
+      setInputValue(newValue);
+    },
+    []
+  );
 
-  // const handleInputChange = (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+  // const nputChange = (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
   //   // Make sure you are using event.target.value directly
   //   // without any reversal logic.
   //   console.log(event);
@@ -1055,9 +1074,7 @@ const ChatInterface = () => {
           {showWelcome ? (
             <MemoizedWelcomeMessage
               key="welcome-screen" // Key helps React manage this component better
-              inputValue={inputValue}
-              onInputChange={handleInputChange}
-              onSubmit={handleSendMessage}
+              onSubmit={(message: string) => handleSendMessage(message)}
               isLoading={isLoading}
             />
           ) : (
@@ -1074,10 +1091,10 @@ const ChatInterface = () => {
                 isLoadingConversation={isLoadingConversation}
                 onViewPdf={onViewPdf}
                 // Add these new props:
-                inputValue={inputValue}
-                onInputChange={handleInputChange}
-                onSubmit={handleSendMessage}
-                showWelcome={showWelcome}
+                // inputValue={inputValue}
+                // onInputChange={handleInputChange}
+                // onSubmit={handleSendMessage}
+                // showWelcome={showWelcome}
               />
 
               <Box
@@ -1091,9 +1108,9 @@ const ChatInterface = () => {
                       : theme.palette.background.paper,
                   mt: 'auto',
                   py: 1.5,
-                  minWidth:'95%',
-                  mx:'auto',
-                  borderRadius:2
+                  minWidth: '95%',
+                  mx: 'auto',
+                  borderRadius: 2,
                 }}
               >
                 <ChatInput

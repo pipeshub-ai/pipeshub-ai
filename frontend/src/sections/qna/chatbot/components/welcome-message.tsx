@@ -1,4 +1,5 @@
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+// WelcomeMessage.tsx - With separated query state
+import React, { useState, useRef, useCallback, useEffect, memo } from 'react';
 import { Icon } from '@iconify/react';
 import githubIcon from '@iconify-icons/mdi/github';
 import sendIcon from '@iconify-icons/mdi/send';
@@ -14,126 +15,94 @@ import {
   alpha,
 } from '@mui/material';
 
-interface WelcomeMessageProps {
-  inputValue?: string;
-  onInputChange: (
-    value: string | React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
-  ) => void;
-  onSubmit: () => Promise<void>;
-  isLoading?: boolean;
-}
-
-const WelcomeMessageComponent = ({
-  inputValue = '',
-  onInputChange,
-  onSubmit,
-  isLoading = false,
-}: WelcomeMessageProps) => {
+// Separate TextInput component that manages its own state
+const TextInput = memo(({ 
+  onSubmit, 
+  isLoading 
+}: { 
+  onSubmit: (text: string) => void;
+  isLoading: boolean; 
+}) => {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const [inputText, setInputText] = useState('');
+  const [hasText, setHasText] = useState(false);
+  const resizeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isSubmittingRef = useRef(false);
 
-  const [hasText, setHasText] = useState(() => Boolean(inputValue.trim()));
-
-  const syncWithParent = useCallback(() => {
-    if (inputRef.current) {
-      onInputChange(inputRef.current.value);
-    }
-  }, [onInputChange]);
-
-  // Auto-resize textarea based on content
+  // Auto-resize textarea with debounce
   const autoResizeTextarea = useCallback(() => {
     if (inputRef.current) {
-      // Reset height first to get accurate scrollHeight
       inputRef.current.style.height = 'auto';
-
-      // Calculate new height based on content (with limits)
       const newHeight = Math.min(Math.max(inputRef.current.scrollHeight, 50), 200);
       inputRef.current.style.height = `${newHeight}px`;
     }
   }, []);
 
-  // Handle changes directly in the component
-  const handleChange = useCallback(
-    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-      // Update local state for button enabling/disabling
-      setHasText(!!e.target.value.trim());
-
-      // Only update parent state when needed - this reduces flickering
-      onInputChange(e.target.value);
-
-      // Resize the textarea
-      autoResizeTextarea();
-    },
-    [onInputChange, autoResizeTextarea]
-  );
-
-  // Improved submit function
-  const submitMessage = useCallback(async () => {
-    if (
-      !inputRef.current ||
-      !inputRef.current.value.trim() ||
-      isLoading ||
-      isSubmittingRef.current
-    ) {
-      return;
+  // Handle input changes locally
+  const handleChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const value = e.target.value;
+    setInputText(value);
+    setHasText(!!value.trim());
+    
+    // Debounce resize to prevent excessive calculations
+    if (resizeTimeoutRef.current) {
+      clearTimeout(resizeTimeoutRef.current);
     }
+    resizeTimeoutRef.current = setTimeout(autoResizeTextarea, 50);
+  }, [autoResizeTextarea]);
 
-    // Save message content before clearing
-    const messageContent = inputRef.current.value;
-
-    // Mark as submitting to prevent multiple submissions
+  // Handle submission
+  const handleSubmit = useCallback(() => {
+    if (!hasText || isLoading || isSubmittingRef.current) return;
+    
+    const text = inputText.trim();
+    if (!text) return;
+    
+    // Mark as submitting to prevent double submissions
     isSubmittingRef.current = true;
-
+    
     try {
-      // Update parent state with the message
-      onInputChange(messageContent);
-
-      // Clear input for better UX
+      // Clear input immediately for UI feedback
+      const messageCopy = text; // Make a copy for submission
+      setInputText('');
+      setHasText(false);
+      
+      // Pass the message copy to parent
+      onSubmit(messageCopy);
+      
+      // Reset textarea height
       if (inputRef.current) {
-        inputRef.current.value = '';
-        setHasText(false);
+        setTimeout(() => {
+          if (inputRef.current) {
+            inputRef.current.style.height = '46px';
+          }
+        }, 50);
       }
-
-      // Submit the message after UI updates
-      await onSubmit();
-
-      // Let parent know the input is now empty
-      onInputChange('');
     } finally {
-      isSubmittingRef.current = false;
+      // Reset submission state after a delay
+      setTimeout(() => {
+        isSubmittingRef.current = false;
+      }, 300);
     }
-  }, [isLoading, onSubmit, onInputChange]);
+  }, [inputText, hasText, isLoading, onSubmit]);
 
-  // Handle enter key press for submission
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        submitMessage();
-      }
-    },
-    [submitMessage]
-  );
+  // Handle Enter key press
+  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSubmit();
+    }
+  }, [handleSubmit]);
 
-  // Setup on mount - focus, set initial value, add scrollbar style
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  // Setup on mount
   useEffect(() => {
     if (inputRef.current) {
-      // Set initial value and state
-      if (inputValue) {
-        inputRef.current.value = inputValue;
-        setHasText(!!inputValue.trim());
-      }
-
       // Focus the textarea
       inputRef.current.focus();
-
-      // Initial resize
-      autoResizeTextarea();
-
-      // Add custom scrollbar styles
+      
+      // Add scrollbar styles
       const styleId = 'welcome-textarea-style';
       if (!document.getElementById(styleId)) {
         const style = document.createElement('style');
@@ -167,9 +136,12 @@ const WelcomeMessageComponent = ({
         `;
         document.head.appendChild(style);
       }
-
-      // Cleanup function
+      
+      // Cleanup
       return () => {
+        if (resizeTimeoutRef.current) {
+          clearTimeout(resizeTimeoutRef.current);
+        }
         const styleElement = document.getElementById(styleId);
         if (styleElement) {
           document.head.removeChild(styleElement);
@@ -177,9 +149,195 @@ const WelcomeMessageComponent = ({
       };
     }
     return undefined;
+  }, [isDark]);
 
-    // Only depend on isDark, not on inputValue to prevent re-runs
-  }, [isDark, autoResizeTextarea, inputValue]);
+  return (
+    <Paper
+      elevation={0}
+      sx={{
+        display: 'flex',
+        alignItems: 'center',
+        p: '9px 14px',
+        borderRadius: '10px',
+        backgroundColor: isDark ? alpha('#131417', 0.5) : alpha('#f8f9fa', 0.6),
+        border: '1px solid',
+        borderColor: isDark ? alpha('#fff', 0.06) : alpha('#000', 0.04),
+        boxShadow: isDark ? '0 4px 16px rgba(0, 0, 0, 0.2)' : '0 2px 10px rgba(0, 0, 0, 0.03)',
+        transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
+        '&:hover': {
+          borderColor: isDark ? alpha('#fff', 0.1) : alpha('#000', 0.07),
+          boxShadow: isDark
+            ? '0 6px 20px rgba(0, 0, 0, 0.25)'
+            : '0 4px 14px rgba(0, 0, 0, 0.05)',
+          backgroundColor: isDark ? alpha('#131417', 0.7) : alpha('#fff', 0.9),
+        },
+      }}
+    >
+      <textarea
+        ref={inputRef}
+        placeholder="Ask anything..."
+        onChange={handleChange}
+        onKeyDown={handleKeyDown}
+        value={inputText}
+        style={{
+          width: '100%',
+          border: 'none',
+          outline: 'none',
+          background: 'transparent',
+          color: isDark ? alpha('#fff', 0.95).toString() : alpha('#000', 0.85).toString(),
+          fontSize: '0.9rem',
+          lineHeight: 1.5,
+          minHeight: '46px',
+          maxHeight: '180px',
+          resize: 'none',
+          padding: '8px 8px',
+          fontFamily: 'Inter, system-ui, -apple-system, sans-serif',
+          margin: '0 6px 0 0',
+          overflowY: 'auto',
+          overflowX: 'hidden',
+          transition: 'height 0.15s ease',
+          letterSpacing: '0.01em',
+        }}
+      />
+
+      <IconButton
+        size="medium"
+        onClick={handleSubmit}
+        disabled={isLoading || !hasText}
+        sx={{
+          backgroundColor: !isLoading && hasText ? alpha(theme.palette.primary.main, 0.9) : 'transparent',
+          width: 34,
+          height: 34,
+          borderRadius: '8px',
+          flexShrink: 0,
+          alignSelf: 'center',
+          transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+          color: !isLoading && hasText ? '#fff' : isDark ? alpha('#fff', 0.4) : alpha('#000', 0.3),
+          opacity: !isLoading && hasText ? 1 : 0.6,
+          border: !isLoading && hasText
+            ? 'none'
+            : `1px solid ${isDark ? alpha('#fff', 0.1) : alpha('#000', 0.05)}`,
+          '&:hover': {
+            backgroundColor: !isLoading && hasText
+              ? theme.palette.primary.main
+              : isDark
+                ? alpha('#fff', 0.05)
+                : alpha('#000', 0.04),
+            transform: !isLoading && hasText ? 'translateY(-1px)' : 'none',
+            boxShadow: !isLoading && hasText ? '0 4px 8px rgba(0, 0, 0, 0.15)' : 'none',
+          },
+          '&:active': {
+            transform: !isLoading && hasText ? 'translateY(0)' : 'none',
+            boxShadow: 'none',
+          },
+          '&.Mui-disabled': {
+            opacity: 0.4,
+            backgroundColor: 'transparent',
+            border: `1px solid ${isDark ? alpha('#fff', 0.05) : alpha('#000', 0.03)}`,
+          },
+        }}
+      >
+        <Icon
+          icon={sendIcon}
+          style={{
+            fontSize: '1rem',
+            transform: 'translateX(1px)',
+            filter: !isLoading && hasText ? 'drop-shadow(0 1px 1px rgba(0,0,0,0.1))' : 'none',
+          }}
+        />
+      </IconButton>
+    </Paper>
+  );
+});
+
+// Simple Footer component
+const Footer = memo(({ isDark }: { isDark: boolean }) => {
+  const theme = useTheme();
+  
+  return (
+    <Box
+      sx={{
+        display: 'flex',
+        justifyContent: 'center',
+        mt: 'auto',
+        pt: 2,
+        pb: 3,
+        width: '100%',
+        marginTop: 6,
+      }}
+    >
+      <Link
+        href="https://github.com/pipeshub-ai/pipeshub-ai"
+        target="_blank"
+        underline="none"
+        sx={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 0.75,
+          fontSize: '0.7rem',
+          color: isDark ? alpha('#fff', 0.5) : alpha('#000', 0.4),
+          opacity: 0.85,
+          transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
+          padding: '6px 12px',
+          borderRadius: '6px',
+          '&:hover': {
+            color: theme.palette.primary.main,
+            opacity: 1,
+            backgroundColor: isDark ? alpha('#fff', 0.03) : alpha('#000', 0.02),
+            transform: 'translateY(-1px)',
+          },
+        }}
+      >
+        <Icon
+          icon={githubIcon}
+          style={{
+            fontSize: '0.9rem',
+            color: 'inherit',
+          }}
+        />
+        pipeshub-ai
+      </Link>
+    </Box>
+  );
+});
+
+TextInput.displayName = 'TextInput';
+Footer.displayName = 'Footer';
+
+interface WelcomeMessageProps {
+  onSubmit: (message:string) => Promise<void>;
+  isLoading?: boolean;
+}
+
+// Main WelcomeMessage component
+const WelcomeMessageComponent = ({
+  onSubmit,
+  isLoading = false,
+}: WelcomeMessageProps) => {
+  const theme = useTheme();
+  const isDark = theme.palette.mode === 'dark';
+  const messageRef = useRef('');
+  const isSubmittingRef = useRef(false);
+  
+  // Direct submission handler that stores message text in a ref
+  const handleDirectSubmit = useCallback((text: string) => {
+    if (isSubmittingRef.current) return;
+    
+    try {
+      // Critical: Store the text in a ref first
+      messageRef.current = text;
+      
+      // Set submitting flag
+      isSubmittingRef.current = true;
+      
+      // Update parent state with message text
+      
+      onSubmit(text);
+    } catch (error) {
+      console.error('Error during message submission:', error);
+      isSubmittingRef.current = false;
+    }
+  }, [ onSubmit]);
 
   return (
     <Container
@@ -241,160 +399,22 @@ const WelcomeMessageComponent = ({
         </Typography>
       </Box>
 
-      {/* Chat Input - Modern & Minimal Style */}
+      {/* Text Input Component */}
       <Box sx={{ width: { xs: '95%', sm: '80%', md: '70%', lg: '60%' } }}>
-        <Paper
-          elevation={0}
-          sx={{
-            display: 'flex',
-            alignItems: 'center', // Change from 'flex-end' to 'center' for better alignment
-            p: '9px 14px',
-            borderRadius: '10px',
-            backgroundColor: isDark ? alpha('#131417', 0.5) : alpha('#f8f9fa', 0.6),
-            border: '1px solid',
-            borderColor: isDark ? alpha('#fff', 0.06) : alpha('#000', 0.04),
-            boxShadow: isDark ? '0 4px 16px rgba(0, 0, 0, 0.2)' : '0 2px 10px rgba(0, 0, 0, 0.03)',
-            transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
-            '&:hover': {
-              borderColor: isDark ? alpha('#fff', 0.1) : alpha('#000', 0.07),
-              boxShadow: isDark
-                ? '0 6px 20px rgba(0, 0, 0, 0.25)'
-                : '0 4px 14px rgba(0, 0, 0, 0.05)',
-              backgroundColor: isDark ? alpha('#131417', 0.7) : alpha('#fff', 0.9),
-            },
-          }}
-        >
-          <textarea
-            ref={inputRef}
-            placeholder="Ask anything..."
-            onChange={handleChange}
-            onKeyDown={handleKeyDown}
-            defaultValue=""
-            style={{
-              width: '100%',
-              border: 'none',
-              outline: 'none',
-              background: 'transparent',
-              color: isDark ? alpha('#fff', 0.95).toString() : alpha('#000', 0.85).toString(),
-              fontSize: '0.9rem',
-              lineHeight: 1.5,
-              minHeight: '46px',
-              maxHeight: '180px',
-              resize: 'none',
-              padding: '8px 8px',
-              fontFamily: 'Inter, system-ui, -apple-system, sans-serif',
-              margin: '0 6px 0 0',
-              overflowY: 'auto',
-              overflowX: 'hidden',
-              transition: 'all 0.15s ease',
-              letterSpacing: '0.01em',
-            }}
-          />
-
-          <IconButton
-            size="medium"
-            onClick={submitMessage}
-            disabled={isLoading || !hasText}
-            sx={{
-              backgroundColor:
-                !isLoading && hasText ? alpha(theme.palette.primary.main, 0.9) : 'transparent',
-              width: 34,
-              height: 34,
-              borderRadius: '8px',
-              flexShrink: 0, // Add to prevent button from shrinking
-              alignSelf: 'center', // Add to ensure vertical alignment
-              transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
-              color:
-                !isLoading && hasText ? '#fff' : isDark ? alpha('#fff', 0.4) : alpha('#000', 0.3),
-              opacity: !isLoading && hasText ? 1 : 0.6,
-              border:
-                !isLoading && hasText
-                  ? 'none'
-                  : `1px solid ${isDark ? alpha('#fff', 0.1) : alpha('#000', 0.05)}`,
-              '&:hover': {
-                backgroundColor:
-                  !isLoading && hasText
-                    ? theme.palette.primary.main
-                    : isDark
-                      ? alpha('#fff', 0.05)
-                      : alpha('#000', 0.04),
-                transform: !isLoading && hasText ? 'translateY(-1px)' : 'none',
-                boxShadow: !isLoading && hasText ? '0 4px 8px rgba(0, 0, 0, 0.15)' : 'none',
-              },
-              '&:active': {
-                transform: !isLoading && hasText ? 'translateY(0)' : 'none',
-                boxShadow: 'none',
-              },
-              '&.Mui-disabled': {
-                opacity: 0.4,
-                backgroundColor: 'transparent',
-                border: `1px solid ${isDark ? alpha('#fff', 0.05) : alpha('#000', 0.03)}`,
-              },
-            }}
-          >
-            <Icon
-              icon={sendIcon}
-              style={{
-                fontSize: '1rem',
-                transform: 'translateX(1px)',
-                filter: !isLoading && hasText ? 'drop-shadow(0 1px 1px rgba(0,0,0,0.1))' : 'none',
-              }}
-            />
-          </IconButton>
-        </Paper>
+        <TextInput
+          onSubmit={handleDirectSubmit}
+          isLoading={isLoading || isSubmittingRef.current}
+        />
       </Box>
 
-      {/* Footer - More minimal */}
-      <Box
-        sx={{
-          display: 'flex',
-          justifyContent: 'center',
-          mt: 'auto',
-          pt: 2,
-          pb: 3,
-          width: '100%',
-          marginTop: 6,
-        }}
-      >
-        <Link
-          href="https://github.com/pipeshub-ai/pipeshub-ai"
-          target="_blank"
-          underline="none"
-          sx={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 0.75,
-            fontSize: '0.7rem',
-            color: isDark ? alpha('#fff', 0.5) : alpha('#000', 0.4),
-            opacity: 0.85,
-            transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
-            padding: '6px 12px',
-            borderRadius: '6px',
-            '&:hover': {
-              color: theme.palette.primary.main,
-              opacity: 1,
-              backgroundColor: isDark ? alpha('#fff', 0.03) : alpha('#000', 0.02),
-              transform: 'translateY(-1px)',
-            },
-          }}
-        >
-          <Icon
-            icon={githubIcon}
-            style={{
-              fontSize: '0.9rem',
-              color: 'inherit',
-            }}
-          />
-          pipeshub-ai
-        </Link>
-      </Box>
+      {/* Footer */}
+      <Footer isDark={isDark} />
     </Container>
   );
 };
 
+// Memoize the component
 const WelcomeMessage = React.memo(WelcomeMessageComponent);
-
 WelcomeMessage.displayName = 'WelcomeMessage';
 
 export default WelcomeMessage;
- 
