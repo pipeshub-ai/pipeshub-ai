@@ -1376,7 +1376,7 @@ const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
                       size="small"
                       error={!!fieldState.error}
                       helperText={
-                        fieldState.error?.message || 'e.g., https://your-resource.openai.azure.com/'
+                        fieldState.error?.message || 'e.g., https://api.together.xyz/v1/'
                       }
                       required
                       disabled={!isEditing || fetchError}
