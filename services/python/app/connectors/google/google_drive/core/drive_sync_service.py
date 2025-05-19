@@ -843,13 +843,13 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                 # Check if the relationship already exists
                 existing_relation = await self.arango_service.check_edge_exists(
                     f"{CollectionNames.USERS.value}/{user['_key']}",
-                    f"{CollectionNames.ORGANIZATIONS.value}/{org_id}",
+                    f"{CollectionNames.ORGS.value}/{org_id}",
                     CollectionNames.BELONGS_TO.value,
                 )
                 if not existing_relation:
                     relation = {
                         "_from": f"{CollectionNames.USERS.value}/{user['_key']}",
-                        "_to": f"{CollectionNames.ORGANIZATIONS.value}/{org_id}",
+                        "_to": f"{CollectionNames.ORGS.value}/{org_id}",
                         "entityType": "ORGANIZATION",
                     }
                     belongs_to_org_relations.append(relation)
