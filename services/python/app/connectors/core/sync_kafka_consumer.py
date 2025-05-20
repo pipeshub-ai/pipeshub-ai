@@ -11,7 +11,7 @@ from app.config.utils.named_constants.arangodb_constants import Connectors
 
 
 class SyncKafkaRouteConsumer:
-    def __init__(self, logger, config_service, arango_service, sync_tasks):
+    def __init__(self, logger, config_service, arango_service, sync_tasks) -> None:
         self.logger = logger
         self.consumer = None
         self.running = False
@@ -41,11 +41,11 @@ class SyncKafkaRouteConsumer:
         }
         self.consume_task = None
 
-    async def create_consumer(self):
+    async def create_consumer(self) -> None:
         """Initialize the Kafka consumer"""
         try:
 
-            async def get_kafka_config():
+            async def get_kafka_config() -> dict:
                 kafka_config = await self.config_service.get_config(
                     config_node_constants.KAFKA.value
                 )
@@ -83,7 +83,7 @@ class SyncKafkaRouteConsumer:
             and offset in self.processed_messages[topic_partition]
         )
 
-    def mark_message_processed(self, message_id: str):
+    def mark_message_processed(self, message_id: str) -> None:
         """Mark a message as processed."""
         topic_partition = "-".join(message_id.split("-")[:-1])
         offset = int(message_id.split("-")[-1])
@@ -92,7 +92,7 @@ class SyncKafkaRouteConsumer:
         self.processed_messages[topic_partition].append(offset)
 
     @inject
-    async def process_message(self, message):
+    async def process_message(self, message) -> bool:
         """Process incoming Kafka messages and route them to appropriate handlers"""
         message_id = None
         try:
@@ -201,7 +201,7 @@ class SyncKafkaRouteConsumer:
 
         return await handler(value["payload"])
 
-    async def drive_init(self, payload):
+    async def drive_init(self, payload) -> bool:
         """Initialize sync service and wait for schedule"""
         try:
             org_id = payload.get("orgId")
@@ -211,16 +211,12 @@ class SyncKafkaRouteConsumer:
             self.logger.info(f"Initializing sync service for org_id: {org_id}")
             # Initialize directly since we can't use BackgroundTasks in Kafka consumer
             await self.sync_tasks.drive_sync_service.initialize(org_id)
-            return {
-                "status": "accepted",
-                "message": "Sync service initialization queued",
-                "service": "Google Drive Sync",
-            }
+            return True
         except Exception as e:
             self.logger.error("Failed to queue sync service initialization: %s", str(e))
             return False
 
-    async def drive_start_sync(self, payload):
+    async def drive_start_sync(self, payload) -> bool:
         """Queue immediate start of the sync service"""
         try:
             org_id = payload.get("orgId")
@@ -229,15 +225,12 @@ class SyncKafkaRouteConsumer:
 
             self.logger.info(f"Starting sync service for org_id: {org_id}")
             await self.sync_tasks.drive_manual_sync_control("start", org_id)
-            return {
-                "status": "accepted",
-                "message": "Sync service start request queued",
-            }
+            return True
         except Exception as e:
             self.logger.error("Failed to queue sync service start: %s", str(e))
             return False
 
-    async def drive_pause_sync(self, payload):
+    async def drive_pause_sync(self, payload) -> bool:
         """Pause the sync service"""
         try:
             org_id = payload.get("orgId")
@@ -246,15 +239,12 @@ class SyncKafkaRouteConsumer:
 
             self.logger.info(f"Pausing sync service for org_id: {org_id}")
             await self.sync_tasks.drive_manual_sync_control("pause", org_id)
-            return {
-                "status": "accepted",
-                "message": "Sync service pause request queued",
-            }
+            return True
         except Exception as e:
             self.logger.error("Failed to queue sync service pause: %s", str(e))
             return False
 
-    async def drive_resume_sync(self, payload):
+    async def drive_resume_sync(self, payload) -> bool:
         """Resume the sync service"""
         try:
             org_id = payload.get("orgId")
@@ -263,15 +253,12 @@ class SyncKafkaRouteConsumer:
 
             self.logger.info(f"Resuming sync service for org_id: {org_id}")
             await self.sync_tasks.drive_manual_sync_control("resume", org_id)
-            return {
-                "status": "accepted",
-                "message": "Sync service resume request queued",
-            }
+            return True
         except Exception as e:
             self.logger.error("Failed to queue sync service resume: %s", str(e))
             return False
 
-    async def drive_sync_user(self, payload):
+    async def drive_sync_user(self, payload) -> bool:
         """Sync a user's Google Drive"""
         try:
             user_email = payload.get("email")
@@ -286,7 +273,7 @@ class SyncKafkaRouteConsumer:
             self.logger.error("Error syncing user: %s", str(e))
             return False
 
-    async def gmail_init(self, payload):
+    async def gmail_init(self, payload) -> bool:
         """Initialize sync service and wait for schedule"""
         try:
             org_id = payload.get("orgId")
@@ -295,16 +282,12 @@ class SyncKafkaRouteConsumer:
 
             self.logger.info(f"Initializing sync service for org_id: {org_id}")
             await self.sync_tasks.gmail_sync_service.initialize(org_id)
-            return {
-                "status": "accepted",
-                "message": "Sync service initialization queued",
-                "service": "Google Gmail Sync",
-            }
+            return True
         except Exception as e:
             self.logger.error("Failed to queue sync service initialization: %s", str(e))
             return False
 
-    async def gmail_start_sync(self, payload):
+    async def gmail_start_sync(self, payload) -> bool:
         """Queue immediate start of the sync service"""
         try:
             org_id = payload.get("orgId")
@@ -313,15 +296,12 @@ class SyncKafkaRouteConsumer:
 
             self.logger.info(f"Starting sync service for org_id: {org_id}")
             await self.sync_tasks.gmail_manual_sync_control("start", org_id)
-            return {
-                "status": "accepted",
-                "message": "Sync service start request queued",
-            }
+            return True
         except Exception as e:
             self.logger.error("Failed to queue sync service start: %s", str(e))
             return False
 
-    async def gmail_pause_sync(self, payload):
+    async def gmail_pause_sync(self, payload) -> bool:
         """Pause the sync service"""
         try:
             org_id = payload.get("orgId")
@@ -330,15 +310,12 @@ class SyncKafkaRouteConsumer:
 
             self.logger.info(f"Pausing sync service for org_id: {org_id}")
             await self.sync_tasks.gmail_manual_sync_control("pause", org_id)
-            return {
-                "status": "accepted",
-                "message": "Sync service pause request queued",
-            }
+            return True
         except Exception as e:
             self.logger.error("Failed to queue sync service pause: %s", str(e))
             return False
 
-    async def gmail_resume_sync(self, payload):
+    async def gmail_resume_sync(self, payload) -> bool:
         """Resume the sync service"""
         try:
             org_id = payload.get("orgId")
@@ -347,15 +324,12 @@ class SyncKafkaRouteConsumer:
 
             self.logger.info(f"Resuming sync service for org_id: {org_id}")
             await self.sync_tasks.gmail_manual_sync_control("resume", org_id)
-            return {
-                "status": "accepted",
-                "message": "Sync service resume request queued",
-            }
+            return True
         except Exception as e:
             self.logger.error("Failed to queue sync service resume: %s", str(e))
             return False
 
-    async def gmail_sync_user(self, payload):
+    async def gmail_sync_user(self, payload) -> bool:
         """Sync a user's Google Drive"""
         try:
             user_email = payload.get("email")
@@ -370,7 +344,7 @@ class SyncKafkaRouteConsumer:
             self.logger.error("Error syncing user: %s", str(e))
             return False
 
-    async def resync_drive(self, payload):
+    async def resync_drive(self, payload) -> bool:
         """Resync a user's Google Drive"""
         try:
             org_id = payload.get("orgId")
@@ -402,7 +376,7 @@ class SyncKafkaRouteConsumer:
             self.logger.error("Error resyncing user: %s", str(e))
             return False
 
-    async def resync_gmail(self, payload):
+    async def resync_gmail(self, payload) -> bool:
         """Resync a user's Google Gmail"""
         try:
             org_id = payload.get("orgId")
@@ -434,14 +408,18 @@ class SyncKafkaRouteConsumer:
             self.logger.error("Error resyncing user: %s", str(e))
             return False
 
-    async def connector_public_url_changed(self, payload):
+    async def connector_public_url_changed(self, payload) -> bool:
         """Handle connector public URL changed event"""
         try:
             org_id = payload.get("orgId")
             if not org_id:
                 raise ValueError("orgId is required")
 
-            await self.resync_drive(payload)
+            org_apps = await self.arango_service.get_org_apps(org_id)
+            if Connectors.GOOGLE_DRIVE.value in org_apps:
+                await self.resync_drive(payload)
+            else:
+                self.logger.info(f"Google Drive app not enabled for org {org_id}. Skipping resync_drive for connector_public_url_changed event.")
             return True
         except Exception as e:
             self.logger.error(
@@ -449,7 +427,7 @@ class SyncKafkaRouteConsumer:
             )
             return False
 
-    async def gmail_updates_enabled_event(self, payload):
+    async def gmail_updates_enabled_event(self, payload) -> bool:
         """Handle Gmail updates enabled event"""
         try:
             self.logger.info(f"Gmail updates enabled event: {payload}")
@@ -457,13 +435,17 @@ class SyncKafkaRouteConsumer:
             if not org_id:
                 raise ValueError("orgId is required")
 
-            await self.resync_gmail(payload)
+            org_apps = await self.arango_service.get_org_apps(org_id)
+            if Connectors.GOOGLE_MAIL.value in org_apps:
+                await self.resync_gmail(payload)
+            else:
+                self.logger.info(f"Google Mail app not enabled for org {org_id}. Skipping resync_gmail for gmail_updates_enabled event.")
             return True
         except Exception as e:
             self.logger.error("Error handling Gmail updates enabled event: %s", str(e))
             return False
 
-    async def gmail_updates_disabled_event(self, payload):
+    async def gmail_updates_disabled_event(self, payload) -> bool:
         """Handle Gmail updates disabled event"""
         try:
             self.logger.info(f"Gmail updates disabled event: {payload}")
@@ -480,7 +462,7 @@ class SyncKafkaRouteConsumer:
             self.logger.error("Error handling Gmail updates disabled event: %s", str(e))
             return False
 
-    async def reindex_failed(self, payload):
+    async def reindex_failed(self, payload) -> bool:
         """Reindex failed records"""
         try:
             self.logger.info(f"Payload: {payload}")
@@ -502,7 +484,7 @@ class SyncKafkaRouteConsumer:
             self.logger.error("Error reindexing failed records: %s", str(e))
             return False
 
-    async def consume_messages(self):
+    async def consume_messages(self) -> None:
         """Main consumption loop."""
         try:
             self.logger.info("Starting Kafka consumer loop")
@@ -543,7 +525,7 @@ class SyncKafkaRouteConsumer:
                 self.consumer.close()
                 self.logger.info("Kafka consumer closed")
 
-    async def start(self):
+    async def start(self) -> None:
         """Start the Kafka consumer."""
         try:
             self.running = True
@@ -555,7 +537,7 @@ class SyncKafkaRouteConsumer:
             self.logger.error(f"Failed to start Kafka consumer: {str(e)}")
             raise
 
-    def stop(self):
+    def stop(self) -> None:
         """Stop the Kafka consumer."""
         self.running = False
         if self.consume_task:
