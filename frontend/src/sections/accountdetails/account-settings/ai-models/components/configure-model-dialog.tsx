@@ -17,7 +17,7 @@ import {
 
 import { Iconify } from 'src/components/iconify';
 
-import LlmConfigForm from './llm-config-form';
+import LlmConfigForm from '../llm/components/llm-config-form';
 import EmbeddingConfigForm from './embedding-config-form';
 import { MODEL_TYPE_NAMES, MODEL_TYPE_ICONS } from '../utils/types';
 
