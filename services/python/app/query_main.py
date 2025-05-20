@@ -15,6 +15,7 @@ from app.api.routes.health import router as health_router
 from app.api.routes.records import router as records_router
 from app.api.routes.search import router as search_router
 from app.config.configuration_service import DefaultEndpoints, config_node_constants
+from app.config.utils.named_constants.status_code_constants import StatusCodeConstants
 from app.setups.query_setup import AppContainer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -81,6 +82,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     consumer = await container.llm_config_handler()
     consume_task = asyncio.create_task(consumer.consume_messages())
 
+    arango_service = await app_container.arango_service()
+
+    # Get all organizations
+    orgs = await arango_service.get_all_orgs()
+    if not orgs:
+        logger.info("No organizations found in the system")
+    else:
+        logger.info("Found organizations in the system")
+        retrieval_service = await container.retrieval_service()
+        await retrieval_service.get_embedding_model_instance()
+
     yield
     # Shutdown
     logger.info("🔄 Shutting down application")
@@ -108,7 +120,7 @@ EXCLUDE_PATHS = ["/health"]  # Exclude health endpoint from authentication for m
 
 
 @app.middleware("http")
-async def authenticate_requests(request: Request, call_next):
+async def authenticate_requests(request: Request, call_next) -> JSONResponse:
     # Check if path should be excluded from authentication
     if any(request.url.path.startswith(path) for path in EXCLUDE_PATHS):
         return await call_next(request)
@@ -142,7 +154,7 @@ app.add_middleware(
 
 
 @app.get("/health")
-async def health_check():
+async def health_check() -> JSONResponse:
     """Health check endpoint that also verifies connector service health"""
     try:
         endpoints = await app.container.config_service().get_config(
@@ -153,7 +165,7 @@ async def health_check():
         async with httpx.AsyncClient() as client:
             connector_response = await client.get(connector_url, timeout=5.0)
 
-            if connector_response.status_code != 200:
+            if connector_response.status_code != StatusCodeConstants.SUCCESS.value:
                 return JSONResponse(
                     status_code=500,
                     content={
@@ -198,7 +210,7 @@ app.include_router(agent_router, prefix="/api/v1")
 app.include_router(health_router, prefix="/api/v1")
 
 
-def run(host: str = "0.0.0.0", port: int = 8000, reload: bool = True):
+def run(host: str = "0.0.0.0", port: int = 8000, reload: bool = True) -> None:
     """Run the application"""
     uvicorn.run(
         "app.query_main:app", host=host, port=port, log_level="info", reload=reload
@@ -206,4 +218,4 @@ def run(host: str = "0.0.0.0", port: int = 8000, reload: bool = True):
 
 
 if __name__ == "__main__":
-    run()
+    run(reload=False)

@@ -1,5 +1,7 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
+from langchain.chat_models.base import BaseChatModel
+from langchain.embeddings.base import Embeddings
 from langchain_qdrant import FastEmbedSparse, QdrantVectorStore, RetrievalMode
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import FieldCondition, Filter, MatchValue
@@ -36,6 +38,7 @@ from app.core.llm_service import (
     OpenAICompatibleLLMConfig,
     OpenAILLMConfig,
 )
+from app.exceptions.embedding_exceptions import EmbeddingModelCreationError
 from app.exceptions.fastapi_responses import Status
 from app.exceptions.indexing_exceptions import IndexingError
 from app.modules.retrieval.retrieval_arango import ArangoService
@@ -51,7 +54,7 @@ class RetrievalService:
         qdrant_api_key: str,
         qdrant_host: str,
         grpc_port: int,
-    ):
+    ) -> None:
         """
         Initialize the retrieval service with necessary configurations.
 
@@ -67,14 +70,12 @@ class RetrievalService:
 
         # Initialize sparse embeddings
         try:
-            self.dense_embeddings = None
             self.sparse_embeddings = FastEmbedSparse(model_name="Qdrant/BM25")
         except Exception as e:
             self.logger.error("Failed to initialize sparse embeddings: " + str(e))
             self.sparse_embeddings = None
             raise Exception(
                 "Failed to initialize sparse embeddings: " + str(e),
-                details={"error": str(e)},
             )
         # Initialize Qdrant client
         self.qdrant_client = QdrantClient(
@@ -88,7 +89,7 @@ class RetrievalService:
         self.collection_name = collection_name
         self.vector_store = None
 
-    async def get_llm_instance(self):
+    async def get_llm_instance(self) -> Optional[BaseChatModel]:
         try:
             self.logger.info("Getting LLM")
             ai_models = await self.config_service.get_config(
@@ -163,9 +164,64 @@ class RetrievalService:
             self.logger.error(f"Error getting LLM: {str(e)}")
             return None
 
-    async def get_embedding_model_instance(self, embedding_configs = None):
+    async def get_embedding_model_instance(self, embedding_configs = None) -> Optional[Embeddings]:
         try:
             self.logger.info("Getting embedding model")
+            embedding_model = await self.get_embedding_model_instance_from_config(embedding_configs)
+
+            try:
+                if not embedding_model or embedding_model == DEFAULT_EMBEDDING_MODEL:
+                    self.logger.info("Using default embedding model")
+                    embedding_model = DEFAULT_EMBEDDING_MODEL
+                    dense_embeddings = await get_default_embedding_model()
+                else:
+                    self.logger.info(f"Using embedding model: {embedding_model}")
+                    dense_embeddings = EmbeddingFactory.create_embedding_model(
+                        embedding_model
+                    )
+
+            except Exception as e:
+                self.logger.error(f"Error creating embedding model: {str(e)}")
+                raise EmbeddingModelCreationError(
+                    f"Failed to create embedding model: {str(e)}"
+                ) from e
+
+            # Get the embedding dimensions from the model
+            try:
+                sample_embedding = await dense_embeddings.aembed_query("test")
+                embedding_size = len(sample_embedding)
+            except Exception as e:
+                self.logger.warning(
+                    f"Error with configured embedding model: {str(e)}"
+                )
+                raise IndexingError(
+                    "Failed to get embedding model: " + str(e),
+                )
+
+            self.logger.info(
+                f"Using embedding model: {embedding_model}, embedding_size: {embedding_size}"
+            )
+            return dense_embeddings
+        except Exception as e:
+            self.logger.error(f"Error getting embedding model: {str(e)}")
+            return None
+
+    async def get_embedding_model_instance_from_config(
+        self,
+        embedding_configs: Optional[List[Dict[str, Any]]] = None
+    ) -> Optional[Union[str, AzureEmbeddingConfig, OpenAIEmbeddingConfig,
+                       HuggingFaceEmbeddingConfig, SentenceTransformersEmbeddingConfig,
+                       GeminiEmbeddingConfig, CohereEmbeddingConfig]]:
+        """
+        Get embedding model configuration from provided configs or fetch from config service.
+
+        Args:
+            embedding_configs: Optional list of embedding configurations
+
+        Returns:
+            Either a string for default model, an embedding config object, or None if error occurs
+        """
+        try:
             if not embedding_configs:
                 ai_models = await self.config_service.get_config(
                     config_node_constants.AI_MODELS.value
@@ -208,47 +264,38 @@ class RetrievalService:
                 elif provider == EmbeddingProvider.DEFAULT.value:
                     embedding_model = DEFAULT_EMBEDDING_MODEL
 
-            try:
-                if not embedding_model or embedding_model == DEFAULT_EMBEDDING_MODEL:
-                    self.logger.info(
-                        "Using default embedding model"
-                    )
-                    embedding_model = DEFAULT_EMBEDDING_MODEL
-                    self.dense_embeddings = await get_default_embedding_model()
-                else:
-                    self.logger.info(f"Using embedding model: {embedding_model}")
-                    self.dense_embeddings = EmbeddingFactory.create_embedding_model(
-                        embedding_model
-                    )
-            except Exception as e:
-                self.logger.error(f"Error creating embedding model: {str(e)}")
-                raise Exception(
-                    "Failed to create embedding model: " + str(e),
-                    details={"error": str(e)},
-                )
-
-            # Get the embedding dimensions from the model
-            try:
-                sample_embedding = await self.dense_embeddings.aembed_query("test")
-                embedding_size = len(sample_embedding)
-            except Exception as e:
-                self.logger.warning(
-                    f"Error with configured embedding model: {str(e)}"
-                )
-                raise IndexingError(
-                    "Failed to get embedding model: " + str(e),
-                    details={"error": str(e)},
-                )
-
-            self.logger.info(
-                f"Using embedding model: {embedding_model}, embedding_size: {embedding_size}"
-            )
-            return self.dense_embeddings
+            return embedding_model
         except Exception as e:
             self.logger.error(f"Error getting embedding model: {str(e)}")
             return None
 
-    def _preprocess_query(self, query: str) -> str:
+    async def get_current_embedding_model_name(self) -> Optional[str]:
+        """Get the current embedding model name from configuration or instance."""
+        try:
+            # First try to get from AI_MODELS config
+            ai_models = await self.config_service.get_config(
+                config_node_constants.AI_MODELS.value
+            )
+            if ai_models and "embedding" in ai_models:
+                for config in ai_models["embedding"]:
+                    # Only one embedding model is supported
+                    if "configuration" in config and "model" in config["configuration"]:
+                        return config["configuration"]["model"]
+
+            return None
+        except Exception as e:
+            self.logger.error(f"Error getting current embedding model name: {str(e)}")
+            return None
+
+    def get_embedding_model_name(self, dense_embeddings: Embeddings) -> Optional[str]:
+        if hasattr(dense_embeddings, "model_name"):
+            return dense_embeddings.model_name
+        elif hasattr(dense_embeddings, "model"):
+            return dense_embeddings.model
+        else:
+            return None
+
+    async def _preprocess_query(self, query: str) -> str:
         """
         Preprocess the query text.
 
@@ -258,13 +305,17 @@ class RetrievalService:
         Returns:
             Preprocessed query text
         """
-        # Check if using BGE model before adding the prefix
-        if (
-            hasattr(self.dense_embeddings, "model_name")
-            and "bge" in self.dense_embeddings.model_name.lower()
-        ):
-            return f"Represent this document for retrieval: {query.strip()}"
-        return query.strip()
+        try:
+            # Get current model name from config
+            model_name = await self.get_current_embedding_model_name()
+
+            # Check if using BGE model before adding the prefix
+            if model_name and "bge" in model_name.lower():
+                return f"Represent this document for retrieval: {query.strip()}"
+            return query.strip()
+        except Exception as e:
+            self.logger.error(f"Error in query preprocessing: {str(e)}")
+            return query.strip()
 
     def _format_results(self, results: List[tuple]) -> List[Dict[str, Any]]:
         """Format search results into a consistent structure with flattened metadata."""
@@ -406,23 +457,19 @@ class RetrievalService:
                         "message": "Vector DB is empty. No records available for retrieval.",
                     }
 
-                if not self.dense_embeddings:
-                    self.logger.info(
-                        "No dense embeddings found, using default embedding model"
-                    )
-                    self.dense_embeddings = await self.get_embedding_model_instance()
-                if not self.dense_embeddings:
+                dense_embeddings = await self.get_embedding_model_instance()
+                if not dense_embeddings:
                     raise ValueError(
                         "No dense embeddings found, please configure an embedding model or ensure indexing is complete"
                     )
 
-                self.logger.info("Dense embeddings: %s", self.dense_embeddings)
+                self.logger.info("Dense embeddings: %s", dense_embeddings)
                 self.vector_store = QdrantVectorStore(
                     client=self.qdrant_client,
                     collection_name=self.collection_name,
                     vector_name="dense",
                     sparse_vector_name="sparse",
-                    embedding=self.dense_embeddings,
+                    embedding=dense_embeddings,
                     sparse_embedding=self.sparse_embeddings,
                     retrieval_mode=RetrievalMode.HYBRID,
                 )
@@ -430,7 +477,7 @@ class RetrievalService:
             # Process each query
             for query in queries:
                 # Perform similarity search
-                processed_query = self._preprocess_query(query)
+                processed_query = await self._preprocess_query(query)
                 results = await self.vector_store.asimilarity_search_with_score(
                     query=processed_query, k=limit, filter=qdrant_filter
                 )

@@ -14,7 +14,7 @@ class ArangoService:
 
     def __init__(
         self, logger, arango_client: ArangoClient, config: ConfigurationService
-    ):
+    ) -> None:
         self.logger = logger
         self.config_service = config
         self.client = arango_client
@@ -61,18 +61,38 @@ class ArangoService:
 
             return False
 
-    async def disconnect(self):
+    async def disconnect(self) -> bool:
         """Disconnect from ArangoDB"""
         try:
             self.logger.info("🚀 Disconnecting from ArangoDB")
             if self.client:
                 self.client.close()
+            self.client = None
+            self.db = None
             self.logger.info("✅ Disconnected from ArangoDB successfully")
+            return True
         except Exception as e:
             self.logger.error("❌ Failed to disconnect from ArangoDB: %s", str(e))
             return False
 
-    async def get_document(self, document_key: str, collection: str):
+    async def get_all_orgs(self, active: bool = True) -> list:
+        """Get all organizations, optionally filtering by active status."""
+        try:
+            query = f"""
+            FOR org IN {CollectionNames.ORGS.value}
+            FILTER @active == false || org.isActive == true
+            RETURN org
+            """
+
+            bind_vars = {"active": active}
+
+            cursor = self.db.aql.execute(query, bind_vars=bind_vars)
+            return list(cursor)
+        except Exception as e:
+            self.logger.error(f"Failed to get organizations: {str(e)}")
+            raise
+
+    async def get_document(self, document_key: str, collection: str) -> Optional[Dict]:
         """Get a document by its key"""
         try:
             query = """
@@ -356,7 +376,7 @@ class ArangoService:
 
     async def check_record_access_with_details(
         self, user_id: str, org_id: str, record_id: str
-    ):
+    ) -> Optional[Dict]:
         """
         Check record access and return record details if accessible
 
