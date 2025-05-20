@@ -10,12 +10,14 @@ class ChatDocCitation:
     chunkindex: int
 
 
-def fix_json_string(json_str):
+def fix_json_string(json_str) -> str:
     """Fix control characters in JSON string values without parsing."""
     result = ""
     in_string = False
     escaped = False
-
+    ascii_start = 32
+    ascii_end = 127
+    extended_ascii_end = 159
     for c in json_str:
         if escaped:
             # Previous character was a backslash, this character is escaped
@@ -43,7 +45,7 @@ def fix_json_string(json_str):
                 result += "\\r"
             elif c == "\t":
                 result += "\\t"
-            elif ord(c) < 32 or (ord(c) >= 127 and ord(c) <= 159):
+            elif ord(c) < ascii_start or (ord(c) >= ascii_end and ord(c) <= extended_ascii_end):
                 # Other control characters as unicode escapes
                 result += f"\\u{ord(c):04x}"
             else:
@@ -128,7 +130,7 @@ def process_citations(llm_response, documents: List[Dict[str, Any]]) -> Dict[str
         chunk_indexes = None
 
         # Function to recursively search for chunk indexes in nested dictionaries
-        def find_chunk_indexes(data, visited=None):
+        def find_chunk_indexes(data, visited=None) -> List[int]:
             if visited is None:
                 visited = set()
 
@@ -147,6 +149,7 @@ def process_citations(llm_response, documents: List[Dict[str, Any]]) -> Dict[str
                     "chunkIndexes",
                 ]:
                     if key in data:
+                        print(f"Found {key} in data: {data[key]}")
                         return data[key]
 
                 # Search nested dictionaries
@@ -166,6 +169,7 @@ def process_citations(llm_response, documents: List[Dict[str, Any]]) -> Dict[str
 
         # Try to find chunk indexes in the response data
         chunk_indexes = find_chunk_indexes(response_data)
+        print(f"Chunk indexes: {chunk_indexes}")
 
         # Fallback: If we still haven't found any indexes and have "answer" field,
         # try parsing the answer text to find numeric references
@@ -207,35 +211,37 @@ def process_citations(llm_response, documents: List[Dict[str, Any]]) -> Dict[str
 
             # Filter out empty values
             chunk_indexes = [idx for idx in chunk_indexes if idx]
-
+            print(f"Chunk indexes 2: {chunk_indexes}")
             # Process each index
-            for idx in chunk_indexes:
+            for [idx, chunk_index] in chunk_indexes:
                 try:
                     # Strip any quotes or spaces
-                    if isinstance(idx, str):
-                        idx = idx.strip().strip("\"'")
+                    if isinstance(chunk_index, str):
+                        chunk_index = chunk_index.strip().strip("\"'")
 
                     # Convert to int and adjust for 0-based indexing
-                    idx_value = int(idx) - 1
-                    if 0 <= idx_value < len(documents):
-                        doc_indexes.append(idx_value)
+                    chunk_index_value = int(chunk_index) - 1
+                    if 0 <= chunk_index_value < len(documents):
+                        doc_indexes.append(chunk_index_value)
                 except (ValueError, TypeError):
                     continue
 
         # Get citations from referenced documents
         citations = []
+        print("doc_indexes", doc_indexes)
+        index = 1
         for idx in doc_indexes:
             try:
                 doc = documents[idx]
-
                 # Safely access content and metadata
                 content = doc.get("content", "")
                 metadata = doc.get("metadata", {})
 
                 citation = ChatDocCitation(
-                    content=content, metadata=metadata, chunkindex=idx + 1
+                    content=content, metadata=metadata, chunkindex=index
                 )
                 citations.append(citation)
+                index += 1
             except (IndexError, KeyError):
                 continue
 
