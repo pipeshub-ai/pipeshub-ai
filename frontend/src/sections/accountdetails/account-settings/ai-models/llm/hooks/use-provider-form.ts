@@ -6,39 +6,6 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { ProviderType, LlmFormValues, ProviderConfig } from '../providers/types';
 import { getProviderById, providers } from '../providers/constants';
 
-// Pre-initialize all provider forms to avoid lag during switching
-const createInitialForms = () => {
-  const forms: Record<ProviderType, UseFormReturn<any>> = {} as any;
-  
-  // Create a form for each provider type
-  providers.forEach(provider => {
-    const providerConfig = getProviderById(provider.id);
-    
-    if (!providerConfig) {
-      forms[provider.id] = useForm({
-        mode: 'onTouched',
-        defaultValues: {
-          modelType: provider.id,
-          apiKey: '',
-          model: '',
-          _provider: provider.id
-        },
-      });
-    } else {
-      forms[provider.id] = useForm({
-        resolver: zodResolver(providerConfig.schema),
-        mode: 'onTouched',
-        defaultValues: {
-          ...providerConfig.defaultValues,
-          _provider: provider.id
-        },
-      });
-    }
-  });
-  
-  return forms;
-};
-
 // Define a custom return type that extends UseFormReturn with providerConfig
 type ProviderFormReturn = UseFormReturn<any> & {
   providerConfig: ProviderConfig | undefined;
@@ -75,8 +42,8 @@ export const useProviderForm = (providerType: ProviderType): ProviderFormReturn 
  */
 export const useProviderForms = (initialProvider: ProviderType = 'openAI') => {
   const [currentProvider, setCurrentProvider] = useState<ProviderType>(initialProvider);
-  // Use ref to store form states with namespaced fields
-  const formStatesRef = useRef<Record<ProviderType, LlmFormValues>>({} as any);
+  // Use ref to store form states with namespaced fields - Fixed typing with Partial
+  const formStatesRef = useRef<Partial<Record<ProviderType, LlmFormValues>>>({});
   // Track if initial data has been loaded
   const [initialDataLoaded, setInitialDataLoaded] = useState(false);
   // Track if we're currently switching providers to prevent validation
@@ -97,7 +64,11 @@ export const useProviderForms = (initialProvider: ProviderType = 'openAI') => {
   // Watch for form changes and update the form states ref with namespaced values
   useEffect(() => {
     // Skip watching when switching providers to avoid validation
-    if (isSwitchingProvider) return () => {};
+    if (isSwitchingProvider) {
+      return () => {
+        // No cleanup needed when switching providers
+      };
+    }
     
     const subscription = watch((data) => {
       if (data && Object.keys(data).length > 0) {
@@ -154,32 +125,28 @@ export const useProviderForms = (initialProvider: ProviderType = 'openAI') => {
         keepIsValid: false,
         keepTouched: false,
       });
+    } else if (formStatesRef.current[currentProvider]) {
+      // If data is for a different provider but we have stored data for current provider
+      reset(formStatesRef.current[currentProvider], {
+        keepErrors: false,
+        keepIsValid: false
+      });
     } else {
-      // If data is for a different provider, don't use it
-      console.warn(`Attempted to set data for ${data._provider || 'unknown'} provider to ${currentProvider} form`);
+      // Use provider defaults as fallback if no stored data exists
+      const defaults = providerConfig?.defaultValues ? {
+        ...providerConfig.defaultValues,
+        _provider: currentProvider
+      } : {
+        modelType: currentProvider,
+        apiKey: '',
+        model: '',
+        _provider: currentProvider
+      };
       
-      // Instead, use previously stored data or defaults
-      if (formStatesRef.current[currentProvider]) {
-        reset(formStatesRef.current[currentProvider], {
-          keepErrors: false,
-          keepIsValid: false
-        });
-      } else {
-        const defaults = providerConfig?.defaultValues ? {
-          ...providerConfig.defaultValues,
-          _provider: currentProvider
-        } : {
-          modelType: currentProvider,
-          apiKey: '',
-          model: '',
-          _provider: currentProvider
-        };
-        
-        reset(defaults, {
-          keepErrors: false,
-          keepIsValid: false
-        });
-      }
+      reset(defaults, {
+        keepErrors: false,
+        keepIsValid: false
+      });
     }
   }, [reset, currentProvider, providerConfig, clearErrors]);
 
@@ -214,7 +181,7 @@ export const useProviderForms = (initialProvider: ProviderType = 'openAI') => {
     setInitialDataLoaded(true);
   }, [currentProvider, reset, clearErrors]);
 
-  // Optimized provider switching function with smoother transitions
+  // Simplified provider switching function with smoother transitions
   const switchProvider = useCallback((newProvider: ProviderType, currentValues: any = null) => {
     // Don't do anything if switching to the same provider
     if (newProvider === currentProvider) return;
@@ -222,37 +189,25 @@ export const useProviderForms = (initialProvider: ProviderType = 'openAI') => {
     // Set switching flag to prevent validation during switch
     setIsSwitchingProvider(true);
     
-    try {
-      // Save current form values before switching - but do this asynchronously
-      // to avoid blocking the UI thread
-      setTimeout(() => {
-        try {
-          const valuesToSave = currentValues || getValues();
-          if (valuesToSave && Object.keys(valuesToSave).length > 0) {
-            // Properly namespace the data before storing
-            formStatesRef.current[currentProvider] = {
-              ...valuesToSave,
-              modelType: currentProvider,
-              _provider: currentProvider,
-            } as LlmFormValues;
-          }
-        } catch (error) {
-          console.error("Error saving current values:", error);
-        }
-      }, 0);
-      
-      // Switch provider immediately for responsive UI
-      setCurrentProvider(newProvider);
-      
-      // Preemptively clear errors
-      clearErrors();
-    } catch (error) {
-      console.error("Error while switching provider:", error);
-      setIsSwitchingProvider(false);
+    // Save current form values before switching
+    const valuesToSave = currentValues || getValues();
+    if (valuesToSave && Object.keys(valuesToSave).length > 0) {
+      // Properly namespace the data before storing
+      formStatesRef.current[currentProvider] = {
+        ...valuesToSave,
+        modelType: currentProvider,
+        _provider: currentProvider,
+      } as LlmFormValues;
     }
+    
+    // Switch provider immediately for responsive UI
+    setCurrentProvider(newProvider);
+    
+    // Preemptively clear errors
+    clearErrors();
   }, [currentProvider, getValues, clearErrors]);
 
-  // New function to reset to a specific provider with data - optimized for performance
+  // Function to reset to a specific provider with data
   const resetToProvider = useCallback((providerType: ProviderType, data: LlmFormValues) => {
     // If already on the right provider, just update the data
     if (providerType === currentProvider) {
@@ -289,53 +244,46 @@ export const useProviderForms = (initialProvider: ProviderType = 'openAI') => {
     
     // Then switch to the provider
     setCurrentProvider(providerType);
-    
-    // Turn off switching flag after a short delay
-    setTimeout(() => {
-      setIsSwitchingProvider(false);
-    }, 50);
   }, [currentProvider, reset, clearErrors]);
 
-  // Effect to handle provider changes and reset the form - optimized
+  // Simplified effect to handle provider changes and reset the form
   useEffect(() => {
-    if (isSwitchingProvider) {
-      // Clear any pending validation
-      clearErrors();
-      
-      // Use requestAnimationFrame to ensure UI updates first
-      requestAnimationFrame(() => {
-        try {
-          // Get values for the new provider
-          let newValues;
-          if (formStatesRef.current[currentProvider]) {
-            // Use stored values if available
-            newValues = formStatesRef.current[currentProvider];
-          } else {
-            // Use defaults if no stored values
-            const newProviderConfig = getProviderById(currentProvider);
-            newValues = newProviderConfig?.defaultValues 
-              ? { ...newProviderConfig.defaultValues, _provider: currentProvider }
-              : { modelType: currentProvider, apiKey: '', model: '', _provider: currentProvider };
-          }
-          
-          // Reset the form asynchronously for better performance
-          setTimeout(() => {
-            reset(newValues, {
-              keepErrors: false,
-              keepIsValid: false,
-              keepTouched: false
-            });
-            
-            // Turn off switching flag
-            setIsSwitchingProvider(false);
-          }, 0);
-        } catch (error) {
-          console.error("Error updating form for new provider:", error);
-          setIsSwitchingProvider(false);
+    // Only run when switching provider state is true
+    if (!isSwitchingProvider) return () => {
+      // No cleanup needed when not switching
+    };
+    
+    // We use a single timeout for simplicity and reliability
+    const timeoutId = setTimeout(() => {
+      try {
+        // Get values for the new provider
+        let newValues;
+        if (formStatesRef.current[currentProvider]) {
+          // Use stored values if available
+          newValues = formStatesRef.current[currentProvider];
+        } else {
+          // Use defaults if no stored values
+          const newProviderConfig = getProviderById(currentProvider);
+          newValues = newProviderConfig?.defaultValues 
+            ? { ...newProviderConfig.defaultValues, _provider: currentProvider }
+            : { modelType: currentProvider, apiKey: '', model: '', _provider: currentProvider };
         }
-      });
-    }
-  }, [currentProvider, reset, clearErrors, isSwitchingProvider]);
+        
+        reset(newValues, {
+          keepErrors: false,
+          keepIsValid: false,
+          keepTouched: false
+        });
+      } catch (error) {
+        console.error("Error updating form for new provider:", error);
+      } finally {
+        // Turn off switching flag
+        setIsSwitchingProvider(false);
+      }
+    }, 50); // Slight delay for better rendering
+    
+    return () => clearTimeout(timeoutId);
+  }, [currentProvider, reset, isSwitchingProvider]);
 
   // Getter for all form states (for debugging)
   const getAllFormStates = useCallback(() => ({ ...formStatesRef.current }), []);

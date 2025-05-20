@@ -12,6 +12,45 @@ let cacheTime = 0;
 const cacheExpirationMs = 30000; 
 
 /**
+ * Deep equality comparison for objects
+ * Reliably compares objects regardless of property order
+ */
+export const isEquivalent = (objA: any, objB: any): boolean => {
+  // Handle primitive types and direct equality
+  if (objA === objB) return true;
+  
+  // Handle null/undefined cases
+  if (objA === null || objA === undefined || objB === null || objB === undefined) return false;
+  
+  // Check object types - if both aren't objects, compare directly
+  if (typeof objA !== 'object' || typeof objB !== 'object') return objA === objB;
+  
+  // Special handling for Date objects
+  if (objA instanceof Date && objB instanceof Date) return objA.getTime() === objB.getTime();
+  
+  // Special handling for arrays
+  if (Array.isArray(objA) && Array.isArray(objB)) {
+    if (objA.length !== objB.length) return false;
+    return objA.every((item, index) => isEquivalent(item, objB[index]));
+  }
+  
+  // Compare object keys - must have same number of properties
+  const keysA = Object.keys(objA);
+  const keysB = Object.keys(objB);
+  
+  if (keysA.length !== keysB.length) return false;
+  
+  // Check that every property in A exists in B with the same value
+  return keysA.every(key => {
+    // Ensure key exists in objB
+    if (!Object.prototype.hasOwnProperty.call(objB, key)) return false;
+    
+    // Recursively check each property value
+    return isEquivalent(objA[key], objB[key]);
+  });
+};
+
+/**
  * Gets the LLM configuration from the API
  * Uses request deduplication, rate limiting, and caching to prevent continuous API calls
  */
@@ -103,7 +142,9 @@ export const updateLlmConfig = async (config: LlmFormValues): Promise<any> => {
     };
 
     const currentLlmConfig = currentConfig.llm?.[0]?.configuration || {};
-    if (JSON.stringify(currentLlmConfig) === JSON.stringify(cleanConfig)) {
+    
+    // Use deep equality check instead of JSON.stringify
+    if (isEquivalent(currentLlmConfig, cleanConfig)) {
       console.log('Configuration unchanged, skipping update');
       return { data: { success: true, message: 'No changes detected' } };
     }

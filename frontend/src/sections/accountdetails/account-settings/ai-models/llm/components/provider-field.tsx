@@ -1,7 +1,7 @@
 // components/provider-field.tsx 
 
 import React, { useState, memo } from 'react';
-import { Controller } from 'react-hook-form';
+import { Control, Controller } from 'react-hook-form';
 import { alpha, useTheme } from '@mui/material/styles';
 import eyeIcon from '@iconify-icons/eva/eye-fill';
 import eyeOffIcon from '@iconify-icons/eva/eye-off-fill';
@@ -19,7 +19,7 @@ import { Iconify } from 'src/components/iconify';
 interface ProviderFieldProps {
   name: string;
   label: string;
-  control: any;
+  control: Control<any>;
   required?: boolean;
   isEditing: boolean;
   isDisabled?: boolean;

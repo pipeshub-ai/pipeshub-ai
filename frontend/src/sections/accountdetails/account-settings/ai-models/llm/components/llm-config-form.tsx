@@ -1,4 +1,4 @@
-// components/LlmConfigForm.tsx 
+// components/LlmConfigForm.tsx
 
 import type { SubmitHandler } from 'react-hook-form';
 import type { SelectChangeEvent } from '@mui/material';
@@ -6,7 +6,14 @@ import type { SelectChangeEvent } from '@mui/material';
 import closeIcon from '@iconify-icons/mdi/close';
 import pencilIcon from '@iconify-icons/mdi/pencil';
 import infoIcon from '@iconify-icons/mdi/info-outline';
-import React, { useState, useEffect, forwardRef, useImperativeHandle, useCallback, useRef } from 'react';
+import React, {
+  useState,
+  useEffect,
+  forwardRef,
+  useImperativeHandle,
+  useCallback,
+  useRef,
+} from 'react';
 
 import { alpha, useTheme } from '@mui/material/styles';
 import {
@@ -56,13 +63,16 @@ const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
     const [formSubmitSuccess, setFormSubmitSuccess] = useState(false);
     const [fetchError, setFetchError] = useState<boolean>(false);
     const [formDataLoaded, setFormDataLoaded] = useState(false);
-    
+    const [saveCompleted, setSaveCompleted] = useState(false);
+
     // Store the original API configuration for reverting on cancel
     const originalApiConfigRef = useRef<LlmFormValues | null>(null);
-    
+
     // Track provider heights to manage transitions
     const formContainerRef = useRef<HTMLDivElement>(null);
-    const [providerHeights, setProviderHeights] = useState<Record<ProviderType, number>>({} as any);
+    const [providerHeights, setProviderHeights] = useState<Partial<Record<ProviderType, number>>>(
+      {}
+    );
     const [isInitialProviderLoaded, setIsInitialProviderLoaded] = useState(false);
 
     // Initialize provider form system with enhanced state management
@@ -82,38 +92,41 @@ const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
     } = useProviderForms(initialProvider);
 
     // Memoized fetch config function with optimized performance
-    const fetchConfig = useCallback(async (forceRefresh = false) => {
-      // Don't load if already loading or data is already loaded and no refresh requested
-      if (isLoading || (formDataLoaded && !forceRefresh)) return; 
-      
-      setIsLoading(true);
-      try {
-        const config = await getLlmConfig();
-        setFetchError(false);
+    const fetchConfig = useCallback(
+      async (forceRefresh = false) => {
+        // Don't load if already loading or data is already loaded and no refresh requested
+        if (isLoading || (formDataLoaded && !forceRefresh)) return;
 
-        if (config) {
-          // Store original API config for use when canceling edits
-          originalApiConfigRef.current = config;
-          
-          // If data is loaded for the first time, set provider to match config
-          if (!formDataLoaded) {
-            if (config.modelType) {
-              switchProvider(config.modelType, null);
+        setIsLoading(true);
+        try {
+          const config = await getLlmConfig();
+          setFetchError(false);
+
+          if (config) {
+            // Store original API config for use when canceling edits
+            originalApiConfigRef.current = config;
+
+            // If data is loaded for the first time, set provider to match config
+            if (!formDataLoaded) {
+              if (config.modelType) {
+                switchProvider(config.modelType, null);
+              }
             }
+
+            // Initialize form data without triggering validation
+            initializeForm(config);
+            setFormDataLoaded(true);
           }
-          
-          // Initialize form data without triggering validation
-          initializeForm(config);
-          setFormDataLoaded(true);
+        } catch (error) {
+          console.error('Failed to load LLM configuration:', error);
+          setFetchError(true);
+          setSaveError('Failed to load configuration. View-only mode enabled.');
+        } finally {
+          setIsLoading(false);
         }
-      } catch (error) {
-        console.error('Failed to load LLM configuration:', error);
-        setFetchError(true);
-        setSaveError('Failed to load configuration. View-only mode enabled.');
-      } finally {
-        setIsLoading(false);
-      }
-    }, [isLoading, formDataLoaded, switchProvider, initializeForm]);
+      },
+      [isLoading, formDataLoaded, switchProvider, initializeForm]
+    );
 
     // Expose the handleSave method to the parent component
     useImperativeHandle(ref, () => ({
@@ -133,27 +146,22 @@ const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
                   modelType: currentProvider,
                   _provider: currentProvider,
                 } as LlmFormValues;
-                
+
                 await updateLlmConfig(saveData);
                 if (onSaveSuccess) {
                   onSaveSuccess();
                 }
                 setIsEditing(false);
                 setFormSubmitSuccess(true);
-                
+                setSaveCompleted(true);
                 // Update our original API config reference with the newly saved data
                 originalApiConfigRef.current = saveData;
-                
-                // After successful save, reload the config to ensure consistency
-                // but set a short timeout to allow UI to update first
-                setTimeout(() => {
-                  fetchConfig(true);
-                }, 100);
-                
+
                 resolve({ success: true });
               } catch (error) {
                 const errorMessage =
-                  error.response?.data?.message || `Failed to save ${providerConfig?.label} configuration`;
+                  error.response?.data?.message ||
+                  `Failed to save ${providerConfig?.label} configuration`;
                 setSaveError(errorMessage);
                 console.error(`Error saving ${providerConfig?.label} configuration:`, error);
                 setFormSubmitSuccess(false);
@@ -174,6 +182,13 @@ const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
       },
     }));
 
+    useEffect(() => {
+      if (saveCompleted) {
+        fetchConfig(true);
+        setSaveCompleted(false);
+      }
+    }, [saveCompleted, fetchConfig]);
+
     // Load existing configuration on mount only once
     useEffect(() => {
       if (!formDataLoaded) {
@@ -190,11 +205,11 @@ const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
             const height = formContainerRef.current.getBoundingClientRect().height;
             if (height > 0) {
               // Only store heights for providers that have fully loaded
-              setProviderHeights(prev => ({
+              setProviderHeights((prev) => ({
                 ...prev,
-                [currentProvider]: height
+                [currentProvider]: height,
               }));
-              
+
               // Mark initial provider as loaded
               if (!isInitialProviderLoaded) {
                 setIsInitialProviderLoaded(true);
@@ -202,13 +217,13 @@ const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
             }
           }
         }, 100);
-        
+
         // Return cleanup function
         return () => {
           clearTimeout(timer);
         };
       }
-      
+
       // Return empty cleanup function for consistent return
       return () => {
         // No cleanup needed when condition isn't met
@@ -221,12 +236,12 @@ const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
         const timer = setTimeout(() => {
           setSaveError(null);
         }, 5000);
-        
+
         return () => {
           clearTimeout(timer);
         };
       }
-      
+
       // Return empty cleanup function for consistent return
       return () => {
         // No cleanup needed when condition isn't met
@@ -241,12 +256,12 @@ const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
           // No cleanup needed
         };
       }
-      
+
       const handler = setTimeout(() => {
         // Only consider validation when editing and not switching providers
         onValidationChange(isValid && isEditing && !isSwitchingProvider);
       }, 100);
-      
+
       return () => {
         clearTimeout(handler);
       };
@@ -264,7 +279,7 @@ const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
         // Cancel edit - reset to original API config
         setIsEditing(false);
         setSaveError(null);
-        
+
         // Use the original API config to revert changes
         if (originalApiConfigRef.current) {
           // This will reset to the correct provider and values from the original API config
@@ -286,7 +301,7 @@ const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
       if (isSwitchingProvider && providerHeights[currentProvider]) {
         return providerHeights[currentProvider];
       }
-      
+
       // If we don't have the target provider's height, use current height
       // or return auto if we don't have any heights yet
       return providerHeights[currentProvider] || 'auto';
@@ -323,20 +338,21 @@ const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
       );
 
       // Optional provider-specific fields
-      const additionalFields = providerConfig?.additionalFields?.map(field => (
-        <Grid item xs={12} md={6} key={field.name}>
-          <ProviderField
-            name={field.name}
-            label={field.label}
-            control={control}
-            isEditing={isEditing}
-            isDisabled={fetchError || isSwitchingProvider}
-            type={field.type || 'text'}
-            placeholder={field.placeholder}
-            icon={field.icon}
-          />
-        </Grid>
-      )) || [];
+      const additionalFields =
+        providerConfig?.additionalFields?.map((field) => (
+          <Grid item xs={12} md={6} key={field.name}>
+            <ProviderField
+              name={field.name}
+              label={field.label}
+              control={control}
+              isEditing={isEditing}
+              isDisabled={fetchError || isSwitchingProvider}
+              type={field.type || 'text'}
+              placeholder={field.placeholder}
+              icon={field.icon}
+            />
+          </Grid>
+        )) || [];
 
       return (
         <>
@@ -378,8 +394,8 @@ const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
           />
           <Box>
             <Typography variant="body2" color="text.secondary">
-              Configure your LLM provider to enable AI capabilities in your application.
-              {' '}{providerConfig?.description}
+              Configure your LLM provider to enable AI capabilities in your application.{' '}
+              {providerConfig?.description}
               {fetchError && ' (View-only mode due to connection error)'}
             </Typography>
           </Box>
@@ -407,17 +423,21 @@ const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
             // Apply height during transitions to prevent jumps
             ...(isSwitchingProvider && {
               height: getTransitionHeight(),
-              overflow: 'hidden'
+              overflow: 'hidden',
             }),
             // Smooth height transitions
             transition: 'height 0.3s ease-in-out',
-            mb: 2
+            mb: 2,
           }}
         >
           {/* Provider Type selector - always visible */}
           <Grid container spacing={2.5} sx={{ mb: 2 }}>
             <Grid item xs={12}>
-              <FormControl fullWidth size="small" disabled={!isEditing || fetchError || isSwitchingProvider}>
+              <FormControl
+                fullWidth
+                size="small"
+                disabled={!isEditing || fetchError || isSwitchingProvider}
+              >
                 <InputLabel>Provider Type</InputLabel>
                 <Select
                   name="modelType"
@@ -425,7 +445,7 @@ const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
                   label="Provider Type"
                   onChange={handleProviderChange}
                 >
-                  {providers.map(provider => (
+                  {providers.map((provider) => (
                     <MenuItem key={provider.id} value={provider.id}>
                       {provider.label}
                     </MenuItem>
@@ -474,13 +494,14 @@ const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
                 <CircularProgress size={20} />
                 <Typography variant="body2" color="text.secondary">
-                  Switching to {providers.find(p => p.id === currentProvider)?.label || 'new provider'}...
+                  Switching to{' '}
+                  {providers.find((p) => p.id === currentProvider)?.label || 'new provider'}...
                 </Typography>
               </Box>
             </Fade>
           </Box>
         </Box>
-        
+
         {saveError && (
           <Alert severity="error" sx={{ mt: 3 }}>
             {saveError}
@@ -488,18 +509,38 @@ const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
         )}
 
         {/* Show appropriate loading indicators */}
+
         {isSaving && (
-          <Box sx={{ display: 'flex', justifyContent: 'center', mt: 3 }}>
-            <CircularProgress size={24} />
+          <Box
+            sx={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              backgroundColor: alpha(theme.palette.background.paper, 0.7),
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 1000,
+              backdropFilter: 'blur(0.1px)',
+              borderRadius: 1,
+            }}
+          >
+            <CircularProgress size={32} />
+            <Typography variant="body2" sx={{ mt: 2, fontWeight: 500 }}>
+              Saving configuration...
+            </Typography>
           </Box>
         )}
-        
+
         {isLoading && formDataLoaded && (
           <Box sx={{ display: 'flex', justifyContent: 'center', my: 2 }}>
             <CircularProgress size={20} />
           </Box>
         )}
-        
+
         <Alert variant="outlined" severity="info" sx={{ my: 3 }}>
           Refer to{' '}
           <Link href="https://docs.pipeshub.com/ai-models/overview" target="_blank" rel="noopener">
