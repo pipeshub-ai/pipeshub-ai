@@ -159,6 +159,7 @@ const PdfHighlighterComp = ({
   fileName = '',
   initialHighlights = [],
   citations = [],
+  highlightCitation = null,
 }: PdfHighlighterCompProps) => {
   const [highlights, setHighlights] = useState<HighlightType[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
@@ -167,7 +168,7 @@ const PdfHighlighterComp = ({
   const [actualPdfBuffer, setActualPdfBuffer] = useState<ArrayBuffer | null>(pdfBuffer || null);
   const scrollViewerTo = useRef<(highlight: HighlightType) => void>(() => {});
   const [processedCitations, setProcessedCitations] = useState<ProcessedCitation[]>([]);
-  console.log(citations);
+
   useEffect(() => {
     const style = document.createElement('style');
     style.textContent = `
@@ -237,6 +238,92 @@ const PdfHighlighterComp = ({
 
     processCitationsWithHighlights();
   }, [actualPdfUrl, actualPdfBuffer, citations]);
+
+  useEffect(() => {
+    // Only execute this effect when necessary conditions are met
+    if (
+      highlights.length > 0 &&
+      highlightCitation &&
+      highlightCitation.metadata._id &&
+      scrollViewerTo.current &&
+      typeof scrollViewerTo.current === 'function' &&
+      !loading
+    ) {
+      // Find the highlight that corresponds to the highlightCitation
+      const targetHighlight = highlights.find((h) => h.id === highlightCitation.metadata._id);
+
+      // Use a slightly longer delay to ensure PDF is fully rendered
+      const delay = 1000;
+
+      console.log('PDF ready, preparing to scroll to highlight:', highlightCitation.metadata._id);
+
+      // Create a function to attempt scrolling
+      const attemptScroll = () => {
+        if (targetHighlight) {
+          console.log('Scrolling to highlight:', targetHighlight.id);
+          scrollViewerTo.current(targetHighlight);
+          return true;
+        }
+
+        // Fix the ESLint unnecessary else error by removing the else
+        if (highlightCitation.metadata.pageNum && highlightCitation.metadata.pageNum.length > 0) {
+          // Fallback: Find any highlight on the specified page
+          const pageNumber = highlightCitation.metadata.pageNum[0];
+          const highlightOnPage = highlights.find((h) => h.position.pageNumber === pageNumber);
+
+          if (highlightOnPage) {
+            console.log('Fallback: scrolling to page:', pageNumber);
+            scrollViewerTo.current(highlightOnPage);
+            return true;
+          }
+        }
+        return false;
+      };
+
+      // Set up a timer to try scrolling after a delay
+      const timer = setTimeout(() => {
+        const scrolled = attemptScroll();
+
+        // If scrolling failed on first attempt, try once more after a bit
+        if (!scrolled) {
+          console.log('First scroll attempt failed, trying again...');
+          setTimeout(attemptScroll, 500);
+        }
+      }, delay);
+
+      // Clean up timer on unmount
+      return () => clearTimeout(timer);
+    }
+
+    // Return undefined for cases where we don't set up a timer
+    return undefined;
+  }, [highlights, highlightCitation, loading]);
+
+  useEffect(() => {
+    // Only run this once when the PDF document is available and scroll function is set
+    if (scrollViewerTo.current && typeof scrollViewerTo.current === 'function') {
+      // Create a wrapper for the scrollViewerTo function that includes error handling
+      const originalScrollFn = scrollViewerTo.current;
+
+      // Replace the function with an enhanced version
+      scrollViewerTo.current = (highlight: HighlightType) => {
+        if (!highlight) {
+          console.error('Cannot scroll to undefined highlight');
+          return;
+        }
+
+        console.log('PDF: Attempting to scroll to highlight:', highlight.id);
+
+        try {
+          // Call the original function
+          originalScrollFn(highlight);
+        } catch (err) {
+          // Rename error to err to avoid shadowing
+          console.error('Error in scrollViewerTo:', err);
+        }
+      };
+    }
+  }, []);
 
   const addHighlight = useCallback((highlight: Omit<HighlightType, 'id'>): void => {
     setHighlights((prevHighlights) => [
@@ -358,26 +445,29 @@ const PdfHighlighterComp = ({
                   screenshot,
                   isScrolledTo
                 ) => {
+                  const isHighlighted: boolean = 
+                    Boolean(isScrolledTo) || Boolean(highlightCitation && highlightCitation.metadata._id === highlight.id);
+                  
                   const isTextHighlight = !highlight.content?.image;
                   const component = isTextHighlight ? (
                     <div
                       className="highlight-wrapper"
                       style={
                         {
-                          '--highlight-color': '#e6f4f1',
-                          '--highlight-opacity': '0.4',
+                          '--highlight-color': isHighlighted ? '#4caf50' : '#e6f4f1',
+                          '--highlight-opacity': isHighlighted ? '0.6' : '0.4',
                         } as CSSProperties
                       }
                     >
                       <Highlight
-                        isScrolledTo={isScrolledTo}
+                        isScrolledTo={isHighlighted}
                         position={highlight.position}
                         comment={highlight.comment}
                       />
                     </div>
                   ) : (
                     <AreaHighlight
-                      isScrolledTo={isScrolledTo}
+                      isScrolledTo={isHighlighted}
                       highlight={highlight}
                       onChange={(boundingRect) => {
                         updateHighlight(
@@ -406,7 +496,18 @@ const PdfHighlighterComp = ({
           )}
         </EnhancedPdfLoader>
       </Box>
-      <CitationSidebar citations={processedCitations} scrollViewerTo={scrollViewerTo.current} />
+      <CitationSidebar
+        citations={processedCitations}
+        scrollViewerTo={(highlight) => {
+          if (scrollViewerTo.current && typeof scrollViewerTo.current === 'function') {
+            console.log('Calling scrollViewerTo from sidebar for highlight:', highlight?.id);
+            scrollViewerTo.current(highlight);
+          } else {
+            console.error('scrollViewerTo.current is not a function');
+          }
+        }}
+        highlightedCitationId={highlightCitation?.metadata._id || null}
+      />
     </Box>
   );
 };

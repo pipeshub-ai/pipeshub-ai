@@ -1,7 +1,10 @@
-import type { ScaledPosition } from "react-pdf-highlighter";
-import type { DocumentContent } from "src/sections/knowledgebase/types/search-response";
+import type { ScaledPosition } from 'react-pdf-highlighter';
+import type {
+  DocumentContent,
+  SearchResult,
+} from 'src/sections/knowledgebase/types/search-response';
 
-import type { Citation, CustomCitation } from "./chat-bot";
+import type { Citation, CustomCitation, Metadata } from './chat-bot';
 
 export interface PdfHighlighterCompProps {
   pdfUrl?: string | null;
@@ -10,6 +13,7 @@ export interface PdfHighlighterCompProps {
   externalRecordId?: string;
   fileName?: string;
   initialHighlights?: Citation[];
+  highlightCitation?: SearchResult | CustomCitation | null;
 }
 
 export interface Comment {
@@ -36,7 +40,6 @@ export interface BoundingRect {
 export interface Content {
   text?: string;
   image?: string;
- 
 }
 
 export interface HighlightType {

@@ -24,7 +24,7 @@ import {
   alpha,
   styled,
 } from '@mui/material';
-import {createScrollableContainerStyle} from '../utils/styles/scrollbar';
+import { createScrollableContainerStyle } from '../utils/styles/scrollbar';
 
 // Styled components for consistent design
 const StyledCard = styled(Card)(({ theme }) => ({
@@ -36,8 +36,14 @@ const StyledCard = styled(Card)(({ theme }) => ({
       ? '8px 8px 24px rgba(f, f, f, 0.8)'
       : '0 8px 24px rgba(0, 0, 0, 0.08)',
   borderRadius: theme.shape.borderRadius,
-  border: theme.palette.mode === 'dark' ? `1px solid ${alpha(theme.palette.common.white, 0.3)}` : `1px solid ${alpha(theme.palette.common.black, 0.2)}`,
-  backgroundColor: theme.palette.mode === 'dark' ? alpha( theme.palette.background.default,1): theme.palette.background.paper,
+  border:
+    theme.palette.mode === 'dark'
+      ? `1px solid ${alpha(theme.palette.common.white, 0.3)}`
+      : `1px solid ${alpha(theme.palette.common.black, 0.2)}`,
+  backgroundColor:
+    theme.palette.mode === 'dark'
+      ? alpha(theme.palette.background.default, 1)
+      : theme.palette.background.paper,
   overflow: 'auto',
   position: 'relative',
   transformOrigin: 'top left',
@@ -155,7 +161,7 @@ interface CitationHoverCardProps {
   onClose: () => void;
   onViewPdf: (
     url: string,
-    citationMeta: Metadata,
+    citationMeta: CustomCitation,
     citations: CustomCitation[],
     isExcelFile?: boolean,
     buffer?: ArrayBuffer
@@ -200,7 +206,7 @@ const CitationHoverCard = ({
       try {
         const isExcelOrCSV = ['csv', 'xlsx', 'xls'].includes(citation.metadata?.extension);
         const citationMeta = citation.metadata;
-        onViewPdf('', citationMeta, aggregatedCitations, isExcelOrCSV);
+        onViewPdf('', citation, aggregatedCitations, isExcelOrCSV);
       } catch (err) {
         console.error('Failed to fetch document:', err);
       }
@@ -232,8 +238,8 @@ const CitationHoverCard = ({
 
   return (
     <Fade in={isVisible} timeout={150}>
-      <StyledCard sx={{...scrollableStyles}}>
-        <Stack spacing={2} sx={{ position: 'relative', zIndex: 0, }}>
+      <StyledCard sx={{ ...scrollableStyles }}>
+        <Stack spacing={2} sx={{ position: 'relative', zIndex: 0 }}>
           {/* Document Header with View Button */}
           <Box
             sx={{
@@ -324,6 +330,11 @@ const CitationHoverCard = ({
             {citation.metadata?.pageNum[0] && (
               <MetaChip size="small" label={`Page ${citation.metadata?.pageNum[0]}`} />
             )}
+            {['xlsx', 'csv', 'xls'].includes(citation.metadata.extension) &&
+              citation.metadata?.blockNum &&
+              citation.metadata.blockNum[0] && (
+                <MetaChip size="small" label={`Row ${citation.metadata.blockNum[0]}`} />
+              )}
             {citation.metadata?.extension && (
               <MetaChip size="small" label={citation.metadata.extension.toUpperCase()} />
             )}
@@ -333,9 +344,9 @@ const CitationHoverCard = ({
           <CitationContent>{citation?.content || 'No content available.'}</CitationContent>
 
           {/* Topics and Departments */}
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
-            {/* Topics */}
-            {citation.metadata?.topics && citation.metadata.topics.length > 0 && (
+          {/* <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}> */}
+          {/* Topics */}
+          {/* {citation.metadata?.topics && citation.metadata.topics.length > 0 && (
               <Box>
                 <SectionHeading>
                   <Icon
@@ -354,10 +365,10 @@ const CitationHoverCard = ({
                   )}
                 </Box>
               </Box>
-            )}
+            )} */}
 
-            {/* Departments */}
-            {citation.metadata?.departments && citation.metadata.departments.length > 0 && (
+          {/* Departments */}
+          {/* {citation.metadata?.departments && citation.metadata.departments.length > 0 && (
               <Box>
                 <SectionHeading>
                   <Icon
@@ -373,8 +384,8 @@ const CitationHoverCard = ({
                   ))}
                 </Box>
               </Box>
-            )}
-          </Box>
+            )} */}
+          {/* </Box> */}
         </Stack>
       </StyledCard>
     </Fade>

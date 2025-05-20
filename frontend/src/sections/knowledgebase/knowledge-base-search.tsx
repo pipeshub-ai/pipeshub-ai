@@ -22,6 +22,7 @@ import { getConnectorPublicUrl } from '../accountdetails/account-settings/servic
 
 import type { Filters } from './types/knowledge-base';
 import type { PipesHub, SearchResult, AggregatedDocument } from './types/search-response';
+import {createScrollableContainerStyle} from '../qna/chatbot/utils/styles/scrollbar';
 
 // Constants for sidebar widths - must match with the sidebar component
 const SIDEBAR_EXPANDED_WIDTH = 320;
@@ -67,6 +68,7 @@ export default function KnowledgeBaseSearch() {
     appSpecificRecordType: [],
     app: [], // Updated to use app instead of connector
   });
+  const scrollableStyles = createScrollableContainerStyle(theme);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [topK, setTopK] = useState<number>(10);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
@@ -84,7 +86,7 @@ export default function KnowledgeBaseSearch() {
   const [hasSearched, setHasSearched] = useState<boolean>(false);
   const [recordsMap, setRecordsMap] = useState<Record<string, PipesHub.Record>>({});
   const [fileBuffer, setFileBuffer] = useState<ArrayBuffer | null>(null);
-
+  const [highlightedCitation, setHighlightedCitation] = useState<SearchResult | null>();
   // Prevent rapid filter changes
   const isFilterChanging = useRef(false);
 
@@ -228,9 +230,13 @@ export default function KnowledgeBaseSearch() {
       console.log('PPT with large file size');
       throw new Error('Large fize size, redirecting to web page ');
     }
-  }
+  };
 
-  const viewCitations = async (recordId: string, extension: string): Promise<void> => {
+  const viewCitations = async (
+    recordId: string,
+    extension: string,
+    recordCitation?: SearchResult
+  ): Promise<void> => {
     // Reset view states;
 
     // Reset all document type states
@@ -243,7 +249,7 @@ export default function KnowledgeBaseSearch() {
     setFileBuffer(null);
     setRecordCitations(null);
     setFileUrl('');
-
+    setHighlightedCitation(recordCitation);
     const documentContainer = document.querySelector('#document-container');
     if (documentContainer) {
       documentContainer.innerHTML = '';
@@ -539,6 +545,7 @@ export default function KnowledgeBaseSearch() {
     setIsTextFile(false);
     setIsMarkdown(false);
     setFileBuffer(null);
+    setHighlightedCitation(null);
   };
 
   const handleCloseSnackbar = () => {
@@ -557,6 +564,7 @@ export default function KnowledgeBaseSearch() {
           pdfUrl={fileUrl}
           pdfBuffer={fileBuffer}
           citations={recordCitations?.documents || []}
+          highlightCitation={highlightedCitation}
         />
       );
     }
@@ -568,6 +576,7 @@ export default function KnowledgeBaseSearch() {
           url={fileUrl}
           buffer={fileBuffer}
           citations={recordCitations?.documents || []}
+          highlightCitation={highlightedCitation}
           renderOptions={{
             breakPages: true,
             renderHeaders: true,
@@ -584,6 +593,7 @@ export default function KnowledgeBaseSearch() {
           fileUrl={fileUrl}
           citations={recordCitations?.documents || []}
           excelBuffer={fileBuffer}
+          highlightCitation={highlightedCitation}
         />
       );
     }
@@ -672,6 +682,7 @@ export default function KnowledgeBaseSearch() {
             }),
             overflow: 'auto',
             maxHeight: '100%',
+            ...scrollableStyles,
           }}
         >
           <KnowledgeSearch

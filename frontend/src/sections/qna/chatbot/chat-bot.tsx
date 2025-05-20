@@ -146,6 +146,7 @@ const ChatInterface = () => {
     const conversationKey = currentConversationId || 'new';
     return conversationStatus[conversationKey] === 'Inprogress';
   }, [currentConversationId, conversationStatus]);
+  const [highlightedCitation, setHighlightedCitation] = useState<CustomCitation | null>(null);
 
   const [snackbar, setSnackbar] = useState({
     open: false,
@@ -228,7 +229,7 @@ const ChatInterface = () => {
     setIsViewerReady(false);
     setPdfUrl(null);
     setFileBuffer(null);
-
+    setHighlightedCitation(null);
     // Delay clearing other states to ensure clean unmount
     setTimeout(() => {
       setOpenPdfView(false);
@@ -248,7 +249,7 @@ const ChatInterface = () => {
 
   const onViewPdf = async (
     url: string,
-    citationMeta: Metadata,
+    citation: CustomCitation,
     citations: CustomCitation[],
     isExcelFile: boolean = false,
     bufferData?: ArrayBuffer
@@ -259,6 +260,7 @@ const ChatInterface = () => {
     // console.log(aggregatedCitations);
     // setShowQuestionDetails(true);
     // // setDrawerOpen(false);
+    const citationMeta = citation.metadata;
     setTransitioning(true);
     setIsViewerReady(false);
     setDrawerOpen(false);
@@ -266,6 +268,7 @@ const ChatInterface = () => {
     setAggregatedCitations(citations);
     setFileBuffer(null);
     setPdfUrl(null);
+    setHighlightedCitation(citation || null);
     try {
       const recordId = citationMeta?.recordId;
       const response = await axios.get(`/api/v1/knowledgebase/record/${recordId}`);
@@ -515,6 +518,7 @@ const ChatInterface = () => {
     // }, 50); // Match this with your transition duration
     resetViewerStates();
     setFileBuffer(null);
+    setHighlightedCitation(null);
   };
 
   // Also update the toggleCitations function to handle citation state more explicitly
@@ -601,7 +605,7 @@ const ChatInterface = () => {
         // This was the first message from WelcomeScreen
         setShowWelcome(false);
         // The WelcomeMessage's internal TextInput clears itself.
-      } 
+      }
       try {
         setInputValue('');
         setMessages((prev) => [...prev, tempUserMessage]);
@@ -1165,6 +1169,7 @@ const ChatInterface = () => {
                   citations={aggregatedCitations}
                   fileUrl={pdfUrl}
                   excelBuffer={fileBuffer}
+                  highlightCitation={highlightedCitation}
                 />
               ) : isDocx ? (
                 <DocxHighlighterComp
@@ -1172,6 +1177,7 @@ const ChatInterface = () => {
                   url={pdfUrl}
                   buffer={fileBuffer}
                   citations={aggregatedCitations}
+                  highlightCitation={highlightedCitation}
                   renderOptions={{
                     breakPages: true,
                     renderHeaders: true,
@@ -1205,6 +1211,7 @@ const ChatInterface = () => {
                   pdfUrl={pdfUrl}
                   pdfBuffer={fileBuffer}
                   citations={aggregatedCitations}
+                  highlightCitation={highlightedCitation}
                 />
               ))}
             <StyledCloseButton

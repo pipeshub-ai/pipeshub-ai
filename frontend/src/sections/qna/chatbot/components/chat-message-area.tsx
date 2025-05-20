@@ -24,7 +24,7 @@ type ChatMessagesAreaProps = {
   isLoadingConversation: boolean;
   onViewPdf: (
     url: string,
-    citationMeta: Metadata,
+    citation: CustomCitation,
     citations: CustomCitation[],
     isExcelFile?: boolean,
     buffer?: ArrayBuffer
@@ -47,7 +47,7 @@ type MessageWithControlsProps = {
   onToggleCitations: (index: number) => void;
   onViewPdf: (
     url: string,
-    citationMeta: Metadata,
+    citation: CustomCitation,
     citations: CustomCitation[],
     isExcelFile?: boolean,
     buffer?: ArrayBuffer

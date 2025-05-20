@@ -1,4 +1,3 @@
-
 export interface BoundingBox {
   x: number;
   y: number;
@@ -36,9 +35,9 @@ export interface DocumentMetadata {
   bounding_box: BoundingBox[];
   origin: string;
   extension: string;
-  rowNum?:number;
-  sheetNum?:number;
-  sheetName?:string;
+  rowNum?: number;
+  sheetNum?: number;
+  sheetName?: string;
   _id: string;
   _collection_name: string;
 }
@@ -48,7 +47,7 @@ export interface DocumentContent {
   score?: number;
   citationType: string;
   metadata: DocumentMetadata;
-  chunkIndex?:number;
+  chunkIndex?: number;
 }
 
 export interface AggregatedDocument {
@@ -111,6 +110,6 @@ export interface KnowledgeSearchProps {
   loading: boolean;
   onSearchQueryChange: (query: string) => void;
   onTopKChange: (callback: (prevTopK: number) => number) => void;
-  onViewCitations: (recordId: string, extension : string) => Promise<void>;
+  onViewCitations: (recordId: string, extension: string, recordCitation?: SearchResult) => Promise<void>;
   recordsMap: Record<string, PipesHub.Record>;
 }

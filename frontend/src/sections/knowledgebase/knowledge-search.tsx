@@ -40,6 +40,7 @@ import {
 import { ORIGIN } from './constants/knowledge-search';
 
 import type { SearchResult, KnowledgeSearchProps } from './types/search-response';
+import {createScrollableContainerStyle} from '../qna/chatbot/utils/styles/scrollbar';
 
 // Helper function to get file icon based on extension
 
@@ -183,6 +184,7 @@ const KnowledgeSearch = ({
   recordsMap,
 }: KnowledgeSearchProps) => {
   const theme = useTheme();
+  const scrollableStyles = createScrollableContainerStyle(theme);
   const [searchInputValue, setSearchInputValue] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [activeTab, setActiveTab] = useState<number>(0);
@@ -218,7 +220,7 @@ const KnowledgeSearch = ({
     const isMarkdown = ['md'].includes(extension.toLowerCase());
     if (isPdf || isExcel || isDocx || isHtml || isTextFile || isMarkdown) {
       if (onViewCitations) {
-        onViewCitations(recordId, extension).finally(() => {
+        onViewCitations(recordId, extension, record).finally(() => {
           // Reset loading state when complete (whether success or error)
           setLoadingRecordId(null);
         });
@@ -342,6 +344,7 @@ const KnowledgeSearch = ({
         width: '100%',
         bgcolor: theme.palette.background.default,
         overflow: 'hidden',
+        ...scrollableStyles,
       }}
     >
       <Box sx={{ px: 3, py: 3, height: '100%', display: 'flex', flexDirection: 'column' }}>
@@ -460,6 +463,7 @@ const KnowledgeSearch = ({
             flexGrow: 1,
             display: 'flex',
             overflow: 'hidden',
+            ...scrollableStyles
           }}
         >
           {/* Results Column */}
@@ -469,6 +473,7 @@ const KnowledgeSearch = ({
               overflow: 'auto',
               transition: 'width 0.25s ease-in-out',
               pr: 1,
+              ...scrollableStyles
             }}
           >
             {/* Loading State */}
@@ -609,7 +614,7 @@ const KnowledgeSearch = ({
 
             {/* Search Results */}
             {showResultsState && (
-              <Box sx={{ pt: 1 }}>
+              <Box sx={{ pt: 1, ...scrollableStyles }}>
                 {searchResults.map((result, index) => {
                   if (!result?.metadata) return null;
 
@@ -772,6 +777,15 @@ const KnowledgeSearch = ({
                                   </Typography>
                                 </>
                               )}
+                              {['xlsx', 'csv', 'xls'].includes(result.metadata.extension) &&
+                                result.metadata.blockNum && (
+                                  <>
+                                    <Divider orientation="vertical" flexItem sx={{ height: 12 }} />
+                                    <Typography variant="caption" color="text.secondary">
+                                      Row {result.metadata.blockNum[0]}
+                                    </Typography>
+                                  </>
+                                )}
                             </Box>
 
                             {/* Content Preview */}

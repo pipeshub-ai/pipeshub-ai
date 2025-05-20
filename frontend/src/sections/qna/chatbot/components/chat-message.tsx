@@ -192,7 +192,7 @@ const MessageContent: React.FC<MessageContentProps> = ({
           try {
             const isExcelOrCSV = ['csv', 'xlsx', 'xls'].includes(citation.metadata?.extension);
             const citationMeta = citation.metadata;
-            onViewPdf('', citationMeta, recordCitationsForDoc, isExcelOrCSV);
+            onViewPdf('', citation, recordCitationsForDoc, isExcelOrCSV);
           } catch (err) {
             console.error('Failed to fetch document:', err);
           }
@@ -560,13 +560,13 @@ const ChatMessage = ({
 
   const handleViewPdf = async (
     url: string,
-    citationMeta: Metadata,
+    citation: CustomCitation,
     citations: CustomCitation[],
     isExcelFile?: boolean,
     buffer?: ArrayBuffer
   ): Promise<void> =>
     new Promise<void>((resolve) => {
-      onViewPdf(url, citationMeta, citations, isExcelFile, buffer);
+      onViewPdf(url, citation, citations, isExcelFile, buffer);
       resolve();
     });
 
@@ -575,7 +575,8 @@ const ChatMessage = ({
       const recordCitations = aggregatedCitations[recordId] || [];
       if (recordCitations.length > 0) {
         const citationMeta = recordCitations[0].metadata;
-        onViewPdf('', citationMeta, recordCitations, false);
+        const citation = recordCitations[0];
+        onViewPdf('', citation, recordCitations, false);
         resolve();
       }
     });

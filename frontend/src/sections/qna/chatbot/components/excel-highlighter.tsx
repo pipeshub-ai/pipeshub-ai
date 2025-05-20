@@ -1,7 +1,10 @@
 import type { BoxProps } from '@mui/material';
 import type { Theme } from '@mui/material/styles';
-import type { CustomCitation } from 'src/types/chat-bot';
-import type { DocumentContent } from 'src/sections/knowledgebase/types/search-response';
+import type { CustomCitation, Metadata } from 'src/types/chat-bot';
+import type {
+  DocumentContent,
+  SearchResult,
+} from 'src/sections/knowledgebase/types/search-response';
 
 import * as XLSX from 'xlsx';
 import { Icon } from '@iconify/react';
@@ -31,11 +34,13 @@ import {
   CircularProgress,
   useTheme,
 } from '@mui/material';
+import {createScrollableContainerStyle} from '../utils/styles/scrollbar';
 
 type ExcelViewerprops = {
   citations: DocumentContent[] | CustomCitation[];
   fileUrl: string | null;
   excelBuffer?: ArrayBuffer | null;
+  highlightCitation?: SearchResult | CustomCitation | null;
 };
 
 interface StyleProps {
@@ -362,7 +367,7 @@ const ControlsContainer = styled(Box)(({ theme }) => ({
   zIndex: 1000,
 }));
 
-const ExcelViewer = ({ citations, fileUrl, excelBuffer }: ExcelViewerprops) => {
+const ExcelViewer = ({ citations, fileUrl, excelBuffer, highlightCitation }: ExcelViewerprops) => {
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [tableData, setTableData] = useState<TableRowType[]>([]);
@@ -377,6 +382,7 @@ const ExcelViewer = ({ citations, fileUrl, excelBuffer }: ExcelViewerprops) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const theme = useTheme();
   const isDarkMode = theme.palette.mode === 'dark';
+  const scrollableStyles = createScrollableContainerStyle(theme);
 
   // Store mapping between original Excel row numbers and displayed indices
   const [rowMapping, setRowMapping] = useState<Map<number, number>>(new Map());
@@ -656,19 +662,25 @@ const ExcelViewer = ({ citations, fileUrl, excelBuffer }: ExcelViewerprops) => {
 
   // Handle initial citation highlight
   useEffect(() => {
-    if (isInitialized && citations.length > 0 && !highlightedRow && mountedRef.current) {
-      const firstCitation = citations[0];
-
-      const { blockNum, extension } = firstCitation.metadata;
-      if (blockNum[0]) {
-        // Use the exact blockNum from the citation - no adjustment needed
-        const highlightedRowNum = extension === 'csv' ? blockNum[0] + 1 : blockNum[0];
-        setHighlightedRow(highlightedRowNum);
-        setSelectedCitation(firstCitation.metadata._id);
-        scrollToRow(highlightedRowNum);
-      }
+    if (!isInitialized || !citations.length || highlightedRow || !mountedRef.current) {
+      return;
     }
-  }, [citations, isInitialized, highlightedRow, scrollToRow]);
+    const sourceCitation = highlightCitation?.metadata || citations[0].metadata;
+    const { blockNum, extension } = sourceCitation;
+
+    if (!blockNum || !blockNum.length) {
+      return; // Exit early if blockNum is missing or empty
+    }
+    // Calculate the row number based on extension type
+    const highlightedRowNum = extension === 'csv' ? blockNum[0] + 1 : blockNum[0];
+
+    // Update state with the highlighted row info
+    setHighlightedRow(highlightedRowNum);
+    setSelectedCitation(sourceCitation._id);
+
+    // Scroll to the highlighted row
+    scrollToRow(highlightedRowNum);
+  }, [citations, isInitialized, highlightedRow, scrollToRow, highlightCitation]);
 
   if (loading) {
     return (
@@ -753,7 +765,7 @@ const ExcelViewer = ({ citations, fileUrl, excelBuffer }: ExcelViewerprops) => {
       </ControlsContainer>
 
       <ViewerContainer>
-        <Box sx={{ maxHeight: '100%', overflow: 'auto' }}>
+        <Box sx={{ maxHeight: '100%', overflow: 'auto' ,...scrollableStyles}}>
           <MainContainer>
             <TableContainer ref={tableRef} sx={{ overflow: 'auto' }}>
               <Table stickyHeader>
@@ -819,7 +831,7 @@ const ExcelViewer = ({ citations, fileUrl, excelBuffer }: ExcelViewerprops) => {
             </Typography>
           </SidebarHeader>
 
-          <List sx={{ flex: 1, overflow: 'auto', p: 1.5 }}>
+          <List sx={{ flex: 1, overflow: 'auto', p: 1.5 ,...scrollableStyles}}>
             {citations.map((citation, index) => (
               <StyledListItem
                 key={citation.metadata._id || index}

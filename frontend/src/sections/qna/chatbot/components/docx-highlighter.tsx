@@ -1,5 +1,5 @@
 import type { CustomCitation } from 'src/types/chat-bot';
-import type { DocumentContent } from 'src/sections/knowledgebase/types/search-response';
+import type { DocumentContent, SearchResult } from 'src/sections/knowledgebase/types/search-response';
 import type { Position, HighlightType, ProcessedCitation } from 'src/types/pdf-highlighter';
 
 import { Icon } from '@iconify/react';
@@ -18,6 +18,7 @@ type DocxViewerProps = {
   buffer?: ArrayBuffer | null;
   renderOptions?: Record<string, unknown>;
   sx?: Record<string, unknown>;
+  highlightCitation?: SearchResult | CustomCitation | null;
 };
 
 // Styled components
@@ -142,6 +143,7 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
   renderOptions = {},
   sx = {},
   citations = [],
+  highlightCitation = null,
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
@@ -153,6 +155,7 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
   const styleAddedRef = useRef<boolean>(false);
   const processingCitationsRef = useRef<boolean>(false);
   const highlightAppliersRef = useRef<(() => void)[]>([]);
+  const [highlightedCitationId, setHighlightedCitationId] = useState<string | null>(null);
 
   // STEP 1: Render document only once
   useEffect(() => {
@@ -515,7 +518,6 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
       element.classList.add('docx-highlight-active');
       element.classList.add('highlight-pulse');
 
-
       // Scroll into view with offset to ensure visibility
       element.scrollIntoView({
         behavior: 'smooth',
@@ -721,12 +723,10 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
     // Clear existing highlights
     clearHighlights();
 
-
-
     citationsArray.forEach((citation) => {
       if (!citation.highlight) return;
 
-      const {text} = citation.highlight.content;
+      const { text } = citation.highlight.content;
       if (!text || text.length < 10) {
         return;
       }
@@ -940,7 +940,6 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
       highlightElement.classList.add('docx-highlight-active');
       highlightElement.classList.add('highlight-pulse');
 
-
       // Scroll to the highlight
       highlightElement.scrollIntoView({
         behavior: 'smooth',
@@ -987,6 +986,58 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
     []
   );
 
+  useEffect(() => {
+    if (!highlightCitation) return;
+
+    // Process the citation to extract its ID based on its type
+    let highlightId: string | null = null;
+
+    if (isDocumentContent(highlightCitation) && highlightCitation.metadata?._id) {
+      highlightId = highlightCitation.metadata._id;
+    } else if ('id' in highlightCitation) {
+      highlightId = highlightCitation.id as string;
+    } else if ('_id' in highlightCitation) {
+      highlightId = highlightCitation._id as string;
+    } else if ('citationId' in highlightCitation) {
+      highlightId = highlightCitation.citationId as string;
+    }
+
+    if (highlightId) {
+      console.log(`Setting highlighted citation ID to: ${highlightId}`);
+      setHighlightedCitationId(highlightId);
+    }
+  }, [highlightCitation]);
+
+  useEffect(() => {
+    if (!documentReady || !highlightedCitationId) return;
+
+    console.log(`Document ready, looking for citation with ID: ${highlightedCitationId}`);
+
+    // If we don't have processed citations yet, wait for them
+    if (!processedCitations.length) {
+      console.log('Waiting for processed citations...');
+      return;
+    }
+
+    // Find the processed citation that matches our ID
+    const targetCitation = processedCitations.find(
+      (citation) => citation.highlight?.id === highlightedCitationId
+    );
+
+    if (targetCitation?.highlight) {
+      console.log('Found matching citation, will scroll to it');
+
+      // Use a delay to ensure highlights are applied first
+      setTimeout(() => {
+        if (targetCitation.highlight) {
+          scrollToHighlight(targetCitation.highlight);
+        }
+      }, 1000); // Longer delay to ensure document is fully processed
+    } else {
+      console.log('No matching processed citation found');
+    }
+  }, [documentReady, processedCitations, highlightedCitationId, scrollToHighlight]);
+
   return (
     <DocViewerContainer component={Paper}>
       {loading && (
@@ -1005,7 +1056,7 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
 
       <Box sx={{ display: 'flex', height: '100%' }}>
         {/* Document container - always render this */}
-        <Box sx={{ height: '100%', width: '75%', position: 'relative' }}>
+        <Box sx={{ height: '100%', width: '72%', position: 'relative' }}>
           <DocumentContainer ref={containerRef} />
         </Box>
 
