@@ -143,9 +143,6 @@ const CitationSidebar = ({
         id: citation.highlight.id || citation.metadata?._id || String(Math.random()).slice(2),
       };
 
-      // Use console.log to debug
-      console.log('Sidebar: clicking citation with ID:', highlight.id);
-      console.log('Position data:', highlight.position);
 
       // Try using the highlight we constructed rather than citation.highlight directly
       try {
@@ -157,7 +154,6 @@ const CitationSidebar = ({
         // Fix TypeScript error: citation.highlight might be null
         setTimeout(() => {
           try {
-            console.log('Trying fallback scroll with constructed highlight again');
             scrollViewerTo(highlight);
           } catch (fallbackErr) {
             console.error('Fallback scroll also failed:', fallbackErr);

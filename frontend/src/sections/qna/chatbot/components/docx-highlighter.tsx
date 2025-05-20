@@ -882,9 +882,6 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
           }
         }
 
-        if (!matchFound) {
-          console.log(`No match found for text: "${text.substring(0, 30)}..."`);
-        }
       } catch (err) {
         console.error('Error applying highlight:', err);
       }
@@ -1003,7 +1000,6 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
     }
 
     if (highlightId) {
-      console.log(`Setting highlighted citation ID to: ${highlightId}`);
       setHighlightedCitationId(highlightId);
     }
   }, [highlightCitation]);
@@ -1011,11 +1007,9 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
   useEffect(() => {
     if (!documentReady || !highlightedCitationId) return;
 
-    console.log(`Document ready, looking for citation with ID: ${highlightedCitationId}`);
 
     // If we don't have processed citations yet, wait for them
     if (!processedCitations.length) {
-      console.log('Waiting for processed citations...');
       return;
     }
 
@@ -1025,7 +1019,6 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
     );
 
     if (targetCitation?.highlight) {
-      console.log('Found matching citation, will scroll to it');
 
       // Use a delay to ensure highlights are applied first
       setTimeout(() => {
@@ -1033,9 +1026,7 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
           scrollToHighlight(targetCitation.highlight);
         }
       }, 1000); // Longer delay to ensure document is fully processed
-    } else {
-      console.log('No matching processed citation found');
-    }
+    } 
   }, [documentReady, processedCitations, highlightedCitationId, scrollToHighlight]);
 
   return (

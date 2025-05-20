@@ -191,7 +191,6 @@ const MessageContent: React.FC<MessageContentProps> = ({
         if (citation.metadata?.recordId) {
           try {
             const isExcelOrCSV = ['csv', 'xlsx', 'xls'].includes(citation.metadata?.extension);
-            const citationMeta = citation.metadata;
             onViewPdf('', citation, recordCitationsForDoc, isExcelOrCSV);
           } catch (err) {
             console.error('Failed to fetch document:', err);

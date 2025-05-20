@@ -255,12 +255,10 @@ const PdfHighlighterComp = ({
       // Use a slightly longer delay to ensure PDF is fully rendered
       const delay = 1000;
 
-      console.log('PDF ready, preparing to scroll to highlight:', highlightCitation.metadata._id);
 
       // Create a function to attempt scrolling
       const attemptScroll = () => {
         if (targetHighlight) {
-          console.log('Scrolling to highlight:', targetHighlight.id);
           scrollViewerTo.current(targetHighlight);
           return true;
         }
@@ -272,7 +270,6 @@ const PdfHighlighterComp = ({
           const highlightOnPage = highlights.find((h) => h.position.pageNumber === pageNumber);
 
           if (highlightOnPage) {
-            console.log('Fallback: scrolling to page:', pageNumber);
             scrollViewerTo.current(highlightOnPage);
             return true;
           }
@@ -286,7 +283,6 @@ const PdfHighlighterComp = ({
 
         // If scrolling failed on first attempt, try once more after a bit
         if (!scrolled) {
-          console.log('First scroll attempt failed, trying again...');
           setTimeout(attemptScroll, 500);
         }
       }, delay);
@@ -312,7 +308,6 @@ const PdfHighlighterComp = ({
           return;
         }
 
-        console.log('PDF: Attempting to scroll to highlight:', highlight.id);
 
         try {
           // Call the original function
@@ -500,7 +495,6 @@ const PdfHighlighterComp = ({
         citations={processedCitations}
         scrollViewerTo={(highlight) => {
           if (scrollViewerTo.current && typeof scrollViewerTo.current === 'function') {
-            console.log('Calling scrollViewerTo from sidebar for highlight:', highlight?.id);
             scrollViewerTo.current(highlight);
           } else {
             console.error('scrollViewerTo.current is not a function');

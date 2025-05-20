@@ -161,7 +161,7 @@ interface CitationHoverCardProps {
   onClose: () => void;
   onViewPdf: (
     url: string,
-    citationMeta: CustomCitation,
+    citation: CustomCitation,
     citations: CustomCitation[],
     isExcelFile?: boolean,
     buffer?: ArrayBuffer
@@ -205,7 +205,6 @@ const CitationHoverCard = ({
     if (citation?.metadata?.recordId) {
       try {
         const isExcelOrCSV = ['csv', 'xlsx', 'xls'].includes(citation.metadata?.extension);
-        const citationMeta = citation.metadata;
         onViewPdf('', citation, aggregatedCitations, isExcelOrCSV);
       } catch (err) {
         console.error('Failed to fetch document:', err);
