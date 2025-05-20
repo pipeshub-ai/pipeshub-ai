@@ -86,3 +86,24 @@ jobs:
         run: |
           cd services/python
           ruff check .
+  
+  ruff-lint-pr:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install ruff
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff
+
+      - name: Run ruff on changed Python files
+        run: |
+          git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep '\.py$' | if [ $(wc -l) -gt 0 ]; then xargs ruff check --select ANN201,ANN202,ANN204,ANN205,ANN206,N804; fi
