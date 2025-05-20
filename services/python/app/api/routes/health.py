@@ -51,8 +51,8 @@ async def embedding_health_check(request: Request, embedding_configs: list[dict]
             return JSONResponse(
                 status_code=500,
                 content={
-                    "status": "error",
-                    "message": "Failed to initialize embedding model",
+                    "status": "not healthy",
+                    "error": "Failed to initialize embedding model",
                     "details": {
                         "embedding_model": "initialization_failed",
                         "vector_store": "unknown",  # Can't check vector store without embeddings
@@ -86,23 +86,16 @@ async def embedding_health_check(request: Request, embedding_configs: list[dict]
             if (current_model_name is not None and
                 new_model_name is not None and
                 current_model_name.lower() != new_model_name.lower()):
-                logger.warning(
-                    "Detected embedding model change attempt",
-                    extra={
-                        "current_model": current_model_name,
-                        "new_model": new_model_name,
-                        "vector_size": qdrant_vector_size
-                    }
-                )
+                logger.warning("Detected embedding model change attempt")
                 if qdrant_vector_size != 0:
                     logger.error("Rejected embedding model change due to existing collection")
                     return JSONResponse(
                         status_code=500,
                         content={
                             "status": "not healthy",
-                            "error": f"Policy Rejection: Embedding model configuration cannot be changed while a vector store collection (dimension: {qdrant_vector_size}) already exists. Please ensure you are using the original embedding configuration.",
+                            "error": "Policy Rejection: Embedding model configuration cannot be changed while a vector store collection already exists. Please ensure you are using the original embedding configuration.",
                             "timestamp": get_epoch_timestamp_in_ms(),
-                        },
+                        }
                     )
         except grpc._channel._InactiveRpcError as e:
             if e.code() == grpc.StatusCode.NOT_FOUND:

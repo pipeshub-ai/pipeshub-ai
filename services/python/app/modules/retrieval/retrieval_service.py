@@ -276,16 +276,17 @@ class RetrievalService:
             ai_models = await self.config_service.get_config(
                 config_node_constants.AI_MODELS.value
             )
-            if ai_models and "embedding" in ai_models:
+            if ai_models and "embedding" in ai_models and ai_models["embedding"]:
                 for config in ai_models["embedding"]:
                     # Only one embedding model is supported
                     if "configuration" in config and "model" in config["configuration"]:
                         return config["configuration"]["model"]
 
-            return None
+            # Return default model if no embedding config found
+            return DEFAULT_EMBEDDING_MODEL
         except Exception as e:
             self.logger.error(f"Error getting current embedding model name: {str(e)}")
-            return None
+            return DEFAULT_EMBEDDING_MODEL
 
     def get_embedding_model_name(self, dense_embeddings: Embeddings) -> Optional[str]:
         if hasattr(dense_embeddings, "model_name"):
