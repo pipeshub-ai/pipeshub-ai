@@ -131,7 +131,7 @@ record_schema = {
             "externalRevisionId": {"type": ["string", "null"]},
             "recordType": {
                 "type": "string",
-                "enum": ["FILE", "DRIVE", "WEBPAGE", "MESSAGE", "MAIL", "OTHERS","DATABASE"],
+                "enum": ["FILE", "DRIVE", "WEBPAGE", "MESSAGE", "MAIL", "OTHERS","DATABASE","COMMENT"],
             },
             "version": {"type": "number", "default": 0},
             "origin": {"type": "string", "enum": ["UPLOAD", "CONNECTOR"]},
@@ -279,7 +279,7 @@ record_group_schema = {
             "externalGroupId": {"type": "string", "minLength": 1},
             "groupType": {
                 "type": "string",
-                "enum": ["SLACK_CHANNEL", "CONFLUENCE_SPACES"],
+                "enum": ["SLACK_CHANNEL", "CONFLUENCE_SPACES","NOTION_WORKSPACE"],
             },
             "connectorName": {
                 "type": "string",
@@ -378,7 +378,6 @@ notion_page_schema = {
         "required": [
             "page_id",
             "title",
-            "url",
         ],
         "additionalProperties": False
     },
@@ -421,7 +420,6 @@ notion_database_schema = {
         "required": [
             "database_id",
             "title",
-            "url",
         ],
         "additionalProperties": False
     },
@@ -433,107 +431,24 @@ notion_comment_schema = {
     "rule": {
         "type": "object",
         "properties": {
-            "database_id": {"type": "string", "minLength": 1},  # Notion's UUID for the database
-            "title": {"type": "string"},  # Extracted database title
-            "url": {"type": "string", "format": "uri"},  # Notion database URL
-            "parent": {
-                "type": "object",
-                "properties": {
-                    "type": {
-                        "type": "string",
-                        "enum": ["page_id", "workspace", "block_id"]
-                    },
-                    "page_id": {"type": "string"},
-                    "workspace": {"type": "boolean"},
-                    "block_id": {"type": "string"}
-                },
-                "additionalProperties": False
-            },
-            "isArchived": {"type": "boolean", "default": False},  # Whether the database is archived in Notion
-            "isDeleted": {"type": "boolean", "default": False},  # Whether the database is deleted in your system
-            "deletedAtTimestamp": {"type": "number"},  # When the database was deleted in your system
-            "properties": {
-                "type": "object",
-                "additionalProperties": True  # Database schema/properties definition
-            },
-            "rawData": {
-                "type": "object",
-                "additionalProperties": True  # Store the complete raw JSON from Notion API
-            }
+            "comment_id": {"type": "string", "minLength": 1},  # Notion's UUID for the database
+            "page_id":{"type": "string", "minLength": 1},
+            "text": {"type": "string"},  # Notion database URL
+            "createdBy" :{"type": "string"},
+            "createdAtTimestamp": {"type": "number"}, 
+            "deletedAtTimestamp":{"type": "number"}, # When the database was deleted in your system
+          
         },
         "required": [
-            "database_id",
-            "title",
-            "url",
+            "comment_id",
+            "text",
+            "page_id",
+            "createdBy",
         ],
         "additionalProperties": False
     },
     "level": "strict",
-    "message": "Document does not match the Notion database schema."
+    "message": "Document does not match the Notion comment schema."
 }
-notion_comment_schema = {
-  "rule": {
-    "type": "object",
-    "properties": {
-      "comment_id": {"type": "string", "minLength": 1},  
-      "parent": {
-        "type": "object",
-        "properties": {
-          "type": {
-            "type": "string",
-            "enum": ["page_id", "block_id", "discussion_id"]
-          },
-          "page_id": {"type": "string"},
-          "block_id": {"type": "string"},
-          "discussion_id": {"type": "string"}
-        },
-        "additionalProperties": False
-      },
-      "discussion_id": {"type": "string"},  
-      "created_by": {
-        "type": "object",
-        "properties": {
-          "id": {"type": "string"},
-          "name": {"type": "string"},
-          "avatar_url": {"type": "string", "format": "uri"}
-        }
-      },
 
-      "rich_text": {
-        "type": "array",
-        "items": {
-          "type": "object",
-          "additionalProperties": True 
-        }
-      },
-      "plain_text": {"type": "string"},  
-      "resolved": {"type": "boolean", "default": False},  
-      "isDeleted": {"type": "boolean", "default": False},  
-      "deletedAtTimestamp": {"type": "number"},  
-      "reactions": {
-        "type": "array",
-        "items": {
-          "type": "object",
-          "properties": {
-            "emoji": {"type": "string"},
-            "users": {
-              "type": "array",
-              "items": {"type": "string"}  
-            }
-          }
-        }
-      },
-      "rawData": {
-        "type": "object",
-        "additionalProperties": True  
-      }
-    },
-    "required": [
-      "comment_id",
-      "parent",
-    ],
-    "additionalProperties": False
-  },
-  "level": "strict",
-  "message": "Document does not match the Notion comment schema."
-}
+
