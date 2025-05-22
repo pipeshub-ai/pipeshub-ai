@@ -767,7 +767,7 @@ class EntityKafkaRouteConsumer:
                 
                 # Initialize NotionService
                     notion_service = NotionService(
-                        integration_secret='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',
+                        integration_secret='',
                         org_id=org_id,
                         logger=self.logger,
                         arango_service=self.arango_service
