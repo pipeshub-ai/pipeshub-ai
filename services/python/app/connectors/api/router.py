@@ -4,8 +4,9 @@ import io
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, AsyncGenerator, Dict, Optional
 
 import google.oauth2.credentials
 import jwt
@@ -36,11 +37,22 @@ from app.config.utils.named_constants.arangodb_constants import (
     RecordRelations,
     RecordTypes,
 )
+from app.config.utils.named_constants.status_code_constants import StatusCodeConstants
 from app.connectors.api.middleware import WebhookAuthVerifier
+from app.connectors.google.admin.admin_webhook_handler import AdminWebhookHandler
+from app.connectors.google.gmail.handlers.gmail_webhook_handler import (
+    AbstractGmailWebhookHandler,
+)
+from app.connectors.google.google_drive.handlers.drive_webhook_handler import (
+    AbstractDriveWebhookHandler,
+)
 from app.connectors.google.scopes import (
     GOOGLE_CONNECTOR_ENTERPRISE_SCOPES,
     GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES,
 )
+from app.modules.parsers.google_files.google_docs_parser import GoogleDocsParser
+from app.modules.parsers.google_files.google_sheets_parser import GoogleSheetsParser
+from app.modules.parsers.google_files.google_slides_parser import GoogleSlidesParser
 from app.setups.connector_setup import AppContainer
 from app.utils.llm import get_llm
 from app.utils.logger import create_logger
@@ -49,8 +61,7 @@ logger = create_logger("connector_service")
 
 router = APIRouter()
 
-
-async def get_drive_webhook_handler(request: Request) -> Optional[Any]:
+async def get_drive_webhook_handler(request: Request) -> Optional[AbstractDriveWebhookHandler]:
     try:
         container: AppContainer = request.app.container
         drive_webhook_handler = container.drive_webhook_handler()
@@ -62,7 +73,7 @@ async def get_drive_webhook_handler(request: Request) -> Optional[Any]:
 
 @router.post("/drive/webhook")
 @inject
-async def handle_drive_webhook(request: Request, background_tasks: BackgroundTasks):
+async def handle_drive_webhook(request: Request, background_tasks: BackgroundTasks) -> dict:
     """Handle incoming webhook notifications from Google Drive"""
     try:
 
@@ -109,7 +120,7 @@ async def handle_drive_webhook(request: Request, background_tasks: BackgroundTas
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
-async def get_gmail_webhook_handler(request: Request) -> Optional[Any]:
+async def get_gmail_webhook_handler(request: Request) -> Optional[AbstractGmailWebhookHandler]:
     try:
         container: AppContainer = request.app.container
         gmail_webhook_handler = container.gmail_webhook_handler()
@@ -122,7 +133,7 @@ async def get_gmail_webhook_handler(request: Request) -> Optional[Any]:
 @router.get("/gmail/webhook")
 @router.post("/gmail/webhook")
 @inject
-async def handle_gmail_webhook(request: Request, background_tasks: BackgroundTasks):
+async def handle_gmail_webhook(request: Request, background_tasks: BackgroundTasks) -> dict:
     """Handles incoming Pub/Sub messages"""
     try:
         gmail_webhook_handler = await get_gmail_webhook_handler(request)
@@ -191,7 +202,7 @@ async def get_signed_url(
     connector: str,
     record_id: str,
     signed_url_handler=Depends(Provide[AppContainer.signed_url_handler]),
-):
+) -> dict:
     """Get signed URL for a record"""
     try:
         additional_claims = {"connector": connector, "purpose": "file_processing"}
@@ -210,7 +221,7 @@ async def get_signed_url(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def get_google_docs_parser(request: Request):
+async def get_google_docs_parser(request: Request) -> Optional[GoogleDocsParser]:
     try:
         container: AppContainer = request.app.container
         google_docs_parser = container.google_docs_parser()
@@ -220,7 +231,7 @@ async def get_google_docs_parser(request: Request):
         return None
 
 
-async def get_google_sheets_parser(request: Request):
+async def get_google_sheets_parser(request: Request) -> Optional[GoogleSheetsParser]:
     try:
         container: AppContainer = request.app.container
         google_sheets_parser = container.google_sheets_parser()
@@ -230,7 +241,7 @@ async def get_google_sheets_parser(request: Request):
         return None
 
 
-async def get_google_slides_parser(request: Request):
+async def get_google_slides_parser(request: Request) -> Optional[GoogleSlidesParser]:
     try:
         container: AppContainer = request.app.container
         google_slides_parser = container.google_slides_parser()
@@ -244,7 +255,7 @@ async def get_google_slides_parser(request: Request):
 @inject
 async def handle_record_deletion(
     record_id: str, arango_service=Depends(Provide[AppContainer.arango_service])
-):
+) -> Optional[dict]:
     try:
         response = await arango_service.delete_records_and_relations(
             record_id, hard_delete=True
@@ -268,7 +279,7 @@ async def handle_record_deletion(
         )
 
 
-@router.get("/api/v1/index/{org_id}/{connector}/record/{record_id}")
+@router.get("/api/v1/index/{org_id}/{connector}/record/{record_id}", response_model=None)
 @inject
 async def download_file(
     request: Request,
@@ -276,67 +287,17 @@ async def download_file(
     record_id: str,
     connector: str,
     token: str,
-    google_token_handler=Depends(Provide[AppContainer.google_token_handler]),
-    arango_service=Depends(Provide[AppContainer.arango_service]),
     signed_url_handler=Depends(Provide[AppContainer.signed_url_handler]),
-    config_service=Depends(Provide[AppContainer.config_service]),
-):
-
-    async def get_service_account_credentials(user_id):
-        """Helper function to get service account credentials"""
-        try:
-            # Load service account credentials from environment or secure storage
-            SCOPES = GOOGLE_CONNECTOR_ENTERPRISE_SCOPES
-
-            credentials_json = await google_token_handler.get_enterprise_token(org_id)
-            credentials = service_account.Credentials.from_service_account_info(
-                credentials_json, scopes=SCOPES
-            )
-            user = await arango_service.get_user_by_user_id(user_id)
-
-            # Get the user email from the record to impersonate
-            credentials = credentials.with_subject(user["email"])
-            return credentials
-
-        except Exception as e:
-            logger.error(f"Error getting service account credentials: {str(e)}")
-            raise HTTPException(
-                status_code=500, detail="Error accessing service account credentials"
-            )
-
-    async def get_user_credentials(org_id, user_id):
-        """Helper function to get user credentials"""
-        try:
-            SCOPES = GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES
-
-            await google_token_handler.refresh_token(org_id, user_id)
-            creds_data = await google_token_handler.get_individual_token(
-                org_id, user_id
-            )
-            # Create credentials object from the response using google.oauth2.credentials.Credentials
-            creds = google.oauth2.credentials.Credentials(
-                token=creds_data.get("access_token"),
-                refresh_token=creds_data.get("refresh_token"),
-                token_uri="https://oauth2.googleapis.com/token",
-                client_id=creds_data.get("client_id"),
-                client_secret=creds_data.get("client_secret"),
-                scopes=SCOPES,
-            )
-            if not creds_data.get("access_token"):
-                raise HTTPException(
-                    status_code=401,
-                    detail="Invalid credentials. Access token not found",
-                )
-
-            return creds
-
-        except Exception as e:
-            logger.error(f"Error getting user credentials: {str(e)}")
-            raise HTTPException(
-                status_code=500, detail="Error accessing user credentials"
-            )
-
+) -> Optional[dict | StreamingResponse]:
     try:
+        try:
+            config_service = request.app.state.config_service
+            google_token_handler = request.app.state.google_token_handler
+            arango_service = request.app.state.arango_service
+        except Exception as e:
+            logger.error(f"Error getting dependencies: {str(e)}")
+            raise HTTPException(status_code=500, detail="Error getting dependencies")
+
         logger.info(f"Downloading file {record_id} with connector {connector}")
         # Verify signed URL using the handler
 
@@ -369,13 +330,12 @@ async def download_file(
 
         file_id = record.get("externalRecordId")
 
-        # Different auth handling based on account type
         if org["accountType"] in [AccountType.ENTERPRISE.value, AccountType.BUSINESS.value]:
             # Use service account credentials
-            creds = await get_service_account_credentials(user_id)
+            creds = await get_service_account_credentials(org_id, user_id, logger, arango_service, google_token_handler, request.app.container)
         else:
             # Individual account - use stored OAuth credentials
-            creds = await get_user_credentials(org_id, user_id)
+            creds = await get_user_credentials(org_id, user_id, logger, google_token_handler, request.app.container)
 
         # Download file based on connector type
         try:
@@ -468,7 +428,7 @@ async def download_file(
                 # Enhanced logging for regular file download
                 logger.info(f"Starting binary file download for file_id: {file_id}")
 
-                async def file_stream():
+                async def file_stream() -> AsyncGenerator[bytes, None]:
                     file_buffer = io.BytesIO()
                     try:
                         logger.info("Initiating download process...")
@@ -545,7 +505,7 @@ async def download_file(
                 messages = list(cursor)
                 logger.info(f"messages: {messages}")
 
-                async def attachment_stream():
+                async def attachment_stream() -> AsyncGenerator[bytes, None]:
                     try:
                         # First try getting the attachment from Gmail
                         message_id = None
@@ -574,7 +534,7 @@ async def download_file(
                                             .execute()
                                         )
                                     except Exception as access_error:
-                                        if hasattr(access_error, 'resp') and access_error.resp.status == 404:
+                                        if hasattr(access_error, 'resp') and access_error.resp.status == StatusCodeConstants.NOT_FOUND.value:
                                             logger.info(f"Message not found with ID {message_id}, searching for related messages...")
 
                                             # Get messageIdHeader from the original mail
@@ -664,9 +624,9 @@ async def download_file(
                                     .execute()
                                 )
                             except Exception as attachment_error:
-                                if hasattr(attachment_error, 'resp') and attachment_error.resp.status == 404:
+                                if hasattr(attachment_error, 'resp') and attachment_error.resp.status == StatusCodeConstants.NOT_FOUND.value:
                                     raise HTTPException(
-                                        status_code=404,
+                                        status_code=StatusCodeConstants.NOT_FOUND.value,
                                         detail="Attachment not found in accessible messages"
                                     )
                                 raise attachment_error
@@ -740,72 +700,23 @@ async def download_file(
         raise HTTPException(status_code=500, detail="Error downloading file")
 
 
-@router.get("/api/v1/stream/record/{record_id}")
+@router.get("/api/v1/stream/record/{record_id}", response_model=None)
 @inject
 async def stream_record(
     request: Request,
     record_id: str,
     convertTo: Optional[str] = None,
-    google_token_handler=Depends(Provide[AppContainer.google_token_handler]),
-    arango_service=Depends(Provide[AppContainer.arango_service]),
-    config_service=Depends(Provide[AppContainer.config_service]),
-):
-    async def get_service_account_credentials(user_id):
-        """Helper function to get service account credentials"""
-        try:
-            # Load service account credentials from environment or secure storage
-            SCOPES = GOOGLE_CONNECTOR_ENTERPRISE_SCOPES
-
-            credentials_json = await google_token_handler.get_enterprise_token(org_id)
-            credentials = service_account.Credentials.from_service_account_info(
-                credentials_json, scopes=SCOPES
-            )
-            user = await arango_service.get_user_by_user_id(user_id)
-
-            # # Get the user email from the record to impersonate
-            credentials = credentials.with_subject(user["email"])
-            return credentials
-
-        except Exception as e:
-            logger.error(f"Error getting service account credentials: {str(e)}")
-            raise HTTPException(
-                status_code=500, detail="Error accessing service account credentials"
-            )
-
-    async def get_user_credentials(org_id, user_id):
-        """Helper function to get user credentials"""
-        try:
-            SCOPES = GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES
-            await google_token_handler.refresh_token(org_id, user_id)
-            creds_data = await google_token_handler.get_individual_token(
-                org_id, user_id
-            )
-
-            # Create credentials object from the response using google.oauth2.credentials.Credentials
-            creds = google.oauth2.credentials.Credentials(
-                token=creds_data.get("access_token"),
-                refresh_token=creds_data.get("refresh_token"),
-                token_uri="https://oauth2.googleapis.com/token",
-                client_id=creds_data.get("client_id"),
-                client_secret=creds_data.get("client_secret"),
-                scopes=SCOPES,
-            )
-            if not creds_data.get("access_token"):
-                raise HTTPException(
-                    status_code=401,
-                    detail="Invalid credentials. Access token not found",
-                )
-
-            return creds
-
-        except Exception as e:
-            logger.error(f"Error getting user credentials: {str(e)}")
-            raise HTTPException(
-                status_code=500, detail="Error accessing user credentials"
-            )
-
+) -> Optional[dict | StreamingResponse]:
     try:
         try:
+            config_service = request.app.state.config_service
+            google_token_handler = request.app.state.google_token_handler
+            arango_service = request.app.state.arango_service
+        except Exception as e:
+            logger.error(f"Error getting dependencies: {str(e)}")
+            raise HTTPException(status_code=500, detail="Error getting dependencies")
+        try:
+            logger.info(f"Stream Record Start: {time.time()}")
             auth_header = request.headers.get("Authorization")
             if not auth_header or not auth_header.startswith("Bearer "):
                 raise HTTPException(
@@ -819,10 +730,8 @@ async def stream_record(
             )
             jwt_secret = secret_keys.get("jwtSecret")
             payload = jwt.decode(token, jwt_secret, algorithms=["HS256"])
-
             org_id = payload.get("orgId")
             user_id = payload.get("userId")
-
         except JWTError as e:
             logger.error("JWT validation error: %s", str(e))
             raise HTTPException(status_code=401, detail="Invalid or expired token")
@@ -833,13 +742,14 @@ async def stream_record(
             logger.error("Unexpected error during token validation: %s", str(e))
             raise HTTPException(status_code=500, detail="Error validating token")
 
-        org = await arango_service.get_document(org_id, CollectionNames.ORGS.value)
-        if not org:
-            raise HTTPException(status_code=404, detail="Organization not found")
-
-        record = await arango_service.get_document(
+        org_task = arango_service.get_document(org_id, CollectionNames.ORGS.value)
+        record_task = arango_service.get_document(
             record_id, CollectionNames.RECORDS.value
         )
+        org, record = await asyncio.gather(org_task, record_task)
+
+        if not org:
+            raise HTTPException(status_code=404, detail="Organization not found")
         if not record:
             raise HTTPException(status_code=404, detail="Record not found")
 
@@ -850,11 +760,10 @@ async def stream_record(
         # Different auth handling based on account type
         if org["accountType"] in [AccountType.ENTERPRISE.value, AccountType.BUSINESS.value]:
             # Use service account credentials
-            creds = await get_service_account_credentials(user_id)
+            creds = await get_service_account_credentials(org_id, user_id, logger, arango_service, google_token_handler, request.app.container)
         else:
             # Individual account - use stored OAuth credentials
-            creds = await get_user_credentials(org_id, user_id)
-
+            creds = await get_user_credentials(org_id, user_id,logger, google_token_handler, request.app.container)
         # Download file based on connector type
         try:
             if connector == Connectors.GOOGLE_DRIVE.value:
@@ -883,7 +792,7 @@ async def stream_record(
                         pdf_path = await convert_to_pdf(temp_file_path, temp_dir)
 
                         # Create async generator to properly handle file cleanup
-                        async def file_iterator():
+                        async def file_iterator() -> AsyncGenerator[bytes, None]:
                             try:
                                 with open(pdf_path, "rb") as pdf_file:
                                     yield await asyncio.to_thread(pdf_file.read)
@@ -903,8 +812,12 @@ async def stream_record(
                         )
 
                 # Regular file download without conversion - now with direct streaming
-                async def file_stream():
+                async def file_stream() -> AsyncGenerator[bytes, None]:
                     try:
+                        logger.info(f"Time check xxx File stream start: {time.time()}")
+                        chunk_count = 0
+                        total_bytes = 0
+
                         request = drive_service.files().get_media(fileId=file_id)
                         buffer = io.BytesIO()
                         downloader = MediaIoBaseDownload(buffer, request)
@@ -913,14 +826,11 @@ async def stream_record(
                         while not done:
                             try:
                                 status, done = downloader.next_chunk()
-                                if status:
-                                    logger.debug(
-                                        f"Download progress: {int(status.progress() * 100)}%"
-                                    )
+                                chunk_count += 1
 
-                                # Get the data from buffer
                                 buffer.seek(0)
                                 chunk = buffer.read()
+                                total_bytes += len(chunk)
 
                                 if chunk:  # Only yield if we have data
                                     yield chunk
@@ -940,6 +850,7 @@ async def stream_record(
                                     status_code=500,
                                     detail="Error during file streaming",
                                 )
+                        logger.info(f"Time check xxx File stream end: {time.time()}")
 
                     except Exception as stream_error:
                         logger.error(f"Error in file stream: {str(stream_error)}")
@@ -951,28 +862,20 @@ async def stream_record(
 
                 # Get file metadata to set correct content type
                 try:
-                    file_metadata = (
-                        drive_service.files()
-                        .get(fileId=file_id, fields="mimeType", supportsAllDrives=True)
-                        .execute()
-                    )
+                    file_metadata = await arango_service.get_document(record_id, CollectionNames.FILES.value)
                     mime_type = file_metadata.get(
                         "mimeType", "application/octet-stream"
                     )
+                    logger.info(f"File mime type: {mime_type}")
                 except Exception as e:
                     logger.warning(f"Could not get file mime type: {str(e)}")
                     mime_type = "application/octet-stream"
 
                 # Return streaming response with proper headers
                 headers = {"Content-Disposition": f'attachment; filename="{file_name}"'}
-
                 return StreamingResponse(
                     file_stream(), media_type=mime_type, headers=headers
                 )
-                # Google download chunk size
-                # streaming response chunk size
-                # download and stream time
-                # direct stream while download.
 
             elif connector == Connectors.GOOGLE_MAIL.value:
                 logger.info(
@@ -991,7 +894,7 @@ async def stream_record(
                                 .execute()
                             )
                         except Exception as access_error:
-                            if hasattr(access_error, 'resp') and access_error.resp.status == 404:
+                            if hasattr(access_error, 'resp') and access_error.resp.status == StatusCodeConstants.NOT_FOUND.value:
                                 logger.info(f"Message not found with ID {file_id}, searching for related messages...")
 
                                 # Get messageIdHeader from the original mail
@@ -1007,7 +910,7 @@ async def stream_record(
 
                                 if not message_id_header:
                                     raise HTTPException(
-                                        status_code=404,
+                                        status_code=StatusCodeConstants.NOT_FOUND.value,
                                         detail="Original mail not found"
                                     )
 
@@ -1043,14 +946,14 @@ async def stream_record(
 
                                 if not message:
                                     raise HTTPException(
-                                        status_code=404,
+                                        status_code=StatusCodeConstants.NOT_FOUND.value,
                                         detail="No accessible messages found."
                                     )
                             else:
                                 raise access_error
 
                         # Continue with existing code for processing the message
-                        def extract_body(payload):
+                        def extract_body(payload: dict) -> str:
                             # If there are no parts, return the direct body data
                             if "parts" not in payload:
                                 return payload.get("body", {}).get("data", "")
@@ -1082,7 +985,7 @@ async def stream_record(
                         ).decode("utf-8", errors="replace")
 
                         # Async generator to stream only the mail content
-                        async def message_stream():
+                        async def message_stream() -> AsyncGenerator[bytes, None]:
                             yield mail_content.encode("utf-8")
 
                         # Return the streaming response with only the mail body
@@ -1146,7 +1049,7 @@ async def stream_record(
                                     .execute()
                                 )
                             except Exception as access_error:
-                                if hasattr(access_error, 'resp') and access_error.resp.status == 404:
+                                if hasattr(access_error, 'resp') and access_error.resp.status == StatusCodeConstants.NOT_FOUND.value:
                                     logger.info(f"Message not found with ID {message_id}, searching for related messages...")
 
                                     # Get messageIdHeader from the original mail
@@ -1162,7 +1065,7 @@ async def stream_record(
 
                                     if not message_id_header:
                                         raise HTTPException(
-                                            status_code=404,
+                                            status_code=StatusCodeConstants.NOT_FOUND.value,
                                             detail="Original mail not found"
                                         )
 
@@ -1199,7 +1102,7 @@ async def stream_record(
 
                                     if not message:
                                         raise HTTPException(
-                                            status_code=404,
+                                            status_code=StatusCodeConstants.NOT_FOUND.value,
                                             detail="No accessible messages found."
                                         )
                                 else:
@@ -1236,9 +1139,9 @@ async def stream_record(
                             .execute()
                         )
                     except Exception as attachment_error:
-                        if hasattr(attachment_error, 'resp') and attachment_error.resp.status == 404:
+                        if hasattr(attachment_error, 'resp') and attachment_error.resp.status == StatusCodeConstants.NOT_FOUND.value:
                             raise HTTPException(
-                                status_code=404,
+                                status_code=StatusCodeConstants.NOT_FOUND.value,
                                 detail="Attachment not found in accessible messages"
                             )
                         raise attachment_error
@@ -1332,7 +1235,7 @@ async def stream_record(
                         }
 
                         # Use the same streaming logic as Drive downloads
-                        async def file_stream():
+                        async def file_stream() -> AsyncGenerator[bytes, None]:
                             try:
                                 request = drive_service.files().get_media(
                                     fileId=file_id
@@ -1410,7 +1313,7 @@ async def stream_record(
 
 
 @router.post("/api/v1/record/buffer/convert")
-async def get_record_stream(request: Request, file: UploadFile = File(...)):
+async def get_record_stream(request: Request, file: UploadFile = File(...)) -> StreamingResponse:
     request.query_params.get("from")
     to_format = request.query_params.get("to")
 
@@ -1469,7 +1372,7 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)):
                             "PDF conversion failed - output file not found"
                         )
 
-                    async def file_iterator():
+                    async def file_iterator() -> AsyncGenerator[bytes, None]:
                         try:
                             with open(pdf_path, "rb") as pdf_file:
                                 yield await asyncio.to_thread(pdf_file.read)
@@ -1502,7 +1405,7 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)):
     raise HTTPException(status_code=400, detail="Invalid conversion request")
 
 
-async def get_admin_webhook_handler(request: Request) -> Optional[Any]:
+async def get_admin_webhook_handler(request: Request) -> Optional[AdminWebhookHandler]:
     try:
         container: AppContainer = request.app.container
         admin_webhook_handler = container.admin_webhook_handler()
@@ -1514,7 +1417,7 @@ async def get_admin_webhook_handler(request: Request) -> Optional[Any]:
 
 @router.post("/admin/webhook")
 @inject
-async def handle_admin_webhook(request: Request, background_tasks: BackgroundTasks):
+async def handle_admin_webhook(request: Request, background_tasks: BackgroundTasks) -> Optional[Dict[str, Any]]:
     """Handle incoming webhook notifications from Google Workspace Admin"""
     try:
         verifier = WebhookAuthVerifier(logger)
@@ -1623,3 +1526,111 @@ async def convert_to_pdf(file_path: str, temp_dir: str) -> str:
     except Exception as conv_error:
         logger.error(f"Error during conversion: {str(conv_error)}")
         raise HTTPException(status_code=500, detail="Error converting file to PDF")
+
+
+async def get_service_account_credentials(org_id: str, user_id: str, logger, arango_service, google_token_handler, container) -> google.oauth2.credentials.Credentials:
+    """Helper function to get service account credentials"""
+    try:
+        service_creds_lock = await container.service_creds_lock()
+
+        async with service_creds_lock:
+            if not hasattr(container, 'service_creds_cache'):
+                container.service_creds_cache = {}
+                logger.info("Created service credentials cache")
+
+            cache_key = f"{org_id}_{user_id}"
+            logger.info(f"Service account cache key: {cache_key}")
+
+            if cache_key in container.service_creds_cache:
+                logger.info(f"Service account cache hit: {cache_key}")
+                return container.service_creds_cache[cache_key]
+
+            # Cache miss - create new credentials
+            logger.info(f"Service account cache miss: {cache_key}. Creating new credentials.")
+
+            # Get user email
+            user = await arango_service.get_user_by_user_id(user_id)
+            if not user:
+                raise Exception(f"User not found: {user_id}")
+
+            # Create new credentials
+            SCOPES = GOOGLE_CONNECTOR_ENTERPRISE_SCOPES
+            credentials_json = await google_token_handler.get_enterprise_token(org_id)
+            credentials = service_account.Credentials.from_service_account_info(
+                credentials_json, scopes=SCOPES
+            )
+            credentials = credentials.with_subject(user["email"])
+
+            # Cache the credentials
+            container.service_creds_cache[cache_key] = credentials
+            logger.info(f"Cached new service credentials for {cache_key}")
+
+            return credentials
+
+    except Exception as e:
+        logger.error(f"Error getting service account credentials: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail="Error accessing service account credentials"
+        )
+
+async def get_user_credentials(org_id: str, user_id: str, logger, google_token_handler, container) -> google.oauth2.credentials.Credentials:
+    """Helper function to get cached user credentials"""
+    try:
+        user_creds_lock = await container.user_creds_lock()
+        cache_key = f"{org_id}_{user_id}"
+
+        async with user_creds_lock:
+            if not hasattr(container, 'user_creds_cache'):
+                container.user_creds_cache = {}
+                logger.info("Created user credentials cache")
+
+            logger.info(f"User credentials cache key: {cache_key}")
+
+            if cache_key in container.user_creds_cache:
+                creds = container.user_creds_cache[cache_key]
+                # Check if credentials are still valid (with some buffer time)
+                if not creds.expired:
+                    logger.info(f"User credentials cache hit: {cache_key}")
+                    return creds
+                else:
+                    logger.info(f"User credentials expired for {cache_key}")
+
+            # Cache miss or expired - create new credentials
+            logger.info(f"User credentials cache miss: {cache_key}. Creating new credentials.")
+
+            # Create new credentials
+            SCOPES = GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES
+            # Refresh token
+            await google_token_handler.refresh_token(org_id, user_id)
+            creds_data = await google_token_handler.get_individual_token(org_id, user_id)
+
+            if not creds_data.get("access_token"):
+                raise HTTPException(
+                    status_code=401,
+                    detail="Invalid credentials. Access token not found",
+                )
+
+            creds = google.oauth2.credentials.Credentials(
+                token=creds_data.get("access_token"),
+                refresh_token=creds_data.get("refresh_token"),
+                token_uri="https://oauth2.googleapis.com/token",
+                client_id=creds_data.get("client_id"),
+                client_secret=creds_data.get("client_secret"),
+                scopes=SCOPES,
+            )
+
+            # Cache the credentials
+            container.user_creds_cache[cache_key] = creds
+            logger.info(f"Cached new user credentials for {cache_key}")
+
+            return creds
+
+    except Exception as e:
+        logger.error(f"Error getting user credentials: {str(e)}")
+        # Remove from cache if there's an error
+        async with user_creds_lock:
+            if hasattr(container, 'user_creds_cache'):
+                container.user_creds_cache.pop(cache_key, None)
+        raise HTTPException(
+            status_code=500, detail="Error accessing user credentials"
+        )

@@ -15,6 +15,7 @@ from app.config.utils.named_constants.arangodb_constants import (
     Connectors,
 )
 from app.setups.connector_setup import (
+    cache_google_workspace_service_credentials,
     initialize_enterprise_account_services_fn,
     initialize_individual_account_services_fn,
 )
@@ -24,7 +25,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 class EntityKafkaRouteConsumer:
     def __init__(
         self, logger, config_service, arango_service, routes=[], app_container=None
-    ):
+    ) -> None:
         self.logger = logger
         self.producer = None
         self.consumer = None
@@ -49,10 +50,10 @@ class EntityKafkaRouteConsumer:
             },
         }
 
-    async def create_consumer_and_producer(self):
+    async def create_consumer_and_producer(self) -> None:
         """Initialize the Kafka consumer and producer"""
         try:
-            async def get_kafka_config():
+            async def get_kafka_config() -> dict:
                 kafka_config = await self.config_service.get_config(
                     config_node_constants.KAFKA.value
                 )
@@ -95,7 +96,7 @@ class EntityKafkaRouteConsumer:
             and offset in self.processed_messages[topic_partition]
         )
 
-    def mark_message_processed(self, message_id: str):
+    def mark_message_processed(self, message_id: str) -> None:
         """Mark a message as processed."""
         topic_partition = "-".join(message_id.split("-")[:-1])
         offset = int(message_id.split("-")[-1])
@@ -104,7 +105,7 @@ class EntityKafkaRouteConsumer:
         self.processed_messages[topic_partition].append(offset)
 
     @inject
-    async def process_message(self, message):
+    async def process_message(self, message) -> bool:
         """Process incoming Kafka messages and route them to appropriate handlers"""
         message_id = None
         try:
@@ -504,6 +505,9 @@ class EntityKafkaRouteConsumer:
                         value={"email": payload["email"]},
                     )
 
+                    if app["appGroup"] == "Google Workspace":
+                        await cache_google_workspace_service_credentials(org_id, self.arango_service, self.logger, self.app_container)
+
             self.logger.info(
                 f"✅ Successfully created/updated user: {payload['email']}"
             )
@@ -662,6 +666,7 @@ class EntityKafkaRouteConsumer:
                 # Initialize services based on account type
                 if self.app_container:
                     accountType = org["accountType"]
+                    self.logger.info(f"Account type: {accountType}")
                     # Use the existing app container to initialize services
                     if accountType == AccountType.ENTERPRISE.value or accountType == AccountType.BUSINESS.value:
                         await initialize_enterprise_account_services_fn(
@@ -819,7 +824,7 @@ class EntityKafkaRouteConsumer:
             self.logger.error(f"❌ Error handling embedding configured event: {str(e)}")
             return False
 
-    async def consume_messages(self):
+    async def consume_messages(self) -> None:
         """Main consumption loop."""
         try:
             self.logger.info("Starting Kafka consumer loop")
@@ -861,11 +866,11 @@ class EntityKafkaRouteConsumer:
                 self.consumer.close()
                 self.logger.info("Kafka consumer closed")
 
-    async def start(self):
+    async def start(self) -> None:
         """Start the consumer."""
         self.running = True
         await self.create_consumer_and_producer()
 
-    def stop(self):
+    def stop(self) -> None:
         """Stop the consumer."""
         self.running = False

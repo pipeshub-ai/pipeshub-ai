@@ -287,6 +287,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app_container = await get_initialized_container()
     app.container = app_container
 
+    app.state.config_service = app_container.config_service()
+    app.state.arango_service = await app_container.arango_service()
+    app.state.google_token_handler = await app_container.google_token_handler()
+
     logger = app_container.logger()
     logger.debug("🚀 Starting application")
 
@@ -361,7 +365,7 @@ INCLUDE_PATHS = ["/api/v1/stream/record/", "/api/v1/delete/"]
 
 
 @app.middleware("http")
-async def authenticate_requests(request: Request, call_next):
+async def authenticate_requests(request: Request, call_next)-> JSONResponse:
     logger = app.container.logger()
     logger.info(f"Middleware request: {request.url.path}")
     # Apply middleware only to specific paths
@@ -373,6 +377,7 @@ async def authenticate_requests(request: Request, call_next):
         # Apply authentication
         authenticated_request = await authMiddleware(request)
         # Continue with the request
+        logger.info("Call Next")
         response = await call_next(authenticated_request)
         return response
 
@@ -398,7 +403,7 @@ app.add_middleware(
 
 
 @router.get("/health")
-async def health_check():
+async def health_check() -> JSONResponse:
     """Basic health check endpoint"""
     try:
         return JSONResponse(
@@ -425,7 +430,7 @@ app.include_router(router)
 
 # Global error handler
 @app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
+async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     logger = app.container.logger()
     logger.error("Global error: %s", str(exc), exc_info=True)
     return JSONResponse(
@@ -434,7 +439,7 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
-def run(host: str = "0.0.0.0", port: int = 8088, workers: int = 1, reload: bool = True):
+def run(host: str = "0.0.0.0", port: int = 8088, workers: int = 1, reload: bool = True) -> None:
     """Run the application"""
     uvicorn.run(
         "app.connectors_main:app",
