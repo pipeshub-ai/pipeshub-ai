@@ -767,28 +767,20 @@ class EntityKafkaRouteConsumer:
                 
                 # Initialize NotionService
                     notion_service = NotionService(
-                        integration_secret='',
+                        integration_secret='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',
                         org_id=org_id,
-                        logger=self.logger
+                        logger=self.logger,
+                        arango_service=self.arango_service
                     )
                 
                     try:
                     # Process and store pages
-                        notion_pages_count, general_records_count = await notion_service.process_and_store_pages(
-                            self.arango_service
-                        )
+                        await notion_service.fetch_and_create_notion_records()
 
-                        notion_database_count,database_records_count=await notion_service.process_and_store_databases(
-                            self.arango_service
-                        )
-
-                    
                         self.logger.info(
-                            f"✅ Successfully processed {notion_pages_count} Notion pages and created {general_records_count} records"
+                            f"✅ Successfully processed Notion pages and databases and created records"
                         )
-                        self.logger.info(
-                            f"✅ Successfully processed {notion_database_count} Notion pages and created {database_records_count} records"
-                        )
+                        
                     
                     except Exception as e:
                         self.logger.error(f"Error processing Notion pages: {str(e)}")
