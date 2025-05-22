@@ -5,7 +5,7 @@ const baseNavData = [
   {
     subheader: 'Overview',
     items: [
-      { title: 'Dashboard', path: paths.dashboard.root },
+      { title: 'Assistant', path: paths.dashboard.root },
       {
         title: 'Knowledge Base',
         path: paths.dashboard.knowledgebase.root,
