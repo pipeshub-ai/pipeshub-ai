@@ -28,17 +28,6 @@ from app.connectors.google.gmail.core.gmail_user_service import GmailUserService
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
-class GmailSyncProgress:
-    """Class to track sync progress"""
-
-    def __init__(self):
-        self.total_files = 0
-        self.processed_files = 0
-        self.percentage = 0
-        self.status = "initializing"
-        self.lastUpdatedTimestampAtSource = get_epoch_timestamp_in_ms()
-
-
 class BaseGmailSyncService(ABC):
     """Abstract base class for sync services"""
 
@@ -50,15 +39,14 @@ class BaseGmailSyncService(ABC):
         change_handler,
         kafka_service: KafkaService,
         celery_app,
-    ):
+    ) -> None:
         self.logger = logger
         self.config_service = config
         self.arango_service = arango_service
         self.kafka_service = kafka_service
         self.celery_app = celery_app
         self.change_handler = change_handler
-        # Common state
-        self.progress = GmailSyncProgress()
+
         self._current_batch = None
         self._pause_event = asyncio.Event()
         self._pause_event.set()
@@ -93,7 +81,7 @@ class BaseGmailSyncService(ABC):
         pass
 
     @abstractmethod
-    async def resync_gmail(self, org_id, user):
+    async def resync_gmail(self, org_id, user) -> Optional[bool]:
         """Resync a user's Google Gmail"""
         pass
 
@@ -245,7 +233,7 @@ class BaseGmailSyncService(ABC):
             return False
         return False
 
-    async def process_batch(self, metadata_list, org_id):
+    async def process_batch(self, metadata_list, org_id) -> Optional[bool]:
         """Process a single batch with atomic operations"""
         self.logger.info(
             "🚀 Starting batch processing with %d items", len(metadata_list)
@@ -869,7 +857,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
         change_handler,
         kafka_service: KafkaService,
         celery_app,
-    ):
+    ) -> None:
         super().__init__(
             logger, config, arango_service, change_handler, kafka_service, celery_app
         )
@@ -1304,7 +1292,6 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                     self.logger.info(f"No threads found for user {user['email']}")
                     continue
 
-                self.progress.total_files = len(threads) + len(messages_full)
                 self.logger.info("🚀 Total threads: %s", len(threads))
                 # self.logger.debug(f"Threads: {threads}")
                 self.logger.info("🚀 Total messages: %s", len(messages_full))
@@ -1821,7 +1808,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
             self.logger.error("❌ Failed to sync user %s: %s", user_email, str(e))
             return False
 
-    async def resync_gmail(self, org_id, user):
+    async def resync_gmail(self, org_id, user) -> Optional[bool]:
         try:
             self.logger.info(f"Resyncing Gmail for user {user['email']}")
             enterprise_users = await self.gmail_admin_service.list_enterprise_users(org_id)
@@ -1880,7 +1867,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
             self.logger.error(f"Error resyncing Gmail for user {user['email']}: {str(e)}")
             return False
 
-    async def reindex_failed_records(self, org_id):
+    async def reindex_failed_records(self, org_id) -> Optional[bool]:
         """Reindex failed records"""
         try:
             self.logger.info("🔄 Starting reindexing of failed records")
@@ -1997,7 +1984,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
         change_handler,
         kafka_service: KafkaService,
         celery_app,
-    ):
+    ) -> None:
         super().__init__(
             logger, config, arango_service, change_handler, kafka_service, celery_app
         )
@@ -2456,7 +2443,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
             self.logger.error(f"❌ Initial sync failed: {str(e)}")
             return False
 
-    async def resync_gmail(self, org_id, user):
+    async def resync_gmail(self, org_id, user) -> Optional[bool]:
         try:
             user_service = self.gmail_user_service
             self.logger.info(f"Resyncing Gmail for user {user['email']}")
@@ -2466,7 +2453,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
             )
             if not channel_history:
                 self.logger.warning(f"⚠️ No historyId found for {user['email']}")
-                return
+                return False
 
             changes = await user_service.fetch_gmail_changes(
                 user["email"], channel_history["historyId"]
@@ -2500,7 +2487,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
             self.logger.error(f"Error resyncing Gmail for user {user['email']}: {str(e)}")
             return False
 
-    async def reindex_failed_records(self, org_id):
+    async def reindex_failed_records(self, org_id) -> Optional[bool]:
         """Reindex failed records"""
         try:
             self.logger.info("🔄 Starting reindexing of failed records")
@@ -2555,9 +2542,13 @@ class GmailSyncIndividualService(BaseGmailSyncService):
 
                     # Add type-specific fields
                     if record["recordType"] == RecordTypes.MAIL.value:
+                        message = await self.gmail_user_service.get_message(record["externalRecordId"])
+                        message_body = message.get("body", {}) if message else {}
+
                         event.update({
                             "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user_id}/gmail/record/{record['_key']}/signedUrl",
-                            "mimeType": "text/gmail_content"
+                            "mimeType": "text/gmail_content",
+                            "body": message_body
                         })
                     elif record["recordType"] == RecordTypes.FILE.value:
                         event.update({

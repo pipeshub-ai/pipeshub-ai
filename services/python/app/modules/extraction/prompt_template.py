@@ -34,6 +34,7 @@ Instructions must be strictly followed, failure to do so will result in terminat
    - Analyze the overall tone and sentiment
    - Choose exactly one from:
    {sentiment_list}
+   - If the sentiment is not clear, choose "Neutral"
 
 5. **Topics**:
    - Extract the main themes and subjects discussed.
@@ -45,7 +46,7 @@ Instructions must be strictly followed, failure to do so will result in terminat
 
 7. **Summary**:
    - A concise summary of the document. Cover all the key information and topics.
-
+   - The summary size should be proportional to the document size.
 
    # Output Format:
    You must return a single valid JSON object with the following structure:
