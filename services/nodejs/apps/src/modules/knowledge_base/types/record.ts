@@ -49,6 +49,7 @@ export interface IRecordDocument {
   isDirty?: boolean; // default: false, indicates need for re-indexing
   reason?: string;
   virtualRecordId?: string;
+  summaryDocumentId?:string;
 }
 
 export interface IFileBuffer {

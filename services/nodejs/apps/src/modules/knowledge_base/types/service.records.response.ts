@@ -13,6 +13,8 @@ export interface IServiceRecord {
   isArchived: boolean;
   indexingStatus: string;
   version: number;
+  summaryDocumentId: string;
+  virtualRecordId:string;
   fileRecord: IServiceFileRecord | null;
   mailRecord: IServiceMailRecord | null;
 }

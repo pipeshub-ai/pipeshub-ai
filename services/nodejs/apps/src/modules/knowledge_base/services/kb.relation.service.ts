@@ -39,6 +39,11 @@ import {
   SyncDriveEvent,
   SyncGmailEvent,
 } from './sync_events.service';
+import {
+  IServiceFileRecord,
+  IServiceRecord,
+  IServiceRecordsResponse,
+} from '../types/service.records.response';
 
 const logger = Logger.getInstance({
   service: 'Knowledge Base Service',
@@ -241,6 +246,10 @@ export class RecordRelationService {
     if (fileRecord && fileRecord.extension) {
       extension = fileRecord.extension;
     }
+    let mimeType = '';
+    if (fileRecord && fileRecord.mimeType) {
+      mimeType = fileRecord.mimeType;
+    }
 
     return {
       orgId: record.orgId,
@@ -251,6 +260,7 @@ export class RecordRelationService {
       signedUrlRoute: signedUrlRoute,
       origin: record.origin,
       extension: extension,
+      mimeType: mimeType,
       createdAtTimestamp: (record.createdAtTimestamp || Date.now()).toString(),
       updatedAtTimestamp: (record.updatedAtTimestamp || Date.now()).toString(),
       sourceCreatedAtTimestamp: (
@@ -268,6 +278,7 @@ export class RecordRelationService {
    */
   async createUpdateRecordEventPayload(
     record: IRecordDocument,
+    fileRecord: IFileRecordDocument,
     keyValueStoreService: KeyValueStoreService,
   ): Promise<UpdateRecordEvent> {
     // Generate signed URL route based on record information
@@ -276,12 +287,22 @@ export class RecordRelationService {
     const storageUrl =
       JSON.parse(url).storage.endpoint || this.defaultConfig.endpoint;
     const signedUrlRoute = `${storageUrl}/api/v1/document/internal/${record.externalRecordId}/download`;
-
+    let extension = '';
+    if (fileRecord && fileRecord.extension) {
+      extension = fileRecord.extension;
+    }
+    let mimeType = '';
+    if (fileRecord && fileRecord.mimeType) {
+      mimeType = fileRecord.mimeType;
+    }
     return {
       orgId: record.orgId,
       recordId: record._key,
       version: record.version || 1,
       signedUrlRoute: signedUrlRoute,
+      extension: extension,
+      mimeType: mimeType,
+      summaryDocumentId: record.summaryDocumentId,
       updatedAtTimestamp: (record.updatedAtTimestamp || Date.now()).toString(),
       sourceLastModifiedTimestamp: (
         record.sourceLastModifiedTimestamp ||
@@ -298,11 +319,25 @@ export class RecordRelationService {
    * @param userId The user performing the deletion
    * @returns DeletedRecordEvent payload for Kafka
    */
-  createDeletedRecordEventPayload(record: IRecordDocument): DeletedRecordEvent {
+  createDeletedRecordEventPayload(
+    record: IRecordDocument | IServiceRecord,
+    fileRecord: IFileRecordDocument | IServiceFileRecord,
+  ): DeletedRecordEvent {
+    let extension = '';
+    if (fileRecord && fileRecord.extension) {
+      extension = fileRecord.extension;
+    }
+    let mimeType = '';
+    if (fileRecord && fileRecord.mimeType) {
+      mimeType = fileRecord.mimeType;
+    }
     return {
       orgId: record.orgId,
       recordId: record._key,
       version: record.version || 1,
+      extension: extension,
+      mimeType: mimeType,
+      summaryDocumentId: record.summaryDocumentId,
       virtualRecordId: record.virtualRecordId,
     };
   }
@@ -2264,7 +2299,56 @@ export class RecordRelationService {
         throw new NotFoundError(`Record with ID ${recordId} not found`);
       }
 
-      // Filter out immutable properties for safety
+      let existingFileRecord = null;
+      // Only fetch file record for FILE type records
+      if (existingRecord.recordType === 'FILE') {
+        try {
+          existingFileRecord =
+            await this.fileRecordCollection.document(recordId);
+        } catch (error) {
+          logger.warn('File record not found for FILE type record', {
+            recordId,
+            error: error,
+          });
+          // Continue without file record - we'll handle this case appropriately
+        }
+      }
+
+      // Extract file metadata before filtering
+      const fileMetadata = updateData.fileMetadata;
+      const hasFileUpload = fileMetadata && fileMetadata.originalname;
+
+      // Validate file extension if uploading a new file for existing file record
+      if (
+        hasFileUpload &&
+        existingRecord.recordType === 'FILE' &&
+        existingFileRecord
+      ) {
+        const newExtension = fileMetadata.extension;
+        const existingExtension = existingFileRecord.extension?.toLowerCase();
+
+        if (newExtension !== existingExtension) {
+          logger.error('File extension mismatch detected in service', {
+            recordId,
+            existingExtension,
+            newExtension,
+            originalname: fileMetadata.originalname,
+          });
+
+          throw new BadRequestError(
+            `File type mismatch: existing file has extension '${existingExtension}', ` +
+              `but uploaded file has extension '${newExtension}'. Please upload a file with the same extension.`,
+          );
+        }
+
+        logger.info('File extension validation passed', {
+          recordId,
+          extension: newExtension,
+          originalname: fileMetadata.originalname,
+        });
+      }
+
+      // Filter out immutable properties and non-record fields for safety
       const safeUpdateData = { ...updateData };
       const immutableProps = [
         '_id',
@@ -2277,98 +2361,281 @@ export class RecordRelationService {
         'origin',
       ];
 
+      // Remove immutable properties
       immutableProps.forEach((prop) => {
         delete safeUpdateData[prop];
       });
 
-      // Validate allowed updates based on schema
+      // Remove non-record fields - clean up before validation
+      delete safeUpdateData.fileMetadata;
+
+      // Remove any fields that don't exist in the schema
+      const nonSchemaFields = [
+        'sizeInBytes',
+        'fileBuffer',
+        'deletedAtTimestamp',
+        'userId',
+        'mimeType',
+        'extension',
+        'originalname',
+      ];
+
+      nonSchemaFields.forEach((field) => {
+        if (safeUpdateData[field] !== undefined) {
+          logger.debug(`Removing non-schema field: ${field}`, {
+            recordId,
+            field,
+          });
+          delete safeUpdateData[field];
+        }
+      });
+
+      // Validate allowed updates based on ArangoDB schema
       const allowedUpdates = [
+        // Basic record fields
         'recordName',
+        'externalRevisionId',
+        'version',
+        'connectorName',
+        'summaryDocumentId',
+        'virtualRecordId',
+
+        // Timestamp fields
         'updatedAtTimestamp',
         'lastSyncTimestamp',
-        'deletedAtSourceTimestamp',
         'sourceCreatedAtTimestamp',
         'sourceLastModifiedTimestamp',
         'lastIndexTimestamp',
         'lastExtractionTimestamp',
-        'isDeletedAtSource',
-        'isDeleted',
-        'isArchived',
+
+        // Status fields
         'indexingStatus',
+        'extractionStatus',
         'isLatestVersion',
         'isDirty',
-        'version',
+        'reason',
+
+        // Deletion related fields
+        'isDeleted',
+        'isArchived',
         'deletedByUserId',
+
+        // Source sync fields (for connector records)
+        'isDeletedAtSource',
+        'deletedAtSourceTimestamp',
       ];
+
+      logger.debug('Validating update fields against allowed schema fields', {
+        recordId,
+        providedFields: Object.keys(safeUpdateData),
+        allowedFields: allowedUpdates,
+      });
 
       // Remove any update properties not in allowed list
       Object.keys(safeUpdateData).forEach((key) => {
         if (!allowedUpdates.includes(key)) {
-          logger.warn(`Removing disallowed update field: ${key}`);
+          logger.warn(`Removing disallowed update field: ${key}`, {
+            recordId,
+            field: key,
+            value: safeUpdateData[key],
+            allowedFields: allowedUpdates,
+          });
           delete safeUpdateData[key];
         }
       });
 
-      // Set updated timestamp to current time
+      logger.debug('Final update data after filtering', {
+        recordId,
+        updateFields: Object.keys(safeUpdateData),
+        updateData: safeUpdateData,
+      });
+
       safeUpdateData.updatedAtTimestamp = Date.now();
 
-      // Special handling for file records
+      const criticalNullChecks = [
+        'recordName',
+        'externalRecordId',
+        'recordType',
+        'origin',
+      ];
+      const existingCriticalFields = criticalNullChecks.filter(
+        (field) =>
+          existingRecord[field] === null || existingRecord[field] === undefined,
+      );
+
+      if (existingCriticalFields.length > 0) {
+        logger.error(
+          'Critical required fields are null/undefined in existing record',
+          {
+            recordId,
+            missingFields: existingCriticalFields,
+            existingRecord: {
+              recordName: existingRecord.recordName,
+              externalRecordId: existingRecord.externalRecordId,
+              recordType: existingRecord.recordType,
+              origin: existingRecord.origin,
+            },
+          },
+        );
+      }
+
       if (existingRecord.recordType === 'FILE') {
-        // Handle version incrementing for file updates
         if (safeUpdateData.version !== undefined) {
-          // If version is explicitly provided, use it
           logger.debug('Using provided version number', {
+            recordId,
             version: safeUpdateData.version,
           });
-        } else {
-          // For file records, always increment the version on update
-          // Ensure version is a number (default to 0 if not set)
+        } else if (hasFileUpload) {
           const currentVersion =
             typeof existingRecord.version === 'number'
               ? existingRecord.version
               : 0;
           safeUpdateData.version = currentVersion + 1;
-          logger.debug('Auto-incrementing file version', {
+          logger.debug('Auto-incrementing file version due to file upload', {
+            recordId,
             previousVersion: currentVersion,
             newVersion: safeUpdateData.version,
           });
         }
 
-        // If this is a file deletion, mark isLatestVersion as false
         if (safeUpdateData.isDeleted === true) {
           safeUpdateData.isLatestVersion = false;
         }
       }
 
-      // Handle indexing status changes
       if (
         safeUpdateData.indexingStatus &&
         safeUpdateData.indexingStatus !== existingRecord.indexingStatus
       ) {
         logger.info('Updating indexing status', {
+          recordId,
           from: existingRecord.indexingStatus,
           to: safeUpdateData.indexingStatus,
         });
 
-        // If status is changing to COMPLETED, update lastIndexTimestamp
         if (safeUpdateData.indexingStatus === 'COMPLETED') {
           safeUpdateData.lastIndexTimestamp = Date.now();
         }
       }
 
-      // Update the record
-      const result = await this.recordCollection.update(
-        recordId,
-        safeUpdateData,
-        {
-          returnNew: true,
-        },
-      );
-
+      let recordResult;
       try {
-        const updatedRecord = result.new as IRecordDocument;
+        recordResult = await this.recordCollection.update(
+          recordId,
+          safeUpdateData,
+          {
+            returnNew: true,
+          },
+        );
+      } catch (updateError: any) {
+        logger.error('ArangoDB update failed', {
+          recordId,
+          error: updateError.message,
+          errorNum: updateError.errorNum,
+          code: updateError.code,
+          updateData: safeUpdateData,
+          existingRecord: {
+            recordType: existingRecord.recordType,
+            version: existingRecord.version,
+            orgId: existingRecord.orgId,
+          },
+        });
+
+        if (updateError.errorNum === 1620) {
+          throw new Error(
+            `Schema validation failed: ${updateError.message}. Check that all fields match the record schema.`,
+          );
+        }
+
+        throw updateError;
+      }
+
+      logger.info('Record updated successfully', {
+        recordId,
+        updatedFields: Object.keys(safeUpdateData),
+        version: recordResult.new.version,
+        hasFileUpload,
+      });
+
+      if (existingRecord.recordType === 'FILE' && existingFileRecord) {
+        try {
+          const fileRecordUpdateData: any = {};
+
+          if (hasFileUpload && fileMetadata) {
+            const { originalname, size } = fileMetadata;
+
+            if (originalname) {
+              fileRecordUpdateData.name = originalname;
+              logger.debug('Updating file record name from uploaded file', {
+                recordId,
+                originalname,
+              });
+            }
+
+            if (size !== undefined) {
+              fileRecordUpdateData.sizeInBytes = size;
+              logger.debug('Updating file record size from uploaded file', {
+                recordId,
+                size,
+              });
+            }
+          } else {
+            const fieldMappings: Record<string, string> = {
+              recordName: 'name', // Record name -> File name
+              sizeInBytes: 'sizeInBytes',
+            };
+
+            Object.entries(fieldMappings).forEach(
+              ([recordField, fileField]) => {
+                if (safeUpdateData[recordField] !== undefined) {
+                  fileRecordUpdateData[fileField] = safeUpdateData[recordField];
+                  logger.debug('Mapping record field to file record field', {
+                    recordId,
+                    recordField,
+                    fileField,
+                    value: safeUpdateData[recordField],
+                  });
+                }
+              },
+            );
+          }
+
+          if (Object.keys(fileRecordUpdateData).length > 0) {
+            await this.fileRecordCollection.update(
+              recordId,
+              fileRecordUpdateData,
+              {
+                returnNew: true,
+              },
+            );
+
+            logger.info('File record updated successfully', {
+              recordId,
+              updatedFields: Object.keys(fileRecordUpdateData),
+              hasFileUpload,
+            });
+          } else {
+            logger.debug('No file record updates needed', { recordId });
+          }
+        } catch (fileRecordError) {
+          logger.error('Failed to update associated file record', {
+            recordId,
+            error: fileRecordError,
+          });
+        }
+      } else if (existingRecord.recordType === 'FILE' && !existingFileRecord) {
+        logger.warn('File record not found for FILE type record', {
+          recordId,
+          recordType: existingRecord.recordType,
+        });
+      }
+
+      // Publish update event
+      try {
+        const updatedRecord = recordResult.new as IRecordDocument;
         const updateEventPayload = await this.createUpdateRecordEventPayload(
           updatedRecord,
+          existingFileRecord,
           keyValueStoreService,
         );
 
@@ -2385,63 +2652,9 @@ export class RecordRelationService {
           recordId,
           error: eventError,
         });
-        // Don't throw the error to avoid affecting the main operation
       }
 
-      logger.info('Record updated successfully', {
-        recordId,
-        updatedFields: Object.keys(safeUpdateData),
-        version: result.new.version,
-      });
-
-      // Handle file record update if needed
-      if (existingRecord.recordType === 'FILE') {
-        try {
-          // Clone update data for file record
-          const fileRecordUpdateData: any = {};
-
-          // Map record fields to file record fields
-          const fieldMappings: Record<string, string> = {
-            recordName: 'name', // Record name -> File name
-            sizeInBytes: 'sizeInBytes',
-          };
-
-          // Copy mapped fields to file record update
-          Object.entries(fieldMappings).forEach(([recordField, fileField]) => {
-            if (safeUpdateData[recordField] !== undefined) {
-              fileRecordUpdateData[fileField] = safeUpdateData[recordField];
-            }
-          });
-
-          if (Object.keys(fileRecordUpdateData).length > 0) {
-            // Check if file record exists before updating
-            try {
-              await this.fileRecordCollection.document(recordId);
-              await this.fileRecordCollection.update(
-                recordId,
-                fileRecordUpdateData,
-              );
-              logger.info('File record updated successfully', {
-                recordId,
-                updatedFields: Object.keys(fileRecordUpdateData),
-              });
-            } catch (fileError) {
-              logger.warn('File record not found for update', {
-                recordId,
-                fileError,
-              });
-            }
-          }
-        } catch (error) {
-          logger.warn('Failed to update associated file record', {
-            recordId,
-            error,
-          });
-          // Continue with the main record update even if file record update fails
-        }
-      }
-
-      return result.new;
+      return recordResult.new;
     } catch (error) {
       logger.error('Error updating record', { recordId, error });
       throw error;
@@ -2454,9 +2667,18 @@ export class RecordRelationService {
     keyValueStoreService: KeyValueStoreService,
   ): Promise<any> {
     try {
+      let existingFileRecord;
+      try {
+        existingFileRecord = await this.fileRecordCollection.document(recordId);
+      } catch (error) {
+        logger.error('File record not found', { recordId, error });
+        throw new NotFoundError(`File record with ID ${recordId} not found`);
+      }
+
       try {
         const reindexEventPayload = await this.createReindexRecordEventPayload(
           record,
+          existingFileRecord,
           keyValueStoreService,
         );
 
@@ -2487,6 +2709,7 @@ export class RecordRelationService {
   // New method for creating reindex event payload
   async createReindexRecordEventPayload(
     record: any,
+    fileRecord: IFileRecordDocument,
     keyValueStoreService: KeyValueStoreService,
   ): Promise<NewRecordEvent> {
     // Generate signed URL route based on record information
@@ -2495,7 +2718,10 @@ export class RecordRelationService {
     const storageUrl =
       JSON.parse(url).storage?.endpoint || this.defaultConfig.endpoint;
     const signedUrlRoute = `${storageUrl}/api/v1/document/internal/${record.externalRecordId}/download`;
-
+    let mimeType = '';
+    if (fileRecord && fileRecord.mimeType) {
+      mimeType = fileRecord.mimeType;
+    }
     return {
       orgId: record.orgId,
       recordId: record._key,
@@ -2505,6 +2731,7 @@ export class RecordRelationService {
       recordType: record.recordType,
       origin: record.origin,
       extension: record.fileRecord.extension,
+      mimeType: mimeType,
       createdAtTimestamp: Date.now().toString(),
       updatedAtTimestamp: Date.now().toString(),
       sourceCreatedAtTimestamp: Date.now().toString(),
@@ -2644,9 +2871,11 @@ export class RecordRelationService {
       try {
         // Fetch the updated record to include all necessary data
         const updatedRecord = await this.recordCollection.document(recordId);
-
-        const deleteEventPayload =
-          this.createDeletedRecordEventPayload(updatedRecord);
+        const fileRecord = await this.fileRecordCollection.document(recordId);
+        const deleteEventPayload = this.createDeletedRecordEventPayload(
+          updatedRecord,
+          fileRecord,
+        );
 
         const event: Event = {
           eventType: EventType.DeletedRecordEvent,
@@ -2668,6 +2897,94 @@ export class RecordRelationService {
       return true;
     } catch (error) {
       logger.error('Error soft deleting record', { recordId, error });
+      throw error;
+    }
+  }
+
+  /**
+   * Publishes a hard delete event for a record
+   * @param recordResponse - The service response containing record and file record data
+   * @throws {Error} When event publishing fails or record processing encounters an error
+   */
+  async publishHardDeleteRecord(
+    recordResponse: IServiceRecordsResponse,
+  ): Promise<void> {
+    const recordId = recordResponse.record?._id;
+
+    try {
+      const record = recordResponse.record;
+
+      if (!record || !recordId) {
+        throw new Error('Invalid record data: missing record or record ID');
+      }
+
+      logger.debug('Publishing hard delete event for record', { recordId });
+
+      // Get file record data - prioritize from response, fallback to database lookup
+      let fileRecord = null;
+
+      if (recordResponse.record.fileRecord) {
+        // Use file record from the response if available
+        fileRecord = recordResponse.record.fileRecord;
+        logger.debug('Using file record from response', { recordId });
+      } else if (record.recordType === 'FILE') {
+        // For FILE type records, attempt to fetch file record from database
+        try {
+          const existingFileRecord =
+            await this.fileRecordCollection.document(recordId);
+          fileRecord = existingFileRecord;
+          logger.debug('Retrieved file record from database', { recordId });
+        } catch (fileRecordError) {
+          logger.warn('File record not found for FILE type record', {
+            recordId,
+            error: fileRecordError,
+          });
+          // Continue without file record - it may have been already deleted
+        }
+      }
+
+      // Create and publish the delete event
+      try {
+        const deleteEventPayload = this.createDeletedRecordEventPayload(
+          record,
+          fileRecord,
+        );
+
+        const event: Event = {
+          eventType: EventType.DeletedRecordEvent,
+          timestamp: Date.now(),
+          payload: deleteEventPayload,
+        };
+
+        await this.eventProducer.publishEvent(event);
+
+        logger.info('Successfully published hard delete event', {
+          recordId,
+          recordType: record.recordType,
+          hasFileRecord: !!fileRecord,
+        });
+      } catch (eventError) {
+        logger.error('Failed to publish hard delete event', {
+          recordId,
+          error: eventError,
+        });
+
+        // Re-throw the error as this is a critical operation
+        throw new Error(
+          `Failed to publish delete event for record ${recordId}: ${eventError}`,
+        );
+      }
+
+      logger.info('Hard delete event processing completed successfully', {
+        recordId,
+        recordType: record.recordType,
+      });
+    } catch (error) {
+      logger.error('Error processing hard delete record event', {
+        recordId,
+        error: error,
+      });
+
       throw error;
     }
   }

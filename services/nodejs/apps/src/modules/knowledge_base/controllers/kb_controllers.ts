@@ -28,10 +28,12 @@ import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { AIServiceCommand } from '../../../libs/commands/ai_service/ai.service.command';
 import { AIServiceResponse } from '../../enterprise_search/types/conversation.interfaces';
-import { IServiceDeleteRecordResponse, IServiceRecordsResponse } from '../types/service.records.response';
+import {
+  IServiceDeleteRecordResponse,
+  IServiceRecordsResponse,
+} from '../types/service.records.response';
 import axios from 'axios';
 import { ArangoService } from '../../../libs/services/arango.service';
-import { Event, EventType } from '../services/records_events.service';
 
 const logger = Logger.getInstance({
   service: 'Knowledge Base Controller',
@@ -401,10 +403,17 @@ export const updateRecord =
 
       // Check if there's a file in the request
       const hasFileBuffer = req.body.fileBuffer && req.body.fileBuffer.buffer;
-      let originalname, mimetype, size;
+      let originalname, mimetype, size, extension;
 
       if (hasFileBuffer) {
         ({ originalname, mimetype, size } = req.body.fileBuffer);
+
+        // Extract extension from filename
+        extension = originalname.includes('.')
+          ? originalname
+              .substring(originalname.lastIndexOf('.') + 1)
+              .toLowerCase()
+          : null;
       }
 
       // Only check for empty updateData if there are no files
@@ -467,25 +476,23 @@ export const updateRecord =
         ...updateData,
         updatedAtTimestamp: Date.now(),
         isLatestVersion: true,
-        sizeInBytes: size,
       };
 
-      // Handle file uploads if present
-      let fileUploaded = false;
-      let fileName = '';
-
-      // Handle file uploads if we found files
+      // Add file-related data if file is being uploaded
       if (hasFileBuffer) {
-        // Use the externalRecordId as the storageDocumentId
-        const storageDocumentId = existingRecord.record.externalRecordId;
+        // Note: sizeInBytes is NOT part of the record schema, only file record schema
+        // Pass file metadata for service validation and file record update
+        updatedData.fileMetadata = {
+          originalname,
+          mimetype,
+          size,
+          extension,
+        };
+      }
 
-        // Check if we have a valid externalRecordId to use
-        if (!storageDocumentId) {
-          throw new BadRequestError(
-            'Cannot update file: No external record ID found for this record',
-          );
-        }
-
+      // Prepare file name and record name if file upload
+      let fileName = '';
+      if (hasFileBuffer) {
         fileName = originalname;
         // Get filename without extension to use as record name
         if (fileName && fileName.includes('.')) {
@@ -500,42 +507,10 @@ export const updateRecord =
           }
         }
 
-        // Log the file upload
-        logger.info('Uploading new version of file', {
-          recordId,
-          fileName: originalname,
-          fileSize: size,
-          mimeType: mimetype,
-          storageDocumentId: storageDocumentId,
-        });
-
-        try {
-          // Update version through storage service using externalRecordId
-          const fileBuffer = req.body.fileBuffer;
-          await uploadNextVersionToStorage(
-            req,
-            fileBuffer,
-            storageDocumentId,
-            keyValueStoreService,
-            defaultConfig,
-          );
-          // Log the file upload
-          logger.info('Uploading new version function called successfully');
-          // Version will be auto-incremented in the service method
-          // but we can explicitly set it here too
-          updatedData.version = (existingRecord.record.version || 0) + 1;
-          fileUploaded = true;
-        } catch (storageError: any) {
-          logger.error('Failed to upload file to storage', {
-            recordId,
-            storageDocumentId: storageDocumentId,
-            error: storageError.message,
-          });
-          throw new InternalServerError(
-            `Failed to upload file: ${storageError.message}`,
-          );
-        }
+        // Prepare version increment
+        updatedData.version = (existingRecord.record.version || 0) + 1;
       }
+
       // Handle soft delete case
       if (updatedData.isDeleted === true && !existingRecord.record.isDeleted) {
         updatedData.deletedByUserId = userId;
@@ -549,12 +524,98 @@ export const updateRecord =
         logger.info('Soft-deleting record', { recordId, userId });
       }
 
-      // Update the record in the database
+      // STEP 1: Update the record in the database FIRST (before storage)
+      logger.info('Updating record in database', {
+        recordId,
+        hasFileUpload: hasFileBuffer,
+        updatedFields: Object.keys(updatedData).filter(
+          (key) => key !== 'fileMetadata',
+        ),
+      });
+
       const updatedRecord = await recordRelationService.updateRecord(
         recordId,
         updatedData,
         keyValueStoreService,
       );
+
+      // STEP 2: Upload file to storage ONLY after database update succeeds
+      let fileUploaded = false;
+      let storageDocumentId = null;
+
+      if (hasFileBuffer) {
+        // Use the externalRecordId as the storageDocumentId
+        storageDocumentId = existingRecord.record.externalRecordId;
+
+        // Check if we have a valid externalRecordId to use
+        if (!storageDocumentId) {
+          // If database update succeeded but no external ID, we need to rollback
+          logger.error('No external record ID found after database update', {
+            recordId,
+            updatedRecord: updatedRecord._key,
+          });
+          throw new BadRequestError(
+            'Cannot update file: No external record ID found for this record',
+          );
+        }
+
+        // Log the file upload attempt
+        logger.info('Uploading new version of file to storage', {
+          recordId,
+          fileName: originalname,
+          fileSize: size,
+          mimeType: mimetype,
+          extension,
+          storageDocumentId: storageDocumentId,
+          version: updatedData.version,
+        });
+
+        try {
+          // Update version through storage service using externalRecordId
+          const fileBuffer = req.body.fileBuffer;
+          await uploadNextVersionToStorage(
+            req,
+            fileBuffer,
+            storageDocumentId,
+            keyValueStoreService,
+            defaultConfig,
+          );
+
+          logger.info('File uploaded to storage successfully', {
+            recordId,
+            storageDocumentId,
+            version: updatedData.version,
+          });
+
+          fileUploaded = true;
+        } catch (storageError: any) {
+          logger.error(
+            'Failed to upload file to storage after database update',
+            {
+              recordId,
+              storageDocumentId: storageDocumentId,
+              error: storageError.message,
+              version: updatedData.version,
+            },
+          );
+
+          // TODO: Consider implementing rollback mechanism here
+          // For now, we log the inconsistent state but don't fail the request
+          // since the database update was successful
+          logger.warn(
+            'Database updated but storage upload failed - inconsistent state',
+            {
+              recordId,
+              storageDocumentId,
+              databaseVersion: updatedRecord.version,
+            },
+          );
+
+          throw new InternalServerError(
+            `Record updated but file upload failed: ${storageError.message}. Please retry the file upload.`,
+          );
+        }
+      }
 
       // Log the successful update
       logger.info('Record updated successfully', {
@@ -563,7 +624,10 @@ export const updateRecord =
         orgId,
         fileUploaded,
         newFileName: fileUploaded ? fileName : undefined,
-        updatedFields: Object.keys(updatedData),
+        updatedFields: Object.keys(updatedData).filter(
+          (key) => key !== 'fileMetadata',
+        ),
+        version: updatedRecord.version,
         requestId: req.context?.requestId,
       });
 
@@ -592,6 +656,7 @@ export const updateRecord =
       next(error);
     }
   };
+
 /**
  * Delete (soft-delete) a record
  */
@@ -717,7 +782,8 @@ export const deleteRecord =
 
         let aiResponse;
         try {
-          aiResponse = (await aiCommand.execute()) as AIServiceResponse<any>;
+          aiResponse =
+            (await aiCommand.execute()) as AIServiceResponse<IServiceRecordsResponse>;
         } catch (error: any) {
           if (error.cause && error.cause.code === 'ECONNREFUSED') {
             throw new InternalServerError(
@@ -807,22 +873,8 @@ export const deleteRecord =
           // If hard delete was successful, publish the event and send response
           if (hardDeleteSuccessful) {
             try {
-              const updatedRecord = existingRecord.record;
-
-              const deleteEventPayload =
-                recordRelationService.createDeletedRecordEventPayload(
-                  updatedRecord,
-                );
-
-              const event: Event = {
-                eventType: EventType.DeletedRecordEvent,
-                timestamp: Date.now(),
-                payload: deleteEventPayload,
-              };
-
-              await recordRelationService.eventProducer.publishEvent(event);
-              logger.info(
-                `Published delete event for hard-deleted record ${recordId}`,
+              await recordRelationService.publishHardDeleteRecord(
+                existingRecord,
               );
             } catch (eventError) {
               logger.error(
@@ -1451,7 +1503,6 @@ export const reindexRecord =
       return; // Added return statement
     }
   };
-
 
 /**
  * Retrieves complete statistics for all connectors from ArangoDB
