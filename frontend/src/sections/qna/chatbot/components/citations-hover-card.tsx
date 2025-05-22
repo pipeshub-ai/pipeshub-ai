@@ -329,6 +329,9 @@ const CitationHoverCard = ({
             {citation.metadata?.pageNum[0] && (
               <MetaChip size="small" label={`Page ${citation.metadata?.pageNum[0]}`} />
             )}
+            {citation.metadata?.sheetName && ['xlsx', 'csv', 'xls'].includes(citation.metadata.extension) && (
+              <MetaChip size="small" label={`${citation.metadata?.sheetName}`} />
+            )}
             {['xlsx', 'csv', 'xls'].includes(citation.metadata.extension) &&
               citation.metadata?.blockNum &&
               citation.metadata.blockNum[0] && (

@@ -1,5 +1,8 @@
 import type { CustomCitation } from 'src/types/chat-bot';
-import type { DocumentContent, SearchResult } from 'src/sections/knowledgebase/types/search-response';
+import type {
+  DocumentContent,
+  SearchResult,
+} from 'src/sections/knowledgebase/types/search-response';
 import type { Position, HighlightType, ProcessedCitation } from 'src/types/pdf-highlighter';
 
 import { Icon } from '@iconify/react';
@@ -63,18 +66,16 @@ const DocumentContainer = styled(Box)({
   width: '100%',
   height: '100%',
   overflow: 'auto',
-  minHeight: '100px', // Ensure the container has a minimum height
+  minHeight: '100px', 
 });
 
 // Helper function to generate unique IDs
 const getNextId = (): string => String(Math.random()).slice(2);
 
-// Helper type guard to check if an object is DocumentContent
 const isDocumentContent = (
   citation: DocumentContent | CustomCitation
 ): citation is DocumentContent => 'metadata' in citation && citation.metadata !== undefined;
 
-// Process citation to create a highlight based on text content
 const processTextHighlight = (citation: DocumentContent | CustomCitation): HighlightType | null => {
   try {
     if (!citation.content) {
@@ -96,10 +97,8 @@ const processTextHighlight = (citation: DocumentContent | CustomCitation): Highl
       id = getNextId();
     }
 
-    // Create a complete Position object with required properties
     const position: Position = {
       pageNumber: -10,
-      // Add missing required properties
       boundingRect: {
         x1: 0,
         y1: 0,
@@ -159,24 +158,19 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
 
   // STEP 1: Render document only once
   useEffect(() => {
-    // Skip if we've already tried rendering or document is ready
     if (renderAttemptedRef.current || documentReady) {
       return;
     }
 
     renderAttemptedRef.current = true;
 
-    // Improved and more efficient attemptRender function
     const attemptRender = async (): Promise<boolean> => {
       if (!containerRef.current) {
         return false;
       }
 
       try {
-        // Clear container
         containerRef.current.innerHTML = '';
-
-        // Default render options with better performance settings
         const defaultOptions = {
           className: 'docx',
           inWrapper: true,
@@ -198,18 +192,14 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
           debug: true,
         };
 
-        // Merge options
         const options = { ...defaultOptions, ...renderOptions };
 
-        // Check document source
         if (!url && !buffer) {
           throw new Error('Either url or buffer must be provided');
         }
 
-        // Render document
         if (url) {
           try {
-            // Use a timeout to prevent hanging on unresponsive URLs
             const fetchWithTimeout = async (fetchUrl: string, timeoutMs = 30000) => {
               const controller = new AbortController();
               const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -224,7 +214,6 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
               }
             };
 
-            // Fetch the file with timeout
             const response = await fetchWithTimeout(url);
 
             if (!response.ok) {
@@ -233,7 +222,6 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
               );
             }
 
-            // Get content type to verify it's a DOCX file
             const contentType = response.headers.get('content-type');
             if (
               contentType &&
@@ -245,14 +233,12 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
               console.warn(`Warning: Content type "${contentType}" may not be a valid DOCX file`);
             }
 
-            // Get the document as an ArrayBuffer (more efficient than Blob)
             const fileBuffer = await response.arrayBuffer();
 
             if (!fileBuffer || fileBuffer.byteLength === 0) {
               throw new Error('Received empty file from URL');
             }
 
-            // Render using the buffer
             await docxPreview.renderAsync(fileBuffer, containerRef.current, undefined, options);
           } catch (urlError) {
             if (urlError.name === 'AbortError') {
@@ -264,9 +250,7 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
           await docxPreview.renderAsync(buffer, containerRef.current, undefined, options);
         }
 
-        // Add IDs to elements for easier highlighting - Use a more efficient approach with a single pass
         if (containerRef.current) {
-          // Create a DocumentFragment for better performance when adding IDs
           const addElementIds = (selector: string, prefix: string) => {
             const elements = containerRef.current?.querySelectorAll(selector);
             if (elements?.length) {
@@ -278,7 +262,6 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
             }
           };
 
-          // Add IDs in a single pass for each element type
           addElementIds('p:not([id])', 'p');
           addElementIds('span:not([id])', 'span');
           addElementIds('div:not([id]):not(:has(p, div))', 'div');
@@ -297,14 +280,12 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
       }
     };
 
-    // First attempt - if container is already available
     if (containerRef.current) {
       attemptRender();
       // eslint-disable-next-line
       return;
     }
 
-    // If container not available yet, set up a limited retry mechanism
     let attempts = 0;
     const maxAttempts = 10;
 
@@ -337,75 +318,144 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
     createHighlightStyles();
   }, []);
 
-  // Create highlight styles function
   const createHighlightStyles = (): (() => void) | undefined => {
     const styleId = 'docx-highlight-styles';
 
-    // Check if style already exists
     if (document.getElementById(styleId)) {
-      return undefined; // Explicit return for consistent return type
+      return undefined; 
     }
 
-    // Create style element with enhanced highlighting styles
     const style = document.createElement('style');
     style.id = styleId;
     style.textContent = `
-      /* Base highlight style */
+      /* Base highlight style - Professional neutral tones */
       .docx-highlight {
         cursor: pointer;
-        background-color: rgba(255, 235, 59, 0.5) !important; /* Bright yellow with transparency */
+        background-color: rgba(59, 130, 246, 0.15) !important; /* Subtle blue */
         position: relative;
         z-index: 1;
-        border-radius: 2px;
-        box-shadow: 0 0 0 1px rgba(255, 193, 7, 0.3);
-        transition: all 0.25s ease;
+        border-radius: 3px;
+        box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.2);
+        transition: all 0.2s ease;
         text-decoration: none !important;
         color: inherit !important;
-        border-bottom: 2px solid #FFC107;
+        border-bottom: 1px solid rgba(59, 130, 246, 0.4);
+      }
+      
+      /* Dark mode support */
+      @media (prefers-color-scheme: dark) {
+        .docx-highlight {
+          background-color: rgba(96, 165, 250, 0.2) !important;
+          box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.3);
+          border-bottom: 1px solid rgba(96, 165, 250, 0.5);
+        }
       }
       
       /* Hover state */
       .docx-highlight:hover {
-        background-color: rgba(255, 193, 7, 0.6) !important; /* Amber on hover */
-        box-shadow: 0 0 0 2px rgba(255, 152, 0, 0.4);
+        background-color: rgba(59, 130, 246, 0.25) !important;
+        box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.4);
         z-index: 2;
+      }
+      
+      @media (prefers-color-scheme: dark) {
+        .docx-highlight:hover {
+          background-color: rgba(96, 165, 250, 0.3) !important;
+          box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.5);
+        }
       }
    
       /* Active state */
       .docx-highlight-active {
-        background-color: rgba(255, 152, 0, 0.7) !important; /* Orange for active */
-        box-shadow: 0 0 0 3px rgba(255, 87, 34, 0.4) !important;
-        font-weight: bold !important;
+        background-color: rgba(59, 130, 246, 0.3) !important;
+        box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.4) !important;
+        font-weight: 500 !important;
         z-index: 3 !important;
         color: inherit !important;
-        border-bottom: 2px solid #FF5722;
+        border-bottom: 2px solid rgba(59, 130, 246, 0.6);
       }
       
-      /* Animation */
+      @media (prefers-color-scheme: dark) {
+        .docx-highlight-active {
+          background-color: rgba(96, 165, 250, 0.35) !important;
+          box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.5) !important;
+          border-bottom: 2px solid rgba(96, 165, 250, 0.7);
+        }
+      }
+      
+      /* Animation - more subtle */
       .highlight-pulse {
-        animation: highlightPulse 1.5s 1;
+        animation: highlightPulse 1s ease-out 1;
       }
       
       @keyframes highlightPulse {
-        0% { box-shadow: 0 0 0 3px rgba(255, 87, 34, 0.3); }
-        50% { box-shadow: 0 0 0 6px rgba(255, 87, 34, 0.1); }
-        100% { box-shadow: 0 0 0 3px rgba(255, 87, 34, 0.3); }
+        0% { 
+          box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.4);
+          background-color: rgba(59, 130, 246, 0.3);
+        }
+        50% { 
+          box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2);
+          background-color: rgba(59, 130, 246, 0.35);
+        }
+        100% { 
+          box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.4);
+          background-color: rgba(59, 130, 246, 0.3);
+        }
       }
       
-      /* Custom highlight styles for different types of matches */
+      @media (prefers-color-scheme: dark) {
+        @keyframes highlightPulse {
+          0% { 
+            box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.5);
+            background-color: rgba(96, 165, 250, 0.35);
+          }
+          50% { 
+            box-shadow: 0 0 0 4px rgba(96, 165, 250, 0.3);
+            background-color: rgba(96, 165, 250, 0.4);
+          }
+          100% { 
+            box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.5);
+            background-color: rgba(96, 165, 250, 0.35);
+          }
+        }
+      }
+      
+      /* Professional highlight styles for different types of matches */
       .docx-highlight-exact {
-        background-color: rgba(255, 235, 59, 0.6) !important; /* Brighter yellow for exact matches */
-        border-bottom: 2px solid #FFC107;
+        background-color: rgba(59, 130, 246, 0.2) !important;
+        border-bottom: 1px solid rgba(59, 130, 246, 0.5);
       }
       
       .docx-highlight-partial {
-        background-color: rgba(156, 204, 101, 0.4) !important; /* Light green for partial matches */
-        border-bottom: 2px dashed #8BC34A;
+        background-color: rgba(16, 185, 129, 0.15) !important; /* Subtle green */
+        border-bottom: 1px dashed rgba(16, 185, 129, 0.4);
+        box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.2);
       }
       
       .docx-highlight-fuzzy {
-        background-color: rgba(187, 222, 251, 0.5) !important; /* Light blue for fuzzy matches */
-        border-bottom: 2px dotted #2196F3;
+        background-color: rgba(107, 114, 128, 0.15) !important; /* Neutral gray */
+        border-bottom: 1px dotted rgba(107, 114, 128, 0.4);
+        box-shadow: 0 0 0 1px rgba(107, 114, 128, 0.2);
+      }
+      
+      /* Dark mode variants for match types */
+      @media (prefers-color-scheme: dark) {
+        .docx-highlight-exact {
+          background-color: rgba(96, 165, 250, 0.25) !important;
+          border-bottom: 1px solid rgba(96, 165, 250, 0.6);
+        }
+        
+        .docx-highlight-partial {
+          background-color: rgba(34, 197, 94, 0.2) !important;
+          border-bottom: 1px dashed rgba(34, 197, 94, 0.5);
+          box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.3);
+        }
+        
+        .docx-highlight-fuzzy {
+          background-color: rgba(156, 163, 175, 0.2) !important;
+          border-bottom: 1px dotted rgba(156, 163, 175, 0.5);
+          box-shadow: 0 0 0 1px rgba(156, 163, 175, 0.3);
+        }
       }
       
       /* Fix for docx-preview styling conflicts */
@@ -423,7 +473,6 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
 
     document.head.appendChild(style);
 
-    // Create cleanup function
     const cleanup = (): void => {
       const styleElement = document.getElementById(styleId);
       if (styleElement) {
@@ -434,12 +483,9 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
     return cleanup;
   };
 
-  // STEP 3: Process citations when document is ready
-  // Replace the citation processing code block with this corrected version
 
   // STEP 3: Process citations when document is ready
   useEffect(() => {
-    // Skip if document not ready or already processing citations
     if (!documentReady || processingCitationsRef.current || !citations?.length) {
       return;
     }
@@ -447,23 +493,17 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
     processingCitationsRef.current = true;
 
     try {
-      // Clear previous highlight appliers
       highlightAppliersRef.current = [];
-
-      // Create a properly typed array from the start
       const processed: ProcessedCitation[] = [];
 
-      // Process citations into highlights with type safety
       citations.forEach((citation) => {
         const highlight = processTextHighlight(citation);
 
-        // Only add items where highlight is not null
         if (highlight) {
-          // Create a properly typed ProcessedCitation
           const processedCitation: ProcessedCitation = {
             ...citation,
             highlight,
-          } as ProcessedCitation; // Cast is necessary because we're merging DocumentContent with highlight
+          } as ProcessedCitation;
 
           processed.push(processedCitation);
         }
@@ -471,7 +511,6 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
 
       setProcessedCitations(processed);
 
-      // Apply highlights after a short delay to ensure document is fully rendered
       if (processed.length > 0 && containerRef.current) {
         setTimeout(() => {
           applyTextHighlights(processed);
@@ -480,14 +519,12 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
     } catch (err) {
       console.error('Error processing citations:', err);
     } finally {
-      // Even if there's an error, mark processing as complete
-      // to allow future attempts when the document changes
+
       processingCitationsRef.current = false;
     }
     // eslint-disable-next-line
   }, [documentReady, citations]);
 
-  // Helper function to calculate text similarity (simple word overlap for now)
   const calculateSimilarity = (text1: string, text2: string): number => {
     const words1 = text1.toLowerCase().split(/\s+/);
     const words2 = text2.toLowerCase().split(/\s+/);
@@ -505,20 +542,16 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
     return matchCount / Math.max(uniqueWords1.size, uniqueWords2.size);
   };
 
-  // Extract click handler to a separate function for reuse
   const addHighlightClickHandler = (element: HTMLElement, highlightId: string): void => {
     element.addEventListener('click', () => {
-      // Remove active class from all highlights
       document.querySelectorAll('.docx-highlight-active').forEach((el) => {
         el.classList.remove('docx-highlight-active');
         el.classList.remove('highlight-pulse');
       });
 
-      // Add active class to this highlight
       element.classList.add('docx-highlight-active');
       element.classList.add('highlight-pulse');
 
-      // Scroll into view with offset to ensure visibility
       element.scrollIntoView({
         behavior: 'smooth',
         block: 'center',
@@ -526,7 +559,6 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
     });
   };
 
-  // Improved text highlighting function that uses different styles for different match types
   const highlightTextInElement = (
     element: Element,
     text: string,
@@ -536,14 +568,11 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
     if (!element || !text) return false;
 
     try {
-      // Find where the text appears in the element
       const elementContent = element.textContent || '';
       let textIndex = elementContent.indexOf(text);
 
-      // Determine the highlight class based on match type
       const highlightClass = `docx-highlight highlight-${highlightId} docx-highlight-${matchType}`;
 
-      // If text is not found directly and we're doing a fuzzy match
       if (textIndex === -1 && matchType === 'fuzzy') {
         const normalizedElementContent = elementContent.replace(/\s+/g, ' ').trim();
         const normalizedText = text.replace(/\s+/g, ' ').trim();
@@ -553,7 +582,6 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
           return false;
         }
 
-        // For fuzzy matches, we'll wrap the whole element
         try {
           const wrapper = document.createElement('span');
           wrapper.className = highlightClass;
@@ -564,7 +592,6 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
           element.textContent = '';
           element.appendChild(wrapper);
 
-          // Store a cleanup function
           highlightAppliersRef.current.push(() => {
             try {
               if (element && wrapper.parentNode === element) {
@@ -575,7 +602,6 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
             }
           });
 
-          // Add click handler
           addHighlightClickHandler(wrapper, highlightId);
 
           return true;
@@ -585,12 +611,10 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
         }
       }
 
-      // Standard approach using text nodes for exact matches
       if (textIndex >= 0) {
         const textNodes: Node[] = [];
         const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null);
 
-        // Fix ESLint no-cond-assign issue with while loop
         let currentNode = walker.nextNode();
         while (currentNode !== null) {
           textNodes.push(currentNode);
@@ -599,19 +623,16 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
 
         if (textNodes.length === 0) return false;
 
-        // Find which text node contains our text
         let currentNodeStart = 0;
         let startNode: Node | null = null;
         let startOffset = 0;
         let endNode: Node | null = null;
         let endOffset = 0;
 
-        // Fix ESLint no-restricted-syntax issue with for...of
         textNodes.forEach((nodeEl) => {
           const nodeText = nodeEl.nodeValue || '';
           const nodeLength = nodeText.length;
 
-          // Check if this node contains the start of our text
           if (
             !startNode &&
             textIndex >= currentNodeStart &&
@@ -621,24 +642,20 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
             startOffset = textIndex - currentNodeStart;
           }
 
-          // Check if this node contains the end of our text
           const textEnd = textIndex + text.length;
           if (!endNode && textEnd > currentNodeStart && textEnd <= currentNodeStart + nodeLength) {
             endNode = nodeEl;
             endOffset = textEnd - currentNodeStart;
           }
 
-          // Skip remaining iterations if we found both nodes
           if (startNode && endNode) {
-            return; // Early return from forEach
+            return;
           }
 
           currentNodeStart += nodeLength;
         });
 
-        // If we found both start and end nodes
         if (startNode && endNode) {
-          // Create a range and highlight it
           const range = document.createRange();
           range.setStart(startNode, startOffset);
           range.setEnd(endNode, endOffset);
@@ -651,29 +668,22 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
           try {
             range.surroundContents(span);
 
-            // Add click handler
             addHighlightClickHandler(span, highlightId);
 
             return true;
           } catch (e) {
             console.error('Error applying range highlight', e);
-
-            // Fallback method when range.surroundContents fails
-            // Create a new span and replace text content
             try {
               const textToHighlight = elementContent.substring(textIndex, textIndex + text.length);
               const beforeText = elementContent.substring(0, textIndex);
               const afterText = elementContent.substring(textIndex + text.length);
 
-              // Clear the element
               element.textContent = '';
 
-              // Add the before text if it exists
               if (beforeText) {
                 element.appendChild(document.createTextNode(beforeText));
               }
 
-              // Add the highlighted text
               const highlightSpan = document.createElement('span');
               highlightSpan.className = highlightClass;
               highlightSpan.textContent = textToHighlight;
@@ -681,15 +691,12 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
               highlightSpan.dataset.matchType = matchType;
               element.appendChild(highlightSpan);
 
-              // Add the after text if it exists
               if (afterText) {
                 element.appendChild(document.createTextNode(afterText));
               }
 
-              // Add click handler
               addHighlightClickHandler(highlightSpan, highlightId);
 
-              // Store cleanup function
               highlightAppliersRef.current.push(() => {
                 try {
                   if (element) {
@@ -716,11 +723,9 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
     }
   };
 
-  // Improved function to apply text-based highlights with fuzzy matching
   const applyTextHighlights = (citationsArray: ProcessedCitation[]): void => {
     if (!containerRef.current) return;
 
-    // Clear existing highlights
     clearHighlights();
 
     citationsArray.forEach((citation) => {
@@ -732,40 +737,33 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
       }
 
       try {
-        // Find all text elements in the document
         const selector = 'p, div:not(:has(p)), span:not(:has(span))';
         const textElements = containerRef.current?.querySelectorAll(selector);
 
         if (!textElements) return;
 
-        // Find elements containing the target text
         let matchFound = false;
 
-        // Normalize the citation text for better matching
         const normalizedText = text.replace(/\s+/g, ' ').trim();
 
-        // Try exact matching first
         const exactMatches = Array.from(textElements).filter((el) => {
           const content = el.textContent || '';
           return content.includes(text);
         });
 
         if (exactMatches.length > 0) {
-          // Sort to find best match (closest length)
           exactMatches.sort((a, b) => {
             const aLength = (a.textContent || '').length;
             const bLength = (b.textContent || '').length;
             return Math.abs(aLength - text.length) - Math.abs(bLength - text.length);
           });
 
-          // Highlight the best match
           if (highlightTextInElement(exactMatches[0], text, citation.highlight.id, 'exact')) {
             matchFound = true;
             return;
           }
         }
 
-        // If exact match fails, try normalized text matching
         if (!matchFound) {
           const normalizedMatches = Array.from(textElements).filter((el) => {
             const content = (el.textContent || '').replace(/\s+/g, ' ').trim();
@@ -773,7 +771,6 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
           });
 
           if (normalizedMatches.length > 0) {
-            // Sort and highlight
             normalizedMatches.sort((a, b) => {
               const aLength = (a.textContent || '').replace(/\s+/g, ' ').trim().length;
               const bLength = (b.textContent || '').replace(/\s+/g, ' ').trim().length;
@@ -797,9 +794,7 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
           }
         }
 
-        // If still no match, try partial matching
         if (!matchFound && text.length > 50) {
-          // Try multiple chunks
           const chunks = [
             text.substring(0, Math.min(100, Math.floor(text.length / 3))),
             text.substring(Math.floor(text.length / 3), Math.floor((2 * text.length) / 3)),
@@ -809,7 +804,7 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
           let chunkMatchCount = 0;
 
           chunks.forEach((chunk, i) => {
-            if (chunk.length < 20) return; // Skip chunks that are too short
+            if (chunk.length < 20) return; 
 
             const chunkMatches = Array.from(textElements).filter((el) =>
               (el.textContent || '').includes(chunk)
@@ -836,9 +831,7 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
           }
         }
 
-        // If still no match, try fuzzy string matching with a tolerance
         if (!matchFound && text.length > 30) {
-          // Try a simple approach - look for elements with substantial text overlap (e.g., 70% of words match)
           const textWords = normalizedText.split(' ');
           const minMatchWords = Math.ceil(textWords.length * 0.7);
 
@@ -857,7 +850,6 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
           });
 
           if (fuzzyMatches.length > 0) {
-            // Sort by best match
             fuzzyMatches.sort((a, b) => {
               const aContent = (a.textContent || '').replace(/\s+/g, ' ').trim();
               const bContent = (b.textContent || '').replace(/\s+/g, ' ').trim();
@@ -865,7 +857,7 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
               const aSimilarity = calculateSimilarity(aContent, normalizedText);
               const bSimilarity = calculateSimilarity(bContent, normalizedText);
 
-              return bSimilarity - aSimilarity; // Higher similarity first
+              return bSimilarity - aSimilarity;
             });
 
             if (
@@ -881,16 +873,13 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
             }
           }
         }
-
       } catch (err) {
         console.error('Error applying highlight:', err);
       }
     });
   };
 
-  // Clear all highlights
   const clearHighlights = (): void => {
-    // Get all highlight elements
     const highlightElements = containerRef.current?.querySelectorAll('.docx-highlight');
     if (highlightElements?.length) {
       highlightElements.forEach((el) => {
@@ -906,7 +895,6 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
       });
     }
 
-    // Execute custom cleanup functions if any were stored
     highlightAppliersRef.current.forEach((cleanup) => {
       try {
         if (typeof cleanup === 'function') cleanup();
@@ -915,11 +903,9 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
       }
     });
 
-    // Reset the list
     highlightAppliersRef.current = [];
   };
 
-  // Scroll to highlight function
   const scrollToHighlight = useCallback((highlight: HighlightType): void => {
     if (!containerRef.current || !highlight) return;
 
@@ -927,17 +913,14 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
     const highlightElement = containerRef.current.querySelector(`.highlight-${highlightId}`);
 
     if (highlightElement) {
-      // Remove active class from all highlights
       document.querySelectorAll('.docx-highlight-active').forEach((el) => {
         el.classList.remove('docx-highlight-active');
         el.classList.remove('highlight-pulse');
       });
 
-      // Add active class to this highlight
       highlightElement.classList.add('docx-highlight-active');
       highlightElement.classList.add('highlight-pulse');
 
-      // Scroll to the highlight
       highlightElement.scrollIntoView({
         behavior: 'smooth',
         block: 'center',
@@ -945,7 +928,6 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
     } else {
       console.warn(`Highlight element with ID ${highlightId} not found`);
 
-      // Try to find partial highlights if they exist
       for (let i = 0; i < 3; i += 1) {
         const chunkHighlight = containerRef.current.querySelector(
           `.highlight-${highlightId}-chunk-${i}`
@@ -970,12 +952,10 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
     }
   }, []);
 
-  // Set up scroll function ref - only once
   useEffect(() => {
     scrollViewerToRef.current = scrollToHighlight;
   }, [scrollToHighlight]);
 
-  // Clean up highlights when component unmounts
   useEffect(
     () => () => {
       clearHighlights();
@@ -986,7 +966,6 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
   useEffect(() => {
     if (!highlightCitation) return;
 
-    // Process the citation to extract its ID based on its type
     let highlightId: string | null = null;
 
     if (isDocumentContent(highlightCitation) && highlightCitation.metadata?._id) {
@@ -1007,26 +986,21 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
   useEffect(() => {
     if (!documentReady || !highlightedCitationId) return;
 
-
-    // If we don't have processed citations yet, wait for them
     if (!processedCitations.length) {
       return;
     }
 
-    // Find the processed citation that matches our ID
     const targetCitation = processedCitations.find(
       (citation) => citation.highlight?.id === highlightedCitationId
     );
 
     if (targetCitation?.highlight) {
-
-      // Use a delay to ensure highlights are applied first
       setTimeout(() => {
         if (targetCitation.highlight) {
           scrollToHighlight(targetCitation.highlight);
         }
-      }, 1000); // Longer delay to ensure document is fully processed
-    } 
+      }, 1000);
+    }
   }, [documentReady, processedCitations, highlightedCitationId, scrollToHighlight]);
 
   return (
@@ -1051,11 +1025,11 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
           <DocumentContainer ref={containerRef} />
         </Box>
 
-        {/* Only show sidebar if there are processed citations */}
         {processedCitations.length > 0 && (
           <CitationSidebar
             citations={processedCitations}
             scrollViewerTo={scrollViewerToRef.current}
+            highlightedCitationId={highlightedCitationId}
           />
         )}
       </Box>

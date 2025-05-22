@@ -22,7 +22,7 @@ import { getConnectorPublicUrl } from '../accountdetails/account-settings/servic
 
 import type { Filters } from './types/knowledge-base';
 import type { PipesHub, SearchResult, AggregatedDocument } from './types/search-response';
-import {createScrollableContainerStyle} from '../qna/chatbot/utils/styles/scrollbar';
+import { createScrollableContainerStyle } from '../qna/chatbot/utils/styles/scrollbar';
 
 // Constants for sidebar widths - must match with the sidebar component
 const SIDEBAR_EXPANDED_WIDTH = 320;
@@ -605,6 +605,7 @@ export default function KnowledgeBaseSearch() {
           url={fileUrl}
           citations={recordCitations?.documents || []}
           buffer={fileBuffer}
+          highlightCitation={highlightedCitation}
         />
       );
     }
@@ -616,6 +617,7 @@ export default function KnowledgeBaseSearch() {
           url={fileUrl}
           citations={recordCitations?.documents || []}
           buffer={fileBuffer}
+          highlightCitation={highlightedCitation}
         />
       );
     }
@@ -626,6 +628,7 @@ export default function KnowledgeBaseSearch() {
           url={fileUrl}
           citations={recordCitations?.documents || []}
           buffer={fileBuffer}
+          highlightCitation={highlightedCitation}
         />
       );
     }

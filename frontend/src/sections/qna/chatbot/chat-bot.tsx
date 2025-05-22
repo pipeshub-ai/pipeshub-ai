@@ -1190,6 +1190,7 @@ const ChatInterface = () => {
                   url={pdfUrl}
                   buffer={fileBuffer}
                   citations={aggregatedCitations}
+                  highlightCitation={highlightedCitation}
                 />
               ) : isHtml ? (
                 <HtmlViewer
@@ -1197,6 +1198,7 @@ const ChatInterface = () => {
                   url={pdfUrl}
                   buffer={fileBuffer}
                   citations={aggregatedCitations}
+                  highlightCitation={highlightedCitation}
                 />
               ) : isTextFile ? (
                 <TextViewer
@@ -1204,6 +1206,7 @@ const ChatInterface = () => {
                   url={pdfUrl}
                   buffer={fileBuffer}
                   citations={aggregatedCitations}
+                  highlightCitation={highlightedCitation}
                 />
               ) : (
                 <PdfHighlighterComp

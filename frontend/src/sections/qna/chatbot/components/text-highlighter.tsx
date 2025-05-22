@@ -1,5 +1,8 @@
 import type { CustomCitation } from 'src/types/chat-bot';
-import type { DocumentContent } from 'src/sections/knowledgebase/types/search-response';
+import type {
+  DocumentContent,
+  SearchResult,
+} from 'src/sections/knowledgebase/types/search-response';
 import type { Position, HighlightType, ProcessedCitation } from 'src/types/pdf-highlighter';
 
 import { Icon } from '@iconify/react';
@@ -7,16 +10,19 @@ import alertCircleIcon from '@iconify-icons/mdi/alert-circle-outline';
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 
 import { styled } from '@mui/material/styles';
-import { Box, Paper, Typography, CircularProgress } from '@mui/material';
+import { Box, Paper, Typography, CircularProgress, useTheme } from '@mui/material';
 
 import CitationSidebar from './highlighter-sidebar';
+import { createScrollableContainerStyle } from '../utils/styles/scrollbar';
 
+// Props type definition - UPDATED to match MarkdownViewer
 type TextViewerProps = {
   citations: DocumentContent[] | CustomCitation[];
   url: string | null;
   text?: string | null;
   buffer?: ArrayBuffer | null;
   sx?: Record<string, unknown>;
+  highlightCitation?: SearchResult | CustomCitation | null; // NEW: Added like MarkdownViewer
 };
 
 // Styled components
@@ -26,6 +32,7 @@ const TextViewerContainer = styled(Box)(({ theme }) => ({
   position: 'relative',
   overflow: 'hidden',
   borderRadius: theme.shape.borderRadius,
+  border: `1px solid ${theme.palette.divider}`,
 }));
 
 const LoadingOverlay = styled(Box)(({ theme }) => ({
@@ -38,7 +45,7 @@ const LoadingOverlay = styled(Box)(({ theme }) => ({
   flexDirection: 'column',
   alignItems: 'center',
   justifyContent: 'center',
-  backgroundColor: theme.palette.background.paper,
+  backgroundColor: 'rgba(255, 255, 255, 0.8)',
   zIndex: 10,
 }));
 
@@ -52,8 +59,10 @@ const ErrorOverlay = styled(Box)(({ theme }) => ({
   flexDirection: 'column',
   alignItems: 'center',
   justifyContent: 'center',
-  backgroundColor: theme.palette.error.light,
-  color: theme.palette.error.contrastText,
+  backgroundColor: theme.palette.error.lighter,
+  color: theme.palette.error.dark,
+  padding: theme.spacing(2),
+  textAlign: 'center',
   zIndex: 10,
 }));
 
@@ -69,37 +78,36 @@ const DocumentContainer = styled(Box)({
   lineHeight: 1.6,
 });
 
-// Helper function to generate unique IDs
-const getNextId = (): string => String(Math.random()).slice(2);
+// Helper functions
+const getNextId = (): string => `text-hl-${Math.random().toString(36).substring(2, 10)}`;
 
-// Helper type guard to check if an object is DocumentContent
 const isDocumentContent = (
   citation: DocumentContent | CustomCitation
 ): citation is DocumentContent => 'metadata' in citation && citation.metadata !== undefined;
 
-// Process citation to create a highlight based on text content
+const normalizeText = (text: string | null | undefined): string => {
+  if (!text) return '';
+  return text.trim().replace(/\s+/g, ' ');
+};
+
 const processTextHighlight = (citation: DocumentContent | CustomCitation): HighlightType | null => {
   try {
-    if (!citation.content) {
-      console.warn('Citation missing content, skipping highlight');
+    const rawContent = citation.content;
+    const normalizedContent = normalizeText(rawContent);
+
+    if (!normalizedContent || normalizedContent.length < 5) {
       return null;
     }
 
     let id: string;
 
-    if (isDocumentContent(citation) && citation.metadata && citation.metadata._id) {
-      id = citation.metadata._id;
-    } else if ('id' in citation) {
-      id = citation.id as string;
-    } else if ('_id' in citation) {
-      id = citation._id as string;
-    } else if ('citationId' in citation) {
-      id = citation.citationId as string;
-    } else {
-      id = getNextId();
-    }
+    if ('highlightId' in citation && citation.highlightId) id = citation.highlightId as string;
+    else if ('id' in citation && citation.id) id = citation.id as string;
+    else if ('citationId' in citation && citation.citationId) id = citation.citationId as string;
+    else if (isDocumentContent(citation) && citation.metadata?._id) id = citation.metadata._id;
+    else if ('_id' in citation && citation._id) id = citation._id as string;
+    else id = getNextId();
 
-    // Create a complete Position object with required properties
     const position: Position = {
       pageNumber: -10,
       boundingRect: {
@@ -110,21 +118,12 @@ const processTextHighlight = (citation: DocumentContent | CustomCitation): Highl
         width: 0,
         height: 0,
       },
-      rects: [
-        {
-          x1: 0,
-          y1: 0,
-          x2: 0,
-          y2: 0,
-          width: 0,
-          height: 0,
-        },
-      ],
+      rects: [],
     };
 
     return {
       content: {
-        text: citation.content,
+        text: normalizedContent,
       },
       position,
       comment: {
@@ -139,27 +138,887 @@ const processTextHighlight = (citation: DocumentContent | CustomCitation): Highl
   }
 };
 
-const TextViewer: React.FC<TextViewerProps> = ({ url, text, buffer, sx = {}, citations = [] }) => {
+const TextViewer: React.FC<TextViewerProps> = ({
+  url,
+  text,
+  buffer,
+  sx = {},
+  citations = [],
+  highlightCitation = null,
+}) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [documentReady, setDocumentReady] = useState<boolean>(false);
   const [documentText, setDocumentText] = useState<string>('');
-  const scrollViewerToRef = useRef<(highlight: HighlightType) => void>(() => {});
   const [processedCitations, setProcessedCitations] = useState<ProcessedCitation[]>([]);
+  const [highlightedCitationId, setHighlightedCitationId] = useState<string | null>(null); // NEW: Added like MarkdownViewer
+
   const styleAddedRef = useRef<boolean>(false);
   const processingCitationsRef = useRef<boolean>(false);
-  const highlightAppliersRef = useRef<(() => void)[]>([]);
+  const contentRenderedRef = useRef<boolean>(false);
+  const highlightsAppliedRef = useRef<boolean>(false);
+  const highlightingInProgressRef = useRef<boolean>(false);
+  const cleanupStylesRef = useRef<(() => void) | null>(null);
+  const prevCitationsJsonRef = useRef<string>('[]');
+  const highlightCleanupsRef = useRef<Map<string, () => void>>(new Map());
+  const theme = useTheme();
+  const scrollableStyles = createScrollableContainerStyle(theme);
+
+  const createHighlightStyles = useCallback((): (() => void) | undefined => {
+    const styleId = 'text-highlight-styles';
+    if (document.getElementById(styleId)) return undefined;
+
+    const style = document.createElement('style');
+    style.id = styleId;
+    style.textContent = `
+      /* Base highlight style - Professional with warm amber tones */
+      .text-highlight {
+        background-color: rgba(255, 193, 7, 0.15); /* Warm amber */
+        border-radius: 2px;
+        padding: 0.1em 0.2em;
+        margin: -0.1em -0.1em;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        display: inline;
+        position: relative;
+        z-index: 1;
+        border: 1px solid rgba(255, 193, 7, 0.25);
+        white-space: pre-wrap !important;
+        color: inherit !important;
+        text-decoration: none !important;
+        text-shadow: 0 0 1px rgba(0, 0, 0, 0.1);
+      }
+
+      /* Dark mode adjustments */
+      @media (prefers-color-scheme: dark) {
+        .text-highlight {
+          background-color: rgba(255, 213, 79, 0.20);
+          border-color: rgba(255, 213, 79, 0.35);
+          text-shadow: 0 0 1px rgba(0, 0, 0, 0.5);
+        }
+      }
+
+      .MuiCssBaseline-root[data-mui-color-scheme="dark"] .text-highlight,
+      [data-theme="dark"] .text-highlight,
+      .dark .text-highlight {
+        background-color: rgba(255, 213, 79, 0.20);
+        border-color: rgba(255, 213, 79, 0.35);
+        text-shadow: 0 0 1px rgba(0, 0, 0, 0.5);
+      }
+
+      .text-highlight:hover {
+        background-color: rgba(255, 193, 7, 0.25);
+        border-color: rgba(255, 193, 7, 0.45);
+        transform: translateY(-0.5px);
+        box-shadow: 0 2px 4px rgba(255, 193, 7, 0.2);
+        z-index: 2;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        .text-highlight:hover {
+          background-color: rgba(255, 213, 79, 0.30);
+          border-color: rgba(255, 213, 79, 0.55);
+          box-shadow: 0 2px 4px rgba(255, 213, 79, 0.25);
+        }
+      }
+
+      .MuiCssBaseline-root[data-mui-color-scheme="dark"] .text-highlight:hover,
+      [data-theme="dark"] .text-highlight:hover,
+      .dark .text-highlight:hover {
+        background-color: rgba(255, 213, 79, 0.30);
+        border-color: rgba(255, 213, 79, 0.55);
+        box-shadow: 0 2px 4px rgba(255, 213, 79, 0.25);
+      }
+
+      .text-highlight-active {
+        background-color: rgba(255, 152, 0, 0.35) !important;
+        border-color: rgba(255, 152, 0, 0.8) !important;
+        border-width: 1.5px !important;
+        transform: translateY(-1px) !important;
+        box-shadow: 0 3px 8px rgba(255, 152, 0, 0.3) !important;
+        z-index: 3 !important;
+        animation: textHighlightPulse 0.8s 1 ease-out;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        .text-highlight-active {
+          background-color: rgba(255, 183, 77, 0.40) !important;
+          border-color: rgba(255, 183, 77, 0.9) !important;
+          box-shadow: 0 3px 8px rgba(255, 183, 77, 0.35) !important;
+        }
+      }
+
+      .MuiCssBaseline-root[data-mui-color-scheme="dark"] .text-highlight-active,
+      [data-theme="dark"] .text-highlight-active,
+      .dark .text-highlight-active {
+        background-color: rgba(255, 183, 77, 0.40) !important;
+        border-color: rgba(255, 183, 77, 0.9) !important;
+        box-shadow: 0 3px 8px rgba(255, 183, 77, 0.35) !important;
+      }
+
+      @keyframes textHighlightPulse {
+        0% { 
+          transform: translateY(-1px) scale(1);
+          box-shadow: 0 3px 8px rgba(255, 152, 0, 0.3);
+        }
+        50% { 
+          transform: translateY(-1px) scale(1.02);
+          box-shadow: 0 4px 12px rgba(255, 152, 0, 0.4);
+        }
+        100% { 
+          transform: translateY(-1px) scale(1);
+          box-shadow: 0 3px 8px rgba(255, 152, 0, 0.3);
+        }
+      }
+
+      /* Fuzzy match styling with green tones */
+      .text-highlight-fuzzy {
+        background-color: rgba(76, 175, 80, 0.12);
+        border-color: rgba(76, 175, 80, 0.25);
+        border-style: dashed;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        .text-highlight-fuzzy {
+          background-color: rgba(129, 199, 132, 0.18);
+          border-color: rgba(129, 199, 132, 0.35);
+        }
+      }
+
+      .MuiCssBaseline-root[data-mui-color-scheme="dark"] .text-highlight-fuzzy,
+      [data-theme="dark"] .text-highlight-fuzzy,
+      .dark .text-highlight-fuzzy {
+        background-color: rgba(129, 199, 132, 0.18);
+        border-color: rgba(129, 199, 132, 0.35);
+      }
+
+      .text-highlight-fuzzy:hover {
+        background-color: rgba(76, 175, 80, 0.20);
+        border-color: rgba(76, 175, 80, 0.40);
+        box-shadow: 0 2px 4px rgba(76, 175, 80, 0.15);
+      }
+
+      @media (prefers-color-scheme: dark) {
+        .text-highlight-fuzzy:hover {
+          background-color: rgba(129, 199, 132, 0.25);
+          border-color: rgba(129, 199, 132, 0.50);
+          box-shadow: 0 2px 4px rgba(129, 199, 132, 0.20);
+        }
+      }
+
+      .MuiCssBaseline-root[data-mui-color-scheme="dark"] .text-highlight-fuzzy:hover,
+      [data-theme="dark"] .text-highlight-fuzzy:hover,
+      .dark .text-highlight-fuzzy:hover {
+        background-color: rgba(129, 199, 132, 0.25);
+        border-color: rgba(129, 199, 132, 0.50);
+        box-shadow: 0 2px 4px rgba(129, 199, 132, 0.20);
+      }
+
+      .text-highlight-fuzzy.text-highlight-active {
+        background-color: rgba(67, 160, 71, 0.30) !important;
+        border-color: rgba(67, 160, 71, 0.8) !important;
+        border-style: dashed !important;
+        box-shadow: 0 3px 8px rgba(67, 160, 71, 0.25) !important;
+        animation: textHighlightPulseFuzzy 0.8s 1 ease-out;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        .text-highlight-fuzzy.text-highlight-active {
+          background-color: rgba(129, 199, 132, 0.35) !important;
+          border-color: rgba(129, 199, 132, 0.9) !important;
+          box-shadow: 0 3px 8px rgba(129, 199, 132, 0.30) !important;
+        }
+      }
+
+      .MuiCssBaseline-root[data-mui-color-scheme="dark"] .text-highlight-fuzzy.text-highlight-active,
+      [data-theme="dark"] .text-highlight-fuzzy.text-highlight-active,
+      .dark .text-highlight-fuzzy.text-highlight-active {
+        background-color: rgba(129, 199, 132, 0.35) !important;
+        border-color: rgba(129, 199, 132, 0.9) !important;
+        box-shadow: 0 3px 8px rgba(129, 199, 132, 0.30) !important;
+      }
+
+      @keyframes textHighlightPulseFuzzy {
+        0% { 
+          transform: translateY(-1px) scale(1);
+          box-shadow: 0 3px 8px rgba(67, 160, 71, 0.25);
+        }
+        50% { 
+          transform: translateY(-1px) scale(1.02);
+          box-shadow: 0 4px 12px rgba(67, 160, 71, 0.35);
+        }
+        100% { 
+          transform: translateY(-1px) scale(1);
+          box-shadow: 0 3px 8px rgba(67, 160, 71, 0.25);
+        }
+      }
+
+      /* Text line specific styles */
+      .text-line {
+        margin: 0;
+        padding: 2px 0;
+      }
+
+      /* Reduce motion for accessibility */
+      @media (prefers-reduced-motion: reduce) {
+        .text-highlight,
+        .text-highlight:hover,
+        .text-highlight-active,
+        .text-highlight-fuzzy,
+        .text-highlight-fuzzy:hover,
+        .text-highlight-fuzzy.text-highlight-active {
+          transition: none;
+          animation: none;
+          transform: none !important;
+        }
+      }
+    `;
+
+    document.head.appendChild(style);
+
+    const cleanup = (): void => {
+      const styleElement = document.getElementById(styleId);
+      if (styleElement) {
+        try {
+          document.head.removeChild(styleElement);
+        } catch (e) {
+          console.error('Error removing text highlight styles:', e);
+        }
+      }
+    };
+    cleanupStylesRef.current = cleanup;
+    return cleanup;
+  }, []);
+
+  const calculateSimilarity = useCallback((text1: string, text2: string | null): number => {
+    const normalized1 = normalizeText(text1);
+    const normalized2 = normalizeText(text2);
+    if (!normalized1 || !normalized2) return 0;
+
+    const words1 = new Set(
+      normalized1
+        .toLowerCase()
+        .split(/\s+/)
+        .filter((w) => w.length > 2)
+    );
+    const words2 = new Set(
+      normalized2
+        .toLowerCase()
+        .split(/\s+/)
+        .filter((w) => w.length > 2)
+    );
+    if (words1.size === 0 || words2.size === 0) return 0;
+
+    let intersectionSize = 0;
+    words1.forEach((word) => {
+      if (words2.has(word)) intersectionSize += 1;
+    });
+    const unionSize = words1.size + words2.size - intersectionSize;
+    return unionSize === 0 ? 0 : intersectionSize / unionSize;
+  }, []);
+
+  const highlightTextInElement = useCallback(
+    (
+      element: Element,
+      normalizedTextToHighlight: string,
+      highlightId: string,
+      matchType: 'exact' | 'fuzzy' = 'exact'
+    ): { success: boolean; cleanup?: () => void } => {
+      if (!element || !normalizedTextToHighlight || normalizedTextToHighlight.length < 3) {
+        return { success: false };
+      }
+
+      const highlightBaseClass = 'text-highlight';
+      const highlightIdClass = `highlight-${highlightId}`;
+      const highlightTypeClass = `text-highlight-${matchType}`;
+      const fullHighlightClass = `${highlightBaseClass} ${highlightIdClass} ${highlightTypeClass}`;
+
+      try {
+        const elementContent = element.textContent || '';
+        const normalizedContent = normalizeText(elementContent);
+
+        const textIndex = normalizedContent
+          .toLowerCase()
+          .indexOf(normalizedTextToHighlight.toLowerCase());
+
+        if (textIndex === -1 && matchType === 'fuzzy') {
+          const wrapper = document.createElement('span');
+          wrapper.className = fullHighlightClass;
+          wrapper.textContent = elementContent;
+          wrapper.dataset.highlightId = highlightId;
+
+          wrapper.addEventListener('click', (e) => {
+            e.stopPropagation();
+            containerRef.current?.querySelectorAll('.text-highlight-active').forEach((el) => {
+              el.classList.remove('text-highlight-active');
+            });
+            wrapper.classList.add('text-highlight-active');
+            setHighlightedCitationId(highlightId);
+            wrapper.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+          });
+
+          element.textContent = '';
+          element.appendChild(wrapper);
+
+          const cleanup = () => {
+            if (element && wrapper.parentNode === element) {
+              element.textContent = wrapper.textContent;
+            }
+          };
+
+          return { success: true, cleanup };
+        }
+
+        if (textIndex >= 0) {
+          const beforeText = elementContent.substring(0, textIndex);
+          const highlightText = elementContent.substring(
+            textIndex,
+            textIndex + normalizedTextToHighlight.length
+          );
+          const afterText = elementContent.substring(textIndex + normalizedTextToHighlight.length);
+
+          element.textContent = '';
+
+          if (beforeText) {
+            element.appendChild(document.createTextNode(beforeText));
+          }
+
+          const highlightSpan = document.createElement('span');
+          highlightSpan.className = fullHighlightClass;
+          highlightSpan.textContent = highlightText;
+          highlightSpan.dataset.highlightId = highlightId;
+
+          highlightSpan.addEventListener('click', (e) => {
+            e.stopPropagation();
+            containerRef.current?.querySelectorAll('.text-highlight-active').forEach((el) => {
+              el.classList.remove('text-highlight-active');
+            });
+            highlightSpan.classList.add('text-highlight-active');
+            setHighlightedCitationId(highlightId);
+            highlightSpan.scrollIntoView({
+              behavior: 'smooth',
+              block: 'center',
+              inline: 'nearest',
+            });
+          });
+
+          element.appendChild(highlightSpan);
+
+          if (afterText) {
+            element.appendChild(document.createTextNode(afterText));
+          }
+
+          const cleanup = () => {
+            if (element) {
+              element.textContent = elementContent;
+            }
+          };
+
+          return { success: true, cleanup };
+        }
+
+        return { success: false };
+      } catch (err) {
+        console.error('Error in highlightTextInElement:', err);
+        return { success: false };
+      }
+    },
+    [containerRef]
+  );
+
+  const clearHighlights = useCallback(() => {
+    if (!containerRef.current || highlightingInProgressRef.current) {
+      return;
+    }
+    highlightingInProgressRef.current = true;
+
+    highlightCleanupsRef.current.forEach((cleanup, id) => {
+      try {
+        cleanup();
+      } catch (e) {
+        console.error(`Error running cleanup for highlight ${id}:`, e);
+      }
+    });
+    highlightCleanupsRef.current.clear();
+
+    const remainingSpans = containerRef.current.querySelectorAll('.text-highlight');
+    if (remainingSpans.length > 0) {
+      remainingSpans.forEach((span) => {
+        if (span.parentNode) {
+          const textContent = span.textContent || '';
+          try {
+            span.parentNode.replaceChild(document.createTextNode(textContent), span);
+          } catch (replaceError) {
+            console.error('Error during fallback removal of span:', replaceError, span);
+            if (span.parentNode)
+              try {
+                span.parentNode.removeChild(span);
+              } catch (_) {
+                console.error('Error during removal of span:', replaceError, span);
+              }
+          }
+        }
+      });
+    }
+
+    containerRef.current.querySelectorAll('.text-highlight-active').forEach((el) => {
+      el.classList.remove('text-highlight-active');
+    });
+
+    highlightsAppliedRef.current = false;
+    highlightingInProgressRef.current = false;
+  }, []);
+
+  const applyTextHighlights = useCallback(
+    (citationsToHighlight: ProcessedCitation[]): void => {
+      if (
+        !containerRef.current ||
+        highlightingInProgressRef.current ||
+        !documentReady ||
+        !contentRenderedRef.current
+      ) {
+        return;
+      }
+
+      highlightingInProgressRef.current = true;
+      clearHighlights();
+      highlightingInProgressRef.current = true;
+
+      requestAnimationFrame(() => {
+        try {
+          if (!containerRef.current) {
+            console.error('Container ref lost during applyTextHighlights delay.');
+            highlightingInProgressRef.current = false;
+            return;
+          }
+
+          let appliedCount = 0;
+          const newCleanups = new Map<string, () => void>();
+          const candidateElements = Array.from(containerRef.current.querySelectorAll('.text-line'));
+
+          citationsToHighlight.forEach((citation) => {
+            const normalizedText = citation.highlight?.content?.text;
+            const highlightId = citation.highlight?.id;
+
+            if (!normalizedText || !highlightId) {
+              return;
+            }
+
+            const exactMatchFound = candidateElements.some((element) => {
+              const normalizedElementText = normalizeText(element.textContent);
+
+              if (normalizedElementText.includes(normalizedText)) {
+                const result = highlightTextInElement(
+                  element,
+                  normalizedText,
+                  highlightId,
+                  'exact'
+                );
+
+                if (result.success) {
+                  appliedCount += 1;
+                  if (result.cleanup) newCleanups.set(highlightId, result.cleanup);
+                  return true;
+                }
+              }
+              return false;
+            });
+
+            if (!exactMatchFound && candidateElements.length > 0) {
+              const similarityScores = candidateElements
+                .map((el) => ({
+                  element: el,
+                  score: calculateSimilarity(normalizedText, el.textContent),
+                }))
+                .filter((item) => item.score > 0.4)
+                .sort((a, b) => b.score - a.score);
+
+              if (similarityScores.length > 0) {
+                const bestMatch = similarityScores[0];
+                const result = highlightTextInElement(
+                  bestMatch.element,
+                  normalizedText,
+                  highlightId,
+                  'fuzzy'
+                );
+                if (result.success) {
+                  appliedCount += 1;
+                  if (result.cleanup) newCleanups.set(highlightId, result.cleanup);
+                }
+              }
+            }
+          });
+
+          highlightCleanupsRef.current = newCleanups;
+          highlightsAppliedRef.current = appliedCount > 0;
+          document.dispatchEvent(new CustomEvent('highlightsapplied'));
+        } catch (e) {
+          console.error('Error during applyTextHighlights execution:', e);
+          highlightsAppliedRef.current = false;
+        } finally {
+          highlightingInProgressRef.current = false;
+        }
+      });
+    },
+    [documentReady, clearHighlights, highlightTextInElement, calculateSimilarity]
+  );
+
+  useEffect(() => {
+    if (!highlightCitation) {
+      setHighlightedCitationId(null);
+      return;
+    }
+
+    let highlightId: string | null = null;
+
+    if ('citationId' in highlightCitation && highlightCitation.citationId) {
+      highlightId = highlightCitation.citationId;
+    } else if ('_id' in highlightCitation && highlightCitation._id) {
+      highlightId = highlightCitation._id;
+    } else if ('id' in highlightCitation && highlightCitation.id) {
+      highlightId = highlightCitation.id;
+    } else if (highlightCitation.metadata?._id) {
+      highlightId = highlightCitation.metadata._id;
+    }
+
+    if (!highlightId) return;
+
+    setHighlightedCitationId(highlightId);
+  }, [highlightCitation]);
+
+  const processCitations = useCallback(() => {
+    const currentCitationsContent = JSON.stringify(
+      citations?.map((c) => normalizeText(c?.content)).sort() ?? []
+    );
+
+    if (
+      processingCitationsRef.current ||
+      !citations ||
+      citations.length === 0 ||
+      (currentCitationsContent === prevCitationsJsonRef.current && highlightsAppliedRef.current)
+    ) {
+      if (currentCitationsContent !== prevCitationsJsonRef.current) {
+        prevCitationsJsonRef.current = currentCitationsContent;
+        highlightsAppliedRef.current = false;
+      }
+      return;
+    }
+
+    processingCitationsRef.current = true;
+
+    try {
+      const processed: ProcessedCitation[] = citations
+        .map((citation) => {
+          const highlight = processTextHighlight(citation);
+          if (highlight) {
+            return { ...citation, highlight } as ProcessedCitation;
+          }
+          return null;
+        })
+        .filter((item): item is ProcessedCitation => item !== null);
+
+      setProcessedCitations(processed);
+      prevCitationsJsonRef.current = currentCitationsContent;
+      highlightsAppliedRef.current = false;
+
+      if (
+        processed.length > 0 &&
+        containerRef.current &&
+        documentReady &&
+        contentRenderedRef.current &&
+        !highlightingInProgressRef.current
+      ) {
+        requestAnimationFrame(() => applyTextHighlights(processed));
+      }
+    } catch (err) {
+      console.error('Error processing citations:', err);
+    } finally {
+      processingCitationsRef.current = false;
+    }
+  }, [citations, documentReady, applyTextHighlights]);
+
+  useEffect(() => {
+    if (!documentReady || !documentText || !containerRef.current) {
+      return undefined;
+    }
+
+    const observer = new MutationObserver((mutations) => {
+      const hasTextContent = containerRef.current?.querySelector('.text-line');
+
+      if (hasTextContent && !contentRenderedRef.current) {
+        contentRenderedRef.current = true;
+        observer.disconnect();
+
+        if (citations.length > 0 && !processingCitationsRef.current) {
+          processCitations();
+
+          if (highlightedCitationId) {
+            setTimeout(() => {
+              const targetCitation = processedCitations.find(
+                (citation) => citation.highlight?.id === highlightedCitationId
+              );
+
+              if (targetCitation?.highlight) {
+                setTimeout(() => {
+                  if (!highlightingInProgressRef.current) {
+                    applyTextHighlights(processedCitations);
+
+                    setTimeout(() => {
+                      const highlightElement = containerRef.current?.querySelector(
+                        `.highlight-${highlightedCitationId}`
+                      );
+
+                      if (highlightElement) {
+                        containerRef.current
+                          ?.querySelectorAll('.text-highlight-active')
+                          .forEach((el) => el.classList.remove('text-highlight-active'));
+
+                        highlightElement.classList.add('text-highlight-active');
+                        highlightElement.scrollIntoView({
+                          behavior: 'smooth',
+                          block: 'center',
+                          inline: 'nearest',
+                        });
+                      }
+                    }, 200);
+                  }
+                }, 100);
+              }
+            }, 50);
+          }
+        }
+      }
+    });
+
+    if (containerRef.current) {
+      observer.observe(containerRef.current, {
+        childList: true,
+        subtree: true,
+        attributes: false,
+        characterData: false,
+      });
+    }
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [
+    documentReady,
+    documentText,
+    highlightedCitationId,
+    citations,
+    processedCitations,
+    applyTextHighlights,
+    processCitations,
+  ]);
+
+  useEffect(() => {
+    if (!documentReady || !highlightedCitationId || !processedCitations.length) {
+      return;
+    }
+
+    const targetCitation = processedCitations.find(
+      (citation) => citation.highlight?.id === highlightedCitationId
+    );
+
+    if (!targetCitation?.highlight) {
+      return;
+    }
+
+    let attempts = 0;
+    const maxAttempts = 3;
+    const baseDelay = 100;
+
+    const attemptHighlightAndScroll = () => {
+      attempts += 1;
+
+      if (!contentRenderedRef.current || !containerRef.current) {
+        if (attempts < maxAttempts) {
+          setTimeout(attemptHighlightAndScroll, baseDelay);
+        }
+        return;
+      }
+
+      const existingHighlight = containerRef.current.querySelector(
+        `.highlight-${highlightedCitationId}`
+      );
+
+      if (existingHighlight) {
+        containerRef.current.querySelectorAll('.text-highlight-active').forEach((el) => {
+          el.classList.remove('text-highlight-active');
+        });
+
+        existingHighlight.classList.add('text-highlight-active');
+        existingHighlight.scrollIntoView({
+          behavior: 'smooth',
+          block: 'center',
+          inline: 'nearest',
+        });
+        return;
+      }
+
+      if (!highlightingInProgressRef.current) {
+        console.log('Applying highlights...');
+        highlightingInProgressRef.current = true;
+
+        clearHighlights();
+
+        requestAnimationFrame(() => {
+          if (!containerRef.current) {
+            highlightingInProgressRef.current = false;
+            return;
+          }
+
+          const candidateElements = Array.from(containerRef.current.querySelectorAll('.text-line'));
+          let highlightApplied = false;
+          const newCleanups = new Map<string, () => void>();
+
+          processedCitations.forEach((citation) => {
+            const normalizedText = citation.highlight?.content?.text;
+            const citationId = citation.highlight?.id;
+
+            if (!normalizedText || !citationId) return;
+
+            const exactMatch = candidateElements.find((element) => {
+              const elementText = normalizeText(element.textContent);
+              return elementText.includes(normalizedText);
+            });
+
+            if (exactMatch) {
+              const result = highlightTextInElement(
+                exactMatch,
+                normalizedText,
+                citationId,
+                'exact'
+              );
+              if (result.success) {
+                if (result.cleanup) newCleanups.set(citationId, result.cleanup);
+                if (citationId === highlightedCitationId) {
+                  highlightApplied = true;
+                }
+              }
+            } else {
+              const fuzzyMatches = candidateElements
+                .map((el) => ({
+                  element: el,
+                  score: calculateSimilarity(normalizedText, el.textContent),
+                }))
+                .filter((item) => item.score > 0.4)
+                .sort((a, b) => b.score - a.score);
+
+              if (fuzzyMatches.length > 0) {
+                const result = highlightTextInElement(
+                  fuzzyMatches[0].element,
+                  normalizedText,
+                  citationId,
+                  'fuzzy'
+                );
+                if (result.success) {
+                  if (result.cleanup) newCleanups.set(citationId, result.cleanup);
+                  if (citationId === highlightedCitationId) {
+                    highlightApplied = true;
+                  }
+                }
+              }
+            }
+          });
+
+          highlightCleanupsRef.current = newCleanups;
+          highlightsAppliedRef.current = newCleanups.size > 0;
+          highlightingInProgressRef.current = false;
+
+          setTimeout(() => {
+            const targetHighlight = containerRef.current?.querySelector(
+              `.highlight-${highlightedCitationId}`
+            );
+
+            if (targetHighlight) {
+              containerRef.current?.querySelectorAll('.text-highlight-active').forEach((el) => {
+                el.classList.remove('text-highlight-active');
+              });
+
+              targetHighlight.classList.add('text-highlight-active');
+              targetHighlight.scrollIntoView({
+                behavior: 'smooth',
+                block: 'center',
+                inline: 'nearest',
+              });
+            } else if (attempts < maxAttempts) {
+              setTimeout(attemptHighlightAndScroll, baseDelay * attempts);
+            }
+          }, 100);
+        });
+      } else if (attempts < maxAttempts) {
+        setTimeout(attemptHighlightAndScroll, baseDelay);
+      }
+    };
+
+    setTimeout(attemptHighlightAndScroll, 200);
+  }, [
+    documentReady,
+    highlightedCitationId,
+    processedCitations,
+    highlightTextInElement,
+    calculateSimilarity,
+    clearHighlights,
+  ]);
+
+  const scrollToHighlight = useCallback(
+    (highlight: HighlightType | null): void => {
+      if (!containerRef.current || !highlight || !highlight.id) return;
+
+      const highlightId = highlight.id;
+
+      const findAndScroll = () => {
+        const highlightElement = containerRef.current?.querySelector(`.highlight-${highlightId}`);
+
+        if (highlightElement) {
+          containerRef.current?.querySelectorAll('.text-highlight-active').forEach((el) => {
+            el.classList.remove('text-highlight-active');
+          });
+
+          highlightElement.classList.add('text-highlight-active');
+          setHighlightedCitationId(highlightId);
+
+          highlightElement.scrollIntoView({
+            behavior: 'smooth',
+            block: 'center',
+            inline: 'nearest',
+          });
+          return true;
+        }
+        return false;
+      };
+
+      if (findAndScroll()) {
+        return;
+      }
+
+      if (processedCitations.length > 0 && !highlightingInProgressRef.current) {
+        applyTextHighlights(processedCitations);
+
+        setTimeout(() => {
+          findAndScroll();
+        }, 300);
+      }
+    },
+    [processedCitations, applyTextHighlights]
+  );
 
   // STEP 1: Load text content
   useEffect(() => {
     const loadTextContent = async (): Promise<void> => {
       try {
-        // Reset state
         setLoading(true);
         setError(null);
+        setDocumentText('');
+        setDocumentReady(false);
+        contentRenderedRef.current = false;
+        highlightsAppliedRef.current = false;
+        prevCitationsJsonRef.current = '[]';
+        clearHighlights();
 
-        // If text is directly provided, use it
         if (text) {
           setDocumentText(text);
           setLoading(false);
@@ -167,10 +1026,8 @@ const TextViewer: React.FC<TextViewerProps> = ({ url, text, buffer, sx = {}, cit
           return;
         }
 
-        // If buffer is provided, convert it to text
         if (buffer) {
           try {
-            // Convert ArrayBuffer to string using TextDecoder
             const decoder = new TextDecoder('utf-8');
             const decodedText = decoder.decode(buffer);
 
@@ -187,7 +1044,6 @@ const TextViewer: React.FC<TextViewerProps> = ({ url, text, buffer, sx = {}, cit
           }
         }
 
-        // If URL is provided, fetch the text
         if (url) {
           try {
             const fetchWithTimeout = async (fetchUrl: string, timeoutMs = 30000) => {
@@ -239,32 +1095,26 @@ const TextViewer: React.FC<TextViewerProps> = ({ url, text, buffer, sx = {}, cit
     };
 
     loadTextContent();
-  }, [url, text, buffer]);
+  }, [url, text, buffer, clearHighlights]);
 
   // STEP 2: Render text content when document is ready
   useEffect(() => {
     if (!documentReady || !documentText || !containerRef.current) return;
 
     try {
-      // Clear container
       containerRef.current.innerHTML = '';
 
-      // Process text for highlighting capabilities
-      // For plain text, we'll split by lines and create paragraph elements
       const lines = documentText.split('\n');
-
-      // Create a document fragment for better performance
       const fragment = document.createDocumentFragment();
 
       lines.forEach((line, index) => {
         const paragraph = document.createElement('p');
         paragraph.id = `line-${index}`;
         paragraph.className = 'text-line';
-        paragraph.textContent = line || ' '; // Use space for empty lines
+        paragraph.textContent = line || ' ';
         fragment.appendChild(paragraph);
       });
 
-      // Append all lines at once
       containerRef.current.appendChild(fragment);
     } catch (err) {
       console.error('Error rendering text document:', err);
@@ -272,661 +1122,83 @@ const TextViewer: React.FC<TextViewerProps> = ({ url, text, buffer, sx = {}, cit
     }
   }, [documentReady, documentText]);
 
-  // STEP 3: Add highlight styles once
+  // STEP 3: Add highlight styles
   useEffect(() => {
-    if (styleAddedRef.current) return;
-
-    styleAddedRef.current = true;
-    createHighlightStyles();
-  }, []);
-
-  // Create highlight styles function
-  const createHighlightStyles = (): (() => void) | undefined => {
-    const styleId = 'text-highlight-styles';
-
-    // Check if style already exists
-    if (document.getElementById(styleId)) {
-      return undefined;
+    if (!styleAddedRef.current) {
+      createHighlightStyles();
+      styleAddedRef.current = true;
     }
-
-    // Create style element with enhanced highlighting styles
-    const style = document.createElement('style');
-    style.id = styleId;
-    style.textContent = `
-      /* Base highlight style */
-      .text-highlight {
-        cursor: pointer;
-        background-color: rgba(255, 235, 59, 0.5) !important; /* Bright yellow with transparency */
-        position: relative;
-        z-index: 1;
-        border-radius: 2px;
-        box-shadow: 0 0 0 1px rgba(255, 193, 7, 0.3);
-        transition: all 0.25s ease;
-        text-decoration: none !important;
-        color: inherit !important;
-        border-bottom: 2px solid #FFC107;
-      }
-      
-      /* Hover state */
-      .text-highlight:hover {
-        background-color: rgba(255, 193, 7, 0.6) !important; /* Amber on hover */
-        box-shadow: 0 0 0 2px rgba(255, 152, 0, 0.4);
-        z-index: 2;
-      }
-   
-      /* Active state */
-      .text-highlight-active {
-        background-color: rgba(255, 152, 0, 0.7) !important; /* Orange for active */
-        box-shadow: 0 0 0 3px rgba(255, 87, 34, 0.4) !important;
-        font-weight: bold !important;
-        z-index: 3 !important;
-        color: inherit !important;
-        border-bottom: 2px solid #FF5722;
-      }
-      
-      /* Animation */
-      .highlight-pulse {
-        animation: highlightPulse 1.5s 1;
-      }
-      
-      @keyframes highlightPulse {
-        0% { box-shadow: 0 0 0 3px rgba(255, 87, 34, 0.3); }
-        50% { box-shadow: 0 0 0 6px rgba(255, 87, 34, 0.1); }
-        100% { box-shadow: 0 0 0 3px rgba(255, 87, 34, 0.3); }
-      }
-      
-      /* Custom highlight styles for different types of matches */
-      .text-highlight-exact {
-        background-color: rgba(255, 235, 59, 0.6) !important; /* Brighter yellow for exact matches */
-        border-bottom: 2px solid #FFC107;
-      }
-      
-      .text-highlight-partial {
-        background-color: rgba(156, 204, 101, 0.4) !important; /* Light green for partial matches */
-        border-bottom: 2px dashed #8BC34A;
-      }
-      
-      .text-highlight-fuzzy {
-        background-color: rgba(187, 222, 251, 0.5) !important; /* Light blue for fuzzy matches */
-        border-bottom: 2px dotted #2196F3;
-      }
-      
-      /* Text viewer specific styles */
-      .text-line {
-        margin: 0;
-        padding: 2px 0;
-      }
-      
-      /* Make sure highlights preserve line breaks and formatting */
-      .text-highlight {
-        display: inline !important;
-        white-space: pre-wrap !important;
-      }
-    `;
-
-    document.head.appendChild(style);
-
-    // Create cleanup function
-    const cleanup = (): void => {
-      const styleElement = document.getElementById(styleId);
-      if (styleElement) {
-        document.head.removeChild(styleElement);
+    return () => {
+      if (cleanupStylesRef.current) {
+        cleanupStylesRef.current();
+        cleanupStylesRef.current = null;
+        styleAddedRef.current = false;
       }
     };
+  }, [createHighlightStyles]);
 
-    return cleanup;
-  };
-
-  // STEP 4: Process citations when document is ready
+  // STEP 4: Mark content as rendered and trigger initial citation processing (like MarkdownViewer)
   useEffect(() => {
-    // Skip if document not ready or already processing citations
-    if (!documentReady || processingCitationsRef.current || !citations?.length) {
-      return;
-    }
+    let timerId: NodeJS.Timeout | number | undefined;
 
-    processingCitationsRef.current = true;
-
-    try {
-      // Clear previous highlight appliers
-      highlightAppliersRef.current = [];
-
-      // Create a properly typed array from the start
-      const processed: ProcessedCitation[] = [];
-
-      // Process citations into highlights with type safety
-      citations.forEach((citation) => {
-        const highlight = processTextHighlight(citation);
-
-        // Only add items where highlight is not null
-        if (highlight) {
-          // Create a properly typed ProcessedCitation
-          const processedCitation: ProcessedCitation = {
-            ...citation,
-            highlight,
-          } as ProcessedCitation;
-
-          processed.push(processedCitation);
-        }
-      });
-
-      setProcessedCitations(processed);
-
-      // Apply highlights after a short delay to ensure document is fully rendered
-      if (processed.length > 0 && containerRef.current) {
-        setTimeout(() => {
-          applyTextHighlights(processed);
-        }, 500);
-      }
-    } catch (err) {
-      console.error('Error processing citations:', err);
-    } finally {
-      // Even if there's an error, mark processing as complete
-      processingCitationsRef.current = false;
-    }
-    // eslint-disable-next-line
-  }, [documentReady, citations]);
-
-  // Helper function to calculate text similarity (Levenshtein distance for fuzzy matching)
-  const calculateSimilarity = (text1: string, text2: string): number => {
-    // Normalize texts
-    const s1 = text1.toLowerCase().trim();
-    const s2 = text2.toLowerCase().trim();
-
-    // Simple word overlap ratio for longer texts
-    if (s1.length > 100 || s2.length > 100) {
-      const words1 = s1.split(/\s+/);
-      const words2 = s2.split(/\s+/);
-
-      const uniqueWords1 = new Set(words1);
-      const uniqueWords2 = new Set(words2);
-
-      let matchCount = 0;
-      uniqueWords1.forEach((word) => {
-        if (word.length > 3 && uniqueWords2.has(word)) {
-          matchCount += 1;
-        }
-      });
-
-      return matchCount / Math.max(uniqueWords1.size, uniqueWords2.size);
-    }
-
-    // For shorter strings, use Levenshtein distance
-    const track = Array(s2.length + 1)
-      .fill(null)
-      .map(() => Array(s1.length + 1).fill(null));
-
-    for (let i = 0; i <= s1.length; i += 1) {
-      track[0][i] = i;
-    }
-
-    for (let j = 0; j <= s2.length; j += 1) {
-      track[j][0] = j;
-    }
-
-    for (let j = 1; j <= s2.length; j += 1) {
-      for (let i = 1; i <= s1.length; i += 1) {
-        const indicator = s1[i - 1] === s2[j - 1] ? 0 : 1;
-        track[j][i] = Math.min(
-          track[j][i - 1] + 1, // deletion
-          track[j - 1][i] + 1, // insertion
-          track[j - 1][i - 1] + indicator // substitution
-        );
-      }
-    }
-
-    // Convert distance to similarity ratio (1 = identical, 0 = completely different)
-    const maxLength = Math.max(s1.length, s2.length);
-    if (maxLength === 0) return 1.0; // Both strings are empty
-
-    return 1.0 - track[s2.length][s1.length] / maxLength;
-  };
-
-  // Extract click handler to a separate function for reuse
-  const addHighlightClickHandler = (element: HTMLElement, highlightId: string): void => {
-    element.addEventListener('click', () => {
-      // Remove active class from all highlights
-      document.querySelectorAll('.text-highlight-active').forEach((el) => {
-        el.classList.remove('text-highlight-active');
-        el.classList.remove('highlight-pulse');
-      });
-
-      // Add active class to this highlight
-      element.classList.add('text-highlight-active');
-      element.classList.add('highlight-pulse');
-
-
-      // Scroll into view with offset to ensure visibility
-      element.scrollIntoView({
-        behavior: 'smooth',
-        block: 'center',
-      });
-    });
-  };
-
-  // Function to determine which lines contain the text to highlight
-  const findLinesWithText = (searchText: string, threshold = 0.8): Element[] => {
-    if (!containerRef.current) return [];
-
-    const lines = containerRef.current.querySelectorAll('.text-line');
-    const resultLines: Element[] = [];
-
-    // Normalize search text
-    const normalizedSearch = searchText.toLowerCase().trim();
-
-    // For very short search texts, require higher precision
-    const adjustedThreshold = normalizedSearch.length < 20 ? 0.9 : threshold;
-
-    // Find paragraphs containing the text with various matching strategies
-    Array.from(lines).forEach((line) => {
-      const lineText = line.textContent || '';
-      const normalizedLine = lineText.toLowerCase().trim();
-
-      // Try exact match first
-      if (normalizedLine.includes(normalizedSearch)) {
-        resultLines.push(line);
-        return;
-      }
-
-      // Try fuzzy match if exact match fails
-      const similarity = calculateSimilarity(normalizedSearch, normalizedLine);
-      if (similarity >= adjustedThreshold) {
-        resultLines.push(line);
-      }
-    });
-
-    return resultLines;
-  };
-
-  // Function to highlight text within a specific element
-  const highlightTextInElement = (
-    element: Element,
-    textString: string,
-    highlightId: string,
-    matchType: 'exact' | 'partial' | 'fuzzy' = 'exact'
-  ): boolean => {
-    if (!element || !textString) return false;
-
-    try {
-      // Find where the text appears in the element
-      const elementContent = element.textContent || '';
-      const normalizedContent = elementContent.toLowerCase();
-      const normalizedText = textString.toLowerCase();
-      let textIndex = normalizedContent.indexOf(normalizedText);
-
-      // Determine the highlight class based on match type
-      const highlightClass = `text-highlight highlight-${highlightId} text-highlight-${matchType}`;
-
-      // If text is not found directly and we're doing a fuzzy match
-      if (textIndex === -1 && matchType === 'fuzzy') {
-        // For fuzzy matches, we'll wrap the whole element
-        try {
-          const wrapper = document.createElement('span');
-          wrapper.className = highlightClass;
-          wrapper.textContent = elementContent;
-          wrapper.dataset.id = highlightId;
-          wrapper.dataset.matchType = 'fuzzy';
-
-          element.textContent = '';
-          element.appendChild(wrapper);
-
-          // Store a cleanup function
-          highlightAppliersRef.current.push(() => {
-            try {
-              if (element && wrapper.parentNode === element) {
-                element.textContent = wrapper.textContent;
-              }
-            } catch (e) {
-              console.error('Error in cleanup', e);
-            }
-          });
-
-          // Add click handler
-          addHighlightClickHandler(wrapper, highlightId);
-
-          return true;
-        } catch (e) {
-          console.error('Error wrapping element', e);
-          return false;
-        }
-      }
-
-      // For exact and partial matches, use text nodes
-      if (textIndex >= 0 || matchType === 'exact' || matchType === 'partial') {
-        // If we have an exact match, use original text index
-        if (textIndex === -1) {
-          // For partial matches, find the best substring match
-          let bestMatchIndex = -1;
-          let bestMatchLength = 0;
-
-          // Try to find a significant substring match
-          const words = normalizedText.split(/\s+/).filter((w) => w.length > 3);
-
-          // Replace the for...of loop with reduce method
-          words.reduce((_, word) => {
-            const wordIndex = normalizedContent.indexOf(word);
-            if (wordIndex >= 0 && word.length > bestMatchLength) {
-              bestMatchIndex = wordIndex;
-              bestMatchLength = word.length;
-            }
-            return null;
-          }, null);
-
-          if (bestMatchIndex >= 0) {
-            textIndex = bestMatchIndex;
-            // Adjust the text to highlight to be the best match area
-            const contextSize = 40; // Characters before and after
-            const start = Math.max(0, bestMatchIndex - contextSize);
-            const end = Math.min(
-              elementContent.length,
-              bestMatchIndex + bestMatchLength + contextSize
-            );
-            text = elementContent.substring(start, end);
-          } else {
-            // If still no match, highlight the whole element
-            try {
-              const wrapper = document.createElement('span');
-              wrapper.className = highlightClass;
-              wrapper.textContent = elementContent;
-              wrapper.dataset.id = highlightId;
-              wrapper.dataset.matchType = matchType;
-
-              element.textContent = '';
-              element.appendChild(wrapper);
-
-              // Store a cleanup function
-              highlightAppliersRef.current.push(() => {
-                try {
-                  if (element && wrapper.parentNode === element) {
-                    element.textContent = wrapper.textContent;
-                  }
-                } catch (e) {
-                  console.error('Error in cleanup', e);
-                }
-              });
-
-              // Add click handler
-              addHighlightClickHandler(wrapper, highlightId);
-
-              return true;
-            } catch (e) {
-              console.error('Error wrapping element for partial match', e);
-              return false;
-            }
+    if (documentReady && !contentRenderedRef.current) {
+      const checkRendered = () => {
+        if (
+          containerRef.current &&
+          (containerRef.current.childNodes.length > 0 || documentText === '')
+        ) {
+          contentRenderedRef.current = true;
+          if (
+            !processingCitationsRef.current &&
+            citations.length > 0 &&
+            !highlightsAppliedRef.current
+          ) {
+            processCitations();
           }
+        } else if (documentReady) {
+          timerId = requestAnimationFrame(checkRendered);
         }
-
-        // Standard text node approach for highlighting
-        try {
-          // Get the actual text to highlight in the case-preserved version
-          const highlightText = elementContent.substring(textIndex, textIndex + textString.length);
-
-          const beforeText = elementContent.substring(0, textIndex);
-          const afterText = elementContent.substring(textIndex + highlightText.length);
-
-          // Clear the element
-          element.textContent = '';
-
-          // Add the before text if it exists
-          if (beforeText) {
-            element.appendChild(document.createTextNode(beforeText));
-          }
-
-          // Add the highlighted text
-          const highlightSpan = document.createElement('span');
-          highlightSpan.className = highlightClass;
-          highlightSpan.textContent = highlightText;
-          highlightSpan.dataset.id = highlightId;
-          highlightSpan.dataset.matchType = matchType;
-          element.appendChild(highlightSpan);
-
-          // Add the after text if it exists
-          if (afterText) {
-            element.appendChild(document.createTextNode(afterText));
-          }
-
-          // Add click handler
-          addHighlightClickHandler(highlightSpan, highlightId);
-
-          // Store cleanup function
-          highlightAppliersRef.current.push(() => {
-            try {
-              if (element) {
-                element.textContent = elementContent;
-              }
-            } catch (err) {
-              console.error('Error in cleanup', err);
-            }
-          });
-
-          return true;
-        } catch (err) {
-          console.error('Error in highlight function:', err);
-          return false;
-        }
-      }
-
-      return false;
-    } catch (err) {
-      console.error('Error in highlight function:', err);
-      return false;
-    }
-  };
-
-  // Apply text-based highlights with fuzzy matching
-  const applyTextHighlights = (citationsArray: ProcessedCitation[]): void => {
-    if (!containerRef.current) return;
-
-    // Clear existing highlights
-    clearHighlights();
-
-    // Apply new highlights
-    citationsArray.forEach((citation) => {
-      if (!citation.highlight) return;
-
-      const textString = citation.highlight.content.text;
-      if (!textString || textString.length < 4) {
-        return;
-      }
-
-      try {
-        // Find all text elements that might contain the target text
-        const matchingLines = findLinesWithText(textString);
-
-        if (matchingLines.length > 0) {
-          // Try exact match first
-          let exactMatchFound = false;
-
-          // Replace for...of with some() to enable early exit with break
-          matchingLines.some((line) => {
-            const lineContent = line.textContent || '';
-            if (lineContent.includes(textString)) {
-              if (
-                citation.highlight &&
-                highlightTextInElement(line, textString, citation?.highlight?.id, 'exact')
-              ) {
-                exactMatchFound = true;
-                return true; // equivalent to break
-              }
-            }
-            return false; // continue the iteration
-          });
-
-          // If exact match not found, try normalized/partial matching
-          if (!exactMatchFound) {
-            // Normalize the citation text
-            const normalizedText = textString.replace(/\s+/g, ' ').trim();
-
-            let partialMatchFound = false;
-
-            // Replace for...of with some() to enable early exit with break
-            matchingLines.some((line) => {
-              const normalizedContent = (line.textContent || '').replace(/\s+/g, ' ').trim();
-
-              if (normalizedContent.includes(normalizedText)) {
-                if (
-                  citation.highlight &&
-                  highlightTextInElement(line, normalizedText, citation.highlight.id, 'partial')
-                ) {
-                  partialMatchFound = true;
-                  return true; // equivalent to break
-                }
-              }
-              return false; // continue the iteration
-            });
-
-            // If still no match, use fuzzy matching
-            if (!partialMatchFound) {
-              // Try to break into chunks for longer texts
-              if (textString.length > 60) {
-                const chunks = [
-                  textString.substring(0, Math.min(100, Math.floor(textString.length / 3))),
-                  textString.substring(
-                    Math.floor(textString.length / 3),
-                    Math.floor((2 * textString.length) / 3)
-                  ),
-                  textString.substring(Math.floor((2 * textString.length) / 3)),
-                ];
-
-                let chunkMatchFound = false;
-                chunks.forEach((chunk, i) => {
-                  if (chunk.length < 15) return; // Skip chunks that are too short
-
-                  const chunkLines = findLinesWithText(chunk, 0.75);
-                  if (chunkLines.length > 0) {
-                    chunkMatchFound = true;
-                    highlightTextInElement(
-                      chunkLines[0],
-                      chunk,
-                      `${citation.highlight?.id}-chunk-${i}`,
-                      'partial'
-                    );
-                  }
-                });
-
-                if (!chunkMatchFound) {
-                  // Last resort: just highlight the best candidate with fuzzy match
-                  if (matchingLines.length > 0) {
-                    highlightTextInElement(
-                      matchingLines[0],
-                      matchingLines[0].textContent || '',
-                      citation.highlight.id,
-                      'fuzzy'
-                    );
-                  }
-                }
-              } else if (matchingLines.length > 0) {
-                highlightTextInElement(
-                  matchingLines[0],
-                  matchingLines[0].textContent || '',
-                  citation.highlight.id,
-                  'fuzzy'
-                );
-              }
-            }
-          }
-        } else {
-          console.log(`No match found for text: "${textString.substring(0, 30)}..."`);
-        }
-      } catch (err) {
-        console.error('Error applying highlight:', err);
-      }
-    });
-  };
-
-  // Clear all highlights
-  const clearHighlights = (): void => {
-    // Get all highlight elements
-    const highlightElements = containerRef.current?.querySelectorAll('.text-highlight');
-    if (highlightElements?.length) {
-      highlightElements.forEach((el) => {
-        try {
-          const parent = el.parentNode;
-          if (parent) {
-            const textNode = document.createTextNode(el.textContent || '');
-            parent.replaceChild(textNode, el);
-          }
-        } catch (err) {
-          console.error('Error removing highlight', err);
-        }
-      });
+      };
+      timerId = requestAnimationFrame(checkRendered);
     }
 
-    // Execute custom cleanup functions if any were stored
-    highlightAppliersRef.current.forEach((cleanup) => {
-      try {
-        if (typeof cleanup === 'function') cleanup();
-      } catch (e) {
-        console.error('Error in highlight cleanup', e);
-      }
-    });
-
-    // Reset the list
-    highlightAppliersRef.current = [];
-  };
-
-  // Scroll to highlight function
-  const scrollToHighlight = useCallback((highlight: HighlightType): void => {
-    if (!containerRef.current || !highlight) return;
-
-    const highlightId = highlight.id;
-    const highlightElement = containerRef.current.querySelector(`.highlight-${highlightId}`);
-
-    if (highlightElement) {
-      // Remove active class from all highlights
-      document.querySelectorAll('.text-highlight-active').forEach((el) => {
-        el.classList.remove('text-highlight-active');
-        el.classList.remove('highlight-pulse');
-      });
-
-      // Add active class to this highlight
-      highlightElement.classList.add('text-highlight-active');
-      highlightElement.classList.add('highlight-pulse');
-
-
-      // Scroll to the highlight
-      highlightElement.scrollIntoView({
-        behavior: 'smooth',
-        block: 'center',
-      });
-    } else {
-      console.warn(`Highlight element with ID ${highlightId} not found`);
-
-      // Try to find partial highlights if they exist
-      for (let i = 0; i < 3; i += 1) {
-        const chunkHighlight = containerRef.current.querySelector(
-          `.highlight-${highlightId}-chunk-${i}`
-        );
-        if (chunkHighlight) {
-          document.querySelectorAll('.text-highlight-active').forEach((el) => {
-            el.classList.remove('text-highlight-active');
-            el.classList.remove('highlight-pulse');
-          });
-
-          chunkHighlight.classList.add('text-highlight-active');
-          chunkHighlight.classList.add('highlight-pulse');
-
-          chunkHighlight.scrollIntoView({
-            behavior: 'smooth',
-            block: 'center',
-          });
-
-          return;
-        }
-      }
+    if (!documentReady) {
+      contentRenderedRef.current = false;
     }
-  }, []);
 
-  // Set up scroll function ref - only once
+    return () => {
+      if (typeof timerId === 'number') {
+        cancelAnimationFrame(timerId);
+      }
+    };
+  }, [documentReady, documentText, citations, processCitations]);
+
+  // STEP 5: Re-process citations if the `citations` prop changes *content* (like MarkdownViewer)
   useEffect(() => {
-    scrollViewerToRef.current = scrollToHighlight;
-  }, [scrollToHighlight]);
+    const currentCitationsContent = JSON.stringify(
+      citations?.map((c) => normalizeText(c?.content)).sort() ?? []
+    );
 
-  // Clean up highlights when component unmounts
+    if (
+      documentReady &&
+      contentRenderedRef.current &&
+      currentCitationsContent !== prevCitationsJsonRef.current
+    ) {
+      processCitations();
+    }
+  }, [citations, documentReady, processCitations]);
+
+  // STEP 6: Clean up highlights when component unmounts
   useEffect(
     () => () => {
       clearHighlights();
+      if (cleanupStylesRef.current) {
+        cleanupStylesRef.current();
+        cleanupStylesRef.current = null;
+        styleAddedRef.current = false;
+      }
     },
-    []
+    [clearHighlights]
   );
 
   return (
@@ -938,31 +1210,64 @@ const TextViewer: React.FC<TextViewerProps> = ({ url, text, buffer, sx = {}, cit
         </LoadingOverlay>
       )}
 
-      {error && (
+      {error && !loading && (
         <ErrorOverlay>
-          <Icon icon={alertCircleIcon} style={{ fontSize: 40, marginBottom: 16 }} />
-          <Typography variant="body1">Error: {error}</Typography>
+          <Icon icon={alertCircleIcon} style={{ fontSize: 40, marginBottom: '16px' }} />
+          <Typography variant="h6">Loading Error</Typography>
+          <Typography variant="body1">{error}</Typography>
         </ErrorOverlay>
       )}
 
-      <Box sx={{ display: 'flex', height: '100%' }}>
-        {/* Text document container */}
+      {/* Container for main content and sidebar */}
+      <Box
+        sx={{
+          display: 'flex',
+          height: '100%',
+          width: '100%',
+          visibility: loading || error ? 'hidden' : 'visible',
+        }}
+      >
+        {/* Text Content Area */}
         <Box
           sx={{
             height: '100%',
-            width: processedCitations.length > 0 ? '75%' : '100%',
+            flexGrow: 1,
+            width:
+              !loading && !error && processedCitations.length > 0 ? 'calc(100% - 280px)' : '100%',
+            transition: 'width 0.3s ease-in-out',
             position: 'relative',
+            borderRight:
+              !loading && !error && processedCitations.length > 0
+                ? (themeVal) => `1px solid ${themeVal.palette.divider}`
+                : 'none',
+            overflow: 'hidden',
           }}
         >
-          <DocumentContainer ref={containerRef} />
+          <DocumentContainer ref={containerRef} sx={{ ...scrollableStyles }}>
+            {!loading && !error && !documentText && documentReady && (
+              <Typography sx={{ p: 3, color: 'text.secondary', textAlign: 'center', mt: 4 }}>
+                No document content available to display.
+              </Typography>
+            )}
+          </DocumentContainer>
         </Box>
 
-        {/* Only show sidebar if there are processed citations */}
-        {processedCitations.length > 0 && (
-          <CitationSidebar
-            citations={processedCitations}
-            scrollViewerTo={scrollViewerToRef.current}
-          />
+        {/* Sidebar Area (Conditional) - UPDATED to match MarkdownViewer */}
+        {processedCitations.length > 0 && !loading && !error && (
+          <Box
+            sx={{
+              width: '280px',
+              height: '100%',
+              flexShrink: 0,
+              overflowY: 'auto',
+            }}
+          >
+            <CitationSidebar
+              citations={processedCitations}
+              scrollViewerTo={scrollToHighlight}
+              highlightedCitationId={highlightedCitationId}
+            />
+          </Box>
         )}
       </Box>
     </TextViewerContainer>
