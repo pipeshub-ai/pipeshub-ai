@@ -26,7 +26,7 @@ class ArangoService(BaseArangoService):
         arango_client: ArangoClient,
         kafka_service,
         config: ConfigurationService,
-    ):
+    ) -> None:
         # Call parent class constructor to initialize shared attributes
         super().__init__(logger, arango_client, config)
         self.kafka_service = kafka_service
@@ -39,7 +39,7 @@ class ArangoService(BaseArangoService):
         user_email: str,
         token: str,
         expiration: Optional[str] = None,
-    ):
+    ) -> Optional[Dict]:
         """Store page token with user channel information"""
         try:
             self.logger.info(
@@ -100,7 +100,7 @@ class ArangoService(BaseArangoService):
 
     async def get_page_token_db(
         self, channel_id: str = None, resource_id: str = None, user_email: str = None
-    ) -> Optional[str]:
+    ) -> Optional[Dict]:
         """Get page token for specific channel"""
         try:
             self.logger.info(
@@ -180,7 +180,7 @@ class ArangoService(BaseArangoService):
 
     async def store_channel_history_id(
         self, history_id: str, expiration: str, user_email: str
-    ):
+    ) -> Optional[Dict]:
         """
         Store the latest historyId for a user's channel watch
 
@@ -231,7 +231,7 @@ class ArangoService(BaseArangoService):
             self.logger.error(f"❌ Error storing historyId: {str(e)}")
             return None
 
-    async def get_channel_history_id(self, user_email: str) -> Optional[str]:
+    async def get_channel_history_id(self, user_email: str) -> Optional[Dict]:
         """
         Retrieve the latest historyId for a user
 
@@ -265,7 +265,7 @@ class ArangoService(BaseArangoService):
             self.logger.error(f"❌ Error retrieving historyId: {str(e)}")
             return None
 
-    async def cleanup_expired_tokens(self, expiry_hours: int = 24):
+    async def cleanup_expired_tokens(self, expiry_hours: int = 24) -> int:
         """Clean up tokens that haven't been updated recently"""
         try:
             expiry_time = datetime.now(timezone.utc) - timedelta(hours=expiry_hours)
@@ -311,7 +311,7 @@ class ArangoService(BaseArangoService):
         nodes: List[Dict],
         collection: str,
         transaction: Optional[TransactionDatabase] = None,
-    ):
+    ) -> bool:
         """Batch upsert multiple nodes using Python-Arango SDK methods"""
         try:
             self.logger.info("🚀 Batch upserting nodes: %s", collection)
@@ -349,7 +349,7 @@ class ArangoService(BaseArangoService):
         edges: List[Dict],
         collection: str,
         transaction: Optional[TransactionDatabase] = None,
-    ):
+    ) -> bool:
         """Batch create PARENT_CHILD relationships"""
         try:
             self.logger.info("🚀 Batch creating edges: %s", collection)
@@ -377,28 +377,6 @@ class ArangoService(BaseArangoService):
         except Exception as e:
             self.logger.error("❌ Batch edge creation failed: %s", str(e))
             return False
-
-    # async def remove_existing_edges(self, file_id: str) -> bool:
-    #     """Remove all existing edges for a record"""
-    #     try:
-    #         self.logger.info("🚀 Removing all existing edges for file %s", file_id)
-    #         query = """
-    #         FOR edge in @@recordRelations
-    #             FILTER edge._from == @@records/@file_id OR edge._to == @@records/@file_id
-    #             REMOVE edge._key IN @@recordRelations
-    #         """
-    #         self.db.aql.execute(
-    #             query,
-    #             bind_vars={'file_id': file_id, '@records': CollectionNames.RECORDS.value, '@recordRelations': CollectionNames.RECORD_RELATIONS.value}
-    #         )
-    #         self.logger.info("✅ Removed all existing edges for file %s", file_id)
-    #         return True
-    #     except Exception as e:
-    #         self.logger.error(
-    #             "❌ Failed to remove existing edges: %s",
-    #             str(e)
-    #         )
-    #         return False
 
     async def get_file_parents(self, file_key: str, transaction) -> List[Dict]:
         try:
@@ -1093,9 +1071,8 @@ class ArangoService(BaseArangoService):
             List[Dict]: List of user documents with their details
         """
         try:
-            self.logger.info("🚀 Fetching all users from database")
-
             if active:
+                self.logger.info("🚀 Fetching all active users from database")
                 # Updated query to check for belongsTo edge with organization
                 query = """
                 FOR edge IN belongsTo
@@ -1107,6 +1084,7 @@ class ArangoService(BaseArangoService):
                 """
 
             else:
+                self.logger.info("🚀 Fetching all users from database")
                 query = """
                 FOR edge IN belongsTo
                     FILTER edge._to == CONCAT('organizations/', @org_id)
@@ -1118,6 +1096,7 @@ class ArangoService(BaseArangoService):
             # Execute query with organization parameter
             cursor = self.db.aql.execute(query, bind_vars={"org_id": org_id})
             users = list(cursor)
+            users = [user for user in users if user is not None]
 
             self.logger.info("✅ Successfully fetched %s users", len(users))
             return users
@@ -1153,31 +1132,6 @@ class ArangoService(BaseArangoService):
         except Exception as e:
             self.logger.error("❌ Error saving entity to people collection: %s", str(e))
             return False
-
-    async def get_all_pageTokens(self):
-        """Get all page tokens from the pageTokens collection.
-
-        Returns:
-            list: List of page token documents, or empty list if none found or error occurs
-        """
-        try:
-            if not self.db.has_collection(CollectionNames.PAGE_TOKENS.value):
-                self.logger.warning("❌ pageTokens collection does not exist")
-                return []
-
-            query = """
-            FOR doc IN pageTokens
-                RETURN doc
-            """
-
-            result = list(self.db.aql.execute(query))
-
-            self.logger.info("✅ Retrieved %d page tokens", len(result))
-            return result
-
-        except Exception as e:
-            self.logger.error("❌ Error retrieving page tokens: %s", str(e))
-            return []
 
     async def get_key_by_external_file_id(
         self, external_file_id: str, transaction: Optional[TransactionDatabase] = None

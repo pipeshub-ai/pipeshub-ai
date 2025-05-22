@@ -2,12 +2,15 @@
 src/api/setup.py
 """
 
+import asyncio
 import os
 
 import aiohttp
+import google.oauth2.credentials
 from arango import ArangoClient
 from confluent_kafka import Consumer, KafkaError
 from dependency_injector import containers, providers
+from google.oauth2 import service_account
 from qdrant_client import QdrantClient
 from redis import asyncio as aioredis
 from redis.asyncio import Redis
@@ -18,6 +21,7 @@ from app.config.configuration_service import (
     RedisConfig,
     config_node_constants,
 )
+from app.config.utils.named_constants.status_code_constants import StatusCodeConstants
 from app.connectors.core.kafka_service import KafkaService
 from app.connectors.core.sync_kafka_consumer import SyncKafkaRouteConsumer
 from app.connectors.google.admin.admin_webhook_handler import AdminWebhookHandler
@@ -47,6 +51,10 @@ from app.connectors.google.google_drive.handlers.drive_webhook_handler import (
     IndividualDriveWebhookHandler,
 )
 from app.connectors.google.helpers.google_token_handler import GoogleTokenHandler
+from app.connectors.google.scopes import (
+    GOOGLE_CONNECTOR_ENTERPRISE_SCOPES,
+    GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES,
+)
 from app.connectors.utils.rate_limiter import GoogleAPIRateLimiter
 from app.core.celery_app import CeleryApp
 from app.core.signed_url import SignedUrlConfig, SignedUrlHandler
@@ -57,10 +65,19 @@ from app.modules.parsers.google_files.parser_user_service import ParserUserServi
 from app.utils.logger import create_logger
 
 
-async def initialize_individual_account_services_fn(org_id, container):
+async def initialize_individual_account_services_fn(org_id, container) -> None:
     """Initialize services for an individual account type."""
     try:
         logger = container.logger()
+        arango_service = await container.arango_service()
+
+        # Pre-fetch service account credentials for this org
+        org_apps = await arango_service.get_org_apps(org_id)
+        for app in org_apps:
+            if app["appGroup"] == "Google Workspace":
+                logger.info("Refreshing Google Workspace user credentials")
+                asyncio.create_task(refresh_google_workspace_user_credentials(org_id, arango_service,logger, container))
+                break
         # Initialize base services
         container.drive_service.override(
             providers.Singleton(
@@ -234,11 +251,25 @@ async def initialize_individual_account_services_fn(org_id, container):
     logger.info("✅ Successfully initialized services for individual account")
 
 
-async def initialize_enterprise_account_services_fn(org_id, container):
+async def initialize_enterprise_account_services_fn(org_id, container) -> None:
     """Initialize services for an enterprise account type."""
 
     try:
         logger = container.logger()
+        arango_service = await container.arango_service()
+
+        # Initialize service credentials cache if not exists
+        if not hasattr(container, 'service_creds_cache'):
+            container.service_creds_cache = {}
+            logger.info("Created service credentials cache")
+
+        # Pre-fetch service account credentials for this org
+        org_apps = await arango_service.get_org_apps(org_id)
+        for app in org_apps:
+            if app["appGroup"] == "Google Workspace":
+                await cache_google_workspace_service_credentials(org_id, arango_service, logger, container)
+                break
+
         # Initialize base services
         container.drive_service.override(
             providers.Singleton(
@@ -420,9 +451,117 @@ async def initialize_enterprise_account_services_fn(org_id, container):
 
     logger.info("✅ Successfully initialized services for enterprise account")
 
+async def cache_google_workspace_service_credentials(org_id, arango_service, logger, container) -> None:
+    """Get Google Workspace service credentials for an organization."""
+    try:
+        google_token_handler = await container.google_token_handler()
+        users = await arango_service.get_users(org_id)
+        service_creds_lock = await container.service_creds_lock()
+
+        for user in users:
+            user_id = user["userId"]
+            try:
+                cache_key = f"{org_id}_{user_id}"
+
+                async with service_creds_lock:
+                    # Check if credentials are already cached
+                    if not hasattr(container, 'service_creds_cache'):
+                        container.service_creds_cache = {}
+
+                    if cache_key in container.service_creds_cache:
+                        logger.info(f"Service account cache hit: {cache_key}. Skipping cache")
+                        continue
+
+                    # Fetch and cache credentials
+                    SCOPES = GOOGLE_CONNECTOR_ENTERPRISE_SCOPES
+                    credentials_json = await google_token_handler.get_enterprise_token(org_id)
+                    credentials = service_account.Credentials.from_service_account_info(
+                        credentials_json, scopes=SCOPES
+                    )
+                    credentials = credentials.with_subject(user["email"])
+
+                    container.service_creds_cache[cache_key] = credentials
+                    logger.info(f"Cached service credentials for {cache_key}")
+
+            except Exception as e:
+                logger.error(f"Failed to cache credentials for user {user_id} in org {org_id}: {str(e)}")
+
+        logger.info("✅ Service credentials cache initialized for org")
+
+    except Exception as e:
+        logger.error(f"Error initializing service credentials cache: {str(e)}")
+        raise
+
+async def refresh_google_workspace_user_credentials(org_id, arango_service, logger, container) -> None:
+    """Background task to refresh user credentials before they expire"""
+    user_creds_lock = await container.user_creds_lock()
+
+    while True:
+        try:
+            async with user_creds_lock:
+                if not hasattr(container, 'user_creds_cache'):
+                    container.user_creds_cache = {}
+                    logger.info("Created user credentials cache")
+
+            users = await arango_service.get_users(org_id)
+            user = users[0]
+            user_id = user["userId"]
+            cache_key = f"{org_id}_{user_id}"
+            logger.info(f"User credentials cache key: {cache_key}")
+
+            needs_refresh = True
+            async with user_creds_lock:
+                if cache_key in container.user_creds_cache:
+                    creds = container.user_creds_cache[cache_key]
+                    try:
+                        if not creds.expired:
+                            logger.info(f"User credentials cache hit: {cache_key}")
+                            needs_refresh = False
+                        else:
+                            logger.info(f"User credentials expired for {cache_key}")
+                    except Exception as e:
+                        logger.error(f"Failed to check credentials for {cache_key}: {str(e)}")
+                        container.user_creds_cache.pop(cache_key, None)
+
+            if needs_refresh:
+                logger.info(f"User credentials cache miss: {cache_key}. Creating new credentials.")
+                google_token_handler = await container.google_token_handler()
+                SCOPES = GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES
+
+                # Refresh token
+                await google_token_handler.refresh_token(org_id, user_id)
+                creds_data = await google_token_handler.get_individual_token(org_id, user_id)
+
+                if not creds_data.get("access_token"):
+                    raise Exception("Invalid credentials. Access token not found")
+
+                new_creds = google.oauth2.credentials.Credentials(
+                    token=creds_data.get("access_token"),
+                    refresh_token=creds_data.get("refresh_token"),
+                    token_uri="https://oauth2.googleapis.com/token",
+                    client_id=creds_data.get("client_id"),
+                    client_secret=creds_data.get("client_secret"),
+                    scopes=SCOPES,
+                )
+
+                async with user_creds_lock:
+                    container.user_creds_cache[cache_key] = new_creds
+                    logger.info(f"Refreshed credentials for {cache_key}")
+
+        except Exception as e:
+            logger.error(f"Error in credential refresh task: {str(e)}")
+
+        # Run every 2 minutes
+        await asyncio.sleep(120)
+        logger.debug("🔄 Checking refresh status of credentials for user")
+
 
 class AppContainer(containers.DeclarativeContainer):
     """Dependency injection container for the application."""
+
+    # Add locks for cache access
+    service_creds_lock = providers.Singleton(asyncio.Lock)
+    user_creds_lock = providers.Singleton(asyncio.Lock)
 
     # Initialize logger correctly as a singleton provider
     logger = providers.Singleton(create_logger, "connector_service")
@@ -434,7 +573,7 @@ class AppContainer(containers.DeclarativeContainer):
     # Core services that don't depend on account type
     config_service = providers.Singleton(ConfigurationService, logger=logger)
 
-    async def _create_arango_client(config_service):
+    async def _create_arango_client(config_service) -> ArangoClient:
         """Async method to initialize ArangoClient."""
         arangodb_config = await config_service.get_config(
             config_node_constants.ARANGODB.value
@@ -442,7 +581,7 @@ class AppContainer(containers.DeclarativeContainer):
         hosts = arangodb_config["url"]
         return ArangoClient(hosts=hosts)
 
-    async def _create_redis_client(config_service):
+    async def _create_redis_client(config_service) -> Redis:
         """Async method to initialize RedisClient."""
         redis_config = await config_service.get_config(
             config_node_constants.REDIS.value
@@ -539,7 +678,7 @@ class AppContainer(containers.DeclarativeContainer):
     )
 
 
-async def health_check_etcd(container):
+async def health_check_etcd(container) -> None:
     """Check the health of etcd via HTTP request."""
     logger = container.logger()
     logger.info("🔍 Starting etcd health check...")
@@ -554,7 +693,7 @@ async def health_check_etcd(container):
 
         async with aiohttp.ClientSession() as session:
             async with session.get(f"{etcd_url}/health") as response:
-                if response.status == 200:
+                if response.status == StatusCodeConstants.SUCCESS.value:
                     response_text = await response.text()
                     logger.info("✅ etcd health check passed")
                     logger.debug(f"etcd health response: {response_text}")
@@ -574,7 +713,7 @@ async def health_check_etcd(container):
         raise
 
 
-async def health_check_arango(container):
+async def health_check_arango(container) -> None:
     """Check the health of ArangoDB using ArangoClient."""
     logger = container.logger()
     logger.info("🔍 Starting ArangoDB health check...")
@@ -606,7 +745,7 @@ async def health_check_arango(container):
         raise Exception(error_msg)
 
 
-async def health_check_kafka(container):
+async def health_check_kafka(container) -> None:
     """Check the health of Kafka by attempting to create a connection."""
     logger = container.logger()
     logger.info("🔍 Starting Kafka health check...")
@@ -646,7 +785,7 @@ async def health_check_kafka(container):
         raise
 
 
-async def health_check_redis(container):
+async def health_check_redis(container) -> None:
     """Check the health of Redis by attempting to connect and ping."""
     logger = container.logger()
     logger.info("🔍 Starting Redis health check...")
@@ -675,7 +814,7 @@ async def health_check_redis(container):
         raise
 
 
-async def health_check_qdrant(container):
+async def health_check_qdrant(container) -> None:
     """Check the health of Qdrant via HTTP request."""
     logger = container.logger()
     logger.info("🔍 Starting Qdrant health check...")
@@ -703,7 +842,7 @@ async def health_check_qdrant(container):
         raise
 
 
-async def health_check(container):
+async def health_check(container) -> None:
     """Run health checks sequentially using HTTP requests."""
     logger = container.logger()
     logger.info("🏥 Starting health checks for all services...")
@@ -751,8 +890,10 @@ async def initialize_container(container) -> bool:
             raise Exception("Failed to initialize ArangoDB service")
 
         logger.info("✅ Container initialization completed successfully")
+
         return True
 
     except Exception as e:
         logger.error(f"❌ Container initialization failed: {str(e)}")
         raise
+
