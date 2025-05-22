@@ -25,6 +25,9 @@ type TextViewerProps = {
   highlightCitation?: SearchResult | CustomCitation | null; // NEW: Added like MarkdownViewer
 };
 
+// similarity threshold 
+const SIMILARITY_THRESHOLD = 0.6;
+
 // Styled components
 const TextViewerContainer = styled(Box)(({ theme }) => ({
   width: '100%',
@@ -631,7 +634,7 @@ const TextViewer: React.FC<TextViewerProps> = ({
                   element: el,
                   score: calculateSimilarity(normalizedText, el.textContent),
                 }))
-                .filter((item) => item.score > 0.4)
+                .filter((item) => item.score > SIMILARITY_THRESHOLD)
                 .sort((a, b) => b.score - a.score);
 
               if (similarityScores.length > 0) {
@@ -904,7 +907,7 @@ const TextViewer: React.FC<TextViewerProps> = ({
                   element: el,
                   score: calculateSimilarity(normalizedText, el.textContent),
                 }))
-                .filter((item) => item.score > 0.4)
+                .filter((item) => item.score > SIMILARITY_THRESHOLD)
                 .sort((a, b) => b.score - a.score);
 
               if (fuzzyMatches.length > 0) {

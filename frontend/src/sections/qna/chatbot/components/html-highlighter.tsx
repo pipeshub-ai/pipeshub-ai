@@ -27,6 +27,8 @@ type HtmlViewerProps = {
   highlightCitation?: SearchResult | CustomCitation | null;
 };
 
+const SIMILARITY_THRESHOLD = 0.6;
+
 const HtmlViewerContainer = styled(Box)(({ theme }) => ({
   width: '100%',
   height: '100%',
@@ -856,7 +858,7 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
                     score: calculateSimilarity(normalizedText, el.textContent),
                   };
                 })
-                .filter((item) => item.score >= 0.4)
+                .filter((item) => item.score >= SIMILARITY_THRESHOLD)
                 .sort((a, b) => b.score - a.score);
 
               if (similarityScores.length > 0) {
@@ -1144,7 +1146,7 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
                   element: el,
                   score: calculateSimilarity(normalizedText, el.textContent),
                 }))
-                .filter((item) => item.score > 0.4)
+                .filter((item) => item.score > SIMILARITY_THRESHOLD)
                 .sort((a, b) => b.score - a.score);
 
               if (fuzzyMatches.length > 0) {
