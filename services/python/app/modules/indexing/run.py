@@ -39,7 +39,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class CustomChunker(SemanticChunker):
-    def __init__(self, logger, *args, **kwargs):
+    def __init__(self, logger, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.logger = logger
         self.number_of_chunks = None
@@ -339,7 +339,7 @@ class IndexingPipeline:
         qdrant_api_key: str,
         qdrant_host,
         grpc_port,
-    ):
+    ) -> None:
         self.logger = logger
         self.config_service = config_service
         self.arango_service = arango_service
@@ -392,7 +392,7 @@ class IndexingPipeline:
 
     def _initialize_collection(
         self, embedding_size: int = 1024, sparse_idf: bool = False
-    ):
+    ) -> None:
         """Initialize Qdrant collection with proper configuration."""
         try:
             collection_info = self.qdrant_client.get_collection(self.collection_name)
@@ -441,7 +441,7 @@ class IndexingPipeline:
                     details={"collection": self.collection_name, "error": str(e)},
                 )
 
-    async def get_embedding_model_instance(self, embedding_configs = None):
+    async def get_embedding_model_instance(self, embedding_configs = None) -> bool:
         try:
             self.logger.info("Getting embedding model")
             if not embedding_configs:
@@ -560,7 +560,7 @@ class IndexingPipeline:
                 "Failed to get embedding model: " + str(e), details={"error": str(e)}
             )
 
-    async def _create_embeddings(self, chunks: List[Document]):
+    async def _create_embeddings(self, chunks: List[Document]) -> None:
         """
         Create both sparse and dense embeddings for document chunks and store them in vector store.
 
@@ -661,7 +661,7 @@ class IndexingPipeline:
                 details={"error": str(e)},
             )
 
-    async def delete_embeddings(self, record_id: str, virtual_record_id: str):
+    async def delete_embeddings(self, record_id: str, virtual_record_id: str) -> bool:
         """
         Delete embeddings only if this is the last record with this virtual_record_id.
         If other records exist with the same virtual_record_id, skip deletion.
@@ -694,7 +694,7 @@ class IndexingPipeline:
                     f"⏭️ Skipping embedding deletion for record {record_id} as other records "
                     f"exist with same virtual_record_id: {other_records}"
                 )
-                return
+                return False
 
             self.logger.info("🗑️ Proceeding with deletion as no other records exist")
 
@@ -718,12 +718,29 @@ class IndexingPipeline:
                 self.logger.info(f"🎯 Ids: {ids}")
 
                 if ids:
-                    await self.vector_store.adelete(ids=ids)
+                    if not self.dense_embeddings or not self.vector_store:
+                        try:
+                            await self.get_embedding_model_instance()
+                        except Exception as e:
+                            raise IndexingError(
+                                "Failed to get embedding model instance: " + str(e),
+                                details={"error": str(e)},
+                            )
+
+                    try:
+                        await self.vector_store.adelete(ids=ids)
+                    except Exception as e:
+                        raise EmbeddingDeletionError(
+                            "Failed to delete embeddings from vector store: " + str(e),
+                            record_id=record_id,
+                            details={"error": str(e)},
+                        )
+                await self.arango_service.delete_blocks_by_virtual_record_id(virtual_record_id)
 
                 self.logger.info(
                     f"✅ Successfully deleted embeddings for record {record_id}"
                 )
-
+                return True
             except Exception as e:
                 raise EmbeddingDeletionError(
                     "Failed to delete embeddings from vector store: " + str(e),
@@ -742,7 +759,7 @@ class IndexingPipeline:
 
     async def index_documents(
         self, sentences: List[Dict[str, Any]], merge_documents: bool = False
-    ):
+    ) -> List[Document]:
         """
         Main method to index documents through the entire pipeline.
 
@@ -819,7 +836,7 @@ class IndexingPipeline:
                 details={"error_type": type(e).__name__},
             )
 
-    async def check_embeddings_exist(self, record_id: str, virtual_record_id: str):
+    async def check_embeddings_exist(self, record_id: str, virtual_record_id: str) -> bool:
         try:
             if not virtual_record_id:
                 raise EmbeddingDeletionError(
@@ -882,6 +899,7 @@ class IndexingPipeline:
             MetadataProcessingError: If there's an error processing the metadata
         """
         try:
+            self.logger.debug(f"🔍 Meta: {meta}")
             block_type = meta.get("blockType", "text")
             virtual_record_id = meta.get("virtualRecordId", "")
             record_name = meta.get("recordName", "")
@@ -894,8 +912,6 @@ class IndexingPipeline:
                 "recordName": record_name,
                 "recordType": meta.get("recordType", ""),
                 "recordVersion": meta.get("version", ""),
-                "origin": meta.get("origin", ""),
-                "connector": meta.get("connectorName", ""),
                 "blockNum": meta.get("blockNum", [0]),
                 "blockText": meta.get("blockText", ""),
                 "blockType": str(block_type),
@@ -908,6 +924,7 @@ class IndexingPipeline:
                 "languages": meta.get("languages", []),
                 "extension": meta.get("extension", ""),
                 "mimeType": meta.get("mimeType", ""),
+                "isBlock": meta.get("isBlock", False),
             }
 
             if meta.get("bounding_box"):
@@ -928,3 +945,4 @@ class IndexingPipeline:
                 f"Unexpected error processing metadata: {str(e)}",
                 details={"error_type": type(e).__name__},
             )
+

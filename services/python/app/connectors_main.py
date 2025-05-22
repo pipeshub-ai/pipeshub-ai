@@ -340,7 +340,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Stop sync kafka consumer if it exists
     if hasattr(app.container, "sync_kafka_consumer"):
         sync_consumer = app.container.sync_kafka_consumer()
-        if sync_consumer:
+        if sync_consumer is not None:
             sync_consumer.stop()
             logger.info("Sync Kafka consumer stopped")
 
@@ -361,7 +361,7 @@ INCLUDE_PATHS = ["/api/v1/stream/record/", "/api/v1/delete/"]
 
 
 @app.middleware("http")
-async def authenticate_requests(request: Request, call_next):
+async def authenticate_requests(request: Request, call_next) -> JSONResponse:
     logger = app.container.logger()
     logger.info(f"Middleware request: {request.url.path}")
     # Apply middleware only to specific paths
@@ -398,7 +398,7 @@ app.add_middleware(
 
 
 @router.get("/health")
-async def health_check():
+async def health_check() -> JSONResponse:
     """Basic health check endpoint"""
     try:
         return JSONResponse(
@@ -425,7 +425,7 @@ app.include_router(router)
 
 # Global error handler
 @app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
+async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     logger = app.container.logger()
     logger.error("Global error: %s", str(exc), exc_info=True)
     return JSONResponse(
@@ -434,7 +434,7 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
-def run(host: str = "0.0.0.0", port: int = 8088, workers: int = 1, reload: bool = True):
+def run(host: str = "0.0.0.0", port: int = 8088, workers: int = 1, reload: bool = True) -> None:
     """Run the application"""
     uvicorn.run(
         "app.connectors_main:app",
