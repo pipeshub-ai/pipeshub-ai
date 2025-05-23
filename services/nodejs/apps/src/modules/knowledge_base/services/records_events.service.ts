@@ -17,7 +17,7 @@ export interface Event {
     | NewRecordEvent
     | UpdateRecordEvent
     | DeletedRecordEvent
-    | ReindexRecordEvent
+    | ReindexRecordEvent;
 }
 
 export interface NewRecordEvent {
@@ -29,6 +29,7 @@ export interface NewRecordEvent {
   signedUrlRoute: string;
   origin: string;
   extension: string;
+  mimeType: string;
   createdAtTimestamp: string;
   updatedAtTimestamp: string;
   sourceCreatedAtTimestamp: string;
@@ -38,10 +39,13 @@ export interface UpdateRecordEvent {
   orgId: string;
   recordId: string;
   version: number;
+  extension: string;
+  mimeType: string;
   signedUrlRoute: string;
   updatedAtTimestamp: string;
   sourceLastModifiedTimestamp: string;
   virtualRecordId?: string;
+  summaryDocumentId?:string;
 }
 
 export interface ReindexRecordEvent {
@@ -62,6 +66,9 @@ export interface DeletedRecordEvent {
   orgId: string;
   recordId: string;
   version: number;
+  extension: string;
+  mimeType: string;
+  summaryDocumentId?:string;
   virtualRecordId?: string;
 }
 
