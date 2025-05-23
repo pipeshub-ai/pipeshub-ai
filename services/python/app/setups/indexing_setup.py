@@ -22,6 +22,7 @@ from app.config.utils.named_constants.arangodb_constants import (
     ExtensionTypes,
     QdrantCollectionNames,
 )
+from app.config.utils.named_constants.status_code_constants import StatusCodeConstants
 from app.core.ai_arango_service import ArangoService
 from app.core.redis_scheduler import RedisScheduler
 from app.events.events import EventProcessor
@@ -55,14 +56,14 @@ class AppContainer(containers.DeclarativeContainer):
     # Core services that don't depend on account type
     config_service = providers.Singleton(ConfigurationService, logger=logger)
 
-    async def _fetch_arango_host(config_service):
+    async def _fetch_arango_host(config_service) -> str:
         """Fetch ArangoDB host URL from etcd asynchronously."""
         arango_config = await config_service.get_config(
             config_node_constants.ARANGODB.value
         )
         return arango_config["url"]
 
-    async def _create_arango_client(config_service):
+    async def _create_arango_client(config_service) -> ArangoClient:
         """Async factory method to initialize ArangoClient."""
         hosts = await AppContainer._fetch_arango_host(config_service)
         return ArangoClient(hosts=hosts)
@@ -72,7 +73,7 @@ class AppContainer(containers.DeclarativeContainer):
     )
 
     # First create an async factory for the connected ArangoService
-    async def _create_arango_service(logger, arango_client, config):
+    async def _create_arango_service(logger, arango_client, config) -> ArangoService:
         """Async factory to create and connect ArangoService"""
         service = ArangoService(logger, arango_client, config)
         await service.connect()
@@ -86,13 +87,12 @@ class AppContainer(containers.DeclarativeContainer):
     )
 
     # Vector search service
-    async def _get_qdrant_config(config_service: ConfigurationService):
+    async def _get_qdrant_config(config_service: ConfigurationService) -> dict:
         """Async factory method to get Qdrant configuration."""
         qdrant_config = await config_service.get_config(
             config_node_constants.QDRANT.value
         )
         return {
-            "collectionName": QdrantCollectionNames.RECORDS.value,
             "apiKey": qdrant_config["apiKey"],
             "host": qdrant_config["host"],
             "grpcPort": qdrant_config["grpcPort"],
@@ -102,17 +102,32 @@ class AppContainer(containers.DeclarativeContainer):
         _get_qdrant_config, config_service=config_service
     )
 
+    async def _get_qdrant_client(qdrant_config) -> QdrantClient:
+        """Async factory method to get Qdrant client."""
+        return QdrantClient(
+            host=qdrant_config["host"],
+            grpc_port=qdrant_config["grpcPort"],
+            api_key=qdrant_config["apiKey"],
+            prefer_grpc=True,
+            https=False,
+            timeout=180,
+        )
+
+
+    qdrant_client =  providers.Resource(
+        _get_qdrant_client,
+        qdrant_config=qdrant_config,
+    )
+
     # Indexing pipeline
-    async def _create_indexing_pipeline(logger, config_service, arango_service, config):
+    async def _create_indexing_pipeline(logger, config_service, arango_service, qdrant_client) -> IndexingPipeline:
         """Async factory for IndexingPipeline"""
         pipeline = IndexingPipeline(
             logger=logger,
             config_service=config_service,
             arango_service=arango_service,
-            collection_name=config["collectionName"],
-            qdrant_api_key=config["apiKey"],
-            qdrant_host=config["host"],
-            grpc_port=config["grpcPort"],
+            collection_name=QdrantCollectionNames.RECORDS.value,
+            qdrant_client=qdrant_client,
         )
         return pipeline
 
@@ -121,11 +136,11 @@ class AppContainer(containers.DeclarativeContainer):
         logger=logger,
         config_service=config_service,
         arango_service=arango_service,
-        config=qdrant_config,
+        qdrant_client=qdrant_client,
     )
 
     # Domain extraction service - depends on arango_service
-    async def _create_domain_extractor(logger, arango_service, config_service):
+    async def _create_domain_extractor(logger, arango_service, config_service) -> DomainExtractor:
         """Async factory for DomainExtractor"""
         extractor = DomainExtractor(logger, arango_service, config_service)
         # Add any necessary async initialization
@@ -139,7 +154,7 @@ class AppContainer(containers.DeclarativeContainer):
     )
 
     # Parsers
-    async def _create_parsers(logger):
+    async def _create_parsers(logger) -> dict:
         """Async factory for Parsers"""
         parsers = {
             ExtensionTypes.DOCX.value: DocxParser(),
@@ -165,7 +180,7 @@ class AppContainer(containers.DeclarativeContainer):
         indexing_pipeline,
         arango_service,
         parsers,
-    ):
+    ) -> Processor:
         """Async factory for Processor"""
         processor = Processor(
             logger=logger,
@@ -189,7 +204,7 @@ class AppContainer(containers.DeclarativeContainer):
     )
 
     # Event processor - depends on processor
-    async def _create_event_processor(logger, processor, arango_service):
+    async def _create_event_processor(logger, processor, arango_service) -> EventProcessor:
         """Async factory for EventProcessor"""
         event_processor = EventProcessor(
             logger=logger, processor=processor, arango_service=arango_service
@@ -205,7 +220,7 @@ class AppContainer(containers.DeclarativeContainer):
     )
 
     # Redis scheduler
-    async def _create_redis_scheduler(logger, config_service):
+    async def _create_redis_scheduler(logger, config_service) -> RedisScheduler:
         """Async factory for RedisScheduler"""
         redis_config = await config_service.get_config(
             config_node_constants.REDIS.value
@@ -220,7 +235,7 @@ class AppContainer(containers.DeclarativeContainer):
     )
 
     # Kafka consumer with async initialization
-    async def _create_kafka_consumer(logger, config_service, event_processor, redis_scheduler):
+    async def _create_kafka_consumer(logger, config_service, event_processor, redis_scheduler) -> KafkaConsumerManager:
         """Async factory for KafkaConsumerManager"""
         consumer = KafkaConsumerManager(
             logger=logger,
@@ -249,7 +264,7 @@ class AppContainer(containers.DeclarativeContainer):
     )
 
 
-async def health_check_etcd(container):
+async def health_check_etcd(container) -> None:
     """Check the health of etcd via HTTP request."""
     logger = container.logger()
     logger.info("🔍 Starting etcd health check...")
@@ -264,7 +279,7 @@ async def health_check_etcd(container):
 
         async with aiohttp.ClientSession() as session:
             async with session.get(f"{etcd_url}/health") as response:
-                if response.status == 200:
+                if response.status == StatusCodeConstants.SUCCESS.value:
                     response_text = await response.text()
                     logger.info("✅ etcd health check passed")
                     logger.debug(f"etcd health response: {response_text}")
@@ -284,7 +299,7 @@ async def health_check_etcd(container):
         raise
 
 
-async def health_check_arango(container):
+async def health_check_arango(container) -> None:
     """Check the health of ArangoDB using ArangoClient."""
     logger = container.logger()
     logger.info("🔍 Starting ArangoDB health check...")
@@ -316,7 +331,7 @@ async def health_check_arango(container):
         raise Exception(error_msg)
 
 
-async def health_check_kafka(container):
+async def health_check_kafka(container) -> None:
     """Check the health of Kafka by attempting to create a connection."""
     logger = container.logger()
     logger.info("🔍 Starting Kafka health check...")
@@ -356,7 +371,7 @@ async def health_check_kafka(container):
         raise
 
 
-async def health_check_redis(container):
+async def health_check_redis(container) -> None:
     """Check the health of Redis by attempting to connect and ping."""
     logger = container.logger()
     logger.info("🔍 Starting Redis health check...")
@@ -384,7 +399,7 @@ async def health_check_redis(container):
         raise
 
 
-async def health_check_qdrant(container):
+async def health_check_qdrant(container) -> None:
     """Check the health of Qdrant via HTTP request."""
     logger = container.logger()
     logger.info("🔍 Starting Qdrant health check...")
@@ -414,7 +429,7 @@ async def health_check_qdrant(container):
         raise
 
 
-async def health_check(container):
+async def health_check(container) -> None:
     """Run health checks sequentially using HTTP requests."""
     logger = container.logger()
     logger.info("🏥 Starting health checks for all services...")
