@@ -39,7 +39,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class CustomChunker(SemanticChunker):
-    def __init__(self, logger, *args, **kwargs):
+    def __init__(self, logger, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.logger = logger
         self.number_of_chunks = None
@@ -336,10 +336,8 @@ class IndexingPipeline:
         config_service,
         arango_service,
         collection_name: str,
-        qdrant_api_key: str,
-        qdrant_host,
-        grpc_port,
-    ):
+        qdrant_client: QdrantClient,
+    ) -> None:
         self.logger = logger
         self.config_service = config_service
         self.arango_service = arango_service
@@ -352,10 +350,8 @@ class IndexingPipeline:
             qdrant_api_key: Optional API key for Qdrant
         """
         try:
-
             # Initialize sparse embeddings
             try:
-                self.dense_embeddings = None
                 self.sparse_embeddings = FastEmbedSparse(model_name="Qdrant/BM25")
             except Exception as e:
                 raise IndexingError(
@@ -363,22 +359,7 @@ class IndexingPipeline:
                     details={"error": str(e)},
                 )
 
-            # Initialize Qdrant client and collection
-            try:
-                self.qdrant_client = QdrantClient(
-                    host=qdrant_host,
-                    grpc_port=grpc_port,
-                    api_key=qdrant_api_key,
-                    prefer_grpc=True,
-                    https=False,
-                    timeout=60,
-                )
-            except Exception as e:
-                raise VectorStoreError(
-                    "Failed to initialize Qdrant client: " + str(e),
-                    details={"error": str(e)},
-                )
-
+            self.qdrant_client = qdrant_client
             self.collection_name = collection_name
             self.vector_store = None
 
@@ -392,7 +373,7 @@ class IndexingPipeline:
 
     def _initialize_collection(
         self, embedding_size: int = 1024, sparse_idf: bool = False
-    ):
+    ) -> None:
         """Initialize Qdrant collection with proper configuration."""
         try:
             collection_info = self.qdrant_client.get_collection(self.collection_name)
@@ -441,7 +422,7 @@ class IndexingPipeline:
                     details={"collection": self.collection_name, "error": str(e)},
                 )
 
-    async def get_embedding_model_instance(self, embedding_configs = None):
+    async def get_embedding_model_instance(self, embedding_configs = None) -> bool:
         try:
             self.logger.info("Getting embedding model")
             if not embedding_configs:
@@ -476,13 +457,11 @@ class IndexingPipeline:
                     )
 
                 elif provider == EmbeddingProvider.GEMINI.value:
-
                     embedding_model = GeminiEmbeddingConfig(
                         model=config['configuration']['model'],
                         api_key=config['configuration']['apiKey'],
                     )
                 elif provider == EmbeddingProvider.COHERE.value:
-
                     embedding_model = CohereEmbeddingConfig(
                         model=config['configuration']['model'],
                         api_key=config['configuration']['apiKey'],
@@ -496,9 +475,9 @@ class IndexingPipeline:
                         "Using default embedding model"
                     )
                     embedding_model = DEFAULT_EMBEDDING_MODEL
-                    self.dense_embeddings = await get_default_embedding_model()
+                    dense_embeddings = await get_default_embedding_model()
                 else:
-                    self.dense_embeddings = EmbeddingFactory.create_embedding_model(
+                    dense_embeddings = EmbeddingFactory.create_embedding_model(
                         embedding_model
                     )
             except Exception as e:
@@ -510,7 +489,7 @@ class IndexingPipeline:
 
             # Get the embedding dimensions from the model
             try:
-                sample_embedding = self.dense_embeddings.embed_query("test")
+                sample_embedding = dense_embeddings.embed_query("test")
                 embedding_size = len(sample_embedding)
             except Exception as e:
                 self.logger.warning(
@@ -534,7 +513,7 @@ class IndexingPipeline:
                 collection_name=self.collection_name,
                 vector_name="dense",
                 sparse_vector_name="sparse",
-                embedding=self.dense_embeddings,
+                embedding=dense_embeddings,
                 sparse_embedding=self.sparse_embeddings,
                 retrieval_mode=RetrievalMode.HYBRID,
             )
@@ -543,7 +522,7 @@ class IndexingPipeline:
             try:
                 self.text_splitter = CustomChunker(
                     logger=self.logger,
-                    embeddings=self.dense_embeddings,
+                    embeddings=dense_embeddings,
                     breakpoint_threshold_type="percentile",
                     breakpoint_threshold_amount=95,
                 )
@@ -560,7 +539,7 @@ class IndexingPipeline:
                 "Failed to get embedding model: " + str(e), details={"error": str(e)}
             )
 
-    async def _create_embeddings(self, chunks: List[Document]):
+    async def _create_embeddings(self, chunks: List[Document]) -> None:
         """
         Create both sparse and dense embeddings for document chunks and store them in vector store.
 
@@ -661,7 +640,7 @@ class IndexingPipeline:
                 details={"error": str(e)},
             )
 
-    async def delete_embeddings(self, record_id: str, virtual_record_id: str):
+    async def delete_embeddings(self, record_id: str, virtual_record_id: str) -> None:
         """
         Delete embeddings only if this is the last record with this virtual_record_id.
         If other records exist with the same virtual_record_id, skip deletion.
@@ -717,6 +696,14 @@ class IndexingPipeline:
                 self.logger.info(f"🎯 Filter: {filter_dict}")
                 self.logger.info(f"🎯 Ids: {ids}")
 
+                try:
+                    await self.get_embedding_model_instance()
+                except Exception as e:
+                    raise IndexingError(
+                        "Failed to get embedding model instance: " + str(e),
+                        details={"error": str(e)},
+                    )
+
                 if ids:
                     await self.vector_store.adelete(ids=ids)
 
@@ -742,7 +729,7 @@ class IndexingPipeline:
 
     async def index_documents(
         self, sentences: List[Dict[str, Any]], merge_documents: bool = False
-    ):
+    ) -> List[Document]:
         """
         Main method to index documents through the entire pipeline.
 
@@ -758,17 +745,6 @@ class IndexingPipeline:
         try:
             if not sentences:
                 raise DocumentProcessingError("No sentences provided for indexing")
-            self.logger.info(f"🔍 Dense embeddings: {self.dense_embeddings}")
-            self.logger.info(f"🔍 Vector store: {self.vector_store}")
-
-            if not self.dense_embeddings or not self.vector_store:
-                try:
-                    await self.get_embedding_model_instance()
-                except Exception as e:
-                    raise IndexingError(
-                        "Failed to get embedding model instance: " + str(e),
-                        details={"error": str(e)},
-                    )
 
             # Convert sentences to custom Document class
             try:
@@ -784,19 +760,14 @@ class IndexingPipeline:
                     "Failed to create document objects: " + str(e),
                     details={"error": str(e)},
                 )
-            # Process documents into chunks
-            if merge_documents:
-                try:
-                    documents = self.text_splitter.split_documents(documents)
-                    if not documents:
-                        raise ChunkingError(
-                            "No chunks were generated from the documents"
-                        )
-                except Exception as e:
-                    raise ChunkingError(
-                        "Failed to split documents into chunks: " + str(e),
-                        details={"error": str(e)},
-                    )
+
+            try:
+                await self.get_embedding_model_instance()
+            except Exception as e:
+                raise IndexingError(
+                    "Failed to get embedding model instance: " + str(e),
+                    details={"error": str(e)},
+                )
 
             # Create and store embeddings
             try:
@@ -819,7 +790,20 @@ class IndexingPipeline:
                 details={"error_type": type(e).__name__},
             )
 
-    async def check_embeddings_exist(self, record_id: str, virtual_record_id: str):
+    async def check_embeddings_exist(self, record_id: str, virtual_record_id: str) -> bool:
+        """
+        Check if embeddings exist for a given virtual record ID.
+
+        Args:
+            record_id (str): ID of the record to check
+            virtual_record_id (str): Virtual record ID to check for
+
+        Returns:
+            bool: True if embeddings exist, False otherwise
+
+        Raises:
+            EmbeddingDeletionError: If there's an error during the deletion process
+        """
         try:
             if not virtual_record_id:
                 raise EmbeddingDeletionError(

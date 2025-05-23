@@ -51,9 +51,7 @@ class RetrievalService:
         logger,
         config_service,
         collection_name: str,
-        qdrant_api_key: str,
-        qdrant_host: str,
-        grpc_port: int,
+        qdrant_client: QdrantClient,
     ) -> None:
         """
         Initialize the retrieval service with necessary configurations.
@@ -77,16 +75,9 @@ class RetrievalService:
             raise Exception(
                 "Failed to initialize sparse embeddings: " + str(e),
             )
-        # Initialize Qdrant client
-        self.qdrant_client = QdrantClient(
-            host=qdrant_host,
-            grpc_port=grpc_port,
-            api_key=qdrant_api_key,
-            prefer_grpc=True,
-            https=False,
-            timeout=60,
-        )
+        self.qdrant_client = qdrant_client
         self.collection_name = collection_name
+        self.logger.info(f"Retrieval service initialized with collection name: {self.collection_name}")
         self.vector_store = None
 
     async def get_llm_instance(self) -> Optional[BaseChatModel]:
