@@ -47,7 +47,7 @@
     "@azure/msal-node": "^2.16.2",
     "@azure/storage-blob": "^12.25.0",
     "@node-saml/passport-saml": "^5.0.1",
-    "@qdrant/js-client-rest": "^1.13.0",
+    "@qdrant/js-client-rest": "^1.14.1",
     "@types/bcrypt": "^5.0.2",
     "@types/express-session": "^1.18.1",
     "@types/mongodb": "^4.0.6",
