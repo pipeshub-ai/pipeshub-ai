@@ -1598,4 +1598,3 @@ class ArangoService(BaseArangoService):
         except Exception as e:
             self.logger.error("❌ Error checking edge existence: %s", str(e))
             return False
-

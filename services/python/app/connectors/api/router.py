@@ -6,8 +6,8 @@ import os
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, Optional
-
+from typing import Any, Optional
+import aiohttp
 import google.oauth2.credentials
 import jwt
 from dependency_injector.wiring import Provide, inject
@@ -28,6 +28,10 @@ from googleapiclient.http import MediaIoBaseDownload
 from jose import JWTError
 from pydantic import ValidationError
 
+from app.connectors.notion.core.notion_app import NotionApp
+from app.connectors.notion.core.notion_service import NotionService
+from app.connectors.notion.core.notion_router_service import NotionRouterService
+from app.connectors.notion.handler.notion_credentials_handler import NotionCredentialsHandler
 from app.config.configuration_service import config_node_constants
 from app.config.utils.named_constants.arangodb_constants import (
     AccountType,
@@ -1528,109 +1532,213 @@ async def convert_to_pdf(file_path: str, temp_dir: str) -> str:
         raise HTTPException(status_code=500, detail="Error converting file to PDF")
 
 
-async def get_service_account_credentials(org_id: str, user_id: str, logger, arango_service, google_token_handler, container) -> google.oauth2.credentials.Credentials:
-    """Helper function to get service account credentials"""
+@router.get("/api/v1/{org_id}/{workspace_id}/notion/record/page/{page_id}/signedUrl")
+@inject
+async def get_notion_page_blocks(
+    org_id: str,
+    workspace_id: str,
+    page_id: str,
+    notion_app: NotionApp = Depends(Provide[AppContainer.notion_app]),
+    arango_service=Depends(Provide[AppContainer.arango_service]),
+    config_service=Depends(Provide[AppContainer.config_service]),
+):
+    """Get blocks from a Notion page"""
     try:
-        service_creds_lock = await container.service_creds_lock()
-
-        async with service_creds_lock:
-            if not hasattr(container, 'service_creds_cache'):
-                container.service_creds_cache = {}
-                logger.info("Created service credentials cache")
-
-            cache_key = f"{org_id}_{user_id}"
-            logger.info(f"Service account cache key: {cache_key}")
-
-            if cache_key in container.service_creds_cache:
-                logger.info(f"Service account cache hit: {cache_key}")
-                return container.service_creds_cache[cache_key]
-
-            # Cache miss - create new credentials
-            logger.info(f"Service account cache miss: {cache_key}. Creating new credentials.")
-
-            # Get user email
-            user = await arango_service.get_user_by_user_id(user_id)
-            if not user:
-                raise Exception(f"User not found: {user_id}")
-
-            # Create new credentials
-            SCOPES = GOOGLE_CONNECTOR_ENTERPRISE_SCOPES
-            credentials_json = await google_token_handler.get_enterprise_token(org_id)
-            credentials = service_account.Credentials.from_service_account_info(
-                credentials_json, scopes=SCOPES
-            )
-            credentials = credentials.with_subject(user["email"])
-
-            # Cache the credentials
-            container.service_creds_cache[cache_key] = credentials
-            logger.info(f"Cached new service credentials for {cache_key}")
-
-            return credentials
-
-    except Exception as e:
-        logger.error(f"Error getting service account credentials: {str(e)}")
-        raise HTTPException(
-            status_code=500, detail="Error accessing service account credentials"
+        logger.info(f"Getting blocks for page {page_id} (org: {org_id}, workspace: {workspace_id})")
+        
+        notion_credentials_handler = NotionCredentialsHandler(
+            logger=logger,
+            config_service=config_service,
+            arango_service=arango_service
         )
+        notion_secrets_response = await notion_credentials_handler.get_notion_secret(org_id)
+        
+        integration_secrets = notion_secrets_response.get('integrationSecrets', [])
+        if not integration_secrets:
+            raise HTTPException(status_code=404, detail="No Notion integrations found for this organization")
+        
+        # Find the correct integration secret by matching workspace_id
+        selected_secret = None
+        selected_workspace_data = None
+        
+        for i, notion_secret in enumerate(integration_secrets):
+            try:
+                # Check workspace info for this integration secret
+                url = "https://api.notion.com/v1/users/me"
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, headers={
+                        "Authorization": f"Bearer {notion_secret}",
+                        "Notion-Version": "2022-06-28",
+                        "Content-Type": "application/json",
+                    }) as response:
+                        if response.status != 200:
+                            error_text = await response.text()
+                            logger.warning(f"Failed to fetch workspace info for integration {i}: {error_text}")
+                            continue
+                        
+                        workspace_data = await response.json()
+                        
+                        # Extract workspace ID from the response
+                        current_workspace_id = workspace_data.get("id", "")
+                        
+                        # Match workspace_id (remove dashes for comparison)
+                        if workspace_id.replace("-", "") == current_workspace_id.replace("-", ""):
+                            selected_secret = notion_secret
+                            selected_workspace_data = workspace_data
+                            logger.info(f"Found matching integration for workspace {workspace_id}")
+                            break
+                            
+            except Exception as e:
+                logger.warning(f"Error checking integration {i}: {str(e)}")
+                continue
+        
+        if not selected_secret:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"No Notion integration found for workspace {workspace_id}"
+            )
+        
+        # Initialize NotionService with the correct integration secret
+        notion_service = NotionRouterService(
+            integration_secret=selected_secret,
+            org_id=org_id,
+            workspace_id=workspace_id,
+            logger=logger,
+            arango_service=arango_service,
+        )
+        
+        blocks = await notion_service.fetch_blocks_of_page(page_id)
 
-async def get_user_credentials(org_id: str, user_id: str, logger, google_token_handler, container) -> google.oauth2.credentials.Credentials:
-    """Helper function to get cached user credentials"""
+
+        # Process the user data into records
+        # integration_secret = notion_app.get_integration_secret(org_id,workspace_id)
+            
+        
+        # if not integration_secret:
+        #     raise HTTPException(
+        #         status_code=404,
+        #         detail=f"No integration found for org {org_id} and workspace {workspace_id}"
+        #     )
+        
+        # Initialize NotionService with the integration secret
+
+    
+        
+        
+        # Fetch blocks from the page
+        
+        
+        logger.info(f"Successfully retrieved {len(blocks)} blocks for page {page_id}")
+        
+        return {
+            "success": True,
+            "org_id": org_id,
+            "page_id": page_id,
+            "workspace_id": workspace_id,
+            "blocks_count": len(blocks),
+            "blocks": blocks
+        }
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as e:
+        logger.error(f"Error getting blocks for page {page_id}: {repr(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/api/v1/{org_id}/{workspace_id}/notion/file/{block_id}/signedUrl")
+@inject
+async def get_notion_page_blocks(
+    org_id: str,
+    workspace_id: str,
+    block_id: str,
+    notion_app: NotionApp = Depends(Provide[AppContainer.notion_app]),
+    arango_service=Depends(Provide[AppContainer.arango_service]),
+    config_service=Depends(Provide[AppContainer.config_service]),
+):
+    """Get blocks from a Notion page"""
     try:
-        user_creds_lock = await container.user_creds_lock()
-        cache_key = f"{org_id}_{user_id}"
-
-        async with user_creds_lock:
-            if not hasattr(container, 'user_creds_cache'):
-                container.user_creds_cache = {}
-                logger.info("Created user credentials cache")
-
-            logger.info(f"User credentials cache key: {cache_key}")
-
-            if cache_key in container.user_creds_cache:
-                creds = container.user_creds_cache[cache_key]
-                # Check if credentials are still valid (with some buffer time)
-                if not creds.expired:
-                    logger.info(f"User credentials cache hit: {cache_key}")
-                    return creds
-                else:
-                    logger.info(f"User credentials expired for {cache_key}")
-
-            # Cache miss or expired - create new credentials
-            logger.info(f"User credentials cache miss: {cache_key}. Creating new credentials.")
-
-            # Create new credentials
-            SCOPES = GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES
-            # Refresh token
-            await google_token_handler.refresh_token(org_id, user_id)
-            creds_data = await google_token_handler.get_individual_token(org_id, user_id)
-
-            if not creds_data.get("access_token"):
-                raise HTTPException(
-                    status_code=401,
-                    detail="Invalid credentials. Access token not found",
-                )
-
-            creds = google.oauth2.credentials.Credentials(
-                token=creds_data.get("access_token"),
-                refresh_token=creds_data.get("refresh_token"),
-                token_uri="https://oauth2.googleapis.com/token",
-                client_id=creds_data.get("client_id"),
-                client_secret=creds_data.get("client_secret"),
-                scopes=SCOPES,
-            )
-
-            # Cache the credentials
-            container.user_creds_cache[cache_key] = creds
-            logger.info(f"Cached new user credentials for {cache_key}")
-
-            return creds
-
-    except Exception as e:
-        logger.error(f"Error getting user credentials: {str(e)}")
-        # Remove from cache if there's an error
-        async with user_creds_lock:
-            if hasattr(container, 'user_creds_cache'):
-                container.user_creds_cache.pop(cache_key, None)
-        raise HTTPException(
-            status_code=500, detail="Error accessing user credentials"
+        
+        notion_credentials_handler = NotionCredentialsHandler(
+            logger=logger,
+            config_service=config_service,
+            arango_service=arango_service
         )
+        notion_secrets_response = await notion_credentials_handler.get_notion_secret(org_id)
+        
+        integration_secrets = notion_secrets_response.get('integrationSecrets', [])
+        if not integration_secrets:
+            raise HTTPException(status_code=404, detail="No Notion integrations found for this organization")
+        
+        # Find the correct integration secret by matching workspace_id
+        selected_secret = None
+        selected_workspace_data = None
+        
+        for i, notion_secret in enumerate(integration_secrets):
+            try:
+                # Check workspace info for this integration secret
+                url = "https://api.notion.com/v1/users/me"
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, headers={
+                        "Authorization": f"Bearer {notion_secret}",
+                        "Notion-Version": "2022-06-28",
+                        "Content-Type": "application/json",
+                    }) as response:
+                        if response.status != 200:
+                            error_text = await response.text()
+                            logger.warning(f"Failed to fetch workspace info for integration {i}: {error_text}")
+                            continue
+                        
+                        workspace_data = await response.json()
+                        
+                        # Extract workspace ID from the response
+                        current_workspace_id = workspace_data.get("id", "")
+                        
+                        # Match workspace_id (remove dashes for comparison)
+                        if workspace_id.replace("-", "") == current_workspace_id.replace("-", ""):
+                            selected_secret = notion_secret
+                            selected_workspace_data = workspace_data
+                            logger.info(f"Found matching integration for workspace {workspace_id}")
+                            break
+                            
+            except Exception as e:
+                logger.warning(f"Error checking integration {i}: {str(e)}")
+                continue
+        
+        if not selected_secret:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"No Notion integration found for workspace {workspace_id}"
+            )
+        
+        # Initialize NotionService with the correct integration secret
+        notion_service = NotionRouterService(
+            integration_secret=selected_secret,
+            org_id=org_id,
+            workspace_id=workspace_id,
+            logger=logger,
+            arango_service=arango_service,
+        )
+        
+        data = await notion_service.fetch_file_data(block_id)
+
+        
+        logger.info(f"Successfully retrieved file data")
+        
+        return {
+            "success": True,
+            "org_id": org_id,
+            "workspace_id": workspace_id,
+            "fileData": data
+        }
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as e:
+        logger.error(f"Error getting file data for file {block_id}: {repr(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+

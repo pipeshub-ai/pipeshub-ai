@@ -21,7 +21,7 @@ from app.schema.arango.documents import (
     user_schema,
     notion_page_schema,
     notion_database_schema,
-    notion_comment_schema,
+    notion_comments_schema,
 )
 from app.schema.arango.edges import (
     basic_edge_schema,
@@ -57,6 +57,10 @@ NODE_COLLECTIONS = [
     (CollectionNames.SUBCATEGORIES3.value, None),
     (CollectionNames.BLOCKS.value, None),
     (CollectionNames.KNOWLEDGE_BASE.value, kb_schema),
+    (CollectionNames.NOTION_PAGE_RECORD.value, notion_page_schema),
+    (CollectionNames.NOTION_DATABASE_RECORD.value, notion_database_schema),
+    (CollectionNames.NOTION_COMMENT_RECORD.value, notion_comments_schema),
+    
 ]
 
 EDGE_COLLECTIONS = [

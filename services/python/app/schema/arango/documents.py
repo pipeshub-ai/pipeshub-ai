@@ -364,6 +364,7 @@ notion_page_schema = {
            
             "isArchived": {"type": "boolean", "default": False},  # Whether the page is archived in Notion
             "isDeleted": {"type": "boolean", "default": False},  # Whether the page is deleted in your system
+            "createdAtTimestamp":{"type":"number"},
             "deletedAtTimestamp": {"type": "number"},  # When the page was deleted in your system
             "hasChildren": {"type": "boolean"},  # Whether the page has child bloc
             "propertyValues": {
@@ -407,6 +408,7 @@ notion_database_schema = {
             },
             "isArchived": {"type": "boolean", "default": False},  # Whether the database is archived in Notion
             "isDeleted": {"type": "boolean", "default": False},  # Whether the database is deleted in your system
+            "createdAtTimestamp": {"type": "number"}, 
             "deletedAtTimestamp": {"type": "number"},  # When the database was deleted in your system
             "properties": {
                 "type": "object",
@@ -427,28 +429,37 @@ notion_database_schema = {
     "message": "Document does not match the Notion database schema."
 }
 
-notion_comment_schema = {
+notion_comments_schema = {
     "rule": {
         "type": "object",
         "properties": {
-            "comment_id": {"type": "string", "minLength": 1},  # Notion's UUID for the database
-            "page_id":{"type": "string", "minLength": 1},
-            "text": {"type": "string"},  # Notion database URL
-            "createdBy" :{"type": "string"},
-            "createdAtTimestamp": {"type": "number"}, 
-            "deletedAtTimestamp":{"type": "number"}, # When the database was deleted in your system
-          
+            "page_id": {"type": "string", "minLength": 1},  # The page these comments belong to
+            "comments": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "comment_id": {"type": "string", "minLength": 1},  # Notion's UUID for the comment
+                        "text": {"type": "string"},  # Comment text content
+                        "createdBy": {"type": "string"},  # Who created the comment
+                        "createdAtTimestamp": {"type": "number"},  # When comment was created
+                        "deletedAtTimestamp": {"type": "number"}  # When comment was deleted (optional)
+                    },
+                    "required": [
+                        "comment_id",
+                    ],
+                    "additionalProperties": False
+                },
+                "minItems": 0  
+            }
         },
         "required": [
-            "comment_id",
-            "text",
             "page_id",
-            "createdBy",
+            "comments"
         ],
         "additionalProperties": False
     },
     "level": "strict",
-    "message": "Document does not match the Notion comment schema."
+    "message": "Document does not match the Notion comments schema."
 }
-
 

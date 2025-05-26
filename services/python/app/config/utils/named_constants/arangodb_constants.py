@@ -40,6 +40,7 @@ class RecordTypes(Enum):
     LINK = "LINK"
     MAIL = "MAIL"
     DRIVE = "DRIVE"
+    COMMENT= "COMMENT"
 
 
 class RecordRelations(Enum):
