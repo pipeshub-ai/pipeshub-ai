@@ -74,7 +74,7 @@ class CeleryApp:
             # Add watch renewal task
             self.app.conf.beat_schedule = {
                 "renew-watches": {
-                    "task": "app.connectors.google.core.sync_tasks.schedule_next_changes_watch",
+                    "task": "app.connectors.sources.google.common.sync_tasks.schedule_next_changes_watch",
                     "schedule": interval_seconds,
                     "options": {
                         "expires": expiration_seconds
@@ -83,7 +83,7 @@ class CeleryApp:
             }
 
             self.logger.info("📋 Celery beat configuration:")
-            self.logger.info("   ├─ Task: app.connectors.google.core.sync_tasks.schedule_next_changes_watch")
+            self.logger.info("   ├─ Task: app.connectors.sources.google.common.sync_tasks.schedule_next_changes_watch")
             self.logger.info(f"   ├─ Interval: {interval_seconds} seconds")
             self.logger.info(f"   └─ Expiration: {expiration_seconds} seconds")
 

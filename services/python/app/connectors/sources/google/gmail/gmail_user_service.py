@@ -13,11 +13,11 @@ from googleapiclient.errors import HttpError
 
 from app.config.configuration_service import ConfigurationService
 from app.config.utils.named_constants.arangodb_constants import AccountType
-from app.connectors.google.gmail.core.gmail_drive_interface import GmailDriveInterface
-from app.connectors.google.scopes import GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES
+from app.connectors.sources.google.gmail.gmail_drive_interface import GmailDriveInterface
+from app.connectors.sources.google.common.scopes import GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES
 from app.connectors.utils.decorators import exponential_backoff, token_refresh
 from app.connectors.utils.rate_limiter import GoogleAPIRateLimiter
-from app.exceptions.connector_google_exceptions import (
+from app.connectors.sources.google.common.connector_google_exceptions import (
     BatchOperationError,
     GoogleAuthError,
     GoogleMailError,

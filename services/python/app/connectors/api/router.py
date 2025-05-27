@@ -39,14 +39,14 @@ from app.config.utils.named_constants.arangodb_constants import (
 )
 from app.config.utils.named_constants.status_code_constants import StatusCodeConstants
 from app.connectors.api.middleware import WebhookAuthVerifier
-from app.connectors.google.admin.admin_webhook_handler import AdminWebhookHandler
-from app.connectors.google.gmail.handlers.gmail_webhook_handler import (
+from app.connectors.sources.google.admin.admin_webhook_handler import AdminWebhookHandler
+from app.connectors.sources.google.gmail.gmail_webhook_handler import (
     AbstractGmailWebhookHandler,
 )
-from app.connectors.google.google_drive.handlers.drive_webhook_handler import (
+from app.connectors.sources.google.google_drive.drive_webhook_handler import (
     AbstractDriveWebhookHandler,
 )
-from app.connectors.google.scopes import (
+from app.connectors.sources.google.common.scopes import (
     GOOGLE_CONNECTOR_ENTERPRISE_SCOPES,
     GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES,
 )
@@ -1576,8 +1576,8 @@ async def get_service_account_credentials(org_id: str, user_id: str, logger, ara
 async def get_user_credentials(org_id: str, user_id: str, logger, google_token_handler, container) -> google.oauth2.credentials.Credentials:
     """Helper function to get cached user credentials"""
     try:
-        user_creds_lock = await container.user_creds_lock()
         cache_key = f"{org_id}_{user_id}"
+        user_creds_lock = container.user_creds_lock()
 
         async with user_creds_lock:
             if not hasattr(container, 'user_creds_cache'):
@@ -1628,9 +1628,8 @@ async def get_user_credentials(org_id: str, user_id: str, logger, google_token_h
     except Exception as e:
         logger.error(f"Error getting user credentials: {str(e)}")
         # Remove from cache if there's an error
-        async with user_creds_lock:
-            if hasattr(container, 'user_creds_cache'):
-                container.user_creds_cache.pop(cache_key, None)
+        if hasattr(container, 'user_creds_cache'):
+            container.user_creds_cache.pop(cache_key, None)
         raise HTTPException(
             status_code=500, detail="Error accessing user credentials"
         )

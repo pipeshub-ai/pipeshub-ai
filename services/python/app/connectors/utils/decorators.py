@@ -2,7 +2,7 @@ import asyncio
 import random
 from functools import wraps
 
-from app.exceptions.connector_google_exceptions import (
+from app.connectors.sources.google.common.connector_google_exceptions import (
     GoogleAuthError,
     GoogleConnectorError,
 )

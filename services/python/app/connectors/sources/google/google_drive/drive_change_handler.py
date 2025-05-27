@@ -13,7 +13,7 @@ from app.config.utils.named_constants.arangodb_constants import (
     RecordTypes,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
-
+from app.connectors.sources.google.google_drive.file_processor import process_drive_file
 
 class DriveChangeHandler:
     def __init__(self, logger, config_service, arango_service):
@@ -495,63 +495,9 @@ class DriveChangeHandler:
                 existing_files.append(file_id)
 
             else:
-                file = {
-                    "_key": str(uuid.uuid4()),
-                    "orgId": org_id,
-                    "name": str(file_metadata.get("name")),
-                    "extension": file_metadata.get("fileExtension", None),
-                    "mimeType": file_metadata.get("mimeType", None),
-                    "sizeInBytes": int(file_metadata.get("size", 0)),
-                    "isFile": file_metadata.get("mimeType", "")
-                    != MimeTypes.GOOGLE_DRIVE_FOLDER.value,
-                    "webUrl": file_metadata.get("webViewLink", None),
-                    "etag": file_metadata.get("etag", None),
-                    "ctag": file_metadata.get("ctag", None),
-                    "quickXorHash": file_metadata.get("quickXorHash", None),
-                    "crc32Hash": file_metadata.get("crc32Hash", None),
-                    "md5Checksum": file_metadata.get("md5Checksum", None),
-                    "sha1Hash": file_metadata.get("sha1Checksum", None),
-                    "sha256Hash": file_metadata.get("sha256Checksum", None),
-                    "path": file_metadata.get("path", None),
-                }
-
-                record = {
-                    "_key": f'{file["_key"]}',
-                    "orgId": org_id,
-                    "recordName": f'{file["name"]}',
-                    "recordType": RecordTypes.FILE.value,
-                    "version": 0,
-                    "externalRecordId": str(file_metadata.get("id")),
-                    "externalRevisionId": file_metadata.get("headRevisionId", None),
-                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                    "sourceCreatedAtTimestamp": int(
-                        parse_timestamp(file_metadata.get("createdTime"))
-                    ),
-                    "sourceLastModifiedTimestamp": int(
-                        parse_timestamp(file_metadata.get("modifiedTime"))
-                    ),
-                    "origin": OriginTypes.CONNECTOR.value,
-                    "connectorName": Connectors.GOOGLE_DRIVE.value,
-                    "isArchived": False,
-                    "virtualRecordId": None,
-                    "lastSyncTimestamp": get_epoch_timestamp_in_ms(),
-                    "indexingStatus": "NOT_STARTED",
-                    "extractionStatus": "NOT_STARTED",
-                    "isLatestVersion": True,
-                    "lastIndexTimestamp": None,
-                    "lastExtractionTimestamp": None,
-                    "isDeleted": False,
-                    "isDirty": False,
-                    "reason": None,
-                }
-                is_of_type_record = {
-                    "_from": f"{CollectionNames.RECORDS.value}/{record['_key']}",
-                    "_to": f"{CollectionNames.FILES.value}/{file['_key']}",
-                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                }
-
+                file_record, record, is_of_type_record = await process_drive_file(file_metadata, org_id)
+                self.logger.info("file_record: %s", file_record.to_dict())
+                self.logger.info("record: %s", record.to_dict())
                 recordRelations = []
 
                 if "parents" in file_metadata:
@@ -562,7 +508,7 @@ class DriveChangeHandler:
                         )
 
                         parent_key = next(parent_cursor, None)
-                        file_key = file["_key"]
+                        file_key = file_record.key
                         self.logger.info(
                             "🚀 Parent key: %s, File key: %s", parent_key, file_key
                         )
@@ -575,14 +521,14 @@ class DriveChangeHandler:
                                     "relationType": RecordRelations.PARENT_CHILD.value,
                                 }
                             )
-
-                if file:
+                
+                if file_record:
                     await self.arango_service.batch_upsert_nodes(
-                        [file], CollectionNames.FILES.value, transaction=transaction
+                        [file_record.to_dict()], CollectionNames.FILES.value, transaction=transaction
                     )
                 if record:
                     await self.arango_service.batch_upsert_nodes(
-                        [record], CollectionNames.RECORDS.value, transaction=transaction
+                        [record.to_dict()], CollectionNames.RECORDS.value, transaction=transaction
                     )
 
                 if is_of_type_record:
@@ -601,11 +547,11 @@ class DriveChangeHandler:
 
                 if permissions:
                     await self.arango_service.process_file_permissions(
-                        org_id, file["_key"], permissions, transaction=transaction
+                        org_id, file_record.key, permissions, transaction=transaction
                     )
 
                 self.logger.info(
-                    "✅ Successfully handled insert of file %s", file["_key"]
+                    "✅ Successfully handled insert of file %s", file_record.key
                 )
 
         except Exception as e:
@@ -620,7 +566,7 @@ class DriveChangeHandler:
             self.logger.info("🚀 Handling update of file: %s", updated_file.get("name"))
 
             permissions = updated_file.pop("permissions", [])
-
+            file_record, record, is_of_type_record = await process_file(updated_file, org_id)
             file = {
                 "_key": existing_file["_key"],
                 "orgId": org_id,

@@ -2,7 +2,7 @@ from typing import Dict, Optional
 
 from app.config.configuration_service import ConfigurationService
 from app.config.utils.named_constants.arangodb_constants import AccountType
-from app.connectors.google.google_drive.core.drive_user_service import DriveUserService
+from app.connectors.sources.google.google_drive.drive_user_service import DriveUserService
 from app.connectors.utils.decorators import exponential_backoff
 from app.connectors.utils.rate_limiter import GoogleAPIRateLimiter
 

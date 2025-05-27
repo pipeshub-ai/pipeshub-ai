@@ -11,7 +11,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
 from app.config.configuration_service import ConfigurationService, config_node_constants
-from app.connectors.google.scopes import GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES
+from app.connectors.sources.google.common.scopes import GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES
 from app.connectors.utils.decorators import exponential_backoff
 from app.connectors.utils.rate_limiter import GoogleAPIRateLimiter
 

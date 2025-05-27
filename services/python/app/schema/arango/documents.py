@@ -139,20 +139,16 @@ record_schema = {
                 "type": "string",
                 "enum": ["ONEDRIVE", "DRIVE", "CONFLUENCE", "GMAIL", "SLACK"],
             },
-            "summaryDocumentId": {"type": ["string", "null"]},
-            "virtualRecordId": {"type": ["string", "null"], "default": None},
             # Arango collection entry
             "createdAtTimestamp": {"type": "number"},
             # Arango collection entry
             "updatedAtTimestamp": {"type": "number"},
-            "lastSyncTimestamp": {"type": "number"},
+            "lastSyncTimestamp": {"type": ["number", "null"]},
             "sourceCreatedAtTimestamp": {"type": ["number", "null"]},
             "sourceLastModifiedTimestamp": {"type": ["number", "null"]},
             "isDeleted": {"type": "boolean", "default": False},
             "isArchived": {"type": "boolean", "default": False},
-            "deletedByUserId": {"type": "string"},
-            "lastIndexTimestamp": {"type": ["number", "null"]},
-            "lastExtractionTimestamp": {"type": ["number", "null"]},
+            "deletedByUserId": {"type": ["string", "null"]},
             "indexingStatus": {
                 "type": "string",
                 "enum": [
@@ -180,6 +176,10 @@ record_schema = {
             "isLatestVersion": {"type": "boolean", "default": True},
             "isDirty": {"type": "boolean", "default": False},  # needs re indexing
             "reason": {"type": ["string", "null"]},  # fail reason, didn't index reason
+            "lastIndexTimestamp": {"type": ["number", "null"]},
+            "lastExtractionTimestamp": {"type": ["number", "null"]},
+            "summaryDocumentId": {"type": ["string", "null"]},
+            "virtualRecordId": {"type": ["string", "null"], "default": None},
         },
         "required": [
             "recordName",

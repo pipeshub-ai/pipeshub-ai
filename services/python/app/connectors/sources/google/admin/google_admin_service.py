@@ -11,16 +11,16 @@ from app.config.configuration_service import (
     config_node_constants,
 )
 from app.config.utils.named_constants.arangodb_constants import CollectionNames
-from app.connectors.google.gcal.core.gcal_user_service import GCalUserService
-from app.connectors.google.gmail.core.gmail_user_service import GmailUserService
-from app.connectors.google.google_drive.core.drive_user_service import DriveUserService
-from app.connectors.google.scopes import (
+from app.connectors.sources.google.calendar.gcal_user_service import GCalUserService
+from app.connectors.sources.google.gmail.gmail_user_service import GmailUserService
+from app.connectors.sources.google.google_drive.drive_user_service import DriveUserService
+from app.connectors.sources.google.common.scopes import (
     GOOGLE_CONNECTOR_ENTERPRISE_SCOPES,
     GOOGLE_PARSER_SCOPES,
 )
 from app.connectors.utils.decorators import exponential_backoff
 from app.connectors.utils.rate_limiter import GoogleAPIRateLimiter
-from app.exceptions.connector_google_exceptions import (
+from app.connectors.sources.google.common.connector_google_exceptions import (
     AdminAuthError,
     AdminDelegationError,
     AdminListError,

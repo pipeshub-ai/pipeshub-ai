@@ -2,7 +2,7 @@
 
 from typing import Dict, List, Optional, Tuple
 
-from app.connectors.google.admin.google_admin_service import GoogleAdminService
+from app.connectors.sources.google.admin.google_admin_service import GoogleAdminService
 from app.connectors.utils.decorators import exponential_backoff
 from app.modules.parsers.google_files.parser_user_service import ParserUserService
 

@@ -22,10 +22,10 @@ from app.config.utils.named_constants.arangodb_constants import (
     OriginTypes,
     RecordTypes,
 )
-from app.connectors.google.scopes import GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES
+from app.connectors.sources.google.common.scopes import GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES
 from app.connectors.utils.decorators import exponential_backoff, token_refresh
 from app.connectors.utils.rate_limiter import GoogleAPIRateLimiter
-from app.exceptions.connector_google_exceptions import (
+from app.connectors.sources.google.common.connector_google_exceptions import (
     BatchOperationError,
     DriveOperationError,
     DrivePermissionError,

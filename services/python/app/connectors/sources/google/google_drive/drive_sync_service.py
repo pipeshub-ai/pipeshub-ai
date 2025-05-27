@@ -2,7 +2,6 @@
 
 # pylint: disable=E1101, W0718, W0719
 import asyncio
-import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import Dict, Optional
@@ -16,19 +15,17 @@ from app.config.utils.named_constants.arangodb_constants import (
     CollectionNames,
     Connectors,
     EventTypes,
-    MimeTypes,
     OriginTypes,
     ProgressStatus,
     RecordRelations,
-    RecordTypes,
 )
-from app.connectors.core.kafka_service import KafkaService
-from app.connectors.google.admin.google_admin_service import GoogleAdminService
-from app.connectors.google.core.arango_service import ArangoService
-from app.connectors.google.google_drive.core.drive_user_service import DriveUserService
+from app.connectors.services.kafka_service import KafkaService
+from app.connectors.sources.google.admin.google_admin_service import GoogleAdminService
+from app.connectors.sources.google.common.arango_service import ArangoService
+from app.connectors.sources.google.google_drive.drive_user_service import DriveUserService
 from app.connectors.utils.drive_worker import DriveWorker
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
-
+from app.connectors.sources.google.google_drive.file_processor import process_drive_file
 
 class DriveSyncProgress:
     """Class to track sync progress"""
@@ -396,7 +393,9 @@ class BaseDriveSyncService(ABC):
             self.logger.error("❌ Failed to process drive data: %s", str(e))
             return False
 
-    async def process_batch(self, metadata_list, org_id):
+    
+
+    async def process_batch(self, file_metadata_list, org_id):
         """Process a single batch with atomic operations"""
         batch_start_time = datetime.now(timezone.utc)
 
@@ -413,7 +412,7 @@ class BaseDriveSyncService(ABC):
                 recordRelations = []
                 existing_files = []
 
-                for metadata in metadata_list:
+                for metadata in file_metadata_list:
                     if not metadata:
                         self.logger.warning("❌ No metadata found for file")
                         continue
@@ -435,77 +434,18 @@ class BaseDriveSyncService(ABC):
                         existing_files.append(file_id)
 
                     else:
-                        # Prepare File, Record and File Metadata
-                        file = {
-                            "_key": str(uuid.uuid4()),
-                            "orgId": org_id,
-                            "name": str(metadata.get("name")),
-                            "isFile": metadata.get("mimeType", "")
-                            != MimeTypes.GOOGLE_DRIVE_FOLDER.value,
-                            "extension": metadata.get("fileExtension", None),
-                            "mimeType": metadata.get("mimeType", None),
-                            "sizeInBytes": int(metadata.get("size", 0)),
-                            "webUrl": metadata.get("webViewLink", None),
-                            "etag": metadata.get("etag", None),
-                            "ctag": metadata.get("ctag", None),
-                            "quickXorHash": metadata.get("quickXorHash", None),
-                            "crc32Hash": metadata.get("crc32Hash", None),
-                            "md5Checksum": metadata.get("md5Checksum", None),
-                            "sha1Hash": metadata.get("sha1Checksum", None),
-                            "sha256Hash": metadata.get("sha256Checksum", None),
-                            "path": metadata.get("path", None),
-                        }
-
+                        # Process file and create file record, record and is_of_type record
                         self.logger.debug("Metadata: %s", metadata)
 
-                        # Determine indexing and extraction status based on whether file is shared
-                        is_shared = metadata.get("isSharedWithMe", False)
-                        shared_status = ProgressStatus.AUTO_INDEX_OFF.value if is_shared else ProgressStatus.NOT_STARTED.value
-
-                        record = {
-                            "_key": f'{file["_key"]}',
-                            "orgId": org_id,
-                            "recordName": f'{file["name"]}',
-                            "recordType": RecordTypes.FILE.value,
-                            "version": 0,
-                            "externalRecordId": str(file_id),
-                            "externalRevisionId": metadata.get("headRevisionId", None),
-                            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                            "sourceCreatedAtTimestamp": int(
-                                parse_timestamp(metadata.get("createdTime"))
-                            ),
-                            "sourceLastModifiedTimestamp": int(
-                                parse_timestamp(metadata.get("modifiedTime"))
-                            ),
-                            "origin": OriginTypes.CONNECTOR.value,
-                            "connectorName": Connectors.GOOGLE_DRIVE.value,
-                            "virtualRecordId": None,
-                            "isArchived": False,
-                            "isDeleted": False,
-                            "isLatestVersion": True,
-                            "isDirty": False,
-                            "lastSyncTimestamp": get_epoch_timestamp_in_ms(),
-                            "indexingStatus": shared_status,
-                            "extractionStatus": shared_status,
-                            "lastIndexTimestamp": None,
-                            "lastExtractionTimestamp": None,
-                            "reason": None,
-                        }
-
-                        is_of_type_record = {
-                            "_from": f"{CollectionNames.RECORDS.value}/{record['_key']}",
-                            "_to": f"{CollectionNames.FILES.value}/{file['_key']}",
-                            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                        }
-
-                        files.append(file)
-                        records.append(record)
+                        file_record, record, is_of_type_record = await process_drive_file(metadata, org_id)
+                        files.append(file_record.to_dict())
+                        records.append(record.to_dict())
                         is_of_type_records.append(is_of_type_record)
+                        self.logger.info("file_record: %s", file_record.to_dict())
+                        self.logger.info("record: %s", record.to_dict())
 
                 # Batch process all collected data
-                if files or records or recordRelations:
+                if records:
                     try:
                         txn = None
                         txn = self.arango_service.db.begin_transaction(
@@ -566,7 +506,7 @@ class BaseDriveSyncService(ABC):
 
                         db = txn if txn else self.arango_service.db
                         # Prepare edge data if parent exists
-                        for metadata in metadata_list:
+                        for metadata in file_metadata_list:
                             file_id = metadata.get("id")
                             if "parents" in metadata:
                                 self.logger.info(
@@ -605,7 +545,7 @@ class BaseDriveSyncService(ABC):
                                 raise Exception("Failed to batch create file relations")
 
                         # Process permissions
-                        for metadata in metadata_list:
+                        for metadata in file_metadata_list:
                             file_id = metadata.get("id")
                             if file_id in existing_files:
                                 continue

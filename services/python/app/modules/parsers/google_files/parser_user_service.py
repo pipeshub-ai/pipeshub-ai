@@ -6,12 +6,12 @@ import google.oauth2.credentials
 from googleapiclient.discovery import build
 
 from app.config.configuration_service import ConfigurationService
-from app.connectors.google.gmail.core.gmail_user_service import (
+from app.connectors.sources.google.gmail.gmail_user_service import (
     GoogleAuthError,
     GoogleMailError,
     MailOperationError,
 )
-from app.connectors.google.scopes import GOOGLE_PARSER_SCOPES
+from app.connectors.sources.google.common.scopes import GOOGLE_PARSER_SCOPES
 from app.connectors.utils.decorators import token_refresh
 from app.connectors.utils.rate_limiter import GoogleAPIRateLimiter
 

@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from app.connectors.google.admin.google_admin_service import GoogleAdminService
+from app.connectors.sources.google.admin.google_admin_service import GoogleAdminService
 from app.connectors.utils.decorators import exponential_backoff
 from app.modules.parsers.excel.prompt_template import (
     prompt,

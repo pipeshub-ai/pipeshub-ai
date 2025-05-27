@@ -23,7 +23,7 @@ class SyncTasks:
         self.logger.info("🔄 Starting task registration")
 
         @self.celery.task(
-            name="app.connectors.google.core.sync_tasks.schedule_next_changes_watch",
+            name="app.connectors.sources.google.common.sync_tasks.schedule_next_changes_watch",
             autoretry_for=(Exception,),
             retry_backoff=True,
             retry_backoff_max=600,

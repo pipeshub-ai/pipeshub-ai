@@ -133,8 +133,11 @@ class GmailChangeHandler:
                         "reason": None,
                     }
 
+                    # Convert record to dictionary if it's a Record object
+                    record_dict = record.to_dict() if hasattr(record, 'to_dict') else record
+                    
                     is_of_type_record = {
-                        "_from": f'{CollectionNames.RECORDS.value}/{record["_key"]}',
+                        "_from": f'{CollectionNames.RECORDS.value}/{record_dict["_key"]}',
                         "_to": f'{CollectionNames.MAILS.value}/{message_record["_key"]}',
                         "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                         "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
@@ -168,7 +171,7 @@ class GmailChangeHandler:
                             transaction=txn,
                         )
                         await self.arango_service.batch_upsert_nodes(
-                            [record],
+                            [record_dict],
                             collection=CollectionNames.RECORDS.value,
                             transaction=txn,
                         )
@@ -390,7 +393,7 @@ class GmailChangeHandler:
                     )
                     self.logger.info(
                         "📨 Sent Kafka reindexing event for record %s",
-                        record["_key"],
+                        record_dict["_key"],
                     )
 
                     if attachments:
