@@ -9,12 +9,12 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class KafkaService:
-    def __init__(self, config: ConfigurationService, logger):
+    def __init__(self, config: ConfigurationService, logger) -> None:
         self.config_service = config
         self.producer = None
         self.logger = logger
 
-    def delivery_report(self, err, msg):
+    def delivery_report(self, err, msg) -> None:
         """Delivery report for produced messages."""
         if err is not None:
             self.logger.error("❌ Delivery failed for record %s: %s", msg.key(), err)
@@ -26,7 +26,7 @@ class KafkaService:
                 msg.partition(),
             )
 
-    async def send_event_to_kafka(self, event_data):
+    async def send_event_to_kafka(self, event_data) -> bool:
         """
         Send an event to Kafka.
         :param event_data: Dictionary containing file processing details
@@ -46,6 +46,7 @@ class KafkaService:
                     "orgId": event_data.get("orgId"),
                     "recordId": event_data.get("recordId"),
                     "virtualRecordId": event_data.get("virtualRecordId", None),
+                    "summaryDocumentId": event_data.get("summaryDocumentId", None),
                     "recordName": event_data.get("recordName"),
                     "recordType": event_data.get("recordType"),
                     "version": event_data.get("recordVersion", 0),

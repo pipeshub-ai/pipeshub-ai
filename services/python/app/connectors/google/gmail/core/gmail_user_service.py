@@ -13,6 +13,7 @@ from googleapiclient.errors import HttpError
 
 from app.config.configuration_service import ConfigurationService
 from app.config.utils.named_constants.arangodb_constants import AccountType
+from app.config.utils.named_constants.status_code_constants import StatusCodeConstants
 from app.connectors.google.gmail.core.gmail_drive_interface import GmailDriveInterface
 from app.connectors.google.scopes import GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES
 from app.connectors.utils.decorators import exponential_backoff, token_refresh
@@ -37,7 +38,7 @@ class GmailUserService:
         google_token_handler,
         credentials=None,
         admin_service=None,
-    ):
+    ) -> None:
         """Initialize GmailUserService"""
         try:
             self.logger = logger
@@ -148,7 +149,7 @@ class GmailUserService:
                 details={"org_id": org_id, "user_id": user_id, "error": str(e)},
             )
 
-    async def _check_and_refresh_token(self):
+    async def _check_and_refresh_token(self) -> None:
         """Check token expiry and refresh if needed"""
         self.logger.info("Checking token expiry and refreshing if needed")
 
@@ -222,7 +223,7 @@ class GmailUserService:
                 details={"error": str(e)},
             )
 
-    async def disconnect(self):
+    async def disconnect(self) -> bool:
         """Disconnect and cleanup Gmail service"""
         try:
             self.logger.info("🔄 Disconnecting Gmail service")
@@ -260,7 +261,7 @@ class GmailUserService:
                 async with self.google_limiter:
                     user = self.service.users().getProfile(userId="me").execute()
             except HttpError as e:
-                if e.resp.status == 403:
+                if e.resp.status == StatusCodeConstants.FORBIDDEN.value:
                     raise GoogleAuthError(
                         "Permission denied getting user profile: " + str(e),
                         details={"org_id": org_id, "error": str(e)},
@@ -323,7 +324,7 @@ class GmailUserService:
                             .execute()
                         )
                 except HttpError as e:
-                    if e.resp.status == 403:
+                    if e.resp.status == StatusCodeConstants.FORBIDDEN.value:
                         raise GoogleAuthError(
                             "Permission denied listing messages: " + str(e),
                             details={"query": query, "error": str(e)},
@@ -365,7 +366,7 @@ class GmailUserService:
     async def get_message(self, message_id: str) -> Dict:
         """Get message by id"""
 
-        def get_message_content(payload):
+        def get_message_content(payload) -> str:
             """Recursively extract message content from MIME parts"""
             if not payload:
                 return ""
@@ -416,14 +417,13 @@ class GmailUserService:
                     .get(userId="me", id=message_id, format="full")
                     .execute()
                 )
-                self.logger.debug("📝 Message: %s", message)
             except HttpError as e:
-                if e.resp.status == 404:
+                if e.resp.status == StatusCodeConstants.NOT_FOUND.value:
                     raise MailOperationError(
                         "Message not found: " + str(e),
                         details={"message_id": message_id},
                     )
-                elif e.resp.status == 403:
+                elif e.resp.status == StatusCodeConstants.FORBIDDEN.value:
                     raise GoogleAuthError(
                         "Permission denied accessing message: " + str(e),
                         details={"message_id": message_id},
@@ -500,7 +500,7 @@ class GmailUserService:
                             .execute()
                         )
                 except HttpError as e:
-                    if e.resp.status == 403:
+                    if e.resp.status == StatusCodeConstants.FORBIDDEN.value:
                         raise GoogleAuthError(
                             "Permission denied listing threads: " + str(e),
                             details={"query": query, "error": str(e)},
@@ -651,11 +651,11 @@ class GmailUserService:
 
     @exponential_backoff()
     @token_refresh
-    async def get_file_ids(self, message):
+    async def get_file_ids(self, message) -> List[str]:
         """Get file ids from message by recursively checking all parts and MIME types"""
         try:
 
-            def extract_file_ids(html_content):
+            def extract_file_ids(html_content) -> List[str]:
                 if not isinstance(html_content, str):
                     return []
                 try:
@@ -670,7 +670,7 @@ class GmailUserService:
                     self.logger.warning(f"Failed to decode content: {str(e)}")
                     return []
 
-            def process_part(part):
+            def process_part(part) -> List[str]:
                 if not isinstance(part, dict):
                     return []
 
@@ -751,12 +751,12 @@ class GmailUserService:
                     )
                     response["expiration"] = int(response["expiration"])
             except HttpError as e:
-                if e.resp.status == 403:
+                if e.resp.status == StatusCodeConstants.FORBIDDEN.value:
                     raise GoogleAuthError(
                         "Permission denied creating user watch: " + str(e),
                         details={"user_id": user_id, "error": str(e)},
                     )
-                elif e.resp.status == 400:
+                elif e.resp.status == StatusCodeConstants.BAD_REQUEST.value:
                     raise MailOperationError(
                         "Invalid request creating user watch: " + str(e),
                         details={"user_id": user_id, "topic": topic, "error": str(e)},
@@ -841,7 +841,7 @@ class GmailUserService:
                     self.logger.info(f"Sent response: {sent_response}")
 
             except HttpError as e:
-                if e.resp.status == 404:
+                if e.resp.status == StatusCodeConstants.NOT_FOUND.value:
                     raise MailOperationError(
                         "Invalid history ID: " + str(e),
                         details={
@@ -850,7 +850,7 @@ class GmailUserService:
                             "error": str(e),
                         },
                     )
-                elif e.resp.status == 403:
+                elif e.resp.status == StatusCodeConstants.FORBIDDEN.value:
                     raise GoogleAuthError(
                         "Permission denied fetching changes: " + str(e),
                         details={"user_email": user_email, "error": str(e)},
