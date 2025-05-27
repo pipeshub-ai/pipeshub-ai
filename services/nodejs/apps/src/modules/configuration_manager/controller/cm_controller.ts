@@ -1693,3 +1693,57 @@ export const setMetricsCollectionRemoteServer =
       next(error);
     }
   };
+
+export const getNotionCredentials =
+  (keyValueStoreService: KeyValueStoreService, orgId: string) =>
+  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const encryptedNotionCredentials = await keyValueStoreService.get<string>(
+        `${configPaths.connectors.notion.credentials}/${orgId}`,
+      );
+      if (encryptedNotionCredentials) {
+        const notionCredentials = JSON.parse(
+          EncryptionService.getInstance(
+            configManagerConfig.algorithm,
+            configManagerConfig.secretKey,
+          ).decrypt(encryptedNotionCredentials),
+        );
+        res.status(200).json(notionCredentials).end();
+      } else {
+        res.status(200).json({}).end();
+      }
+    } catch (error: any) {
+      logger.error('Error getting Notion credentials', { error });
+      next(error);
+    }
+  };
+
+export const setNotionCredentials =
+  (keyValueStoreService: KeyValueStoreService, orgId: string) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { integrationSecrets } = req.body;
+      const configManagerConfig = loadConfigurationManagerConfig();
+
+      const encryptedNotionCredentials = EncryptionService.getInstance(
+        configManagerConfig.algorithm,
+        configManagerConfig.secretKey,
+      ).encrypt(JSON.stringify({ integrationSecrets }));
+
+      await keyValueStoreService.set<string>(
+        `${configPaths.connectors.notion.credentials}/${orgId}`,
+        encryptedNotionCredentials,
+      );
+
+      res
+        .status(200)
+        .json({
+          msg: 'Notion Credentials saved successfully',
+        })
+        .end();
+    } catch (error: any) {
+      logger.error('Error saving notion credentials', { error });
+      next(error);
+    }
+  };

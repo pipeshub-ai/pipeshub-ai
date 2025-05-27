@@ -1634,3 +1634,214 @@ async def get_user_credentials(org_id: str, user_id: str, logger, google_token_h
         raise HTTPException(
             status_code=500, detail="Error accessing user credentials"
         )
+
+@router.get("/api/v1/{org_id}/{workspace_id}/notion/record/page/{page_id}/signedUrl")
+@inject
+async def get_notion_page_blocks(
+    org_id: str,
+    workspace_id: str,
+    page_id: str,
+    notion_app: NotionApp = Depends(Provide[AppContainer.notion_app]),
+    arango_service=Depends(Provide[AppContainer.arango_service]),
+    config_service=Depends(Provide[AppContainer.config_service]),
+):
+    """Get blocks from a Notion page"""
+    try:
+        logger.info(f"Getting blocks for page {page_id} (org: {org_id}, workspace: {workspace_id})")
+        
+        notion_credentials_handler = NotionCredentialsHandler(
+            logger=logger,
+            config_service=config_service,
+            arango_service=arango_service
+        )
+        notion_secrets_response = await notion_credentials_handler.get_notion_secret(org_id)
+        
+        integration_secrets = notion_secrets_response.get('integrationSecrets', [])
+        if not integration_secrets:
+            raise HTTPException(status_code=404, detail="No Notion integrations found for this organization")
+        
+        # Find the correct integration secret by matching workspace_id
+        selected_secret = None
+        selected_workspace_data = None
+        
+        for i, notion_secret in enumerate(integration_secrets):
+            try:
+                # Check workspace info for this integration secret
+                url = "https://api.notion.com/v1/users/me"
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, headers={
+                        "Authorization": f"Bearer {notion_secret}",
+                        "Notion-Version": "2022-06-28",
+                        "Content-Type": "application/json",
+                    }) as response:
+                        if response.status != 200:
+                            error_text = await response.text()
+                            logger.warning(f"Failed to fetch workspace info for integration {i}: {error_text}")
+                            continue
+                        
+                        workspace_data = await response.json()
+                        
+                        # Extract workspace ID from the response
+                        current_workspace_id = workspace_data.get("id", "")
+                        
+                        # Match workspace_id (remove dashes for comparison)
+                        if workspace_id.replace("-", "") == current_workspace_id.replace("-", ""):
+                            selected_secret = notion_secret
+                            selected_workspace_data = workspace_data
+                            logger.info(f"Found matching integration for workspace {workspace_id}")
+                            break
+                            
+            except Exception as e:
+                logger.warning(f"Error checking integration {i}: {str(e)}")
+                continue
+        
+        if not selected_secret:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"No Notion integration found for workspace {workspace_id}"
+            )
+        
+        # Initialize NotionService with the correct integration secret
+        notion_service = NotionRouterService(
+            integration_secret=selected_secret,
+            org_id=org_id,
+            workspace_id=workspace_id,
+            logger=logger,
+            arango_service=arango_service,
+        )
+        
+        blocks = await notion_service.fetch_blocks_of_page(page_id)
+
+
+        # Process the user data into records
+        # integration_secret = notion_app.get_integration_secret(org_id,workspace_id)
+            
+        
+        # if not integration_secret:
+        #     raise HTTPException(
+        #         status_code=404,
+        #         detail=f"No integration found for org {org_id} and workspace {workspace_id}"
+        #     )
+        
+        # Initialize NotionService with the integration secret
+
+    
+        
+        
+        # Fetch blocks from the page
+        
+        
+        logger.info(f"Successfully retrieved {len(blocks)} blocks for page {page_id}")
+        
+        return {
+            "success": True,
+            "org_id": org_id,
+            "page_id": page_id,
+            "workspace_id": workspace_id,
+            "blocks_count": len(blocks),
+            "blocks": blocks
+        }
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as e:
+        logger.error(f"Error getting blocks for page {page_id}: {repr(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/api/v1/{org_id}/{workspace_id}/notion/file/{block_id}/signedUrl")
+@inject
+async def get_notion_page_blocks(
+    org_id: str,
+    workspace_id: str,
+    block_id: str,
+    notion_app: NotionApp = Depends(Provide[AppContainer.notion_app]),
+    arango_service=Depends(Provide[AppContainer.arango_service]),
+    config_service=Depends(Provide[AppContainer.config_service]),
+):
+    """Get blocks from a Notion page"""
+    try:
+        
+        notion_credentials_handler = NotionCredentialsHandler(
+            logger=logger,
+            config_service=config_service,
+            arango_service=arango_service
+        )
+        notion_secrets_response = await notion_credentials_handler.get_notion_secret(org_id)
+        
+        integration_secrets = notion_secrets_response.get('integrationSecrets', [])
+        if not integration_secrets:
+            raise HTTPException(status_code=404, detail="No Notion integrations found for this organization")
+        
+        # Find the correct integration secret by matching workspace_id
+        selected_secret = None
+        selected_workspace_data = None
+        
+        for i, notion_secret in enumerate(integration_secrets):
+            try:
+                # Check workspace info for this integration secret
+                url = "https://api.notion.com/v1/users/me"
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, headers={
+                        "Authorization": f"Bearer {notion_secret}",
+                        "Notion-Version": "2022-06-28",
+                        "Content-Type": "application/json",
+                    }) as response:
+                        if response.status != 200:
+                            error_text = await response.text()
+                            logger.warning(f"Failed to fetch workspace info for integration {i}: {error_text}")
+                            continue
+                        
+                        workspace_data = await response.json()
+                        
+                        # Extract workspace ID from the response
+                        current_workspace_id = workspace_data.get("id", "")
+                        
+                        # Match workspace_id (remove dashes for comparison)
+                        if workspace_id.replace("-", "") == current_workspace_id.replace("-", ""):
+                            selected_secret = notion_secret
+                            selected_workspace_data = workspace_data
+                            logger.info(f"Found matching integration for workspace {workspace_id}")
+                            break
+                            
+            except Exception as e:
+                logger.warning(f"Error checking integration {i}: {str(e)}")
+                continue
+        
+        if not selected_secret:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"No Notion integration found for workspace {workspace_id}"
+            )
+        
+        # Initialize NotionService with the correct integration secret
+        notion_service = NotionRouterService(
+            integration_secret=selected_secret,
+            org_id=org_id,
+            workspace_id=workspace_id,
+            logger=logger,
+            arango_service=arango_service,
+        )
+        
+        data = await notion_service.fetch_file_data(block_id)
+
+        
+        logger.info(f"Successfully retrieved file data")
+        
+        return {
+            "success": True,
+            "org_id": org_id,
+            "workspace_id": workspace_id,
+            "fileData": data
+        }
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as e:
+        logger.error(f"Error getting file data for file {block_id}: {repr(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+

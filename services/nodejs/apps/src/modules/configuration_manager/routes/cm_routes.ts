@@ -40,6 +40,8 @@ import {
   getMetricsCollection,
   setMetricsCollectionPushInterval,
   setMetricsCollectionRemoteServer,
+  setNotionCredentials,
+  getNotionCredentials,
 } from '../controller/cm_controller';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
@@ -60,6 +62,7 @@ import {
   metricsCollectionPushIntervalSchema,
   metricsCollectionToggleSchema,
   metricsCollectionRemoteServerSchema,
+  notionCredentialsSchema,
 } from '../validator/validators';
 import { FileProcessorFactory } from '../../../libs/middlewares/file_processor/fp.factory';
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
@@ -560,6 +563,74 @@ export function createConfigurationManagerRouter(container: Container): Router {
         syncEventService,
         req.tokenPayload?.orgId,
       )(req, res, next);
+    },
+  );
+
+  router.get(
+    '/internal/connectors/notionCredentials',
+    authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
+    metricsMiddleware(container),
+    (req: AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
+      if (!req.tokenPayload) {
+        throw new NotFoundError('User not found');
+      }
+      return getNotionCredentials(keyValueStoreService, req.tokenPayload.orgId)(
+        req,
+        res,
+        next,
+      );
+    },
+  );
+
+  router.get(
+    '/connectors/notionCredentials',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+      if (!req.user) {
+        throw new NotFoundError('User not found');
+      }
+      return getNotionCredentials(keyValueStoreService, req.user.orgId)(
+        req,
+        res,
+        next,
+      );
+    },
+  );
+
+  router.post(
+    '/connectors/notionCredentials',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(notionCredentialsSchema),
+    (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+      if (!req.user) {
+        throw new NotFoundError('User not found');
+      }
+      return setNotionCredentials(keyValueStoreService, req.user.orgId)(
+        req,
+        res,
+        next,
+      );
+    },
+  );
+
+  router.post(
+    '/internal/connectors/notionCredentials',
+    authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(notionCredentialsSchema),
+    (req: AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
+      if (!req.tokenPayload) {
+        throw new NotFoundError('User not found');
+      }
+      return setNotionCredentials(keyValueStoreService, req.tokenPayload.orgId)(
+        req,
+        res,
+        next,
+      );
     },
   );
 

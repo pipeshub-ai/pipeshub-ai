@@ -40,6 +40,7 @@ class RecordTypes(Enum):
     LINK = "LINK"
     MAIL = "MAIL"
     DRIVE = "DRIVE"
+    COMMENT= "COMMENT"
 
 
 class RecordRelations(Enum):
@@ -120,6 +121,10 @@ class CollectionNames(Enum):
     ORG_DEPARTMENT_RELATION = "orgDepartmentRelation"
 
     BLOCKS = "blocks"
+
+    NOTION_PAGE_RECORD="notionPageRecord"
+    NOTION_DATABASE_RECORD="notionDatabaseRecord"
+    NOTION_COMMENT_RECORD="notionCommentRecord"
 
 
 class QdrantCollectionNames(Enum):

@@ -50,6 +50,9 @@ from app.connectors.google.google_drive.handlers.drive_webhook_handler import (
     EnterpriseDriveWebhookHandler,
     IndividualDriveWebhookHandler,
 )
+
+from app.connectors.notion.core.notion_app import NotionApp
+from app.connectors.notion.handler.notion_credentials_handler import NotionCredentialsHandler
 from app.connectors.google.helpers.google_token_handler import GoogleTokenHandler
 from app.connectors.google.scopes import (
     GOOGLE_CONNECTOR_ENTERPRISE_SCOPES,
@@ -69,15 +72,7 @@ async def initialize_individual_account_services_fn(org_id, container) -> None:
     """Initialize services for an individual account type."""
     try:
         logger = container.logger()
-        arango_service = await container.arango_service()
-
-        # Pre-fetch service account credentials for this org
-        org_apps = await arango_service.get_org_apps(org_id)
-        for app in org_apps:
-            if app["appGroup"] == "Google Workspace":
-                logger.info("Refreshing Google Workspace user credentials")
-                asyncio.create_task(refresh_google_workspace_user_credentials(org_id, arango_service,logger, container))
-                break
+        notion_app = container.notion_app()
         # Initialize base services
         container.drive_service.override(
             providers.Singleton(
@@ -256,20 +251,7 @@ async def initialize_enterprise_account_services_fn(org_id, container) -> None:
 
     try:
         logger = container.logger()
-        arango_service = await container.arango_service()
-
-        # Initialize service credentials cache if not exists
-        if not hasattr(container, 'service_creds_cache'):
-            container.service_creds_cache = {}
-            logger.info("Created service credentials cache")
-
-        # Pre-fetch service account credentials for this org
-        org_apps = await arango_service.get_org_apps(org_id)
-        for app in org_apps:
-            if app["appGroup"] == "Google Workspace":
-                await cache_google_workspace_service_credentials(org_id, arango_service, logger, container)
-                break
-
+        notion_app = container.notion_app()
         # Initialize base services
         container.drive_service.override(
             providers.Singleton(
@@ -648,6 +630,20 @@ class AppContainer(containers.DeclarativeContainer):
         config=signed_url_config,
         configuration_service=config_service,
     )
+
+    notion_app = providers.Singleton(
+        NotionApp,
+        logger=logger
+    )
+
+    # NotionCredentialsHandler for managing Notion secrets
+    notion_credentials_handler = providers.Singleton(
+        NotionCredentialsHandler,
+        logger=logger,
+        config_service=config_service,
+        arango_service=arango_service,
+    )
+
 
     # Services that will be initialized based on account type
     # Define lazy dependencies for account-based services:

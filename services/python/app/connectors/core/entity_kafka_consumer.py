@@ -3,11 +3,12 @@ import json
 import time
 from typing import Dict, List
 from uuid import uuid4
-
+import aiohttp
 from confluent_kafka import Consumer, KafkaError, Producer
 from dependency_injector.wiring import inject
 
 # Import required services
+from app.connectors.core.kafka_service import KafkaService
 from app.config.configuration_service import KafkaConfig, config_node_constants
 from app.config.utils.named_constants.arangodb_constants import (
     AccountType,
@@ -19,6 +20,10 @@ from app.setups.connector_setup import (
     initialize_enterprise_account_services_fn,
     initialize_individual_account_services_fn,
 )
+
+from app.connectors.notion.core.notion_service import NotionService
+from app.connectors.notion.core.notion_app import NotionApp
+from app.connectors.notion.handler.notion_credentials_handler import NotionCredentialsHandler
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -662,108 +667,246 @@ class EntityKafkaRouteConsumer:
             enabled_apps = set(apps)
 
             if enabled_apps:
-                self.logger.info(f"Enabled apps are: {enabled_apps}")
-                # Initialize services based on account type
-                if self.app_container:
-                    accountType = org["accountType"]
-                    self.logger.info(f"Account type: {accountType}")
-                    # Use the existing app container to initialize services
-                    if accountType == AccountType.ENTERPRISE.value or accountType == AccountType.BUSINESS.value:
-                        await initialize_enterprise_account_services_fn(
-                            org_id, self.app_container
-                        )
-                    elif accountType == AccountType.INDIVIDUAL.value:
-                        await initialize_individual_account_services_fn(
-                            org_id, self.app_container
+                if app_group == 'Google Workspace':
+                    self.logger.info(f"Enabled apps are: {enabled_apps}")
+                    # Initialize services based on account type
+                    if self.app_container:
+                        accountType = org["accountType"]
+                        # Use the existing app container to initialize services
+                        if accountType == AccountType.ENTERPRISE.value or accountType == AccountType.BUSINESS.value:
+                            await initialize_enterprise_account_services_fn(
+                                org_id, self.app_container
+                            )
+                        elif accountType == AccountType.INDIVIDUAL.value:
+                            await initialize_individual_account_services_fn(
+                                org_id, self.app_container
+                            )
+                        else:
+                            self.logger.error("Account Type not valid")
+                            return False
+                        self.logger.info(
+                            f"✅ Successfully initialized services for account type: {org['accountType']}"
                         )
                     else:
-                        self.logger.error("Account Type not valid")
-                        return False
-                    self.logger.info(
-                        f"✅ Successfully initialized services for account type: {org['accountType']}"
-                    )
-                else:
-                    self.logger.warning(
-                        "App container not provided, skipping service initialization"
-                    )
-
-                user_type = (
-                    AccountType.ENTERPRISE.value
-                    if org["accountType"] in [AccountType.ENTERPRISE.value, AccountType.BUSINESS.value]
-                    else AccountType.INDIVIDUAL.value
-                )
-
-                # Handle enterprise/business account type
-                if user_type == AccountType.ENTERPRISE.value:
-                    active_users = await self.arango_service.get_users(
-                        org_id, active=True
-                    )
-
-                    for app_name in enabled_apps:
-                        if app_name in [Connectors.GOOGLE_CALENDAR.value]:
-                            self.logger.info(f"Skipping init for {app_name}")
-                            continue
-
-                        # Initialize app (this will fetch and create users)
-                        await self._handle_sync_event(
-                            event_type=f"{app_name.lower()}.init",
-                            value={"orgId": org_id},
+                        self.logger.warning(
+                            "App container not provided, skipping service initialization"
                         )
 
-                        await asyncio.sleep(5)
+                    user_type = (
+                        AccountType.ENTERPRISE.value
+                        if org["accountType"] in [AccountType.ENTERPRISE.value, AccountType.BUSINESS.value]
+                        else AccountType.INDIVIDUAL.value
+                    )
 
-                        if sync_action == "immediate":
-                            # Start sync for all users
+                    # Handle enterprise/business account type
+                    if user_type == AccountType.ENTERPRISE.value:
+                        active_users = await self.arango_service.get_users(
+                            org_id, active=True
+                        )
+
+                        for app_name in enabled_apps:
+                            if app_name in [Connectors.GOOGLE_CALENDAR.value]:
+                                self.logger.info(f"Skipping init for {app_name}")
+                                continue
+
+                            # Initialize app (this will fetch and create users)
                             await self._handle_sync_event(
-                                event_type=f"{app_name.lower()}.start",
+                                event_type=f"{app_name.lower()}.init",
                                 value={"orgId": org_id},
                             )
+
                             await asyncio.sleep(5)
 
-                # For individual accounts, create edges between existing active users and apps
-                else:
-                    active_users = await self.arango_service.get_users(
-                        org_id, active=True
-                    )
-
-                    # First initialize each app
-                    for app_name in enabled_apps:
-                        if app_name in [Connectors.GOOGLE_CALENDAR.value]:
-                            self.logger.info(f"Skipping init for {app_name}")
-                            continue
-
-                        # Initialize app
-                        await self._handle_sync_event(
-                            event_type=f"{app_name.lower()}.init",
-                            value={"orgId": org_id},
-                        )
-
-                        await asyncio.sleep(5)
-
-                    # Then create edges and start sync if needed
-                    for user in active_users:
-                        for app in app_docs:
                             if sync_action == "immediate":
-                                # Start sync for individual user
-                                if app["name"] in [Connectors.GOOGLE_CALENDAR.value]:
-                                    self.logger.info("Skipping start")
-                                    continue
-
+                                # Start sync for all users
                                 await self._handle_sync_event(
-                                    event_type=f'{app["name"].lower()}.start',
-                                    value={
-                                        "orgId": org_id,
-                                        "email": user["email"],
-                                    },
+                                    event_type=f"{app_name.lower()}.start",
+                                    value={"orgId": org_id},
                                 )
                                 await asyncio.sleep(5)
 
-            self.logger.info(f"✅ Successfully enabled apps for org: {org_id}")
-            return True
+                    # For individual accounts, create edges between existing active users and apps
+                    else:
+                        active_users = await self.arango_service.get_users(
+                            org_id, active=True
+                        )
+
+                        # First initialize each app
+                        for app_name in enabled_apps:
+                            if app_name in [Connectors.GOOGLE_CALENDAR.value]:
+                                self.logger.info(f"Skipping init for {app_name}")
+                                continue
+
+                            # Initialize app
+                            await self._handle_sync_event(
+                                event_type=f"{app_name.lower()}.init",
+                                value={"orgId": org_id},
+                            )
+
+                            await asyncio.sleep(5)
+
+                        # Then create edges and start sync if needed
+                        for user in active_users:
+                            for app in app_docs:
+                                if sync_action == "immediate":
+                                    # Start sync for individual user
+                                    if app["name"] in [Connectors.GOOGLE_CALENDAR.value]:
+                                        self.logger.info("Skipping start")
+                                        continue
+
+                                    await self._handle_sync_event(
+                                        event_type=f'{app["name"].lower()}.start',
+                                        value={
+                                            "orgId": org_id,
+                                            "email": user["email"],
+                                        },
+                                    )
+                                    await asyncio.sleep(5)
+
+                elif app_group == 'Notion':
+                    self.logger.info(f"📥 Processing Notion app enabled event")
+                    
+                    try:
+                        # Initialize services
+                        kafka_service = KafkaService(self.config_service, self.logger)
+                        notion_credentials_handler = NotionCredentialsHandler(
+                            logger=self.logger,
+                            config_service=self.config_service,
+                            arango_service=self.arango_service
+                        )
+
+                        # # Get the global NotionApp singleton
+                        # notion_app = NotionApp(self.logger)
+                        # self.logger.info(f"📱 Using NotionApp singleton: {notion_app}")
+
+                        # # Get secrets from credentials handler
+                        notion_secrets_response = await notion_credentials_handler.get_notion_secret(org_id)
+                     
+                        integration_secrets = notion_secrets_response.get('integrationSecrets', [])
+                        # # Load integrations into the global NotionApp
+                        # loaded_integrations = notion_app.load_from_secrets_response(org_id, notion_secrets_response)
+                        # self.logger.info(f"Found {loaded_integrations} Notion integration(s)")
+                        
+                        # if loaded_integrations == 0:
+                        #     self.logger.warning("No Notion integrations found")
+                        #     return False
+
+                        # # Get all integrations for this org from the singleton
+                        # org_integrations = notion_app.get_org_integrations(org_id)
+                        
+                        # Process each integration separately
+                        successful_integrations = 0
+                        failed_integrations = 0
+                        
+                        for i, integration_secret in enumerate(integration_secrets):
+                            try:
+                                # self.logger.info(f"🔄 Processing Notion integration {i+1}/{len(org_integrations)} "
+                                #             f"(org: {org_id}, workspace: {workspace_id})")
+                                
+                                # Initialize NotionService for this specific secret
+                                workspace_id=None
+                                url = "https://api.notion.com/v1/users/me"
+                
+                                async with aiohttp.ClientSession() as session:
+                                    async with session.get(url, headers={
+                                        "Authorization": f"Bearer {integration_secret}",
+                                        "Notion-Version": "2022-06-28",
+                                        "Content-Type": "application/json",
+                                    }) as response:
+                                        if response.status != 200:
+                                            error_text = await response.text()
+                                            self.logger.warning(f"Failed to fetch workspace info for integration {i}: {error_text}")
+                                            continue
+                                        
+                                        workspace_data = await response.json()
+                                        
+                                        # Extract workspace ID from the response
+                                        current_workspace_id = workspace_data.get("id", "")
+                                        
+                                        # Match workspace_id (remove dashes for comparison)
+                                        workspace_id=current_workspace_id.replace("-", "")
+                                     
+                           
+                                notion_service = NotionService(
+                                    integration_secret=integration_secret,
+                                    org_id=org_id,
+                                    workspace_id= workspace_id,  # Pass workspace_id if supported
+                                    logger=self.logger,
+                                    arango_service=self.arango_service,
+                                    kafka_service=kafka_service,
+                                    config_service=self.config_service
+                                )
+                                
+                                # Process the async generator properly
+                                sync_completed = False
+                                async for result in notion_service.fetch_and_create_notion_records():
+                                    step = result.get("step")
+                                    status = result.get("status")
+                                    message = result.get("message")
+                                    data = result.get("data", {})
+                                    
+                                    if status == "started":
+                                        self.logger.info(f"🔄 {message}")
+                                    elif status == "completed":
+                                        if step == "sync":
+                                            # Final completion
+                                            self.logger.info(f"✅ {message}")
+                                            self.logger.info(f"   📊 Summary: {data.get('user_count', 0)} users, "
+                                                        f"{data.get('page_count', 0)} pages, "
+                                                        f"{data.get('database_count', 0)} databases")
+                                            sync_completed = True
+                                        else:
+                                            # Individual step completion
+                                            self.logger.info(f"✅ {message}")
+                                    elif status == "failed":
+                                        # Error occurred
+                                        self.logger.error(f"❌ {message}")
+                                        raise Exception(result.get("error", "Unknown error"))
+                                
+                                if sync_completed:
+                                    self.logger.info(f"✅ Successfully processed Notion integration {i+1} "
+                                                f"(workspace: {integration_secret})")
+                                    successful_integrations += 1
+                                else:
+                                    self.logger.warning(f"⚠️ Notion integration {i+1} completed but sync status unclear "
+                                                    f"(workspace: {integration_secret})")
+                                    
+                            except Exception as e:
+                                self.logger.error(f"❌ Error processing Notion integration {i+1} "
+                                                f"(workspace: {integration_secret}): {str(e)}")
+                                failed_integrations += 1
+                                # Continue with next integration instead of returning False immediately
+                                continue
+                        
+                        # Log final results
+                        if successful_integrations > 0:
+                            self.logger.info(
+                                f"✅ Successfully processed {successful_integrations} Notion integration(s). "
+                                f"Failed: {failed_integrations}"
+                            )
+                            
+                            # Log global NotionApp statistics
+                            # global_stats = notion_app.get_stats()
+                            # self.logger.info(f"📊 Global NotionApp Stats: {global_stats}")
+                            
+                            # Consider this successful if at least one integration worked
+                            return True
+                        else:
+                            self.logger.error(f"❌ All Notion integrations failed")
+                            return False
+                            
+                    except Exception as e:
+                        self.logger.error(f"❌ Error processing Notion app enabled event: {str(e)}")
+                        return False
 
         except Exception as e:
             self.logger.error(f"❌ Error enabling apps: {str(e)}")
             return False
+
+        self.logger.info(f"✅ Successfully enabled apps for org: {org_id}")
+        return True
+                    
+                   
 
     async def handle_app_disabled(self, payload: dict) -> bool:
         """Handle app disabled event"""
