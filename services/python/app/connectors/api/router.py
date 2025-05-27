@@ -1531,7 +1531,7 @@ async def convert_to_pdf(file_path: str, temp_dir: str) -> str:
 async def get_service_account_credentials(org_id: str, user_id: str, logger, arango_service, google_token_handler, container) -> google.oauth2.credentials.Credentials:
     """Helper function to get service account credentials"""
     try:
-        service_creds_lock = await container.service_creds_lock()
+        service_creds_lock = container.service_creds_lock()
 
         async with service_creds_lock:
             if not hasattr(container, 'service_creds_cache'):
@@ -1576,7 +1576,7 @@ async def get_service_account_credentials(org_id: str, user_id: str, logger, ara
 async def get_user_credentials(org_id: str, user_id: str, logger, google_token_handler, container) -> google.oauth2.credentials.Credentials:
     """Helper function to get cached user credentials"""
     try:
-        user_creds_lock = await container.user_creds_lock()
+        user_creds_lock = container.user_creds_lock()
         cache_key = f"{org_id}_{user_id}"
 
         async with user_creds_lock:

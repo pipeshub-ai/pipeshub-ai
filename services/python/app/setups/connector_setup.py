@@ -456,7 +456,7 @@ async def cache_google_workspace_service_credentials(org_id, arango_service, log
     try:
         google_token_handler = await container.google_token_handler()
         users = await arango_service.get_users(org_id)
-        service_creds_lock = await container.service_creds_lock()
+        service_creds_lock = container.service_creds_lock()
 
         for user in users:
             user_id = user["userId"]
@@ -494,7 +494,7 @@ async def cache_google_workspace_service_credentials(org_id, arango_service, log
 
 async def refresh_google_workspace_user_credentials(org_id, arango_service, logger, container) -> None:
     """Background task to refresh user credentials before they expire"""
-    user_creds_lock = await container.user_creds_lock()
+    user_creds_lock = container.user_creds_lock()
 
     while True:
         try:
