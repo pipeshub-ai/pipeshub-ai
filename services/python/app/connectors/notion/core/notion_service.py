@@ -59,16 +59,16 @@ class NotionService:
                     workspace_data = await response.json()
                     
                     # Process the user data into records
-                    notion_workspace_record = await self._process_workspace_data(workspace_data)
+                    notion_workspace_record_key = await self._process_workspace_data(workspace_data)
                     
                     self.logger.info(f"Successfully fetched user: {workspace_data.get('name', 'Unknown user')}")
-                    return notion_workspace_record
+                    return notion_workspace_record_key
         
         except Exception as e:
             self.logger.error(f"Error fetching Notion user data: {str(e)}")
             raise
     
-    async def _fetch_and_store_users(self, workspace_record):
+    async def _fetch_and_store_users(self, workspace_record_key):
         """
         Fetch all users from the Notion workspace and store them in the database.
         
@@ -115,14 +115,14 @@ class NotionService:
                 self.logger.info(f"Successfully fetched all {len(all_users)} Notion users")
                 
                 # Process all users after they've been completely fetched
-                await self._process_and_store_users(all_users, workspace_record)
+                await self._process_and_store_users(all_users, workspace_record_key)
                 
                 return all_users
         except Exception as e:
             self.logger.error(f"Error fetching Notion users: {str(e)}")
             raise
 
-    async def _process_and_store_users(self, all_users, workspace_record):
+    async def _process_and_store_users(self, all_users, workspace_record_key):
         """
         Process and store a batch of Notion users in the database.
         
@@ -139,7 +139,7 @@ class NotionService:
             
             for user in all_users:
                 user_id = user.get("id").replace("-", "")
-                key = str(uuid4()),
+                key = str(uuid4())
                 
                 # Determine user type and extract relevant information
                 user_type = user.get("type", "")
@@ -155,6 +155,7 @@ class NotionService:
                         "fullName": user_name,
                         "email": email,
                     }
+                    self.logger.info(f"Notion user record: {notion_user_record}")
                     notion_user_records.append(notion_user_record)
             
             # Store the user records
@@ -168,7 +169,7 @@ class NotionService:
                 for user_record in notion_user_records:
                     edge_data = {
                         "_from": f"{CollectionNames.USERS.value}/{user_record['_key']}",
-                        "_to": f"{CollectionNames.GROUPS.value}/{workspace_record['_key']}",
+                        "_to": f"{CollectionNames.GROUPS.value}/{workspace_record_key}",
                         "entityType": "GROUP",
                         "createdAtTimestamp": current_timestamp,
                     }
@@ -198,7 +199,7 @@ class NotionService:
             self.logger.info(f"Creating workspace records and dumping in arangodb")
             workspaceId = user_data.get("id", "").replace("-", "")
             current_timestamp = int(datetime.now().timestamp() * 1000)
-            key = str(uuid4())
+            
             
             # Extract workspace information
             workspace_name = None
@@ -211,6 +212,27 @@ class NotionService:
                     workspace_name = bot_data.get("workspace_name", "Unknown Workspace")
             
             workspace_records = []
+
+             # Check if record with this external record ID already exists
+            existing_key = await self.arango_service.get_key_by_external_record_id(
+                external_record_id=workspaceId,
+                collection_name=CollectionNames.GROUPS.value
+            )
+            
+            if existing_key:
+                self.logger.info(
+                    "📋 Record with external record ID %s already exists with key %s. Updating record.",
+                    workspaceId,
+                    existing_key
+                )
+                return existing_key
+            else:
+                self.logger.info(
+                    "🆕 Creating new record for external record ID %s",
+                    workspaceId
+                )
+            
+            key = str(uuid4())
             # Create Notion user record
             notion_workspace_record = {
                 "_key": key,
@@ -230,7 +252,7 @@ class NotionService:
                 workspace_records, CollectionNames.GROUPS.value
             )
             
-            return notion_workspace_record
+            return key
         except Exception as e:
             self.logger.error(
                 f"Error processing and storing Notion Workspace Record: {str(e)}"
@@ -354,6 +376,11 @@ class NotionService:
         current_timestamp = int(datetime.now().timestamp() * 1000)
         notion_page_records = []
         general_records = []
+        message_events= []
+        endpoints = await self.config_service.get_config(
+                config_node_constants.ENDPOINTS.value
+        )
+        connector_endpoint = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
 
         for page in pages:
             page_id = page.get("id", "").replace("-", "")
@@ -404,11 +431,7 @@ class NotionService:
                 "isDirty": False,
             }
         
-            endpoints = await self.config_service.get_config(
-                config_node_constants.ENDPOINTS.value
-            )
-            connector_endpoint = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
-
+         
             message_event = {
                 "orgId": self.org_id,
                 "recordId": key,
@@ -428,19 +451,13 @@ class NotionService:
                     page.get("last_edited_time")
                 ),
             }
-
-            await self.kafka_service.send_event_to_kafka(message_event)
-            self.logger.info(
-                "📨 Sent Kafka Indexing event for message %s",
-                key,
-            )
-
             notion_page_records.append(notion_page_record)
             general_records.append(general_record)
+            message_events.append(message_event)
 
-        return notion_page_records, general_records
+        return notion_page_records, general_records, message_events
 
-    async def _process_and_store_pages(self, workspace_record):
+    async def _process_and_store_pages(self, workspace_record_key):
         """
         Fetch, transform, and store Notion pages in the database.
 
@@ -453,7 +470,7 @@ class NotionService:
             # Process pages in batches as they're fetched
             async for pages_batch in self._fetch_all_pages():
                 # Transform pages into records
-                notion_page_records, general_records = await self._transform_pages(pages_batch)
+                notion_page_records, general_records,message_events = await self._transform_pages(pages_batch)
 
                 # Store Notion page records
                 if notion_page_records:
@@ -484,11 +501,19 @@ class NotionService:
                         record_page_edges,
                         CollectionNames.IS_OF_TYPE.value,
                     )
-                
+                for message_event in message_events:
+                    await self.kafka_service.send_event_to_kafka(message_event)
+                    self.logger.info(
+                        "📨 Sent Kafka Indexing event for message %s",
+                        message_event['recordId'],
+                    )
+                    
                 # Create parent-child relationships for this batch
                 await self._create_parent_child_relationships(
-                    notion_page_records, workspace_record, recordType="page"
+                    notion_page_records, workspace_record_key, recordType="page"
                 )
+
+               
 
                 # Fetch comments and blocks for this batch
                 await self._fetch_page_comments(notion_page_records)
@@ -605,6 +630,12 @@ class NotionService:
         current_timestamp = int(datetime.now().timestamp() * 1000)
         notion_database_records = []
         general_records = []
+        message_events=[]
+        endpoints = await self.config_service.get_config(
+                config_node_constants.ENDPOINTS.value
+            )
+        connector_endpoint = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
+
 
         for database in databases:
             database_id = database.get("id", "").replace("-", "")
@@ -653,11 +684,7 @@ class NotionService:
                 "isDirty": False,
             }
 
-            endpoints = await self.config_service.get_config(
-                config_node_constants.ENDPOINTS.value
-            )
-            connector_endpoint = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
-
+            
             message_event = {
                 "orgId": self.org_id,
                 "recordId": key,
@@ -677,19 +704,13 @@ class NotionService:
                     database.get("last_edited_time")
                 ),
             }
-
-            await self.kafka_service.send_event_to_kafka(message_event)
-            self.logger.info(
-                "📨 Sent Kafka Indexing event for message %s",
-                key,
-            )
-
+            message_events.append(message_event)
             notion_database_records.append(notion_database_record)
             general_records.append(general_record)
 
-        return notion_database_records, general_records
+        return notion_database_records, general_records,message_events
 
-    async def _process_and_store_databases(self, workspace_record):
+    async def _process_and_store_databases(self, workspace_record_key):
         """
         Fetch, transform, and store Notion databases in the database.
 
@@ -702,7 +723,7 @@ class NotionService:
             # Process databases in batches as they're fetched
             async for databases_batch in self._fetch_all_databases():
                 # Transform databases into records
-                notion_database_records, general_records = await self._transform_databases(
+                notion_database_records, general_records,message_events = await self._transform_databases(
                     databases_batch
                 )
                 # Store Notion database records
@@ -736,8 +757,16 @@ class NotionService:
                         CollectionNames.IS_OF_TYPE.value,
                     )
 
+                for message_event in message_events:
+                    await self.kafka_service.send_event_to_kafka(message_event)
+                    self.logger.info(
+                        "📨 Sent Kafka Indexing event for message %s",
+                        message_event['recordId'],
+                    )
+                    
+
                 await self._create_parent_child_relationships(
-                    notion_database_records, workspace_record, recordType="db"
+                    notion_database_records, workspace_record_key, recordType="db"
                 )
                 
                 all_database_records.extend(notion_database_records)
@@ -750,7 +779,7 @@ class NotionService:
             )
             raise
 
-    async def _create_parent_child_relationships(self, pages_or_databases,workspace_record,recordType):
+    async def _create_parent_child_relationships(self, pages_or_databases,workspace_record_key,recordType):
         """
         Create relationships between pages and their parents/children.
 
@@ -809,7 +838,7 @@ class NotionService:
 
                     elif parent_type == "workspace":
                         edge_data = {
-                            "_from": f"{CollectionNames.GROUPS.value}/{workspace_record['_key']}",
+                            "_from": f"{CollectionNames.GROUPS.value}/{workspace_record_key}",
                             "_to": f"{CollectionNames.NOTION_PAGE_RECORD.value}/{page_key}",
                             "relationship": "PARENT_CHILD",
                             "createdAtTimestamp": int(datetime.now().timestamp() * 1000),
@@ -856,7 +885,7 @@ class NotionService:
 
                     elif parent_type == "workspace":
                         edge_data = {
-                            "_from": f"{CollectionNames.GROUPS.value}/{workspace_record['_key']}",
+                            "_from": f"{CollectionNames.GROUPS.value}/{workspace_record_key}",
                             "_to": f"{CollectionNames.NOTION_DATABASE_RECORD.value}/{db_key}",
                             "relationship": "PARENT_CHILD",
                             "createdAtTimestamp": int(datetime.now().timestamp() * 1000),
@@ -1321,7 +1350,7 @@ class NotionService:
 
 # -----------------------------------------------------------------------------------------------------------------------
 
-    async def _process_single_pages_batch(self, pages_batch: List[Dict[str, Any]], workspace_record: Dict[str, Any]):
+    async def _process_single_pages_batch(self, pages_batch: List[Dict[str, Any]], workspace_record_key: str):
         """
         Process a single batch of pages without yielding - all processing happens here.
         This replaces the batch processing logic from _process_and_store_pages.
@@ -1332,7 +1361,7 @@ class NotionService:
         """
         try:
             # Transform pages into records
-            notion_page_records, general_records = await self._transform_pages(pages_batch)
+            notion_page_records, general_records,message_events = await self._transform_pages(pages_batch)
 
             # Store Notion page records
             if notion_page_records:
@@ -1366,7 +1395,7 @@ class NotionService:
             
             # Create parent-child relationships for this batch
             await self._create_parent_child_relationships(
-                notion_page_records, workspace_record, recordType="page"
+                notion_page_records, workspace_record_key, recordType="page"
             )
 
             await self._fetch_page_comments(notion_page_records)
@@ -1557,7 +1586,7 @@ class NotionService:
             self.logger.error(f"Error sending batch Kafka events: {str(e)}")
             raise
 
-    async def _process_single_databases_batch(self, databases_batch: List[Dict[str, Any]], workspace_record: Dict[str, Any]):
+    async def _process_single_databases_batch(self, databases_batch: List[Dict[str, Any]], workspace_record_key):
         """
         Process a single batch of databases without yielding - all processing happens here.
         This replaces the batch processing logic from _process_and_store_databases.
@@ -1568,7 +1597,7 @@ class NotionService:
         """
         try:
             # Transform databases into records
-            notion_database_records, general_records = await self._transform_databases(databases_batch)
+            notion_database_records, general_records,message_events = await self._transform_databases(databases_batch)
 
             # Store Notion database records
             if notion_database_records:
@@ -1601,9 +1630,18 @@ class NotionService:
                     CollectionNames.IS_OF_TYPE.value,
                 )
 
+            for message_event in message_events:
+                await self.kafka_service.send_event_to_kafka(message_event)
+                self.logger.info(
+                    "📨 Sent Kafka Indexing event for message %s",
+                    message_event['recordId'],
+                )
+                    
+
+
             # Create parent-child relationships for this batch
             await self._create_parent_child_relationships(
-                notion_database_records, workspace_record, recordType="db"
+                notion_database_records, workspace_record_key, recordType="db"
             )
 
         except Exception as e:
@@ -1629,12 +1667,12 @@ class NotionService:
             
             # Step 1: Fetch workspace
             yield {"step": "workspace", "status": "started", "message": "Fetching workspace information"}
-            workspace_record = await self._fetch_current_workspace()
-            yield {"step": "workspace", "status": "completed", "message": "Workspace fetched successfully", "data": {"workspace_key": workspace_record["_key"]}}
+            workspace_record_key = await self._fetch_current_workspace()
+            yield {"step": "workspace", "status": "completed", "message": "Workspace fetched successfully", "data": {"workspace_key": workspace_record_key}}
 
             # Step 2: Fetch and store users
             yield {"step": "users", "status": "started", "message": "Fetching workspace users"}
-            users = await self._fetch_and_store_users(workspace_record)
+            users = await self._fetch_and_store_users(workspace_record_key)
             yield {"step": "users", "status": "completed", "message": f"Processed {len(users)} users", "data": {"user_count": len(users)}}
 
             # Step 3: Process pages in batches, yielding back to caller after each batch
@@ -1651,7 +1689,7 @@ class NotionService:
                     pages_buffer = pages_buffer[batch_size:]
                     
                     # Process this batch
-                    await self._process_single_pages_batch(processing_batch, workspace_record)
+                    await self._process_single_pages_batch(processing_batch, workspace_record_key)
                     total_pages += len(processing_batch)
                     
                     self.logger.info(f"Processed batch of {len(processing_batch)} pages, total: {total_pages}")
@@ -1670,7 +1708,7 @@ class NotionService:
             
             # Process remaining pages
             if pages_buffer:
-                await self._process_single_pages_batch(pages_buffer, workspace_record)
+                await self._process_single_pages_batch(pages_buffer, workspace_record_key)
                 total_pages += len(pages_buffer)
                 yield {
                     "step": "pages_batch",
@@ -1698,7 +1736,7 @@ class NotionService:
                     databases_buffer = databases_buffer[batch_size:]
                     
                     # Process this batch
-                    await self._process_single_databases_batch(processing_batch, workspace_record)
+                    await self._process_single_databases_batch(processing_batch, workspace_record_key)
                     total_databases += len(processing_batch)
                     
                     self.logger.info(f"Processed batch of {len(processing_batch)} databases, total: {total_databases}")
@@ -1717,7 +1755,7 @@ class NotionService:
             
             # Process remaining databases
             if databases_buffer:
-                await self._process_single_databases_batch(databases_buffer, workspace_record)
+                await self._process_single_databases_batch(databases_buffer, workspace_record_key)
                 total_databases += len(databases_buffer)
                 yield {
                     "step": "databases_batch",
@@ -1737,7 +1775,7 @@ class NotionService:
                 "status": "completed", 
                 "message": "Notion sync completed successfully",
                 "data": {
-                    "workspace_key": workspace_record["_key"],
+                    "workspace_key": workspace_record_key,
                     "user_count": len(users),
                     "page_count": total_pages,
                     "database_count": total_databases

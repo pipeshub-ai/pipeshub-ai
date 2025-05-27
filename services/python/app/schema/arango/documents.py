@@ -131,7 +131,7 @@ record_schema = {
             "externalRevisionId": {"type": ["string", "null"]},
             "recordType": {
                 "type": "string",
-                "enum": ["FILE", "DRIVE", "WEBPAGE", "MESSAGE", "MAIL", "OTHERS","DATABASE","COMMENT"],
+                "enum": ["FILE", "DRIVE", "WEBPAGE", "MESSAGE", "MAIL", "OTHERS", "DATABASE", "PAGE_COMMENTS"],
             },
             "version": {"type": "number", "default": 0},
             "origin": {"type": "string", "enum": ["UPLOAD", "CONNECTOR"]},

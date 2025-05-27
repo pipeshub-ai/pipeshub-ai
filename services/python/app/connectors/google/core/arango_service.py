@@ -1598,3 +1598,61 @@ class ArangoService(BaseArangoService):
         except Exception as e:
             self.logger.error("❌ Error checking edge existence: %s", str(e))
             return False
+
+    async def get_key_by_external_record_id(
+        self,
+        external_record_id: str,
+        collection_name: str,
+        transaction: Optional[TransactionDatabase] = None,
+    ) -> Optional[str]:
+        """
+        Get internal record key using the external record ID
+        
+        Args:
+            external_record_id (str): External record ID to look up
+            collection_name (str): Name of the collection to search in
+            transaction (Optional[TransactionDatabase]): Optional database transaction
+        
+        Returns:
+            Optional[str]: Internal record key if found, None otherwise
+        """
+        try:
+            self.logger.info(
+                "🚀 Retrieving internal key for external record ID %s in collection %s",
+                external_record_id,
+                collection_name,
+            )
+            
+            query = f"""
+            FOR doc IN {collection_name}
+                FILTER doc.externalRecordId == @external_record_id
+                RETURN doc._key
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(
+                query, bind_vars={"external_record_id": external_record_id}
+            )
+            result = next(cursor, None)
+            
+            if result:
+                self.logger.info(
+                    "✅ Successfully retrieved internal key for external record ID %s",
+                    external_record_id,
+                )
+                return result
+            else:
+                self.logger.info(
+                    "ℹ️ No internal key found for external record ID %s in collection %s",
+                    external_record_id,
+                    collection_name,
+                )
+                return None
+        
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to retrieve internal key for external record ID %s: %s",
+                external_record_id,
+                str(e),
+            )
+            return None
+
