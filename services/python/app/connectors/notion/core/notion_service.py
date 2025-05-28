@@ -170,7 +170,7 @@ class NotionService:
                 for user_record in notion_user_records:
                     edge_data = {
                         "_from": f"{CollectionNames.USERS.value}/{user_record['_key']}",
-                        "_to": f"{CollectionNames.GROUPS.value}/{workspace_record_key}",
+                        "_to": f"{CollectionNames.RECORD_GROUPS.value}/{workspace_record_key}",
                         "entityType": "GROUP",
                         "createdAtTimestamp": current_timestamp,
                     }
@@ -215,7 +215,7 @@ class NotionService:
              # Check if record with this external record ID already exists
             existing_key = await self.arango_service.get_key_by_external_record_id(
                 external_record_id=workspaceId,
-                collection_name=CollectionNames.GROUPS.value
+                collection_name=CollectionNames.RECORD_GROUPS.value
             )
 
             if existing_key:
@@ -237,18 +237,18 @@ class NotionService:
                 "_key": key,
                 "orgId": self.org_id,
                 "groupName": user_data.get("name", ""),
-                "externalRecordId": workspaceId,
+                "externalGroupId": workspaceId,
                 "groupType": "NOTION_WORKSPACE",
                 "createdAtTimestamp": current_timestamp,
                 "connectorName": "NOTION",
                 "updatedAtTimestamp": current_timestamp,
                 "lastSyncTimestamp": current_timestamp,
             }
-
+           
             workspace_records.append(notion_workspace_record)
-
+            print(workspace_records)
             await self.arango_service.batch_upsert_nodes(
-                workspace_records, CollectionNames.GROUPS.value
+                workspace_records, CollectionNames.RECORD_GROUPS.value
             )
 
             return key
@@ -793,6 +793,7 @@ class NotionService:
             )
 
             relationship_edges = []
+            group_edges=[]
             if(recordType=="page"):
                 # Lists to hold edges
                 self.logger.info("creating page parent relationship")
@@ -811,8 +812,8 @@ class NotionService:
 
                         # Create edge from parent to child using _key
                         edge_data = {
-                            "_from": f"{CollectionNames.NOTION_PAGE_RECORD.value}/{parent_key}",
-                            "_to": f"{CollectionNames.NOTION_PAGE_RECORD.value}/{page_key}",
+                            "_from": f"{CollectionNames.RECORDS.value}/{parent_key}",
+                            "_to": f"{CollectionNames.RECORDS.value}/{page_key}",
                             "relationship": "PARENT_CHILD",
                             "createdAtTimestamp": int(datetime.now().timestamp() * 1000),
                         }
@@ -825,8 +826,8 @@ class NotionService:
 
                         # Create edge from parent database to child page using _key
                         edge_data = {
-                            "_from": f"{CollectionNames.NOTION_DATABASE_RECORD.value}/{parent_key}",
-                            "_to": f"{CollectionNames.NOTION_PAGE_RECORD.value}/{page_key}",
+                            "_from": f"{CollectionNames.RECORDS.value}/{parent_key}",
+                            "_to": f"{CollectionNames.RECORDS.value}/{page_key}",
                             "relationship": "PARENT_CHILD",
                             "createdAtTimestamp": int(datetime.now().timestamp() * 1000),
                         }
@@ -834,12 +835,12 @@ class NotionService:
 
                     elif parent_type == "workspace":
                         edge_data = {
-                            "_from": f"{CollectionNames.GROUPS.value}/{workspace_record_key}",
-                            "_to": f"{CollectionNames.NOTION_PAGE_RECORD.value}/{page_key}",
-                            "relationship": "PARENT_CHILD",
+                            "_from": f"{CollectionNames.RECORD_GROUPS.value}/{workspace_record_key}",
+                            "_to": f"{CollectionNames.RECORDS.value}/{page_key}",
+                            "entityType": "GROUP",
                             "createdAtTimestamp": int(datetime.now().timestamp() * 1000),
                         }
-                        relationship_edges.append(edge_data)
+                        group_edges.append(edge_data)
 
 
 
@@ -858,8 +859,8 @@ class NotionService:
 
                         # Create edge from parent page to child database using _key
                         edge_data = {
-                            "_from": f"{CollectionNames.NOTION_PAGE_RECORD.value}/{parent_key}",
-                            "_to": f"{CollectionNames.NOTION_DATABASE_RECORD.value}/{db_key}",
+                            "_from": f"{CollectionNames.RECORDS.value}/{parent_key}",
+                            "_to": f"{CollectionNames.RECORDS.value}/{db_key}",
                             "relationship": "PARENT_CHILD",
                             "createdAtTimestamp": int(datetime.now().timestamp() * 1000),
                         }
@@ -871,8 +872,8 @@ class NotionService:
                         parent_key = await self._get_or_create_db_key(parent_id)
 
                         edge_data = {
-                            "_from": f"{CollectionNames.NOTION_DATABASE_RECORD.value}/{parent_key}",
-                            "_to": f"{CollectionNames.NOTION_DATABASE_RECORD.value}/{db_key}",
+                            "_from": f"{CollectionNames.RECORDS.value}/{parent_key}",
+                            "_to": f"{CollectionNames.RECORDS.value}/{db_key}",
                             "relationship": "PARENT_CHILD",
                             "createdAtTimestamp": int(datetime.now().timestamp() * 1000),
                         }
@@ -880,15 +881,22 @@ class NotionService:
 
                     elif parent_type == "workspace":
                         edge_data = {
-                            "_from": f"{CollectionNames.GROUPS.value}/{workspace_record_key}",
-                            "_to": f"{CollectionNames.NOTION_DATABASE_RECORD.value}/{db_key}",
-                            "relationship": "PARENT_CHILD",
+                            "_from": f"{CollectionNames.RECORD_GROUPS.value}/{workspace_record_key}",
+                            "_to": f"{CollectionNames.RECORDS.value}/{db_key}",
+                            "entityType": "GROUP",
                             "createdAtTimestamp": int(datetime.now().timestamp() * 1000),
                         }
-                        relationship_edges.append(edge_data)
-            print('hi')
+                        group_edges.append(edge_data)
 
             # Batch create edges
+            if(group_edges):
+                await self.arango_service.batch_create_edges(
+                    group_edges, CollectionNames.BELONGS_TO_RECORD_GROUP.value
+                )
+
+                self.logger.info(
+                    f"Created {len(relationship_edges)} parent-child relationships"
+                )
             if relationship_edges:
                 await self.arango_service.batch_create_edges(
                     relationship_edges, CollectionNames.RECORD_RELATIONS.value
@@ -898,9 +906,7 @@ class NotionService:
                     f"Created {len(relationship_edges)} parent-child relationships"
                 )
 
-                return len(relationship_edges)
-
-            return 0
+            return len(relationship_edges)+len(group_edges)
 
         except Exception as e:
             self.logger.error(f"Error creating parent-child relationships: {str(e)}")
@@ -1087,6 +1093,7 @@ class NotionService:
             page_comment_records = []
             general_records = []
             comment_edges = []
+            message_events=[]
             current_timestamp = int(datetime.now().timestamp() * 1000)
 
             for page in pages:
@@ -1201,11 +1208,8 @@ class NotionService:
                         "modifiedAtSourceTimestamp": current_timestamp
                     }
 
-                    await self.kafka_service.send_event_to_kafka(message_event)
-                    self.logger.info(
-                        "📨 Sent Kafka Indexing event for message %s",
-                        key,
-                    )
+                    message_events.append(message_event)
+                    
 
                     page_comment_records.append(page_comment_record)
                     general_records.append(general_record)
@@ -1254,6 +1258,13 @@ class NotionService:
 
                 self.logger.info(f"Successfully processed comments for {len(page_comment_records)} pages")
 
+
+            for message in message_events:
+                await self.kafka_service.send_event_to_kafka(message_event)
+                self.logger.info(
+                    "📨 Sent Kafka Indexing event for message %s",
+                    message_event['recordId'],
+                )
         except Exception as e:
             self.logger.error(f"Error fetching page comments: {str(e)}")
             raise
@@ -1387,6 +1398,13 @@ class NotionService:
             await self._create_parent_child_relationships(
                 notion_page_records, workspace_record_key, recordType="page"
             )
+
+            for message_event in message_events:
+                await self.kafka_service.send_event_to_kafka(message_event)
+                self.logger.info(
+                    "📨 Sent Kafka Indexing event for message %s",
+                    message_event['recordId'],
+                )
 
             await self._fetch_page_comments(notion_page_records)
             await self._process_blocks_for_pages_batch(notion_page_records)
@@ -1817,8 +1835,8 @@ class NotionService:
             }
 
             record_relation_edge_data = {
-                "_from": f"{CollectionNames.NOTION_PAGE_RECORD.value}/{page['_key']}",
-                "_to": f"{CollectionNames.FILES.value}/{key}",
+                "_from": f"{CollectionNames.RECORDS.value}/{page['_key']}",
+                "_to": f"{CollectionNames.RECORDS.value}/{key}",
                 "relationship": "PARENT_CHILD",
                 "createdAtTimestamp": int(datetime.now().timestamp() * 1000)
             }

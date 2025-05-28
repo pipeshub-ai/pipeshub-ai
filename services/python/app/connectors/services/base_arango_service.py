@@ -22,6 +22,7 @@ from app.schema.arango.documents import (
     orgs_schema,
     record_schema,
     user_schema,
+    record_group_schema,
 )
 from app.schema.arango.edges import (
     basic_edge_schema,
@@ -60,6 +61,7 @@ NODE_COLLECTIONS = [
     (CollectionNames.NOTION_PAGE_RECORD.value, notion_page_schema),
     (CollectionNames.NOTION_DATABASE_RECORD.value, notion_database_schema),
     (CollectionNames.NOTION_COMMENT_RECORD.value, notion_comments_schema),
+    (CollectionNames.RECORD_GROUPS.value, record_group_schema),
 
 ]
 
@@ -79,6 +81,7 @@ EDGE_COLLECTIONS = [
     (CollectionNames.INTER_CATEGORY_RELATIONS.value, basic_edge_schema),
     (CollectionNames.BELONGS_TO_KNOWLEDGE_BASE.value, belongs_to_schema),
     (CollectionNames.PERMISSIONS_TO_KNOWLEDGE_BASE.value, permissions_schema),
+    (CollectionNames.BELONGS_TO_RECORD_GROUP.value,belongs_to_schema),
 ]
 
 class BaseArangoService:

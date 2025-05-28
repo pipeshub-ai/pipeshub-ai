@@ -287,7 +287,7 @@ record_group_schema = {
             },
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
-            "lastSyncTimestampstamp": {"type": "number"},
+            "lastSyncTimestamp": {"type": "number"},
             "isDeletedAtSource": {"type": "boolean", "default": False},
             "deletedAtSourceTimestamp": {"type": "number"},
             "sourceCreatedAtTimestamp": {"type": "number"},
