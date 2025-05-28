@@ -1,4 +1,5 @@
 import uuid
+from typing import Optional
 
 from app.config.configuration_service import DefaultEndpoints, config_node_constants
 from app.config.utils.named_constants.arangodb_constants import (
@@ -13,12 +14,12 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class GmailChangeHandler:
-    def __init__(self, config_service, arango_service, logger):
+    def __init__(self, config_service, arango_service, logger) -> None:
         self.config_service = config_service
         self.arango_service = arango_service
         self.logger = logger
 
-    async def process_changes(self, user_service, changes, org_id, user) -> bool:
+    async def process_changes(self, user_service, changes, org_id, user) -> Optional[bool]:
         """Process changes since last sync time"""
         self.logger.info("🚀 Processing changes")
         self.logger.info(f"changes: {changes}")
@@ -553,6 +554,7 @@ class GmailChangeHandler:
                                     "orgId": org_id,
                                     "recordId": attachment["_key"],
                                     "virtualRecordId":attachment.get("virtualRecordId", None),
+                                    "summaryDocumentId":attachment.get("summaryDocumentId", None),
                                     "recordName": attachment.get("recordName", "Unnamed Attachment"),
                                     "recordType": RecordTypes.ATTACHMENT.value,
                                     "recordVersion": 0,
@@ -579,6 +581,7 @@ class GmailChangeHandler:
                                 "orgId": org_id,
                                 "recordId": existing_message["_key"],
                                 "virtualRecordId": existing_message.get("virtualRecordId", None),
+                                "summaryDocumentId": existing_message.get("summaryDocumentId", None),
                                 "recordName": existing_message.get("recordName", "No Subject"),
                                 "recordType": RecordTypes.MAIL.value,
                                 "recordVersion": 0,

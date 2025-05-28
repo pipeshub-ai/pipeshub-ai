@@ -2,7 +2,6 @@
 
 import json
 import uuid
-from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Set, Tuple
 
 from arango import ArangoClient
@@ -264,29 +263,6 @@ class ArangoService(BaseArangoService):
         except Exception as e:
             self.logger.error(f"❌ Error retrieving historyId: {str(e)}")
             return None
-
-    async def cleanup_expired_tokens(self, expiry_hours: int = 24) -> int:
-        """Clean up tokens that haven't been updated recently"""
-        try:
-            expiry_time = datetime.now(timezone.utc) - timedelta(hours=expiry_hours)
-
-            query = """
-            FOR token IN pageTokens
-            FILTER token.updatedAt < @expiry_time
-            REMOVE token IN pageTokens
-            RETURN OLD
-            """
-
-            removed = list(
-                self.db.aql.execute(query, bind_vars={"expiry_time": expiry_time})
-            )
-
-            self.logger.info("🧹 Cleaned up %d expired tokens", len(removed))
-            return len(removed)
-
-        except Exception as e:
-            self.logger.error("❌ Error cleaning up tokens: %s", str(e))
-            return 0
 
     async def get_document(self, document_key: str, collection: str) -> Optional[Dict]:
         """Get a document by its key"""
@@ -1132,6 +1108,7 @@ class ArangoService(BaseArangoService):
         except Exception as e:
             self.logger.error("❌ Error saving entity to people collection: %s", str(e))
             return False
+
 
     async def get_key_by_external_file_id(
         self, external_file_id: str, transaction: Optional[TransactionDatabase] = None

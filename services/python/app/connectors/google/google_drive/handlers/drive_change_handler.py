@@ -1,6 +1,6 @@
 import traceback
 import uuid
-from typing import Dict
+from typing import Dict, Optional, Tuple
 
 from app.config.configuration_service import DefaultEndpoints, config_node_constants
 from app.config.utils.named_constants.arangodb_constants import (
@@ -16,12 +16,12 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 
 
 class DriveChangeHandler:
-    def __init__(self, logger, config_service, arango_service):
+    def __init__(self, logger, config_service, arango_service) -> None:
         self.logger = logger
         self.config_service = config_service
         self.arango_service = arango_service
 
-    async def process_change(self, change: Dict, user_service, org_id, user_id):
+    async def process_change(self, change: Dict, user_service, org_id, user_id) -> Optional[Dict]:
         """Process a single change with revision checking"""
         txn = None
         try:
@@ -225,6 +225,7 @@ class DriveChangeHandler:
                     "orgId": org_id,
                     "recordId": file_key,
                     "virtualRecordId": db_record.get("virtualRecordId", None),
+                    "summaryDocumentId": db_record.get("summaryDocumentId", None),
                     "recordName": db_record.get("recordName", ""),
                     "recordVersion": 0,
                     "recordType": db_record.get("recordType", ""),
@@ -248,6 +249,7 @@ class DriveChangeHandler:
                     "orgId": org_id,
                     "recordId": file_key,
                     "virtualRecordId": db_record.get("virtualRecordId", None),
+                    "summaryDocumentId": db_record.get("summaryDocumentId", None),
                     "recordName": db_record.get("recordName", ""),
                     "recordVersion": 0,
                     "recordType": db_record.get("recordType", ""),
@@ -283,7 +285,7 @@ class DriveChangeHandler:
 
     async def needs_update(
         self, updated_file, existing_file, existing_record, transaction
-    ) -> bool:
+    ) -> Tuple[bool, bool]:
         """Check if file needs update based on revision"""
         try:
 
@@ -411,7 +413,7 @@ class DriveChangeHandler:
             )
             return False, False
 
-    async def handle_removal(self, existing_file, existing_record, transaction=None):
+    async def handle_removal(self, existing_file, existing_record, transaction=None) -> Optional[Dict]:
         """Handle file removal or access loss"""
         try:
             self.logger.info(
@@ -471,7 +473,7 @@ class DriveChangeHandler:
             )
             raise
 
-    async def handle_insert(self, file_metadata, org_id, transaction):
+    async def handle_insert(self, file_metadata, org_id, transaction) -> Optional[Dict]:
         """Handle file insert"""
         try:
             self.logger.info(
@@ -614,7 +616,7 @@ class DriveChangeHandler:
 
     async def handle_update(
         self, updated_file, existing_file, existing_record, org_id, transaction
-    ):
+    ) -> Optional[Dict]:
         """Handle file update or creation"""
         try:
             self.logger.info("🚀 Handling update of file: %s", updated_file.get("name"))
