@@ -21,6 +21,7 @@ export const configPaths = {
     okta: '/services/auth/okta',
     microsoft: '/services/auth/microsoft',
     sso: '/services/auth/sso',
+    oauth: '/services/auth/oauth',
   },
   aiModels: '/services/aiModels',
   db: {

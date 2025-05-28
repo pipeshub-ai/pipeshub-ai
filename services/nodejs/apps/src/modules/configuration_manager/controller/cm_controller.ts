@@ -497,6 +497,81 @@ export const setGoogleAuthConfig =
     }
   };
 
+export const getOAuthConfig =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const configManagerConfig = loadConfigurationManagerConfig();
+
+      const encryptedAuthConfig = await keyValueStoreService.get<string>(
+        configPaths.auth.oauth,
+      );
+
+      if (encryptedAuthConfig) {
+        const authConfig = JSON.parse(
+          EncryptionService.getInstance(
+            configManagerConfig.algorithm,
+            configManagerConfig.secretKey,
+          ).decrypt(encryptedAuthConfig),
+        );
+        res.status(200).json(authConfig).end();
+      } else {
+        res.status(200).json({}).end();
+      }
+    } catch (error: any) {
+      logger.error('Error getting OAuth config', { error });
+      next(error);
+    }
+  };
+
+export const setOAuthConfig =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const configManagerConfig = loadConfigurationManagerConfig();
+
+      const {
+        providerName,
+        clientId,
+        clientSecret,
+        authorizationUrl,
+        tokenEndpoint,
+        userInfoEndpoint,
+        scope,
+        redirectUri,
+      } = req.body;
+
+      const oauthConfig = {
+        providerName,
+        clientId,
+        ...(clientSecret && { clientSecret }),
+        ...(authorizationUrl && { authorizationUrl }),
+        ...(tokenEndpoint && { tokenEndpoint }),
+        ...(userInfoEndpoint && { userInfoEndpoint }),
+        ...(scope && { scope }),
+        ...(redirectUri && { redirectUri }),
+      };
+
+      const encryptedAuthConfig = EncryptionService.getInstance(
+        configManagerConfig.algorithm,
+        configManagerConfig.secretKey,
+      ).encrypt(JSON.stringify(oauthConfig));
+
+      await keyValueStoreService.set<string>(
+        configPaths.auth.oauth,
+        encryptedAuthConfig,
+      );
+
+      res
+        .status(200)
+        .json({ message: 'OAuth config created successfully' })
+        .end();
+    } catch (error: any) {
+      logger.error('Error creating OAuth config', { error });
+      next(error);
+    }
+  };
+
 export const createArangoDbConfig =
   (keyValueStoreService: KeyValueStoreService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {

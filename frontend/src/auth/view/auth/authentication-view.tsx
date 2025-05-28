@@ -50,10 +50,12 @@ import {
   SignInWithGoogle,
   SignInWithAzureAd,
   SignInWithMicrosoft,
+  SignInWithOAuth,
 } from 'src/auth/context/jwt';
 
 import OtpSignIn from './otp-sign-in';
 import SamlSignIn from './saml-sign-in';
+import OAuthSignIn from './oauth-sign-in';
 import PasswordSignIn from './password-sign-in';
 
 interface RootState {
@@ -190,6 +192,11 @@ const socialConfig = {
     icon: microsoftAzureIcon,
     label: 'Continue with Azure AD',
     color: '#0078D4',
+  },
+  oauth: {
+    icon: 'mdi:key-variant',
+    label: 'Continue with OAuth',
+    color: '#6366F1',
   },
 };
 
@@ -334,6 +341,30 @@ export const AuthenticationView = () => {
     } catch (err) {
       console.error('Microsoft/Azure login failed', err);
       setError('Authentication failed. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Handle OAuth login success
+  const handleOAuthLoginSuccess = async (credentials: { accessToken?: string; idToken?: string }) => {
+    try {
+      if (!credentials.accessToken && !credentials.idToken) {
+        throw new Error('No credentials received from OAuth provider');
+      }
+
+      setLoading(true);
+      const authResponse = await SignInWithOAuth(credentials);
+
+      // Check if this is the final step
+      if (authResponse.accessToken && authResponse.refreshToken) {
+        handleAuthComplete();
+      } else if (authResponse.nextStep !== undefined) {
+        handleNextAuthStep(authResponse);
+      }
+    } catch (err) {
+      console.error('OAuth login failed', err);
+      setError('OAuth authentication failed. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -533,7 +564,7 @@ export const AuthenticationView = () => {
     ['password', 'otp', 'samlSso'].includes(method)
   );
   const socialMethods = currentStep.methods.filter((method) =>
-    ['google', 'microsoft', 'azureAd'].includes(method)
+    ['google', 'microsoft', 'azureAd', 'oauth'].includes(method)
   );
 
   // Get the component for the current tab
@@ -730,6 +761,24 @@ export const AuthenticationView = () => {
                         clientId={clientId}
                         authority={authority}
                         onSuccess={handleMsalLoginSuccess}
+                        onError={(errorMessage) => setError(errorMessage)}
+                      />
+                    );
+                  }
+
+                  if (method === 'oauth') {
+                    const oauthConfig = currentStep?.authProviders?.oauth;
+                    
+                    if (!oauthConfig) {
+                      return null;
+                    }
+
+                    return (
+                      <OAuthSignIn
+                        key={method}
+                        email={emailFromStore}
+                        authConfig={oauthConfig}
+                        onSuccess={handleOAuthLoginSuccess}
                         onError={(errorMessage) => setError(errorMessage)}
                       />
                     );

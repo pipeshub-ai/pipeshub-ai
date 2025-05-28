@@ -35,6 +35,7 @@ import {
   getAzureAuthConfig,
   getGoogleAuthConfig,
   getMicrosoftAuthConfig,
+  getOAuthConfig,
 } from '../utils/auth-configuration-service';
 
 // Authentication method type
@@ -60,6 +61,7 @@ interface ConfigStatus {
   microsoft: boolean;
   azureAd: boolean;
   samlSso: boolean;
+  oauth: boolean;
 }
 
 // Configuration for auth methods with icons and descriptions
@@ -116,6 +118,15 @@ const AUTH_METHODS_CONFIG = [
     requiresSmtp: false,
     requiresConfig: true,
   },
+  {
+    type: 'oauth',
+    icon: 'mdi:key-variant',
+    title: 'OAuth',
+    description: 'Generic OAuth 2.0 provider authentication',
+    configurable: true,
+    requiresSmtp: false,
+    requiresConfig: true,
+  },
 ];
 
 // SMTP configuration item
@@ -145,6 +156,7 @@ const AuthMethodsList: React.FC<AuthMethodsListProps> = ({
     microsoft: false,
     azureAd: false,
     samlSso: false,
+    oauth: false,
   });
   const [checkingConfigs, setCheckingConfigs] = useState(true);
   const [lastConfigured, setLastConfigured] = useState<string | null>(null);
@@ -160,6 +172,7 @@ const AuthMethodsList: React.FC<AuthMethodsListProps> = ({
           getMicrosoftAuthConfig(),
           getAzureAuthConfig(),
           getSamlSsoConfig(),
+          getOAuthConfig(),
         ]);
 
         // Check if each configuration has required fields
@@ -185,11 +198,20 @@ const AuthMethodsList: React.FC<AuthMethodsListProps> = ({
           !!results[3].value.emailKey &&
           !!results[3].value.certificate;
 
+        // Check OAuth configuration
+        const oauthConfigured =
+          results[4].status === 'fulfilled' &&
+          results[4].value &&
+          !!results[4].value.clientId &&
+          !!results[4].value.providerName;
+
+
         const newConfigStatus = {
           google: googleConfigured,
           microsoft: microsoftConfigured,
           azureAd: azureConfigured,
           samlSso: samlConfigured, // Now this is definitely a boolean value
+          oauth: oauthConfigured,
         };
 
         setConfigStatus(newConfigStatus);
@@ -201,6 +223,7 @@ const AuthMethodsList: React.FC<AuthMethodsListProps> = ({
             (lastConfigured === 'microsoft' && microsoftConfigured) ||
             (lastConfigured === 'azureAd' && azureConfigured) ||
             (lastConfigured === 'samlSso' && samlConfigured) ||
+            (lastConfigured === 'oauth' && oauthConfigured) ||
             (lastConfigured === 'smtp' && smtpConfigured);
 
           if (wasConfigured) {
@@ -245,6 +268,7 @@ const AuthMethodsList: React.FC<AuthMethodsListProps> = ({
     // Find the current method
     const currentMethod = authMethods.find((m) => m.type === type);
 
+
     // If we're trying to disable the only enabled method, show error
     if (currentMethod?.enabled) {
       const enabledCount = authMethods.filter((m) => m.enabled).length;
@@ -283,6 +307,9 @@ const AuthMethodsList: React.FC<AuthMethodsListProps> = ({
             break;
           case 'samlSso':
             isConfigured = configStatus.samlSso;
+            break;
+          case 'oauth':
+            isConfigured = configStatus.oauth;
             break;
           default:
             break;
@@ -326,6 +353,8 @@ const AuthMethodsList: React.FC<AuthMethodsListProps> = ({
           return !configStatus.azureAd;
         case 'samlSso':
           return !configStatus.samlSso;
+        case 'oauth':
+          return !configStatus.oauth;
         default:
           break;
       }
@@ -363,6 +392,9 @@ const AuthMethodsList: React.FC<AuthMethodsListProps> = ({
           break;
         case 'samlSso':
           isConfigured = configStatus.samlSso;
+          break;
+        case 'oauth':
+          isConfigured = configStatus.oauth;
           break;
         default:
           break;
@@ -459,6 +491,9 @@ const AuthMethodsList: React.FC<AuthMethodsListProps> = ({
                 break;
               case 'samlSso':
                 isConfigured = configStatus.samlSso;
+                break;
+              case 'oauth':
+                isConfigured = configStatus.oauth;
                 break;
               default:
                 break;

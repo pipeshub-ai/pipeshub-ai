@@ -31,7 +31,8 @@ interface IUserActivity extends Document {
     | 'AUTH SERVICE'
     | 'GOOGLE OAUTH'
     | 'MICROSOFT OAUTH'
-    | 'SSO';
+    | 'SSO'
+    | 'OAUTH';
   ipAddress: string;
   isDeleted?: boolean;
   createdAt?: Date;
@@ -76,6 +77,7 @@ const UserActivitySchema = new Schema<IUserActivity>(
         'MICROSOFT OAUTH',
         'SSO',
         'AZUREAD OAUTH',
+        'OAUTH',
       ],
     },
     ipAddress: {

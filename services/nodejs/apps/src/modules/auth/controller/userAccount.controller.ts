@@ -51,6 +51,7 @@ import {
   ConfigurationManagerService,
   GOOGLE_AUTH_CONFIG_PATH,
   MICROSOFT_AUTH_CONFIG_PATH,
+  OAUTH_AUTH_CONFIG_PATH,
 } from '../services/cm.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { Org } from '../../user_management/schema/org.schema';
@@ -271,6 +272,19 @@ export class UserAccountController {
             this.config.scopedJwtSecret,
           );
         authProviders.azuread = configManagerResponse.data;
+      }
+
+      if (allowedMethods.includes(AuthMethodType.OAUTH)) {
+        const configManagerResponse =
+          await this.configurationManagerService.getConfig(
+            this.config.cmBackend,
+            OAUTH_AUTH_CONFIG_PATH,
+            user,
+            this.config.scopedJwtSecret,
+          );
+        
+        const { clientSecret, tokenEndpoint, userInfoEndpoint, ...publicConfig } = configManagerResponse.data;
+        authProviders.oauth = publicConfig;
       }
 
       res.json({
@@ -1037,6 +1051,90 @@ export class UserAccountController {
     });
   }
 
+  async authenticateWithOAuth(
+    user: Record<string, any>,
+    credentials: Record<string, any>,
+    ip: string,
+  ) {
+    const configManagerResponse =
+      await this.configurationManagerService.getConfig(
+        this.config.cmBackend,
+        OAUTH_AUTH_CONFIG_PATH,
+        user,
+        this.config.scopedJwtSecret,
+      );
+    
+    const { 
+      userInfoEndpoint
+    } = configManagerResponse.data;
+
+    const { accessToken, idToken } = credentials;
+
+    if (!accessToken && !idToken) {
+      throw new BadRequestError('Access token or ID token is required for OAuth authentication');
+    }
+
+    try {
+      // Verify token and get user info from OAuth provider
+      let userInfo;
+      
+      if (idToken) {
+        // For ID tokens, we need proper JWT verification
+        // Since this is a generic OAuth implementation, we'll use the userInfo endpoint approach
+        // ID token verification requires provider-specific JWKS endpoints and is complex for generic OAuth
+        throw new BadRequestError('ID token verification not supported for generic OAuth. Please use access token flow.');
+      } else if (accessToken && userInfoEndpoint) {
+        // If access token is provided, fetch user info from the provider
+        const userInfoResponse = await fetch(userInfoEndpoint, {
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+        });
+
+        if (!userInfoResponse.ok) {
+          this.logger.warn('OAuth userinfo fetch failed', { 
+            status: userInfoResponse.status, 
+            provider: configManagerResponse.data.providerName 
+          });
+          throw new UnauthorizedError('Failed to fetch user information from OAuth provider');
+        }
+
+        userInfo = await userInfoResponse.json();
+      } else {
+        throw new BadRequestError('Cannot verify user information: missing user info endpoint or ID token');
+      }
+
+      // Verify email matches
+      const providerEmail = userInfo.email || userInfo.preferred_username || userInfo.sub;
+      if (!providerEmail) {
+        throw new BadRequestError('No email found in OAuth provider response');
+      }
+
+      this.logger.debug('entered email', user.email);
+      this.logger.debug('authenticated email', providerEmail);
+
+      if (providerEmail !== user.email) {
+        throw new BadRequestError(
+          'Email mismatch: OAuth provider email does not match session email.',
+        );
+      }
+
+      await UserActivities.create({
+        email: user.email,
+        activityType: LOGIN,
+        ipAddress: ip,
+        loginMode: 'OAUTH',
+      });
+
+    } catch (error) {
+      if (error instanceof Error && (error.message.includes('BadRequestError') || error.message.includes('UnauthorizedError'))) {
+        throw error;
+      }
+      throw new UnauthorizedError(`OAuth authentication failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
   async authenticate(
     req: AuthSessionRequest,
     res: Response,
@@ -1101,6 +1199,9 @@ export class UserAccountController {
             req.ip || ' ',
           );
           break;
+        case AuthMethodType.OAUTH:
+          await this.authenticateWithOAuth(user, credentials, req.ip!);
+          break;
         case AuthMethodType.SAML_SSO:
           break;
         default:
@@ -1153,6 +1254,19 @@ export class UserAccountController {
               this.config.scopedJwtSecret,
             );
           authProviders.azuread = configManagerResponse.data;
+        }
+
+        if (allowedMethods.includes(AuthMethodType.OAUTH)) {
+          const configManagerResponse =
+            await this.configurationManagerService.getConfig(
+              this.config.cmBackend,
+              OAUTH_AUTH_CONFIG_PATH,
+              user,
+              this.config.scopedJwtSecret,
+            );
+          
+          const { clientSecret, tokenEndpoint, userInfoEndpoint, ...publicConfig } = configManagerResponse.data;
+          authProviders.oauth = publicConfig;
         }
         res.json({
           status: 'success',
@@ -1240,4 +1354,94 @@ export class UserAccountController {
       next(error);
     }
   };
+
+  async exchangeOAuthToken(
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const { code, email, provider, redirectUri } = req.body;
+
+      if (!code || !email || !provider || !redirectUri) {
+        this.logger.warn('OAuth token exchange failed: missing required parameters', { 
+          hasCode: !!code, 
+          hasEmail: !!email, 
+          hasProvider: !!provider, 
+          hasRedirectUri: !!redirectUri 
+        });
+        throw new BadRequestError('Missing required OAuth parameters');
+      }
+
+      // Find user to get proper context for configuration access
+      const authToken = iamJwtGenerator(email, this.config.scopedJwtSecret);
+      const user = await this.iamService.getUserByEmail(email, authToken);
+
+      if (user.statusCode !== 200) {
+        throw new NotFoundError('User not found');
+      }
+
+      // Get OAuth configuration using configuration manager service
+      const configManagerResponse =
+        await this.configurationManagerService.getConfig(
+          this.config.cmBackend,
+          OAUTH_AUTH_CONFIG_PATH,
+          user.data,
+          this.config.scopedJwtSecret,
+        );
+
+      if (!configManagerResponse.data) {
+        throw new BadRequestError('OAuth is not configured');
+      }
+
+      const oauthConfig = configManagerResponse.data;
+
+      this.logger.debug('OAuth token exchange initiated', {
+        provider: oauthConfig.providerName || 'Unknown',
+        hasValidConfig: !!(oauthConfig.tokenEndpoint && oauthConfig.clientId && oauthConfig.clientSecret)
+      });
+
+      if (!oauthConfig.tokenEndpoint) {
+        throw new BadRequestError('OAuth token endpoint not configured');
+      }
+
+      // Exchange authorization code for tokens
+      const tokenResponse = await fetch(oauthConfig.tokenEndpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          client_id: oauthConfig.clientId,
+          client_secret: oauthConfig.clientSecret,
+          code,
+          redirect_uri: redirectUri,
+        }),
+      });
+
+      if (!tokenResponse.ok) {
+        const errorBody = await tokenResponse.text();
+        this.logger.error('OAuth token exchange failed', {
+          status: tokenResponse.status,
+          statusText: tokenResponse.statusText,
+          errorBody,
+          tokenEndpoint: oauthConfig.tokenEndpoint,
+        });
+        throw new BadRequestError(`Failed to exchange authorization code for tokens: ${tokenResponse.status} ${tokenResponse.statusText} - ${errorBody}`);
+      }
+
+      const tokens = await tokenResponse.json();
+
+      res.status(200).json({
+        access_token: tokens.access_token,
+        id_token: tokens.id_token,
+        token_type: tokens.token_type,
+        expires_in: tokens.expires_in,
+      });
+
+    } catch (error) {
+      next(error);
+    }
+  }
 }

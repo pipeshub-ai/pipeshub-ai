@@ -292,6 +292,31 @@ export const SignInWithMicrosoft = async (
   }
 };
 
+interface OAuthCredentials {
+  accessToken?: string;
+  idToken?: string;
+}
+
+export const SignInWithOAuth = async (credential: OAuthCredentials): Promise<AuthResponse> => {
+  try {
+    const res = await axios.post(`${CONFIG.authUrl}/api/v1/userAccount/authenticate`, {
+      credentials: credential,
+      method: 'oauth',
+    });
+
+    const response = res.data as AuthResponse;
+
+    // Check if this is the final step with tokens
+    if (response.accessToken && response.refreshToken) {
+      setSession(response.accessToken, response.refreshToken);
+    }
+
+    return response;
+  } catch (error) {
+    throw new Error('Error during OAuth authentication:', error);
+  }
+};
+
 /** **************************************
  * Account setup
  *************************************** */

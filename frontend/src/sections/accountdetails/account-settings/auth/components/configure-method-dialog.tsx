@@ -31,6 +31,7 @@ import GoogleAuthForm from './google-auth-form';
 import SmtpConfigForm from './smtp-config-form';
 import AzureAdAuthForm from './azureAd-auth-form';
 import MicrosoftAuthForm from './microsoft-auth-form';
+import OAuthAuthForm from './oauth-auth-form';
 
 // Import configuration forms
 import type { GoogleAuthFormRef } from './google-auth-form';
@@ -68,6 +69,11 @@ const METHOD_CONFIG: MethodConfigType = {
     title: 'SAML SSO',
     color: '#FF6500',
   },
+  oauth: {
+    icon: 'mdi:key-variant',
+    title: 'OAuth',
+    color: '#6366F1',
+  },
   smtp: {
     icon: smtpIcon,
     title: 'SMTP',
@@ -96,6 +102,7 @@ const ConfigureMethodDialog: React.FC<ConfigureMethodDialogProps> = ({
   const theme = useTheme();
   const navigate = useNavigate();
   const [isValid, setIsValid] = useState(false);
+  const [showOAuthForm, setShowOAuthForm] = useState(false);
   const { isAdmin } = useAdmin();
   const { user } = useAuthContext();
   const accountType = user?.accountType;
@@ -109,7 +116,7 @@ const ConfigureMethodDialog: React.FC<ConfigureMethodDialogProps> = ({
   // Get method config if available
   const methodConfig = methodType ? METHOD_CONFIG[methodType] : null;
 
-  // Handle SAML SSO - route to dedicated page
+  // Handle special cases - SAML SSO and OAuth
   useEffect(() => {
     if (open && methodType === 'samlSso') {
       // Close dialog and navigate to SAML config page
@@ -123,6 +130,12 @@ const ConfigureMethodDialog: React.FC<ConfigureMethodDialogProps> = ({
         return;
       }
       navigate('/');
+    }
+    
+    if (open && methodType === 'oauth') {
+      setShowOAuthForm(true);
+    } else {
+      setShowOAuthForm(false);
     }
   }, [open, methodType, navigate, onClose, accountType, isAdmin]);
 
@@ -173,26 +186,46 @@ const ConfigureMethodDialog: React.FC<ConfigureMethodDialogProps> = ({
     onSave();
   };
 
+  // Handle OAuth form success
+  const handleOAuthSuccess = () => {
+    setShowOAuthForm(false);
+    onSave();
+  };
+
+  // Handle OAuth form close
+  const handleOAuthClose = () => {
+    setShowOAuthForm(false);
+    onClose();
+  };
+
   return (
-    <Dialog
-      open={open}
-      onClose={onClose}
-      maxWidth="md"
-      fullWidth
-      BackdropProps={{
-        sx: {
-          backdropFilter: 'blur(1px)',
-          backgroundColor: alpha(theme.palette.common.black, 0.3),
-        },
-      }}
-      PaperProps={{
-        sx: {
-          borderRadius: 1,
-          boxShadow: '0 10px 35px rgba(0, 0, 0, 0.1)',
-          overflow: 'hidden',
-        },
-      }}
-    >
+    <>
+      {/* OAuth form as separate dialog */}
+      <OAuthAuthForm
+        open={showOAuthForm}
+        onClose={handleOAuthClose}
+        onSuccess={handleOAuthSuccess}
+      />
+      
+      <Dialog
+        open={open && methodType !== 'oauth'}
+        onClose={onClose}
+        maxWidth="md"
+        fullWidth
+        BackdropProps={{
+          sx: {
+            backdropFilter: 'blur(1px)',
+            backgroundColor: alpha(theme.palette.common.black, 0.3),
+          },
+        }}
+        PaperProps={{
+          sx: {
+            borderRadius: 1,
+            boxShadow: '0 10px 35px rgba(0, 0, 0, 0.1)',
+            overflow: 'hidden',
+          },
+        }}
+      >
       {methodConfig && (
         <>
           <DialogTitle
@@ -324,7 +357,8 @@ const ConfigureMethodDialog: React.FC<ConfigureMethodDialogProps> = ({
           </DialogActions>
         </>
       )}
-    </Dialog>
+      </Dialog>
+    </>
   );
 };
 

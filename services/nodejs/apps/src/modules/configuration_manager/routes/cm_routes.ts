@@ -15,6 +15,7 @@ import {
   getGoogleWorkspaceCredentials,
   getKafkaConfig,
   getMicrosoftAuthConfig,
+  getOAuthConfig,
   getRedisConfig,
   getSmtpConfig,
   getSsoAuthConfig,
@@ -22,6 +23,7 @@ import {
   setAzureAdAuthConfig,
   setGoogleAuthConfig,
   setMicrosoftAuthConfig,
+  setOAuthConfig,
   setSsoAuthConfig,
   setGoogleWorkspaceOauthConfig,
   createArangoDbConfig,
@@ -51,6 +53,7 @@ import {
   storageValidationSchema,
   azureAdConfigSchema,
   googleAuthConfigSchema,
+  oauthConfigSchema,
   ssoConfigSchema,
   googleWorkspaceConfigSchema,
   mongoDBConfigSchema,
@@ -264,6 +267,31 @@ export function createConfigurationManagerRouter(container: Container): Router {
     metricsMiddleware(container),
     ValidationMiddleware.validate(ssoConfigSchema),
     setSsoAuthConfig(keyValueStoreService),
+  );
+
+  // OAuth config routes
+  router.get(
+    '/authConfig/oauth',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    getOAuthConfig(keyValueStoreService),
+  );
+
+  router.get(
+    '/internal/authConfig/oauth',
+    authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
+    metricsMiddleware(container),
+    getOAuthConfig(keyValueStoreService),
+  );
+
+  router.post(
+    '/authConfig/oauth',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(oauthConfigSchema),
+    setOAuthConfig(keyValueStoreService),
   );
 
   router.post(
