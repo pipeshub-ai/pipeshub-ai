@@ -16,7 +16,7 @@ from app.config.utils.named_constants.arangodb_constants import (
 )
 
 # Import required services
-from app.connectors.core.kafka_service import KafkaService
+from app.connectors.services.kafka_service import KafkaService
 from app.connectors.notion.core.notion_service import NotionService
 from app.connectors.notion.handler.notion_credentials_handler import (
     NotionCredentialsHandler,
