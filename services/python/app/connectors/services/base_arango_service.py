@@ -16,6 +16,9 @@ from app.schema.arango.documents import (
     file_record_schema,
     kb_schema,
     mail_record_schema,
+    notion_comments_schema,
+    notion_database_schema,
+    notion_page_schema,
     orgs_schema,
     record_schema,
     user_schema,
@@ -54,6 +57,10 @@ NODE_COLLECTIONS = [
     (CollectionNames.SUBCATEGORIES3.value, None),
     (CollectionNames.BLOCKS.value, None),
     (CollectionNames.KNOWLEDGE_BASE.value, kb_schema),
+    (CollectionNames.NOTION_PAGE_RECORD.value, notion_page_schema),
+    (CollectionNames.NOTION_DATABASE_RECORD.value, notion_database_schema),
+    (CollectionNames.NOTION_COMMENT_RECORD.value, notion_comments_schema),
+
 ]
 
 EDGE_COLLECTIONS = [
@@ -89,6 +96,7 @@ class BaseArangoService:
         self._collections = {
             collection_name: None
             for collection_name, _ in NODE_COLLECTIONS + EDGE_COLLECTIONS
+
         }
 
     async def connect(self) -> bool:
