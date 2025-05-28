@@ -20,9 +20,9 @@ from app.schema.arango.documents import (
     notion_database_schema,
     notion_page_schema,
     orgs_schema,
+    record_group_schema,
     record_schema,
     user_schema,
-    record_group_schema,
 )
 from app.schema.arango.edges import (
     basic_edge_schema,

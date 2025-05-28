@@ -41,6 +41,11 @@ from app.config.utils.named_constants.http_status_code_constants import (
     HttpStatusCode,
 )
 from app.connectors.api.middleware import WebhookAuthVerifier
+from app.connectors.notion.core.notion_app import NotionApp
+from app.connectors.notion.core.notion_router_service import NotionRouterService
+from app.connectors.notion.handler.notion_credentials_handler import (
+    NotionCredentialsHandler,
+)
 from app.connectors.sources.google.admin.admin_webhook_handler import (
     AdminWebhookHandler,
 )
@@ -53,11 +58,6 @@ from app.connectors.sources.google.gmail.gmail_webhook_handler import (
 )
 from app.connectors.sources.google.google_drive.drive_webhook_handler import (
     AbstractDriveWebhookHandler,
-)
-from app.connectors.notion.core.notion_app import NotionApp
-from app.connectors.notion.core.notion_router_service import NotionRouterService
-from app.connectors.notion.handler.notion_credentials_handler import (
-    NotionCredentialsHandler,
 )
 from app.modules.parsers.google_files.google_docs_parser import GoogleDocsParser
 from app.modules.parsers.google_files.google_sheets_parser import GoogleSheetsParser

@@ -22,6 +22,10 @@ from app.config.configuration_service import (
     config_node_constants,
 )
 from app.config.utils.named_constants.http_status_code_constants import HttpStatusCode
+from app.connectors.notion.core.notion_app import NotionApp
+from app.connectors.notion.handler.notion_credentials_handler import (
+    NotionCredentialsHandler,
+)
 from app.connectors.services.kafka_service import KafkaService
 from app.connectors.services.sync_kafka_consumer import SyncKafkaRouteConsumer
 from app.connectors.sources.google.admin.admin_webhook_handler import (
@@ -58,11 +62,6 @@ from app.connectors.sources.google.google_drive.drive_user_service import (
 from app.connectors.sources.google.google_drive.drive_webhook_handler import (
     EnterpriseDriveWebhookHandler,
     IndividualDriveWebhookHandler,
-)
-
-from app.connectors.notion.core.notion_app import NotionApp
-from app.connectors.notion.handler.notion_credentials_handler import (
-    NotionCredentialsHandler,
 )
 from app.connectors.utils.rate_limiter import GoogleAPIRateLimiter
 from app.core.celery_app import CeleryApp

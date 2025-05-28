@@ -244,7 +244,7 @@ class NotionService:
                 "updatedAtTimestamp": current_timestamp,
                 "lastSyncTimestamp": current_timestamp,
             }
-           
+
             workspace_records.append(notion_workspace_record)
             print(workspace_records)
             await self.arango_service.batch_upsert_nodes(
@@ -1209,7 +1209,7 @@ class NotionService:
                     }
 
                     message_events.append(message_event)
-                    
+
 
                     page_comment_records.append(page_comment_record)
                     general_records.append(general_record)
