@@ -547,7 +547,7 @@ async def download_file(
                                             logger.info(f"Message not found with ID {message_id}, searching for related messages...")
 
                                             # Get messageIdHeader from the original mail
-                                            file_key = await arango_service.get_key_by_external_message_id(message_id)
+                                            file_key = await arango_service.get_key_by_external_record_id(message_id)
                                             aql_query = """
                                             FOR mail IN mails
                                                 FILTER mail._key == @file_key
@@ -907,7 +907,7 @@ async def stream_record(
                                 logger.info(f"Message not found with ID {file_id}, searching for related messages...")
 
                                 # Get messageIdHeader from the original mail
-                                file_key = await arango_service.get_key_by_external_message_id(file_id)
+                                file_key = await arango_service.get_key_by_external_record_id(file_id)
                                 aql_query = """
                                 FOR mail IN mails
                                     FILTER mail._key == @file_key
@@ -1062,7 +1062,7 @@ async def stream_record(
                                     logger.info(f"Message not found with ID {message_id}, searching for related messages...")
 
                                     # Get messageIdHeader from the original mail
-                                    file_key = await arango_service.get_key_by_external_message_id(message_id)
+                                    file_key = await arango_service.get_key_by_external_record_id(message_id)
                                     aql_query = """
                                     FOR mail IN mails
                                         FILTER mail._key == @file_key
@@ -1643,18 +1643,31 @@ async def get_user_credentials(org_id: str, user_id: str, logger, google_token_h
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error accessing user credentials"
         )
 
-@router.get("/api/v1/{org_id}/{workspace_id}/notion/record/page/{page_id}/signedUrl")
+@router.get("/api/v1/{org_id}/{workspace_id}/notion/record/page/{record_id}/signedUrl")
 @inject
 async def get_notion_page_blocks(
     org_id: str,
     workspace_id: str,
-    page_id: str,
+    record_id: str,
     notion_app: NotionApp = Depends(Provide[AppContainer.notion_app]),
     arango_service=Depends(Provide[AppContainer.arango_service]),
     config_service=Depends(Provide[AppContainer.config_service]),
 ):
     """Get blocks from a Notion page"""
+    page_id = None
     try:
+        logger.info(f"Getting notion id from record {record_id}")
+        record = arango_service.get_document(record_id, CollectionNames.RECORDS.value)
+        if not record:
+            raise HTTPException(status_code=404, detail=f"Record {record_id} not found")
+            
+        page_id = record.get("externalRecordId", None)
+        
+        if not page_id:
+            raise HTTPException(status_code=404, detail=f"No external record ID found for record {record_id}")
+
+        page_id = record.get("externalRecordId", None)
+        
         logger.info(f"Getting blocks for page {page_id} (org: {org_id}, workspace: {workspace_id})")
 
         notion_credentials_handler = NotionCredentialsHandler(
@@ -1759,18 +1772,29 @@ async def get_notion_page_blocks(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/api/v1/{org_id}/{workspace_id}/notion/file/{block_id}/signedUrl")
+@router.get("/api/v1/{org_id}/{workspace_id}/notion/file/{record_id}/signedUrl")
 @inject
 async def get_notion_file_block(
     org_id: str,
     workspace_id: str,
-    block_id: str,
+    record_id: str,
     notion_app: NotionApp = Depends(Provide[AppContainer.notion_app]),
     arango_service=Depends(Provide[AppContainer.arango_service]),
     config_service=Depends(Provide[AppContainer.config_service]),
 ):
     """Get blocks from a Notion page"""
+    block_id = None
     try:
+        logger.info(f"Getting notion id from record {record_id}")
+        record = await arango_service.get_document(record_id, CollectionNames.RECORDS.value)
+        
+        if not record:
+            raise HTTPException(status_code=404, detail=f"Record {record_id} not found")
+            
+        block_id = record.get("externalRecordId", None)
+        
+        if not block_id:
+            raise HTTPException(status_code=404, detail=f"No external record ID found for record {record_id}")
 
         notion_credentials_handler = NotionCredentialsHandler(
             logger=logger,

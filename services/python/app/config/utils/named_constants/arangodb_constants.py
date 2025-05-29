@@ -32,7 +32,7 @@ class Connectors(Enum):
     GOOGLE_DRIVE = "DRIVE"
     GOOGLE_MAIL = "GMAIL"
     GOOGLE_CALENDAR = "CALENDAR"
-
+    NOTION = "NOTION"
 
 class RecordTypes(Enum):
     FILE = "FILE"

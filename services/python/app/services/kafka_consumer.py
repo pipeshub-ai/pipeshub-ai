@@ -174,6 +174,8 @@ class KafkaConsumerManager:
                     f"Raw value: {message_value[:1000]}..."
                 )
                 raise
+            
+            self.logger.info(f"Event: {data}")
 
             # Event processing
             event_type = data.get("eventType")
@@ -309,7 +311,7 @@ class KafkaConsumerManager:
                         f"Received signed URL response for message {message_id}"
                     )
 
-                    if response.get("is_json"):
+                    if response.get("is_json") and "signedUrl" in response["data"]:
                         signed_url = response["data"]["signedUrl"]
                         payload_data["signedUrl"] = signed_url
                     else:
@@ -570,7 +572,7 @@ class KafkaConsumerManager:
                                     f"Received signed URL response for record {record_id}"
                                 )
 
-                                if response.get("is_json"):
+                                if response.get("is_json") and "signedUrl" in response["data"]:
                                     signed_url = response["data"]["signedUrl"]
                                     payload_data["signedUrl"] = signed_url
                                 else:

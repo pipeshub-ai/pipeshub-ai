@@ -500,6 +500,7 @@ class NotionService:
                         CollectionNames.IS_OF_TYPE.value,
                     )
                 for message_event in message_events:
+                    await self.arango_service.get_document(message_event['recordId'],CollectionNames.RECORDS.value)
                     await self.kafka_service.send_event_to_kafka(message_event)
                     self.logger.info(
                         "📨 Sent Kafka Indexing event for message %s",
@@ -755,6 +756,7 @@ class NotionService:
                     )
 
                 for message_event in message_events:
+                    await self.arango_service.get_document(message_event['recordId'],CollectionNames.RECORDS)
                     await self.kafka_service.send_event_to_kafka(message_event)
                     self.logger.info(
                         "📨 Sent Kafka Indexing event for message %s",
@@ -922,7 +924,7 @@ class NotionService:
         """
         # First try to find the page in ArangoDB
 
-        page_record = await self.arango_service.get_key_by_external_file_id(
+        page_record = await self.arango_service.get_key_by_external_record_id(
             page_id,
         )
 
@@ -941,7 +943,7 @@ class NotionService:
             The _key value for the database
         """
         # First try to find the database in ArangoDB
-        db_record = await self.arango_service.get_key_by_external_file_id(
+        db_record = await self.arango_service.get_key_by_external_record_id(
             database_id
         )
 
@@ -1260,6 +1262,7 @@ class NotionService:
 
 
             for message in message_events:
+                await self.arango_service.get_document(message_event['recordId'],CollectionNames.RECORDS.value)
                 await self.kafka_service.send_event_to_kafka(message_event)
                 self.logger.info(
                     "📨 Sent Kafka Indexing event for message %s",
@@ -1400,6 +1403,7 @@ class NotionService:
             )
 
             for message_event in message_events:
+                await self.arango_service.get_document(message_event['recordId'],CollectionNames.RECORDS.value)
                 await self.kafka_service.send_event_to_kafka(message_event)
                 self.logger.info(
                     "📨 Sent Kafka Indexing event for message %s",
@@ -1467,6 +1471,7 @@ class NotionService:
 
                                 # Create Kafka event for this file
                                 kafka_event = await self._create_file_kafka_event(
+                                    file_info["key"],
                                     file_info["record_id"],
                                     file_info["name"],
                                     file_info["mimetype"],
@@ -1533,7 +1538,7 @@ class NotionService:
             self.logger.error(f"Error processing blocks for pages batch: {str(e)}")
             raise
 
-    async def _create_file_kafka_event(self, record_id: str, name: str, mime_type: str,
+    async def _create_file_kafka_event(self,key:str, record_id: str, name: str, mime_type: str,
                                     created_at: int, last_edited_at: int) -> Dict[str, Any]:
         """
         Create a Kafka event for a file record.
@@ -1554,19 +1559,20 @@ class NotionService:
 
             message_event = {
                 "orgId": self.org_id,
-                "recordId": record_id,
+                "recordId": key,
                 "recordName": name,
                 "recordType": RecordTypes.FILE.value,
                 "mimeType": mime_type,
                 "recordVersion": 0,
                 "signedUrlUnsupported": False,
                 "eventType": EventTypes.NEW_RECORD.value,
-                "signedUrlRoute": f"{connector_endpoint}/api/v1/{self.org_id}/{self.workspace_id}/notion/file/{record_id}/signedUrl",
+                "signedUrlRoute": f"{connector_endpoint}/api/v1/{self.org_id}/{self.workspace_id}/notion/file/{key}/signedUrl",
                 "connectorName": "NOTION",
                 "origin": OriginTypes.CONNECTOR.value,
                 "createdAtSourceTimestamp": created_at,
                 "modifiedAtSourceTimestamp": last_edited_at
             }
+            await self.arango_service.get_document(message_event['recordId'],CollectionNames.RECORDS.value)
 
             return message_event
 
@@ -1634,6 +1640,7 @@ class NotionService:
                 )
 
             for message_event in message_events:
+                await self.arango_service.get_document(message_event['recordId'],CollectionNames.RECORDS.value)
                 await self.kafka_service.send_event_to_kafka(message_event)
                 self.logger.info(
                     "📨 Sent Kafka Indexing event for message %s",
@@ -1846,27 +1853,7 @@ class NotionService:
             )
             connector_endpoint = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
 
-            message_event = {
-                "orgId": self.org_id,
-                "recordId": key,
-                "recordName": name,
-                "recordType": RecordTypes.FILE.value,
-                "mimeType": mimeType,
-                "recordVersion": 0,
-                "signedUrlUnsupported" : False,
-                "eventType": EventTypes.NEW_RECORD.value,
-                "signedUrlRoute": f"{connector_endpoint}/api/v1/{self.org_id}/{self.workspace_id}/notion/file/{key}/signedUrl",
-                "connectorName": "NOTION",
-                "origin": OriginTypes.CONNECTOR.value,
-                "createdAtSourceTimestamp": createdAt,
-                "modifiedAtSourceTimestamp": lastEditedAt
-            }
-
-            await self.kafka_service.send_event_to_kafka(message_event)
-            self.logger.info(
-                "📨 Sent Kafka Indexing event for message %s",
-                key,
-            )
+           
 
             self.logger.info("create file records")
             return file_record,general_record,record_edge_data,record_relation_edge_data
@@ -2009,11 +1996,12 @@ class NotionService:
             createdAt = self._iso_to_timestamp(block_created_time)
             lastEditedAt = self._iso_to_timestamp(block_last_edited_time)
 
-            file_record, general_record, record_edge_data, record_relation_edge_data = await self.store_file_block(
+            file_record, general_record, record_edge_data, record_relation_edge_data= await self.store_file_block(
                 page_record, block_id, file_url, name, mimetype, createdAt, lastEditedAt
             )
 
             return {
+                "key": file_record['_key'],
                 "record_id": block_id,
                 "file_url": file_url,
                 "name": name,
@@ -2021,7 +2009,7 @@ class NotionService:
                 "file_record": file_record,
                 "general_record": general_record,
                 "record_edge": record_edge_data,
-                "record_relation_edge": record_relation_edge_data
+                "record_relation_edge": record_relation_edge_data,
             }
 
         except Exception as e:

@@ -13,6 +13,7 @@ from app.config.utils.named_constants.arangodb_constants import (
     MimeTypes,
     ProgressStatus,
     RecordTypes,
+    Connectors
 )
 from app.config.utils.named_constants.http_status_code_constants import HttpStatusCode
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -218,6 +219,23 @@ class EventProcessor:
             self.logger.debug(f"file_content type: {type(file_content)}")
 
             record_type = doc.get("recordType")
+                            
+            if connector == Connectors.NOTION.value:
+                if isinstance(file_content, bytes) or isinstance(file_content, BytesIO):
+                    file_content = json.loads(file_content.decode("utf-8"))
+
+                if record_type == RecordTypes.FILE.value:
+                    if isinstance(file_content, list):
+                        stream_data = file_content[0]
+                    else:
+                        stream_data = file_content
+
+                    if stream_data:
+                        file_content = stream_data.get("data")
+                        return file_content
+                else:
+                    await self.processor.process_notion_block_content(file_content)
+
             if record_type == RecordTypes.FILE.value:
                 try:
                     file = await self.arango_service.get_document(

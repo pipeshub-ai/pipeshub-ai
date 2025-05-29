@@ -635,24 +635,24 @@ class NotionRouterService:
             self.logger.error(f"Error fetching file data for block {block_id}: {str(e)}")
             raise Exception(f"Failed to fetch file data: {str(e)}")
 
-    async def get_file_download_info(self, block_id: str):
-        """
-        Convenience method to get just the essential file download information.
-        Args:
-            block_id (str): The block ID of the file block
-        Returns:
-            dict: File download information with URL, name, and expiry
-        """
-        try:
-            file_data = await self.fetch_file_data(block_id)
+    # async def get_file_download_info(self, block_id: str):
+    #     """
+    #     Convenience method to get just the essential file download information.
+    #     Args:
+    #         block_id (str): The block ID of the file block
+    #     Returns:
+    #         dict: File download information with URL, name, and expiry
+    #     """
+    #     try:
+    #         file_data = await self.fetch_file_data(block_id)
 
-            return {
-                "url": file_data["file"]["file"]["url"],
-                "name": file_data["file"]["name"],
-                "expiry_time": file_data["file"]["file"]["expiry_time"],
-                "block_id": block_id
-            }
+    #         return {
+    #             "url": file_data["file"]["file"]["url"],
+    #             "name": file_data["file"]["name"],
+    #             "expiry_time": file_data["file"]["file"]["expiry_time"],
+    #             "block_id": block_id
+    #         }
 
-        except Exception as e:
-            self.logger.error(f"Error getting file download info for block {block_id}: {str(e)}")
-            raise
+    #     except Exception as e:
+    #         self.logger.error(f"Error getting file download info for block {block_id}: {str(e)}")
+    #         raise

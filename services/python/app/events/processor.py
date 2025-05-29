@@ -2185,3 +2185,7 @@ class Processor:
         )
 
         return {"status": "success", "message": "PPT processed successfully"}
+
+    async def process_notion_block_content(self, content):
+        self.logger.info("Content of notion page block: %s", content)
+        self.logger.info("type of notion page block: %s", type(content))
