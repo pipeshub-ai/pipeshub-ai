@@ -1657,7 +1657,7 @@ async def get_notion_page_blocks(
     page_id = None
     try:
         logger.info(f"Getting notion id from record {record_id}")
-        record = arango_service.get_document(record_id, CollectionNames.RECORDS.value)
+        record = await arango_service.get_document(record_id, CollectionNames.RECORDS.value)
         if not record:
             raise HTTPException(status_code=404, detail=f"Record {record_id} not found")
             

@@ -41,6 +41,7 @@ class RecordTypes(Enum):
     MAIL = "MAIL"
     DRIVE = "DRIVE"
     COMMENT= "COMMENT"
+    PAGE_COMMENTS="PAGE_COMMENTS"
 
 
 class RecordRelations(Enum):

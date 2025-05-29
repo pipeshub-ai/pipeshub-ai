@@ -3,6 +3,9 @@ from datetime import datetime
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 from uuid import uuid4
 
+import os
+from urllib.parse import urlparse
+
 import aiohttp
 
 from app.config.configuration_service import DefaultEndpoints, config_node_constants
@@ -440,7 +443,7 @@ class NotionService:
                 "signedUrlUnsupported" : False,
                 "signedUrlRoute": f"{connector_endpoint}/api/v1/{self.org_id}/{self.workspace_id}/notion/record/page/{key}/signedUrl",
                 "connectorName": "NOTION",
-                "mimeType": "text",
+                "mimeType": "notion/text",
                 "origin": OriginTypes.CONNECTOR.value,
                 "createdAtSourceTimestamp": self._iso_to_timestamp(
                     page.get("created_time")
@@ -1198,8 +1201,8 @@ class NotionService:
                         "orgId": self.org_id,
                         "recordId": key,
                         "recordName": f"comments for page {page_id}",
-                        "recordType": RecordTypes.FILE.value,
-                        "mimeType": "text",
+                        "recordType": RecordTypes.PAGE_COMMENTS.value,
+                        "mimeType": "notion/pageCommentText",
                         "recordVersion": 0,
                         "signedUrlUnsupported" : False,
                         "eventType": EventTypes.NEW_RECORD.value,
@@ -1462,6 +1465,7 @@ class NotionService:
                                 block_created_time, block_last_edited_time,
                                 page_record
                             )
+                            print(file_info)
 
                             if file_info:
                                 all_file_records.append(file_info["file_record"])
@@ -1475,6 +1479,7 @@ class NotionService:
                                     file_info["record_id"],
                                     file_info["name"],
                                     file_info["mimetype"],
+                                    file_info["extension"],
                                     self._iso_to_timestamp(block_created_time),
                                     self._iso_to_timestamp(block_last_edited_time)
                                 )
@@ -1538,7 +1543,7 @@ class NotionService:
             self.logger.error(f"Error processing blocks for pages batch: {str(e)}")
             raise
 
-    async def _create_file_kafka_event(self,key:str, record_id: str, name: str, mime_type: str,
+    async def _create_file_kafka_event(self,key:str, record_id: str, name: str, mime_type: str,extension:str,
                                     created_at: int, last_edited_at: int) -> Dict[str, Any]:
         """
         Create a Kafka event for a file record.
@@ -1563,6 +1568,7 @@ class NotionService:
                 "recordName": name,
                 "recordType": RecordTypes.FILE.value,
                 "mimeType": mime_type,
+                "extension":extension,
                 "recordVersion": 0,
                 "signedUrlUnsupported": False,
                 "eventType": EventTypes.NEW_RECORD.value,
@@ -1801,7 +1807,7 @@ class NotionService:
 
     #--------------block fetching --------------------------------
 
-    async def store_file_block(self,page,file_id,file_url,name,mimeType,createdAt,lastEditedAt):
+    async def store_file_block(self,page,file_id,file_url,name,mimeType,file_extension,createdAt,lastEditedAt):
         """Store a single file block in the database"""
         try:
 
@@ -1814,6 +1820,8 @@ class NotionService:
                 "orgId": self.org_id,
                 "name":name,
                 "webUrl": file_url,
+                "mimeType":mimeType,
+                "extension":file_extension,
             }
 
             # Create general record
@@ -1910,8 +1918,8 @@ class NotionService:
 
 
     async def _process_file_block(self, block_id: str, block_type: str, block_content: Dict,
-                                 block_created_time: str, block_last_edited_time: str,
-                                 page_record: Dict) -> Optional[Dict]:
+                             block_created_time: str, block_last_edited_time: str,
+                             page_record: Dict) -> Optional[Dict]:
         """
         Process a file/media block and return all necessary records and edges.
         Args:
@@ -1920,6 +1928,7 @@ class NotionService:
             block_content: Content of the block
             block_created_time: Block creation timestamp
             block_last_edited_time: Block last edit timestamp
+            page_record: The page record this block belongs to
         Returns:
             Dictionary containing all records and edges, or None if processing fails
         """
@@ -1992,12 +2001,43 @@ class NotionService:
             else:
                 return None
 
+            # Extract file extension using the same pattern as fetch_file_data
+            file_extension = None
+            block_format = "bin"  # Default format
+
+            if file_url:
+                parsed_url = urlparse(file_url)
+                file_path = parsed_url.path
+                _, ext = os.path.splitext(file_path)
+                if ext:
+                    file_extension = ext.lower().lstrip('.')  # Remove the dot prefix
+                    # Determine format based on extension
+                    if ext.lower() in ['.txt', '.md', '.html', '.json', '.xml', '.csv']:
+                        block_format = "txt"
+                    elif ext.lower() in ['.md', '.markdown']:
+                        block_format = "markdown"
+                    else:
+                        block_format = "bin"
+
+            # If no extension from URL, try to get from file name
+            if not file_extension and name:
+                _, ext = os.path.splitext(name)
+                if ext:
+                    file_extension = ext.lower().lstrip('.')  # Remove the dot prefix
+                    # Determine format based on extension
+                    if ext.lower() in ['.txt', '.md', '.html', '.json', '.xml', '.csv']:
+                        block_format = "txt"
+                    elif ext.lower() in ['.md', '.markdown']:
+                        block_format = "markdown"
+                    else:
+                        block_format = "bin"
+
             # Create records using existing method
             createdAt = self._iso_to_timestamp(block_created_time)
             lastEditedAt = self._iso_to_timestamp(block_last_edited_time)
 
-            file_record, general_record, record_edge_data, record_relation_edge_data= await self.store_file_block(
-                page_record, block_id, file_url, name, mimetype, createdAt, lastEditedAt
+            file_record, general_record, record_edge_data, record_relation_edge_data = await self.store_file_block(
+                page_record, block_id, file_url, name, mimetype,file_extension, createdAt, lastEditedAt
             )
 
             return {
@@ -2006,6 +2046,8 @@ class NotionService:
                 "file_url": file_url,
                 "name": name,
                 "mimetype": mimetype,
+                "extension": file_extension,   # Single file extension (e.g., ".pdf")
+                "block_format": block_format,       # Block format type
                 "file_record": file_record,
                 "general_record": general_record,
                 "record_edge": record_edge_data,
@@ -2015,7 +2057,29 @@ class NotionService:
         except Exception as e:
             self.logger.error(f"Error processing file block {block_id}: {str(e)}")
             return None
-
+        
+    def extract_file_extension_from_url_and_name(file_url, file_name):
+        """
+        Extract file extension from URL or filename, similar to the pattern in your code.
+        Returns a list containing the extension (matching your code's format).
+        """
+        file_extensions = []
+        
+        # First try to get extension from URL
+        if file_url:
+            parsed_url = urlparse(file_url)
+            file_path = parsed_url.path
+            _, ext = os.path.splitext(file_path)
+            if ext:
+                file_extensions = [ext.lower()]
+        
+        # If no extension from URL, try to get from file name
+        if not file_extensions and file_name:
+            _, ext = os.path.splitext(file_name)
+            if ext:
+                file_extensions = [ext.lower()]
+        
+        return file_extensions
 
     def _extract_mimetype_from_content(self, content: Dict, block_type: str, name: str) -> str:
         """Extract or infer mimetype from content and block type"""
