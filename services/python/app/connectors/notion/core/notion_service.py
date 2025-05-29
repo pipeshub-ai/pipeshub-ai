@@ -1821,7 +1821,7 @@ class NotionService:
                 "_key": key,
                 "orgId": self.org_id,
                 "recordName": name,
-                "externalRecordId": page.get("page_id", "").replace("-", ""),
+                "externalRecordId": file_id,
                 "recordType": "FILE",
                 "origin": "CONNECTOR",
                 "version": 0,
