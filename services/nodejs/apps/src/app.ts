@@ -209,9 +209,10 @@ export class Application {
     );
 
     const isDev = process.env.NODE_ENV !== 'production';
+    const isStrictMode = process.env.STRICT_MODE === 'true';
 
     this.app.use((_req, res, next) => {
-      const csp = isDev
+      const csp = isDev || !isStrictMode
         ? "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:;"
         : `script-src 'self' https://cdnjs.cloudflare.com ${connectorPublicUrl}; worker-src 'self' blob:;`;
       res.setHeader('Content-Security-Policy', csp);
