@@ -68,6 +68,7 @@ class Routes(Enum):
         "/api/v1/connectors/internal/refreshIndividualConnectorToken"
     )
     BUSINESS_CREDENTIALS = "/api/v1/configurationManager/internal/connectors/business/googleWorkspaceCredentials"
+    NOTION_CONFIG = "/api/v1/configurationManager/internal/connectors/notionCredentials"
 
     # AI Model paths
     AI_MODEL_CONFIG = "/api/v1/configurationManager/internal/aiModelsConfig"

@@ -3,6 +3,7 @@ import type { Icon as IconifyIcon } from '@iconify/react';
 import { useRef, useState } from 'react';
 import closeIcon from '@iconify-icons/eva/close-outline';
 import googleIcon from '@iconify-icons/eva/google-outline';
+import notionIcon from '@iconify-icons/ri/notion-fill';
 
 import {
   Box,
@@ -21,6 +22,7 @@ import { Iconify } from 'src/components/iconify';
 import GoogleWorkspaceConfigForm from './google-workspace-config-individual-form';
 
 import type { GoogleWorkspaceConfigFormRef } from './google-workspace-config-individual-form';
+import NotionConfigForm, { NotionConfigFormRef } from './notion-config-form';
 
 // Method configurations
 interface ConnectorConfigType {
@@ -36,6 +38,11 @@ const CONNECTOR_CONFIG: ConnectorConfigType = {
     icon: googleIcon,
     title: 'Google Workspace',
     color: '#4285F4',
+  },
+  notion: {
+    icon: notionIcon,
+    title: 'Notion',
+    color: '#000000',
   },
 };
 
@@ -63,7 +70,7 @@ const ConfigureConnectorDialog = ({
   const [isValid, setIsValid] = useState(false);
 
   const googleWorkspaceFormRef = useRef<GoogleWorkspaceConfigFormRef>(null);
-
+  const notionFormRef = useRef<NotionConfigFormRef>(null);
   // Get connector config if available
   const connectorConfig = connectorType ? CONNECTOR_CONFIG[connectorType] : null;
 
@@ -80,6 +87,9 @@ const ConfigureConnectorDialog = ({
     switch (connectorType) {
       case 'googleWorkspace':
         currentRef = googleWorkspaceFormRef;
+        break;
+      case 'notion':
+        currentRef = notionFormRef;
         break;
       default:
         currentRef = null;
@@ -175,6 +185,14 @@ const ConfigureConnectorDialog = ({
                   onValidationChange={handleValidationChange}
                   onSaveSuccess={handleFormSaveSuccess}
                   ref={googleWorkspaceFormRef}
+                  isEnabled={isEnabled || false}
+                />
+              )}
+              {connectorType === 'notion' && (
+                <NotionConfigForm
+                  onValidationChange={handleValidationChange}
+                  onSaveSuccess={handleFormSaveSuccess}
+                  ref={notionFormRef}
                   isEnabled={isEnabled || false}
                 />
               )}

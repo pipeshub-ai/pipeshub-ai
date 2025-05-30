@@ -35,7 +35,7 @@ const ConnectorSettings = lazy(
 const GoogleWorkspaceBusinessPage = lazy(
   () => import('src/pages/dashboard/account/connectors/googleWorkspace-business-config')
 );
-
+const NotionConfigPage = lazy(() => import('src/pages/dashboard/account/connectors/notion-config'));
 const GoogleWorkspaceIndividualPage = lazy(
   () => import('src/pages/dashboard/account/connectors/googleWorkspace-individual-config')
 );
@@ -320,6 +320,14 @@ export const dashboardRoutes = [
                           <BusinessAdminOnlyRoute component={GoogleWorkspaceBusinessPage} />
                         ),
                       },
+                      {
+                        path: 'notion',
+                        element: CONFIG.auth.skip ? (
+                          <NotionConfigPage />
+                        ) : (
+                          <BusinessAdminOnlyRoute component={NotionConfigPage} />
+                        ),
+                      },
                     ],
                   },
                   {
@@ -420,6 +428,14 @@ export const dashboardRoutes = [
                           <GoogleWorkspaceIndividualPage />
                         ) : (
                           <IndividualOnlyRoute component={GoogleWorkspaceIndividualPage} />
+                        ),
+                      },
+                      {
+                        path: 'notion',
+                        element: CONFIG.auth.skip ? (
+                          <NotionConfigPage />
+                        ) : (
+                          <IndividualOnlyRoute component={NotionConfigPage} />
                         ),
                       },
                     ],

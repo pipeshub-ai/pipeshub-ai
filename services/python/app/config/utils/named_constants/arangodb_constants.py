@@ -40,6 +40,7 @@ class RecordTypes(Enum):
     LINK = "LINK"
     MAIL = "MAIL"
     DRIVE = "DRIVE"
+    COMMENT= "COMMENT"
 
 
 class RecordRelations(Enum):
@@ -65,7 +66,7 @@ class CollectionNames(Enum):
     # Records and Record relations
     RECORDS = "records"
     RECORD_RELATIONS = "recordRelations"
-
+    RECORD_GROUPS = "recordGroups"
     # Knowledge base
     KNOWLEDGE_BASE = "knowledgeBase"
     IS_OF_TYPE = "isOfType"
@@ -120,6 +121,11 @@ class CollectionNames(Enum):
     ORG_DEPARTMENT_RELATION = "orgDepartmentRelation"
 
     BLOCKS = "blocks"
+
+    NOTION_PAGE_RECORD="notionPageRecord"
+    NOTION_DATABASE_RECORD="notionDatabaseRecord"
+    NOTION_COMMENT_RECORD="notionCommentRecord"
+    BELONGS_TO_RECORD_GROUP="belongsToRecordGroup"
 
 
 class QdrantCollectionNames(Enum):

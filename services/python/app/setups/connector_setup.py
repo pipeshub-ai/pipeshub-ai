@@ -22,6 +22,10 @@ from app.config.configuration_service import (
     config_node_constants,
 )
 from app.config.utils.named_constants.http_status_code_constants import HttpStatusCode
+from app.connectors.notion.core.notion_app import NotionApp
+from app.connectors.notion.handler.notion_credentials_handler import (
+    NotionCredentialsHandler,
+)
 from app.connectors.services.kafka_service import KafkaService
 from app.connectors.services.sync_kafka_consumer import SyncKafkaRouteConsumer
 from app.connectors.sources.google.admin.admin_webhook_handler import (
@@ -83,7 +87,6 @@ async def initialize_individual_account_services_fn(org_id, container) -> None:
                 asyncio.create_task(refresh_google_workspace_user_credentials(org_id, arango_service,logger, container))
                 break
 
-        print("Initializing base services")
         # Initialize base services
         container.drive_service.override(
             providers.Singleton(
@@ -656,6 +659,20 @@ class AppContainer(containers.DeclarativeContainer):
         config=signed_url_config,
         configuration_service=config_service,
     )
+
+    notion_app = providers.Singleton(
+        NotionApp,
+        logger=logger
+    )
+
+    # NotionCredentialsHandler for managing Notion secrets
+    notion_credentials_handler = providers.Singleton(
+        NotionCredentialsHandler,
+        logger=logger,
+        config_service=config_service,
+        arango_service=arango_service,
+    )
+
 
     # Services that will be initialized based on account type
     # Define lazy dependencies for account-based services:
