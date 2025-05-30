@@ -988,22 +988,42 @@ export const getGoogleWorkspaceCredentials =
       const userType = org.accountType;
       const configManagerConfig = loadConfigurationManagerConfig();
       let path;
-      let googleWorkspaceConfig: any;
-      let encryptedGoogleWorkspaceConfig;
+      let googleWorkspaceCredentials: any;
+      let encryptedGoogleWorkspaceCredentials;
       switch (userType.toLowerCase()) {
         case googleWorkspaceTypes.INDIVIDUAL.toLowerCase():
           path = `${configPaths.connectors.googleWorkspace.credentials.individual}/${userId}`;
-          encryptedGoogleWorkspaceConfig =
+          const oauthPath = `${configPaths.connectors.googleWorkspace.config}`;
+
+          encryptedGoogleWorkspaceCredentials =
             await keyValueStoreService.get<string>(path);
-          if (encryptedGoogleWorkspaceConfig) {
-            googleWorkspaceConfig = JSON.parse(
+          const encryptedGoogleWorkspaceOauthConfig =
+            await keyValueStoreService.get<string>(oauthPath);
+
+          if (encryptedGoogleWorkspaceOauthConfig) {
+            const googleWorkspaceOauthConfig = JSON.parse(
               EncryptionService.getInstance(
                 configManagerConfig.algorithm,
                 configManagerConfig.secretKey,
-              ).decrypt(encryptedGoogleWorkspaceConfig),
+              ).decrypt(encryptedGoogleWorkspaceOauthConfig),
             );
+            if (encryptedGoogleWorkspaceCredentials) {
+              googleWorkspaceCredentials = JSON.parse(
+                EncryptionService.getInstance(
+                  configManagerConfig.algorithm,
+                  configManagerConfig.secretKey,
+                ).decrypt(encryptedGoogleWorkspaceCredentials),
+              );
 
-            res.status(200).json(googleWorkspaceConfig).end();
+              const combinedResponse = {
+                ...googleWorkspaceCredentials,
+                ...googleWorkspaceOauthConfig,
+              };
+
+              res.status(200).json(combinedResponse).end();
+            } else {
+              res.status(200).json({}).end();
+            }
           } else {
             res.status(200).json({}).end();
           }
@@ -1012,16 +1032,16 @@ export const getGoogleWorkspaceCredentials =
 
         case googleWorkspaceTypes.BUSINESS.toLowerCase():
           path = `${configPaths.connectors.googleWorkspace.credentials.business}/${orgId}`;
-          encryptedGoogleWorkspaceConfig =
+          encryptedGoogleWorkspaceCredentials =
             await keyValueStoreService.get<string>(path);
-          if (encryptedGoogleWorkspaceConfig) {
-            googleWorkspaceConfig = JSON.parse(
+          if (encryptedGoogleWorkspaceCredentials) {
+            googleWorkspaceCredentials = JSON.parse(
               EncryptionService.getInstance(
                 configManagerConfig.algorithm,
                 configManagerConfig.secretKey,
-              ).decrypt(encryptedGoogleWorkspaceConfig),
+              ).decrypt(encryptedGoogleWorkspaceCredentials),
             );
-            res.status(200).json(googleWorkspaceConfig).end();
+            res.status(200).json(googleWorkspaceCredentials).end();
           } else {
             res.status(200).json({}).end();
           }
