@@ -1,3 +1,5 @@
+from enum import Enum
+
 import aiohttp
 import jwt
 from tenacity import (
@@ -15,6 +17,12 @@ from app.config.configuration_service import (
 )
 from app.config.utils.named_constants.http_status_code_constants import HttpStatusCode
 
+
+class CredentialKeys(Enum):
+    CLIENT_ID = "clientId"
+    CLIENT_SECRET = "clientSecret"
+    ACCESS_TOKEN = "access_token"
+    REFRESH_TOKEN = "refresh_token"
 
 class GoogleTokenHandler:
     def __init__(self, logger, config_service, arango_service) -> None:
@@ -65,7 +73,7 @@ class GoogleTokenHandler:
                     )
                 creds_data = await response.json()
                 self.logger.info(
-                    "🚀 Fetch refreshed access token response: %s", creds_data
+                    "🚀 Fetched individual credentials for Google"
                 )
 
         return creds_data

@@ -22,6 +22,7 @@ from app.connectors.sources.google.common.connector_google_exceptions import (
     GoogleMailError,
     MailOperationError,
 )
+from app.connectors.sources.google.common.google_token_handler import CredentialKeys
 from app.connectors.sources.google.common.scopes import (
     GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES,
 )
@@ -104,11 +105,11 @@ class GmailUserService:
             try:
                 # Create credentials object from the response
                 creds = google.oauth2.credentials.Credentials(
-                    token=creds_data.get("access_token"),
-                    refresh_token=creds_data.get("refresh_token"),
+                    token=creds_data.get(CredentialKeys.ACCESS_TOKEN.value),
+                    refresh_token=creds_data.get(CredentialKeys.REFRESH_TOKEN.value),
                     token_uri="https://oauth2.googleapis.com/token",
-                    client_id=creds_data.get("client_id"),
-                    client_secret=creds_data.get("client_secret"),
+                    client_id=creds_data.get(CredentialKeys.CLIENT_ID.value),
+                    client_secret=creds_data.get(CredentialKeys.CLIENT_SECRET.value),
                     scopes=SCOPES,
                 )
             except Exception as e:
@@ -181,11 +182,11 @@ class GmailUserService:
             )
 
             creds = google.oauth2.credentials.Credentials(
-                token=creds_data.get("access_token"),
-                refresh_token=creds_data.get("refresh_token"),
+                token=creds_data.get(CredentialKeys.ACCESS_TOKEN.value),
+                refresh_token=creds_data.get(CredentialKeys.REFRESH_TOKEN.value),
                 token_uri="https://oauth2.googleapis.com/token",
-                client_id=creds_data.get("client_id"),
-                client_secret=creds_data.get("client_secret"),
+                client_id=creds_data.get(CredentialKeys.CLIENT_ID.value),
+                client_secret=creds_data.get(CredentialKeys.CLIENT_SECRET.value),
                 scopes=GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES,
             )
 

@@ -547,8 +547,8 @@ async def refresh_google_workspace_user_credentials(org_id, arango_service, logg
                     token=creds_data.get("access_token"),
                     refresh_token=creds_data.get("refresh_token"),
                     token_uri="https://oauth2.googleapis.com/token",
-                    client_id=creds_data.get("client_id"),
-                    client_secret=creds_data.get("client_secret"),
+                    client_id=creds_data.get("clientId"),
+                    client_secret=creds_data.get("clientSecret"),
                     scopes=SCOPES,
                 )
 
