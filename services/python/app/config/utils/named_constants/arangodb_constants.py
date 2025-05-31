@@ -126,7 +126,9 @@ class CollectionNames(Enum):
     NOTION_PAGE_RECORD="notionPageRecord"
     NOTION_DATABASE_RECORD="notionDatabaseRecord"
     NOTION_COMMENT_RECORD="notionCommentRecord"
+    NOTION_LAST_SYNC_RECORD="notionLastSyncRecord"
     BELONGS_TO_RECORD_GROUP="belongsToRecordGroup"
+    
 
 
 class QdrantCollectionNames(Enum):

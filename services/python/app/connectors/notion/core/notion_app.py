@@ -1,128 +1,154 @@
-import logging
-import threading
-from functools import wraps
-from typing import Dict, List, Optional, Tuple
+import asyncio
+import aiohttp
+from app.connectors.notion.core.notion_service import NotionService
 
-
-def singleton(cls):
-    """Decorator to make any class a singleton"""
-    instances = {}
-    lock = threading.Lock()
-
-    @wraps(cls)
-    def get_instance(*args, **kwargs):
-        if cls not in instances:
-            with lock:
-                if cls not in instances:
-                    instances[cls] = cls(*args, **kwargs)
-        return instances[cls]
-    return get_instance
-
-
-@singleton
 class NotionApp:
-    """Singleton NotionApp to manage Notion integrations globally across the application"""
-
-    def __init__(self, logger: Optional[logging.Logger] = None):
-        self.logger = logger or logging.getLogger(__name__)
-        self._integration_map: Dict[Tuple[str, str], str] = {}
-        self._org_workspaces: Dict[str, List[str]] = {}
-        self._lock = threading.Lock()
-        self.logger.info("NotionApp singleton initialized")
-
-    def add_integration(self, org_id: str, workspace_id: str, integration_secret: str) -> None:
-        """Thread-safe add integration"""
-        with self._lock:
-            key = (org_id, workspace_id)
-            self._integration_map[key] = integration_secret
-
-            if org_id not in self._org_workspaces:
-                self._org_workspaces[org_id] = []
-
-            if workspace_id not in self._org_workspaces[org_id]:
-                self._org_workspaces[org_id].append(workspace_id)
-
-        self.logger.info(f"Added Notion integration for org {org_id}, workspace {workspace_id}")
-
-    def get_integration_secret(self, org_id: str, workspace_id: str) -> Optional[str]:
-        """Thread-safe get integration secret"""
-        with self._lock:
-            key = (org_id, workspace_id)
-            return self._integration_map.get(key)
-
-    def get_org_integrations(self, org_id: str) -> Dict[str, str]:
-        """Thread-safe get all integrations for an organization"""
-        with self._lock:
-            org_integrations = {}
-            if org_id in self._org_workspaces:
-                for workspace_id in self._org_workspaces[org_id]:
-                    key = (org_id, workspace_id)
-                    if key in self._integration_map:
-                        org_integrations[workspace_id] = self._integration_map[key]
-            return org_integrations
-
-    def get_all_integrations(self) -> Dict[Tuple[str, str], str]:
-        """Thread-safe get all integrations"""
-        with self._lock:
-            return self._integration_map.copy()
-
-    def has_integration(self, org_id: str, workspace_id: str) -> bool:
-        """Thread-safe check if integration exists"""
-        with self._lock:
-            key = (org_id, workspace_id)
-            return key in self._integration_map
-
-    def remove_integration(self, org_id: str, workspace_id: str) -> bool:
-        """Thread-safe remove integration"""
-        with self._lock:
-            key = (org_id, workspace_id)
-            if key in self._integration_map:
-                del self._integration_map[key]
-
-                if org_id in self._org_workspaces:
-                    self._org_workspaces[org_id] = [
-                        ws for ws in self._org_workspaces[org_id] if ws != workspace_id
-                    ]
-                    if not self._org_workspaces[org_id]:
-                        del self._org_workspaces[org_id]
-
-                self.logger.info(f"Removed integration for org {org_id}, workspace {workspace_id}")
-                return True
-            return False
-
-    def get_stats(self) -> Dict[str, int]:
-        """Get statistics about stored integrations"""
-        with self._lock:
-            return {
-                "total_integrations": len(self._integration_map),
-                "total_orgs": len(self._org_workspaces),
-                "avg_workspaces_per_org": len(self._integration_map) / max(len(self._org_workspaces), 1)
-            }
-
-    def load_from_secrets_response(self, org_id: str, notion_secrets_response: dict) -> int:
-        """Load integrations from Notion secrets response"""
-        integration_secrets = notion_secrets_response.get('integrationSecrets', [])
-        loaded_count = 0
-
-        for i, secret_data in enumerate(integration_secrets):
-            # Handle both string secrets and object secrets
-            if isinstance(secret_data, str):
-                # If it's just a string, use it as the secret with default workspace
-                workspace_id = f'workspace_{i}'
-                integration_secret = secret_data
-            else:
-                # If it's an object, extract workspace_id and secret
-                workspace_id = secret_data.get('workspace_id') or secret_data.get('workspaceId') or f'workspace_{i}'
-                integration_secret = secret_data.get('secret') or secret_data.get('integration_secret') or secret_data
-
-            if integration_secret:
-                self.add_integration(org_id, workspace_id, integration_secret)
-                loaded_count += 1
-
-        self.logger.info(f"Loaded {loaded_count} Notion integrations for org {org_id}")
-        return loaded_count
-
-    def __str__(self) -> str:
-        stats = self.get_stats()
-        return f"NotionApp({stats['total_integrations']} integrations, {stats['total_orgs']} orgs)"
+    """Singleton NotionApp that manages all Notion integrations across organizations."""
+    
+    def __init__(self, logger, arango_service, kafka_service, config_service):
+        self.logger = logger
+        self.arango_service = arango_service
+        self.kafka_service = kafka_service
+        self.config_service = config_service
+        self.org_integrations = {}  # org_id -> {workspace_id -> NotionService}
+        self.workspace_cache = {}   # integration_secret -> workspace_info
+        self
+        self._lock = asyncio.Lock()
+    
+    async def initialize_org_integrations(self, org_id: str, integration_secrets: list) -> int:
+        """Initialize all Notion integrations for an organization."""
+        async with self._lock:
+            self.logger.info(f"🔄 Initializing Notion integrations for org: {org_id}")
+            
+            if org_id not in self.org_integrations:
+                self.org_integrations[org_id] = {}
+            
+            successful_count = 0
+            
+            for i, integration_secret in enumerate(integration_secrets):
+                try:
+                    # Get workspace info
+                    workspace_info = await self._get_workspace_info(integration_secret)
+                    workspace_id = workspace_info.get("id", "").replace("-", "")
+                    
+                    # Create NotionService for this integration
+                    notion_service = NotionService(
+                        integration_secret=integration_secret,
+                        org_id=org_id,
+                        workspace_id=workspace_id,
+                        logger=self.logger,
+                        arango_service=self.arango_service,
+                        kafka_service=self.kafka_service,
+                        config_service=self.config_service
+                    )
+                    
+                    # Store in org integrations
+                    self.org_integrations[org_id][workspace_id] = notion_service
+                    self.workspace_cache[integration_secret] = workspace_info
+                    
+                    self.logger.info(f"✅ Initialized integration {i+1} for workspace: {workspace_id}")
+                    successful_count += 1
+                    
+                except Exception as e:
+                    self.logger.error(f"❌ Failed to initialize integration {i+1}: {str(e)}")
+                    continue
+            
+            self.logger.info(f"📊 Initialized {successful_count}/{len(integration_secrets)} integrations for org {org_id}")
+            return successful_count
+    
+    async def sync_org_data(self, org_id: str) -> dict:
+        """Sync data for all integrations in an organization."""
+        if org_id not in self.org_integrations:
+            raise ValueError(f"No integrations found for org: {org_id}")
+        
+        results = {
+            "total_integrations": len(self.org_integrations[org_id]),
+            "successful_syncs": 0,
+            "failed_syncs": 0,
+            "sync_details": []
+        }
+        
+        for workspace_id, notion_service in self.org_integrations[org_id].items():
+            try:
+                self.logger.info(f"🔄 Starting sync for workspace: {workspace_id}")
+                
+                sync_result = {"workspace_id": workspace_id, "status": "started"}
+                
+                # Process the async generator
+                async for result in notion_service.fetch_and_create_notion_records():
+                    step = result.get("step")
+                    status = result.get("status")
+                    message = result.get("message")
+                    data = result.get("data", {})
+                    
+                    if status == "completed" and step == "sync":
+                        sync_result.update({
+                            "status": "completed",
+                            "user_count": data.get('user_count', 0),
+                            "page_count": data.get('page_count', 0),
+                            "database_count": data.get('database_count', 0)
+                        })
+                        results["successful_syncs"] += 1
+                        self.logger.info(f"✅ Completed sync for workspace: {workspace_id}")
+                        break
+                    elif status == "failed":
+                        sync_result.update({"status": "failed", "error": result.get("error")})
+                        results["failed_syncs"] += 1
+                        self.logger.error(f"❌ Failed sync for workspace: {workspace_id}")
+                        break
+                
+                results["sync_details"].append(sync_result)
+                
+            except Exception as e:
+                self.logger.error(f"❌ Error syncing workspace {workspace_id}: {str(e)}")
+                results["failed_syncs"] += 1
+                results["sync_details"].append({
+                    "workspace_id": workspace_id,
+                    "status": "failed",
+                    "error": str(e)
+                })
+        
+        return results
+    
+    async def _get_workspace_info(self, integration_secret: str) -> dict:
+        """Get workspace information from Notion API."""
+        if integration_secret in self.workspace_cache:
+            return self.workspace_cache[integration_secret]
+        
+        url = "https://api.notion.com/v1/users/me"
+        headers = {
+            "Authorization": f"Bearer {integration_secret}",
+            "Notion-Version": "2022-06-28",
+            "Content-Type": "application/json",
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    raise Exception(f"Failed to fetch workspace info: {error_text}")
+                
+                return await response.json()
+    
+    def get_org_integrations(self, org_id: str) -> dict:
+        """Get all integrations for an organization."""
+        return self.org_integrations.get(org_id, {})
+    
+    def get_stats(self) -> dict:
+        """Get global statistics."""
+        total_orgs = len(self.org_integrations)
+        total_integrations = sum(len(integrations) for integrations in self.org_integrations.values())
+        
+        return {
+            "total_organizations": total_orgs,
+            "total_integrations": total_integrations,
+            "organizations": list(self.org_integrations.keys())
+        }
+    
+    async def remove_org_integrations(self, org_id: str):
+        """Remove all integrations for an organization."""
+        async with self._lock:
+            if org_id in self.org_integrations:
+                del self.org_integrations[org_id]
+                self.logger.info(f"🗑️ Removed all integrations for org: {org_id}")
 

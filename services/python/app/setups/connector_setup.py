@@ -663,17 +663,19 @@ class AppContainer(containers.DeclarativeContainer):
 
     notion_app = providers.Singleton(
         NotionApp,
-        logger=logger
+        logger=logger,
+        arango_service=arango_service,
+        kafka_service=kafka_service,
+        config_service=config_service
     )
-
-    # NotionCredentialsHandler for managing Notion secrets
+    
+    # NotionCredentialsHandler
     notion_credentials_handler = providers.Singleton(
         NotionCredentialsHandler,
         logger=logger,
         config_service=config_service,
         arango_service=arango_service,
     )
-
 
     # Services that will be initialized based on account type
     # Define lazy dependencies for account-based services:

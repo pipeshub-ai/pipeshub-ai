@@ -19,6 +19,7 @@ from app.schema.arango.documents import (
     notion_comments_schema,
     notion_database_schema,
     notion_page_schema,
+    notion_last_sync_schema,
     orgs_schema,
     record_schema,
     user_schema,
@@ -62,7 +63,7 @@ NODE_COLLECTIONS = [
     (CollectionNames.NOTION_DATABASE_RECORD.value, notion_database_schema),
     (CollectionNames.NOTION_COMMENT_RECORD.value, notion_comments_schema),
     (CollectionNames.RECORD_GROUPS.value, record_group_schema),
-
+    (CollectionNames.NOTION_LAST_SYNC_RECORD.value, notion_last_sync_schema),
 ]
 
 EDGE_COLLECTIONS = [
