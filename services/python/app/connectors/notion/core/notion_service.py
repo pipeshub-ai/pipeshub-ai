@@ -199,9 +199,9 @@ class NotionService:
         """
         try:
             self.logger.info("Creating workspace records and dumping in arangodb")
-            workspaceId = user_data.get("id", "").replace("-", "")
+            workspace_id = user_data.get("id", "").replace("-", "")
             current_timestamp = int(datetime.now().timestamp() * 1000)
-
+            self.workspace_id = workspace_id
 
             # Extract workspace information
             # workspace_name = None
@@ -217,21 +217,21 @@ class NotionService:
 
              # Check if record with this external record ID already exists
             existing_key = await self.arango_service.get_key_by_external_record_id(
-                external_record_id=workspaceId,
+                external_record_id=workspace_id,
                 collection_name=CollectionNames.RECORD_GROUPS.value
             )
 
             if existing_key:
                 self.logger.info(
                     "📋 Record with external record ID %s already exists with key %s. Updating record.",
-                    workspaceId,
+                    workspace_id,
                     existing_key
                 )
                 return existing_key
             else:
                 self.logger.info(
                     "🆕 Creating new record for external record ID %s",
-                    workspaceId
+                    workspace_id
                 )
 
             key = str(uuid4())
@@ -240,7 +240,7 @@ class NotionService:
                 "_key": key,
                 "orgId": self.org_id,
                 "groupName": user_data.get("name", ""),
-                "externalGroupId": workspaceId,
+                "externalGroupId": workspace_id,
                 "groupType": "NOTION_WORKSPACE",
                 "createdAtTimestamp": current_timestamp,
                 "connectorName": "NOTION",
@@ -249,7 +249,6 @@ class NotionService:
             }
            
             workspace_records.append(notion_workspace_record)
-            print(workspace_records)
             await self.arango_service.batch_upsert_nodes(
                 workspace_records, CollectionNames.RECORD_GROUPS.value
             )
@@ -261,30 +260,45 @@ class NotionService:
             )
             raise
 
-    async def _fetch_all_pages(self):
+    async def _fetch_all_pages(self, last_sync_time: Optional[int] = None):
         """
-        Fetch all pages accessible with the integration secret.
+        Fetch all pages accessible with the integration secret with incremental sync support.
+        Pages are fetched in descending order by last_edited_time and stops when we reach
+        pages older than the last sync time.
+        
+        Args:
+            last_sync_time: Unix timestamp of last sync. If None, fetches all pages.
+            
         Yields:
             List[Dict[str, Any]]: Batches of pages from the Notion API as they're fetched.
         """
         try:
-            self.logger.info("Fetching all Notion pages...")
+            self.logger.info(f"Fetching Notion pages {'incrementally' if last_sync_time else 'fully'}...")
+            if last_sync_time:
+                self.logger.info(f"Last sync time: {last_sync_time} ({datetime.fromtimestamp(last_sync_time)})")
+            
             url = f"{self.BASE_URL}/search"
-
+            
             params = {
                 "filter": {"value": "page", "property": "object"},
                 "page_size": 100,
+                "sort": {
+                    "direction": "descending",
+                    "timestamp": "last_edited_time"
+                }
             }
-
+            
             has_more = True
             next_cursor = None
             total_pages = 0
-
+            pages_processed_since_last_sync = 0
+            should_continue = True
+            
             async with aiohttp.ClientSession() as session:
-                while has_more:
+                while has_more and should_continue:
                     if next_cursor:
                         params["start_cursor"] = next_cursor
-
+                    
                     async with session.post(
                         url, headers=self.headers, json=params
                     ) as response:
@@ -294,23 +308,62 @@ class NotionService:
                                 f"Failed to fetch Notion pages: {error_text}"
                             )
                             raise Exception(f"Notion API error: {response.status}")
-
+                        
                         data = await response.json()
                         pages_batch = data.get("results", [])
-
-                        # Yield each batch of pages
+                        
+                        if pages_batch and last_sync_time:
+                            # Filter pages based on last sync time
+                            filtered_pages = []
+                            for page in pages_batch:
+                                page_last_edited = page.get("last_edited_time")
+                                if page_last_edited:
+                                    # Convert ISO string to timestamp
+                                    page_timestamp = int(datetime.fromisoformat(
+                                        page_last_edited.replace('Z', '+00:00')
+                                    ).timestamp())
+                                    
+                                    # If page is newer than last sync, include it
+                                    if page_timestamp > last_sync_time:
+                                        filtered_pages.append(page)
+                                        pages_processed_since_last_sync += 1
+                                    else:
+                                        # We've reached pages older than last sync, stop here
+                                        self.logger.info(
+                                            f"Reached pages older than last sync time. "
+                                            f"Processed {pages_processed_since_last_sync} new/updated pages."
+                                        )
+                                        should_continue = False
+                                        break
+                            
+                            pages_batch = filtered_pages
+                        
+                        # Yield batch if we have pages
                         if pages_batch:
                             total_pages += len(pages_batch)
                             yield pages_batch
-
+                        
                         has_more = data.get("has_more", False)
                         next_cursor = data.get("next_cursor")
-
+                        
+                        # If we have no pages in this batch and we're doing incremental sync,
+                        # we might have reached the end
+                        if not pages_batch and last_sync_time:
+                            should_continue = False
+                        
                         self.logger.info(
-                            f"Fetched {total_pages} Notion pages so far"
+                            f"Fetched {len(pages_batch) if pages_batch else 0} pages in this batch, "
+                            f"{total_pages} total pages so far"
                         )
-
-            self.logger.info(f"Successfully fetched all {total_pages} Notion pages")
+            
+            if last_sync_time:
+                self.logger.info(
+                    f"Incremental sync completed: {pages_processed_since_last_sync} new/updated pages, "
+                    f"{total_pages} total pages fetched"
+                )
+            else:
+                self.logger.info(f"Full sync completed: {total_pages} total pages fetched")
+                
         except Exception as e:
             self.logger.error(f"Error fetching Notion pages: {str(e)}")
             raise
@@ -382,9 +435,13 @@ class NotionService:
                 config_node_constants.ENDPOINTS.value
         )
         connector_endpoint = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
-
+        
         for page in pages:
             page_id = page.get("id", "").replace("-", "")
+            last_edited_time = page.get("last_edited_time")
+            if await self._should_skip_record_update(page_id, last_edited_time):
+                self.logger.debug(f"Skipping page {page_id} - no changes since last sync")
+                continue
             title = self._extract_page_title(page)
             if not title:
                 title = "Untitled Page for page id :" + page_id
@@ -411,6 +468,7 @@ class NotionService:
                 "orgId": self.org_id,
                 "recordName": title,
                 "externalRecordId": page_id,
+                "externalRevisionId": last_edited_time,
                 "recordType": "WEBPAGE",
                 "version": 0,
                 "origin": "CONNECTOR",
@@ -503,7 +561,6 @@ class NotionService:
                         CollectionNames.IS_OF_TYPE.value,
                     )
                 for message_event in message_events:
-                    await self.arango_service.get_document(message_event['recordId'],CollectionNames.RECORDS.value)
                     await self.kafka_service.send_event_to_kafka(message_event)
                     self.logger.info(
                         "📨 Sent Kafka Indexing event for message %s",
@@ -529,30 +586,44 @@ class NotionService:
             self.logger.error(f"Error processing and storing Notion pages: {str(e)}")
             raise
 
-    async def _fetch_all_databases(self):
+    async def _fetch_all_databases(self, last_sync_time: Optional[int] = None):
         """
-        Fetch all databases accessible with the integration secret.
+        Fetch all databases accessible with the integration secret with incremental sync support.
+        Databases are fetched in descending order by last_edited_time.
+        
+        Args:
+            last_sync_time: Unix timestamp of last sync. If None, fetches all databases.
+            
         Yields:
             List[Dict[str, Any]]: Batches of databases from the Notion API as they're fetched.
         """
         try:
-            self.logger.info("Fetching all Notion databases...")
+            self.logger.info(f"Fetching Notion databases {'incrementally' if last_sync_time else 'fully'}...")
+            if last_sync_time:
+                self.logger.info(f"Last sync time: {last_sync_time} ({datetime.fromtimestamp(last_sync_time)})")
+            
             url = f"{self.BASE_URL}/search"
-
+            
             params = {
                 "filter": {"value": "database", "property": "object"},
                 "page_size": 100,
+                "sort": {
+                    "direction": "descending", 
+                    "timestamp": "last_edited_time"
+                }
             }
-
+            
             has_more = True
             next_cursor = None
             total_databases = 0
-
+            databases_processed_since_last_sync = 0
+            should_continue = True
+            
             async with aiohttp.ClientSession() as session:
-                while has_more:
+                while has_more and should_continue:
                     if next_cursor:
                         params["start_cursor"] = next_cursor
-
+                    
                     async with session.post(
                         url, headers=self.headers, json=params
                     ) as response:
@@ -562,26 +633,61 @@ class NotionService:
                                 f"Failed to fetch Notion databases: {error_text}"
                             )
                             raise Exception(f"Notion API error: {response.status}")
-
+                        
                         data = await response.json()
                         databases_batch = data.get("results", [])
-
-                        # Yield each batch of databases
+                        
+                        if databases_batch and last_sync_time:
+                            # Filter databases based on last sync time
+                            filtered_databases = []
+                            for database in databases_batch:
+                                db_last_edited = database.get("last_edited_time")
+                                if db_last_edited:
+                                    # Convert ISO string to timestamp
+                                    db_timestamp = int(datetime.fromisoformat(
+                                        db_last_edited.replace('Z', '+00:00')
+                                    ).timestamp())
+                                    
+                                    # If database is newer than last sync, include it
+                                    if db_timestamp > last_sync_time:
+                                        filtered_databases.append(database)
+                                        databases_processed_since_last_sync += 1
+                                    else:
+                                        # We've reached databases older than last sync
+                                        self.logger.info(
+                                            f"Reached databases older than last sync time. "
+                                            f"Processed {databases_processed_since_last_sync} new/updated databases."
+                                        )
+                                        should_continue = False
+                                        break
+                            
+                            databases_batch = filtered_databases
+                        
+                        # Yield batch if we have databases
                         if databases_batch:
                             total_databases += len(databases_batch)
                             yield databases_batch
-
+                        
                         has_more = data.get("has_more", False)
                         next_cursor = data.get("next_cursor")
-
+                        
+                        # If no databases in this batch during incremental sync, we might be done
+                        if not databases_batch and last_sync_time:
+                            should_continue = False
+                        
                         self.logger.info(
-                            f"Fetched {total_databases} Notion databases so far"
+                            f"Fetched {len(databases_batch) if databases_batch else 0} databases in this batch, "
+                            f"{total_databases} total databases so far"
                         )
-
-            self.logger.info(
-                f"Successfully fetched all {total_databases} Notion databases"
-            )
-
+            
+            if last_sync_time:
+                self.logger.info(
+                    f"Incremental sync completed: {databases_processed_since_last_sync} new/updated databases, "
+                    f"{total_databases} total databases fetched"
+                )
+            else:
+                self.logger.info(f"Full sync completed: {total_databases} total databases fetched")
+                
         except Exception as e:
             self.logger.error(f"Error fetching Notion databases: {str(e)}")
             raise
@@ -636,15 +742,19 @@ class NotionService:
                 config_node_constants.ENDPOINTS.value
             )
         connector_endpoint = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
-
-
+        
         for database in databases:
             database_id = database.get("id", "").replace("-", "")
+            last_edited_time = database.get("last_edited_time")
+            if await self._should_skip_record_update(database_id, last_edited_time):
+                self.logger.debug(f"Skipping database {database_id} - no changes since last sync")
+                continue
             title = self._extract_database_title(database)
             if not title:
                 title = "Untitled db for db id :" + database_id
             url = database.get("url", "")
             key = str(uuid4())
+            
             # Create Notion database record
             notion_database_record = {
                 "_key": key,
@@ -664,6 +774,7 @@ class NotionService:
                 "orgId": self.org_id,
                 "recordName": title,
                 "externalRecordId": database_id,
+                "externalRevisionId": last_edited_time,
                 "recordType": "DATABASE",
                 "origin": "CONNECTOR",
                 "version": 0,
@@ -759,7 +870,6 @@ class NotionService:
                     )
 
                 for message_event in message_events:
-                    await self.arango_service.get_document(message_event['recordId'],CollectionNames.RECORDS)
                     await self.kafka_service.send_event_to_kafka(message_event)
                     self.logger.info(
                         "📨 Sent Kafka Indexing event for message %s",
@@ -929,6 +1039,7 @@ class NotionService:
 
         page_record = await self.arango_service.get_key_by_external_record_id(
             page_id,
+            CollectionNames.NOTION_PAGE_RECORD
         )
 
         if page_record:
@@ -947,7 +1058,8 @@ class NotionService:
         """
         # First try to find the database in ArangoDB
         db_record = await self.arango_service.get_key_by_external_record_id(
-            database_id
+            database_id,
+            CollectionNames.NOTION_DATABASE_RECORD
         )
 
         if db_record:
@@ -1103,7 +1215,6 @@ class NotionService:
 
             for page in pages:
                 page_id = page.get("page_id","").replace("-", "")
-
                 all_comments = await self._fetch_comments(page_id)
 
                 # Transform comments into array format
@@ -1265,7 +1376,6 @@ class NotionService:
 
 
             for message in message_events:
-                await self.arango_service.get_document(message_event['recordId'],CollectionNames.RECORDS.value)
                 await self.kafka_service.send_event_to_kafka(message_event)
                 self.logger.info(
                     "📨 Sent Kafka Indexing event for message %s",
@@ -1406,7 +1516,6 @@ class NotionService:
             )
 
             for message_event in message_events:
-                await self.arango_service.get_document(message_event['recordId'],CollectionNames.RECORDS.value)
                 await self.kafka_service.send_event_to_kafka(message_event)
                 self.logger.info(
                     "📨 Sent Kafka Indexing event for message %s",
@@ -1460,12 +1569,12 @@ class NotionService:
 
                         # Handle file/media blocks - create records and return existing info
                         if block_type in ["file", "video", "image", "gif", "audio"]:
+
                             file_info = await self._process_file_block(
                                 block_id, block_type, block_content,
                                 block_created_time, block_last_edited_time,
                                 page_record
                             )
-                            print(file_info)
 
                             if file_info:
                                 all_file_records.append(file_info["file_record"])
@@ -1578,8 +1687,7 @@ class NotionService:
                 "createdAtSourceTimestamp": created_at,
                 "modifiedAtSourceTimestamp": last_edited_at
             }
-            await self.arango_service.get_document(message_event['recordId'],CollectionNames.RECORDS.value)
-
+            
             return message_event
 
         except Exception as e:
@@ -1646,7 +1754,6 @@ class NotionService:
                 )
 
             for message_event in message_events:
-                await self.arango_service.get_document(message_event['recordId'],CollectionNames.RECORDS.value)
                 await self.kafka_service.send_event_to_kafka(message_event)
                 self.logger.info(
                     "📨 Sent Kafka Indexing event for message %s",
@@ -1690,10 +1797,24 @@ class NotionService:
 
             # Step 3: Process pages in batches, yielding back to caller after each batch
             yield {"step": "pages", "status": "started", "message": "Starting page processing"}
-            total_pages = 0
+            await self._update_last_sync_timestamps(self.workspace_id)
 
+            workspace_last_sync_key= await self.arango_service.get_key_by_external_record_id(
+                external_record_id=self.workspace_id,
+                collection_name=CollectionNames.NOTION_LAST_SYNC_RECORD.value
+            )
+
+            workspace_last_sync_document =await self.arango_service.get_document(workspace_last_sync_key,CollectionNames.NOTION_LAST_SYNC_RECORD.value)
+
+
+            pages_last_sync_time=workspace_last_sync_document['pages_last_sync']
+            databases_last_sync_time=workspace_last_sync_document['databases_last_sync']
+            comments_last_sync_time=workspace_last_sync_document['comments_last_sync']
+           
+            total_pages = 0
             pages_buffer = []
-            async for pages_batch in self._fetch_all_pages():
+            
+            async for pages_batch in self._fetch_all_pages(pages_last_sync_time):
                 pages_buffer.extend(pages_batch)
 
                 # Process batches and yield back to caller after each batch
@@ -1707,17 +1828,16 @@ class NotionService:
 
                     self.logger.info(f"Processed batch of {len(processing_batch)} pages, total: {total_pages}")
 
-                    # YIELD BACK TO CALLER - this is where control returns to orchestrator
+                    # YIELD BACK TO CALLER
                     yield {
                         "step": "pages_batch",
-                        "status": "completed",
+                        "status": "completed", 
                         "message": f"Processed {len(processing_batch)} pages",
                         "data": {
                             "batch_pages_processed": len(processing_batch),
                             "total_pages_processed": total_pages
                         }
                     }
-                    # After this yield, the caller gets control back and can do whatever they want
 
             # Process remaining pages
             if pages_buffer:
@@ -1726,7 +1846,7 @@ class NotionService:
                 yield {
                     "step": "pages_batch",
                     "status": "completed",
-                    "message": f"Processed final {len(pages_buffer)} pages",
+                    "message": f"Processed final {len(pages_buffer)} pages", 
                     "data": {
                         "batch_pages_processed": len(pages_buffer),
                         "total_pages_processed": total_pages
@@ -1735,12 +1855,13 @@ class NotionService:
 
             yield {"step": "pages", "status": "completed", "message": f"All pages processed: {total_pages}", "data": {"page_count": total_pages}}
 
-            # Step 4: Process databases in batches, yielding back to caller after each batch
-            yield {"step": "databases", "status": "started", "message": "Starting database processing"}
+            # Step 5: Process databases in batches with incremental sync
+            yield {"step": "databases", "status": "started", "message": f"Starting database processing ({'incremental' if databases_last_sync_time else 'full'} sync)"}
+            
             total_databases = 0
-
             databases_buffer = []
-            async for databases_batch in self._fetch_all_databases():
+            
+            async for databases_batch in self._fetch_all_databases(databases_last_sync_time):
                 databases_buffer.extend(databases_batch)
 
                 # Process batches and yield back to caller after each batch
@@ -1754,7 +1875,7 @@ class NotionService:
 
                     self.logger.info(f"Processed batch of {len(processing_batch)} databases, total: {total_databases}")
 
-                    # YIELD BACK TO CALLER - control returns to orchestrator
+                    # YIELD BACK TO CALLER
                     yield {
                         "step": "databases_batch",
                         "status": "completed",
@@ -1764,14 +1885,13 @@ class NotionService:
                             "total_databases_processed": total_databases
                         }
                     }
-                    # After this yield, caller can run other services, handle requests, etc.
 
             # Process remaining databases
             if databases_buffer:
                 await self._process_single_databases_batch(databases_buffer, workspace_record_key)
                 total_databases += len(databases_buffer)
                 yield {
-                    "step": "databases_batch",
+                    "step": "databases_batch", 
                     "status": "completed",
                     "message": f"Processed final {len(databases_buffer)} databases",
                     "data": {
@@ -1781,6 +1901,10 @@ class NotionService:
                 }
 
             yield {"step": "databases", "status": "completed", "message": f"All databases processed: {total_databases}", "data": {"database_count": total_databases}}
+
+
+            #update the time accordingly
+            await self._update_last_sync_timestamps(self.workspace_id,pages_sync_time=0,databases_sync_time=0)
 
             # Final completion
             yield {
@@ -1807,7 +1931,7 @@ class NotionService:
 
     #--------------block fetching --------------------------------
 
-    async def store_file_block(self,page,file_id,file_url,name,mimeType,file_extension,createdAt,lastEditedAt):
+    async def _store_file_block(self,page,file_id,file_url,name,mimeType,file_extension,createdAt,lastEditedAt):
         """Store a single file block in the database"""
         try:
 
@@ -2036,7 +2160,9 @@ class NotionService:
             createdAt = self._iso_to_timestamp(block_created_time)
             lastEditedAt = self._iso_to_timestamp(block_last_edited_time)
 
-            file_record, general_record, record_edge_data, record_relation_edge_data = await self.store_file_block(
+            
+
+            file_record, general_record, record_edge_data, record_relation_edge_data = await self._store_file_block(
                 page_record, block_id, file_url, name, mimetype,file_extension, createdAt, lastEditedAt
             )
 
@@ -2126,3 +2252,115 @@ class NotionService:
                     mimetype = "application/octet-stream"
 
         return mimetype
+    
+
+
+    async def _should_skip_record_update(
+        self, 
+        block_id: str, 
+        last_edited_time: str, 
+    ) -> bool:
+        """
+        Check if a record should be skipped based on externalRevisionId comparison.
+        
+        Args:
+            block_id: The page ID or Database ID to check
+            last_edited_time: Current last_edited_time from Notion API
+        
+        Returns:
+            bool: True if record should be skipped (no changes), False if should be processed
+        """
+        try:
+            if not last_edited_time:
+                # No last_edited_time, process the record
+                return False
+            
+            existing_key = await self.arango_service.get_key_by_external_record_id(
+                external_record_id=block_id,
+                collection_name=CollectionNames.RECORDS.value
+            )
+
+            existing_record=await self.arango_service.get_document(existing_key,CollectionNames.RECORDS.value)
+
+            if not existing_record:
+                # No existing record, this is new - process it
+                return False
+            
+            existing_revision_id = existing_record.get("externalRevisionId")
+            if not existing_revision_id:
+                # No existing revision ID, process the record
+                return False
+            
+            # Compare the revision IDs (both should be ISO timestamp strings)
+            if existing_revision_id == last_edited_time:
+                # Same revision ID, skip this record
+                return True
+            
+            # Different revision IDs, process the record
+            return False
+            
+        except Exception as e:
+            self.logger.warning(f"Error checking revision for page {block_id}: {str(e)}")
+            # On error, process the record to be safe
+            return False
+        
+    async def _update_last_sync_timestamps(
+        self, 
+        workspace_id: str,
+        pages_sync_time: Optional[int] = None,
+        databases_sync_time: Optional[int] = None, 
+        comments_sync_time: Optional[int] = None
+    ):
+        """
+        Update the last sync timestamps for a workspace.
+        """
+        try:
+            current_timestamp = int(datetime.now().timestamp() * 1000)
+            
+            # Prepare the sync record according to your schema
+            sync_record = {
+                "_key": f"sync_{workspace_id}",
+                "orgId": self.org_id,  # Changed from org_id to match schema
+                "externalRecordId": workspace_id,  # Changed from workspace_id to match schema
+            }
+            
+            # Add sync timestamps as numbers, assign 0 if None
+            sync_record["pages_last_sync"] = pages_sync_time if pages_sync_time is not None else 0
+            sync_record["databases_last_sync"] = databases_sync_time if databases_sync_time is not None else 0
+            sync_record["comments_last_sync"] = comments_sync_time if comments_sync_time is not None else 0
+            
+            # Check if this is the first sync
+            try:
+                existing_key = await self.arango_service.get_key_by_external_record_id(
+                    external_record_id=workspace_id,
+                    collection_name=CollectionNames.NOTION_LAST_SYNC_RECORD.value
+                )
+                
+                if existing_key:
+                    # Record exists, this is an update
+                    self.logger.info(f"Updating existing sync record for workspace {workspace_id}")
+                    # Keep the existing _key
+                    sync_record["_key"] = existing_key
+                else:
+                    # New record
+                    self.logger.info(f"Creating new sync record for workspace {workspace_id}")
+                    
+            except Exception as e:
+                # If error getting existing record, treat as new
+                self.logger.info(f"Creating new sync record for workspace {workspace_id} (error checking existing: {str(e)})")
+            
+            sync_records=[]
+            sync_records.append(sync_record)
+            # Upsert the sync record
+            await self.arango_service.batch_upsert_nodes(
+                sync_records, 
+                CollectionNames.NOTION_LAST_SYNC_RECORD.value
+            )
+            
+            self.logger.info(f"Updated sync timestamps for workspace {workspace_id}")
+            
+        except Exception as e:
+            self.logger.error(f"Error updating sync timestamps: {str(e)}")
+            raise
+
+

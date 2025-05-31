@@ -463,3 +463,22 @@ notion_comments_schema = {
     "message": "Document does not match the Notion comments schema."
 }
 
+notion_last_sync_schema= {
+    "rule": {
+        "type": "object", 
+        "properties": {
+            "orgId": {"type": "string", "minLength": 1},
+            "externalRecordId": {"type": "string", "minLength": 1}, 
+            "pages_last_sync": {"type": "number"},
+            "databases_last_sync": {"type": "number"},
+            "comments_last_sync": {"type": "number"},
+        },
+        "required": [
+            "orgId",
+            "externalRecordId", 
+        ],
+        "additionalProperties": False
+    },
+    "level": "strict",
+    "message": "Document does not match the Notion last sync schema."
+}
