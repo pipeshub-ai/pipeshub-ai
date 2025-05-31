@@ -1,7 +1,7 @@
 import mongoose, { Schema, Document, Types, Model } from 'mongoose';
 
 export interface IAuthMethod {
-  type: 'samlSso' | 'otp' | 'password' | 'google' | 'microsoft' | 'azureAd';
+  type: 'samlSso' | 'otp' | 'password' | 'google' | 'microsoft' | 'azureAd' | 'oauth';
 }
 
 export enum AuthMethodType {
@@ -11,6 +11,7 @@ export enum AuthMethodType {
   GOOGLE = 'google',
   MICROSOFT = 'microsoft',
   AZURE_AD = 'azureAd',
+  OAUTH = 'oauth',
 }
 
 interface IAuthStep {
@@ -32,7 +33,7 @@ const AuthMethodSchema = new Schema<IAuthMethod>(
   {
     type: {
       type: String,
-      enum: ['samlSso', 'otp', 'password', 'google', 'microsoft', 'azureAd'],
+      enum: ['samlSso', 'otp', 'password', 'google', 'microsoft', 'azureAd', 'oauth'],
       required: true,
     },
   },

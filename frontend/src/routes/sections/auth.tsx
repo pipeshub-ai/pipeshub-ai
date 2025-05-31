@@ -18,7 +18,7 @@ const Jwt = {
   SignUpPage: lazy(() => import('src/pages/auth/jwt/account-setup')),
   ResetPasswordPage: lazy(() => import('src/pages/auth/jwt/reset-password')),
   SamlSsoSuccess: lazy(() => import('src/auth/view/auth/saml-sso-success')),
-
+  OAuthCallback: lazy(() => import('src/auth/view/auth/oauth-callback')),
 };
 
 
@@ -41,6 +41,14 @@ const authJwt = {
           <AuthSplitLayout section={{ title: 'Processing authentication...' }}>
           <Jwt.SamlSsoSuccess />
           </AuthSplitLayout>
+        </GuestGuard>
+      ),
+    },
+    {
+      path: 'oauth/callback',
+      element: (
+        <GuestGuard>
+          <Jwt.OAuthCallback />
         </GuestGuard>
       ),
     },

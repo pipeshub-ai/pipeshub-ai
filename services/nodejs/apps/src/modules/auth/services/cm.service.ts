@@ -14,6 +14,8 @@ export const AZURE_AD_AUTH_CONFIG_PATH =
   'api/v1/configurationManager/internal/authConfig/azureAd';
 export const MICROSOFT_AUTH_CONFIG_PATH =
   'api/v1/configurationManager/internal/authConfig/microsoft';
+export const OAUTH_AUTH_CONFIG_PATH =
+  'api/v1/configurationManager/internal/authConfig/oauth';
 
 @injectable()
 export class ConfigurationManagerService {

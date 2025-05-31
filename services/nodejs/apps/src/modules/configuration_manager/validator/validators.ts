@@ -107,6 +107,19 @@ export const googleAuthConfigSchema = z.object({
   }),
 });
 
+export const oauthConfigSchema = z.object({
+  body: z.object({
+    providerName: z.string().min(1, { message: 'Provider name is required' }),
+    clientId: z.string().min(1, { message: 'Client ID is required' }),
+    clientSecret: z.string().optional(),
+    authorizationUrl: z.string().url().optional().or(z.literal('')),
+    tokenEndpoint: z.string().url().optional().or(z.literal('')),
+    userInfoEndpoint: z.string().url().optional().or(z.literal('')),
+    scope: z.string().optional(),
+    redirectUri: z.string().url().optional().or(z.literal('')),
+  }),
+});
+
 export const microsoftConfigSchema = z.object({
   clientId: z.string().min(1, { message: 'Microsoft client ID is required' }),
   tenantId: z.string().optional().default('common'),

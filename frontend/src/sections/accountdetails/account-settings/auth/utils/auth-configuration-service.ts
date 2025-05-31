@@ -23,6 +23,17 @@ export interface SamlSsoConfig {
   entityId?: string;       
 }
 
+export interface OAuthConfig {
+  clientId: string;
+  clientSecret?: string;
+  authorizationUrl?: string;
+  tokenEndpoint?: string;
+  userInfoEndpoint?: string;
+  providerName: string;
+  scope?: string;
+  redirectUri?: string;
+}
+
 // Base API URL
 const API_BASE_URL = '/api/v1/configurationManager/authConfig';
 
@@ -78,6 +89,20 @@ export const getSamlSsoConfig = async (): Promise<SamlSsoConfig> => {
     return response.data;
   } catch (error) {
     console.error('Failed to fetch SAML SSO configuration:', error);
+    throw error;
+  }
+};
+
+/**
+ * Fetch OAuth authentication configuration
+ * @returns {Promise<OAuthConfig>} The OAuth auth configuration
+ */
+export const getOAuthConfig = async (): Promise<OAuthConfig> => {
+  try {
+    const response = await axios.get(`${API_BASE_URL}/oauth`);
+    return response.data;
+  } catch (error) {
+    console.error('Failed to fetch OAuth configuration:', error);
     throw error;
   }
 };
@@ -144,13 +169,30 @@ export const updateSamlSsoConfig = async (samlConfig: SamlSsoConfig): Promise<an
   }
 };
 
+/**
+ * Update OAuth auth configuration
+ * @param {OAuthConfig} oauthConfig - OAuth auth configuration
+ * @returns {Promise<any>} The API response
+ */
+export const updateOAuthConfig = async (oauthConfig: OAuthConfig): Promise<any> => {
+  try {
+    const response = await axios.post(`${API_BASE_URL}/oauth`, oauthConfig);
+    return response.data;
+  } catch (error) {
+    console.error('Failed to update OAuth configuration:', error);
+    throw error;
+  }
+};
+
 export default {
   getGoogleAuthConfig,
   getAzureAuthConfig,
   getMicrosoftAuthConfig,
   getSamlSsoConfig,
+  getOAuthConfig,
   updateGoogleAuthConfig,
   updateAzureAuthConfig,
   updateMicrosoftAuthConfig,
-  updateSamlSsoConfig
+  updateSamlSsoConfig,
+  updateOAuthConfig
 };

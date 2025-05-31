@@ -24,7 +24,7 @@ import { validateOtpConfiguration, validateSingleMethodSelection } from './utils
 import type { AuthMethod } from './utils/validations';
 
 // API schema for validation
-const AUTH_METHOD_TYPES = ['password', 'otp', 'google', 'microsoft', 'azureAd', 'samlSso'];
+const AUTH_METHOD_TYPES = ['password', 'otp', 'google', 'microsoft', 'azureAd', 'samlSso', 'oauth'];
 
 // Main component
 const AuthenticationSettings: React.FC = () => {
