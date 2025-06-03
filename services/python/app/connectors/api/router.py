@@ -343,7 +343,7 @@ async def download_file(
 
         # Download file based on connector type
         try:
-            if connector == "drive":
+            if connector.lower() == Connectors.GOOGLE_DRIVE.value.lower():
                 logger.info(f"Downloading Drive file: {file_id}")
                 # Build the Drive service
                 drive_service = build("drive", "v3", credentials=creds)
@@ -353,7 +353,7 @@ async def download_file(
                 )
                 if not file:
                     raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found")
-                mime_type = file.get("mimeType")
+                mime_type = file.get("mimeType", "application/octet-stream")
 
                 if mime_type == "application/vnd.google-apps.presentation":
                     logger.info("🚀 Processing Google Slides")
@@ -467,20 +467,6 @@ async def download_file(
                     finally:
                         file_buffer.close()
 
-                # Get file metadata to set correct content type
-                try:
-                    file_metadata = (
-                        drive_service.files()
-                        .get(fileId=file_id, fields="mimeType", supportsAllDrives=True)
-                        .execute()
-                    )
-                    mime_type = file_metadata.get(
-                        "mimeType", "application/octet-stream"
-                    )
-                except Exception as e:
-                    logger.warning(f"Could not get file mime type: {str(e)}")
-                    mime_type = "application/octet-stream"
-
                 # Return streaming response with proper headers
                 headers = {
                     "Content-Disposition": f'attachment; filename="{record.get("recordName", "")}"'
@@ -490,7 +476,7 @@ async def download_file(
                     file_stream(), media_type=mime_type, headers=headers
                 )
 
-            elif connector == "gmail":
+            elif connector.lower() == Connectors.GOOGLE_MAIL.value.lower():
                 logger.info(f"Downloading Gmail attachment for record_id: {record_id}")
                 gmail_service = build("gmail", "v1", credentials=creds)
 
@@ -507,7 +493,6 @@ async def download_file(
 
                 cursor = arango_service.db.aql.execute(aql_query)
                 messages = list(cursor)
-                logger.info(f"messages: {messages}")
 
                 async def attachment_stream() -> AsyncGenerator[bytes, None]:
                     try:
@@ -607,6 +592,7 @@ async def download_file(
                                             actual_attachment_id = part.get("body", {}).get("attachmentId")
                                             if not actual_attachment_id:
                                                 raise Exception("Attachment ID not found in part body")
+                                            logger.info(f"Found attachment ID: {actual_attachment_id}")
                                             break
                                     else:
                                         raise Exception("Part ID not found in message")
@@ -770,10 +756,17 @@ async def stream_record(
             creds = await get_user_credentials(org_id, user_id,logger, google_token_handler, request.app.container)
         # Download file based on connector type
         try:
-            if connector == Connectors.GOOGLE_DRIVE.value:
+            if connector.lower() == Connectors.GOOGLE_DRIVE.value.lower():
                 logger.info(f"Downloading Drive file: {file_id}")
                 drive_service = build("drive", "v3", credentials=creds)
                 file_name = record.get("recordName", "")
+                file = await arango_service.get_document(
+                    record_id, CollectionNames.FILES.value
+                )
+                if not file:
+                    raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found")
+
+                mime_type = file.get("mimeType", "application/octet-stream")
 
                 # Check if PDF conversion is requested
                 if convertTo == MimeTypes.PDF.value:
@@ -818,7 +811,6 @@ async def stream_record(
                 # Regular file download without conversion - now with direct streaming
                 async def file_stream() -> AsyncGenerator[bytes, None]:
                     try:
-                        logger.info(f"Time check xxx File stream start: {time.time()}")
                         chunk_count = 0
                         total_bytes = 0
 
@@ -829,7 +821,7 @@ async def stream_record(
                         done = False
                         while not done:
                             try:
-                                status, done = downloader.next_chunk()
+                                _ , done = downloader.next_chunk()
                                 chunk_count += 1
 
                                 buffer.seek(0)
@@ -854,7 +846,6 @@ async def stream_record(
                                     status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                                     detail="Error during file streaming",
                                 )
-                        logger.info(f"Time check xxx File stream end: {time.time()}")
 
                     except Exception as stream_error:
                         logger.error(f"Error in file stream: {str(stream_error)}")
@@ -864,16 +855,6 @@ async def stream_record(
                     finally:
                         buffer.close()
 
-                # Get file metadata to set correct content type
-                try:
-                    file_metadata = await arango_service.get_document(record_id, CollectionNames.FILES.value)
-                    mime_type = file_metadata.get(
-                        "mimeType", "application/octet-stream"
-                    )
-                    logger.info(f"File mime type: {mime_type}")
-                except Exception as e:
-                    logger.warning(f"Could not get file mime type: {str(e)}")
-                    mime_type = "application/octet-stream"
 
                 # Return streaming response with proper headers
                 headers = {"Content-Disposition": f'attachment; filename="{file_name}"'}
@@ -881,7 +862,7 @@ async def stream_record(
                     file_stream(), media_type=mime_type, headers=headers
                 )
 
-            elif connector == Connectors.GOOGLE_MAIL.value:
+            elif connector.lower() == Connectors.GOOGLE_MAIL.value.lower():
                 logger.info(
                     f"Handling Gmail request for record_id: {record_id}, type: {recordType}"
                 )
@@ -1013,6 +994,7 @@ async def stream_record(
                     raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found")
 
                 file_name = file.get("name", "")
+                mime_type = file.get("mimeType", "application/octet-stream")
 
                 # Get the related message's externalRecordId using AQL
                 aql_query = f"""
@@ -1122,6 +1104,7 @@ async def stream_record(
                                     actual_attachment_id = part.get("body", {}).get("attachmentId")
                                     if not actual_attachment_id:
                                         raise Exception("Attachment ID not found in part body")
+                                    logger.info(f"Found attachment ID: {actual_attachment_id}")
                                     break
                             else:
                                 raise Exception("Part ID not found in message")
@@ -1215,24 +1198,6 @@ async def stream_record(
                                     },
                                 )
 
-                        # Regular file download with streaming
-                        # Get file metadata to set correct content type
-                        try:
-                            file_metadata = (
-                                drive_service.files()
-                                .get(
-                                    fileId=file_id,
-                                    fields="mimeType",
-                                    supportsAllDrives=True,
-                                )
-                                .execute()
-                            )
-                            mime_type = file_metadata.get(
-                                "mimeType", "application/octet-stream"
-                            )
-                        except Exception as e:
-                            logger.warning(f"Could not get file mime type: {str(e)}")
-                            mime_type = "application/octet-stream"
 
                         headers = {
                             "Content-Disposition": f'attachment; filename="{file_name}"'
