@@ -2,8 +2,12 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, field_validator
 
+
+class Point(BaseModel):
+    x: float
+    y: float
 
 class CommentFormat(str, Enum):
     TXT = "txt"
@@ -42,23 +46,44 @@ class TextFormat(str, Enum):
 class BlockComment(BaseModel):
     text: str
     format: TextFormat
-    threadId: Optional[str] = None
-    attachementRecordIds: Optional[List[str]] = None
+    thread_id: Optional[str] = None
+    attachment_record_ids: Optional[List[str]] = None
 
 class CitationMetadata(BaseModel):
     """Citation-specific metadata for referencing source locations"""
+    # All File formatsspecific
+    section_title: Optional[str] = None
+
+    # PDF specific
     page_number: Optional[int] = None
-    sheet_number: Optional[int] = None
-    sheet_name: Optional[str] = None
-    row_number: Optional[int] = None
-    column_number: Optional[int] = None
-    cell_reference: Optional[str] = None  # e.g., "A1", "B5"
+    bounding_boxes: List[Point]
+
+    # PDF/Word/Text specific
     line_number: Optional[int] = None
     paragraph_number: Optional[int] = None
-    section_title: Optional[str] = None
-    timestamp: Optional[str] = None  # For video/audio content
+
+    # Excel specific
+    sheet_number: Optional[int] = None
+    sheet_name: Optional[str] = None
+    cell_reference: Optional[str] = None  # e.g., "A1", "B5"
+
+    # Excel/CSV specific
+    row_number: Optional[int] = None
+    column_number: Optional[int] = None
+
+    # Slide specific
     slide_number: Optional[int] = None
-    bounding_boxes: Optional[List[int]] = None
+
+    # Video/Audio specific
+    timestamp: Optional[str] = None  # For video/audio content
+    duration_ms: Optional[int] = None  # For video/audio
+
+    @field_validator('bounding_boxes')
+    @classmethod
+    def validate_bounding_boxes(cls, v):
+        if len(v) != 4:
+            raise ValueError('bounding_boxes must contain exactly 4 points')
+        return v
 
 class TableMetadata(BaseModel):
     """Metadata specific to table blocks"""
@@ -144,21 +169,20 @@ class Block(BaseModel):
 
     # Semantic metadata
     entities: Optional[List[Dict[str, Any]]] = None
-    sectionNumbers: Optional[List[str]] = None
+    section_numbers: Optional[List[str]] = None
     summary: Optional[str] = None
     keywords: Optional[List[str]] = None
     departments: Optional[List[str]] = None
     languages: Optional[List[str]] = None
     topics: Optional[List[str]] = None
-    recordId: Optional[str] = None
+    record_id: Optional[str] = None
     page_number: Optional[int] = None
     sheet_number: Optional[int] = None
     category: Optional[str] = None
     sub_category_level_1: Optional[str] = None
     sub_category_level_2: Optional[str] = None
     sub_category_level_3: Optional[str] = None
-
-    confidence: Confidence = Confidence.VERY_HIGH
+    confidence: Optional[Confidence] = None
 
 class RecordType(str, Enum):
     FILE = "FILE"
@@ -175,7 +199,8 @@ class RecordStatus(str, Enum):
     FAILED = "FAILED"
     COMPLETED = "COMPLETED"
     FILE_TYPE_NOT_SUPPORTED = "FILE_TYPE_NOT_SUPPORTED"
-    MANUAL_SYNC = "AUTO_INDEX_OFF"
+    MANUAL_SYNC = "MANUAL_SYNC"
+    AUTO_INDEX_OFF = "AUTO_INDEX_OFF"
 
 class Record(BaseModel):
     # Core record properties
@@ -183,20 +208,21 @@ class Record(BaseModel):
     org_id: str = Field(description="Unique identifier for the organization")
     record_name: str = Field(description="Human-readable name for the record")
     record_type: RecordType = Field(description="Type/category of the record")
-    record_status: RecordStatus = Field(default=RecordStatus.PROCESSING)
+    record_status: RecordStatus = Field(default=RecordStatus.NOT_STARTED)
     external_record_id: str = Field(description="Unique identifier for the record in the external system")
     external_revision_id: Optional[str] = Field(description="Unique identifier for the revision of the record in the external system")
     version: int = Field(description="Version of the record")
     origin: str = Field(description="Origin of the record")
     connector_name: Optional[str] = Field(description="Name of the connector used to create the record")
-    virtualRecordId: Optional[str] = Field(description="Virtual record identifier")
-    summaryDocumentId: Optional[str] = Field(description="Summary document identifier")
+    virtual_record_id: Optional[str] = Field(description="Virtual record identifier", default=None)
+    summary_document_id: Optional[str] = Field(description="Summary document identifier", default=None)
     md5_hash: Optional[str] = Field(description="MD5 hash of the record")
-    # Timestamps
-    created_at: int = Field()
-    updated_at: int = Field()
-    source_created_at: Optional[int] = None
-    source_updated_at: Optional[int] = None
+
+    # Epoch Timestamps
+    created_at: int = Field(description="Epoch timestamp in milliseconds of the record creation")
+    updated_at: int = Field(description="Epoch timestamp in milliseconds of the record update")
+    source_created_at: Optional[int] = Field(description="Epoch timestamp in milliseconds of the record creation in the source system")
+    source_updated_at: Optional[int] = Field(description="Epoch timestamp in milliseconds of the record update in the source system")
 
     # Source information
     weburl: Optional[HttpUrl] = None
