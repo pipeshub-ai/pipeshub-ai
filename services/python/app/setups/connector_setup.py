@@ -4,6 +4,7 @@ src/api/setup.py
 
 import asyncio
 import os
+from datetime import datetime, timedelta, timezone
 
 import aiohttp
 import google.oauth2.credentials
@@ -521,12 +522,21 @@ async def refresh_google_workspace_user_credentials(org_id, arango_service, logg
             async with user_creds_lock:
                 if cache_key in container.user_creds_cache:
                     creds = container.user_creds_cache[cache_key]
+                    logger.info(f"Expiry time: {creds.expiry}")
+                    expiry = creds.expiry
+
                     try:
-                        if not creds.expired:
+                        now = datetime.now(timezone.utc).replace(tzinfo=None)
+                        # Add 5 minute buffer before expiry to ensure we refresh early
+                        buffer_time = timedelta(minutes=10)
+
+                        if expiry and (expiry - buffer_time) > now:
                             logger.info(f"User credentials cache hit: {cache_key}")
                             needs_refresh = False
                         else:
-                            logger.info(f"User credentials expired for {cache_key}")
+                            logger.info(f"User credentials expired or expiring soon for {cache_key}")
+                            # Remove expired credentials from cache
+                            container.user_creds_cache.pop(cache_key, None)
                     except Exception as e:
                         logger.error(f"Failed to check credentials for {cache_key}: {str(e)}")
                         container.user_creds_cache.pop(cache_key, None)
@@ -551,6 +561,10 @@ async def refresh_google_workspace_user_credentials(org_id, arango_service, logg
                     client_secret=creds_data.get("clientSecret"),
                     scopes=SCOPES,
                 )
+                # Update token expiry time
+                new_creds.expiry = datetime.fromtimestamp(
+                    creds_data.get("access_token_expiry_time", 0) / 1000, timezone.utc
+                ).replace(tzinfo=None)  # Convert to naive UTC for Google client compatibility
 
                 async with user_creds_lock:
                     container.user_creds_cache[cache_key] = new_creds
@@ -559,8 +573,8 @@ async def refresh_google_workspace_user_credentials(org_id, arango_service, logg
         except Exception as e:
             logger.error(f"Error in credential refresh task: {str(e)}")
 
-        # Run every 2 minutes
-        await asyncio.sleep(120)
+        # Run every 5 minutes
+        await asyncio.sleep(300)
         logger.debug("🔄 Checking refresh status of credentials for user")
 
 
