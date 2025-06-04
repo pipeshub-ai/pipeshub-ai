@@ -175,3 +175,4 @@ services/python/default_config*.json
 *.DS_Store
 test.txt
 image_*.png 
+*.log
