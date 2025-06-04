@@ -1,7 +1,9 @@
-from pydantic import BaseModel, Field, HttpUrl
-from typing import List, Optional, Dict, Union, Any, Literal
 from datetime import datetime
 from enum import Enum
+from typing import Any, Dict, List, Literal, Optional
+
+from pydantic import BaseModel, Field, HttpUrl
+
 
 class CommentFormat(str, Enum):
     TXT = "txt"
@@ -57,7 +59,7 @@ class CitationMetadata(BaseModel):
     timestamp: Optional[str] = None  # For video/audio content
     slide_number: Optional[int] = None
     bounding_boxes: Optional[List[int]] = None
-    
+
 class TableMetadata(BaseModel):
     """Metadata specific to table blocks"""
     rows: Optional[int] = None
@@ -122,15 +124,15 @@ class Block(BaseModel):
     block_source_id: Optional[str] = None
     block_source_name: Optional[str] = None
     block_source_type: Optional[str] = None
-    
+
 
     # Content and links
     data: Optional[Any] = None
     links: Optional[List[str]] = None
     weburl: Optional[HttpUrl] = None
     public_data_link: Optional[HttpUrl] = None
-    public_data_link_expiration_epoch_time_in_ms: Optional[int] = None    
-    
+    public_data_link_expiration_epoch_time_in_ms: Optional[int] = None
+
     # Block-type specific metadata
     list_metadata: Optional[ListMetadata] = None
     table_metadata: Optional[TableMetadata] = None
@@ -139,12 +141,12 @@ class Block(BaseModel):
     file_metadata: Optional[FileMetadata] = None
     link_metadata: Optional[LinkMetadata] = None
     citation_metadata: Optional[CitationMetadata] = None
-    
+
     # Semantic metadata
     entities: Optional[List[Dict[str, Any]]] = None
     sectionNumbers: Optional[List[str]] = None
     summary: Optional[str] = None
-    keywords: Optional[List[str]] = None 
+    keywords: Optional[List[str]] = None
     departments: Optional[List[str]] = None
     languages: Optional[List[str]] = None
     topics: Optional[List[str]] = None
@@ -195,14 +197,14 @@ class Record(BaseModel):
     updated_at: int = Field()
     source_created_at: Optional[int] = None
     source_updated_at: Optional[int] = None
-    
+
     # Source information
     weburl: Optional[HttpUrl] = None
 
 
     # Content blocks
     blocks: List[Block] = Field(default_factory=list, description="List of content blocks in this record")
- 
+
     # Semantic information at record level
     title: Optional[str] = None
     description: Optional[str] = None
@@ -219,7 +221,7 @@ class Record(BaseModel):
     sub_category_level_2: Optional[str] = None
     sub_category_level_3: Optional[str] = None
 
-    
+
     # Relationships
     parent_record_id: Optional[str] = None
     child_record_ids: Optional[List[str]] = Field(default_factory=list)
@@ -235,7 +237,7 @@ class FileRecord(Record):
 class MessageRecord(Record):
     message_id: Optional[str] = None
     message_subject: Optional[str] = None
-    
+
 class MailRecord(Record):
     mail_id: Optional[str] = None
     mail_subject: Optional[str] = None
