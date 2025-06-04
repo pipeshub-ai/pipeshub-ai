@@ -80,9 +80,11 @@ class CitationMetadata(BaseModel):
 
     @field_validator('bounding_boxes')
     @classmethod
-    def validate_bounding_boxes(cls, v):
-        if len(v) != 4:
-            raise ValueError('bounding_boxes must contain exactly 4 points')
+    def validate_bounding_boxes(cls, v: List[Point]) -> List[Point]:
+        """Validate that the bounding boxes contain exactly 4 points"""
+        COORDINATE_COUNT = 4
+        if len(v) != COORDINATE_COUNT:
+            raise ValueError(f'bounding_boxes must contain exactly {COORDINATE_COUNT} points')
         return v
 
 class TableMetadata(BaseModel):
