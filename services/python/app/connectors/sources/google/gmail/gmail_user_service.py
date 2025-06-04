@@ -424,7 +424,6 @@ class GmailUserService:
                     .get(userId="me", id=message_id, format="full")
                     .execute()
                 )
-                self.logger.debug("📝 Message: %s", message)
             except HttpError as e:
                 if e.resp.status == HttpStatusCode.NOT_FOUND.value:
                     raise MailOperationError(

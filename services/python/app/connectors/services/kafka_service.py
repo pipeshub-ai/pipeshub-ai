@@ -1,7 +1,6 @@
-import asyncio
 import json
 
-from confluent_kafka import Producer
+from aiokafka import AIOKafkaProducer
 
 from app.config.configuration_service import ConfigurationService, config_node_constants
 from app.config.utils.named_constants.arangodb_constants import EventTypes
@@ -14,29 +13,47 @@ class KafkaService:
         self.producer = None
         self.logger = logger
 
-    def delivery_report(self, err, msg) -> None:
-        """Delivery report for produced messages."""
-        if err is not None:
-            self.logger.error("❌ Delivery failed for record %s: %s", msg.key(), err)
-        else:
-            self.logger.info(
-                "✅ Record %s successfully produced to %s [%s]",
-                msg.key(),
-                msg.topic(),
-                msg.partition(),
-            )
+    async def _ensure_producer(self) -> None:
+        """Ensure producer is initialized and started"""
+        if self.producer is None:
+            try:
+                kafka_config = await self.config_service.get_config(
+                    config_node_constants.KAFKA.value
+                )
+                if not isinstance(kafka_config, dict):
+                    raise ValueError("Kafka configuration must be a dictionary")
+
+                brokers = kafka_config.get("brokers", "localhost:9092")
+                if isinstance(brokers, list):
+                    brokers = ",".join(brokers)
+                elif (
+                    isinstance(brokers, str)
+                    and brokers.startswith("[")
+                    and brokers.endswith("]")
+                ):
+                    brokers = brokers.strip("[]").replace("'", "").replace('"', "").strip()
+
+                producer_config = {
+                    "bootstrap_servers": brokers,  # aiokafka uses bootstrap_servers
+                    "client_id": kafka_config.get("client_id", "file-processor"),
+                }
+
+                self.producer = AIOKafkaProducer(**producer_config)
+                await self.producer.start()
+                self.logger.info("✅ Kafka producer initialized and started")
+
+            except Exception as e:
+                self.logger.error(f"❌ Failed to initialize Kafka producer: {str(e)}")
+                raise
 
     async def send_event_to_kafka(self, event_data) -> bool | None:
         """
-        Send an event to Kafka.
+        Send an event to Kafka asynchronously.
         :param event_data: Dictionary containing file processing details
         """
         try:
-            kafka_config = await self.config_service.get_config(
-                config_node_constants.KAFKA.value
-            )
-            if not isinstance(kafka_config, dict):
-                raise ValueError("Kafka configuration must be a dictionary")
+            # Ensure producer is ready
+            await self._ensure_producer()
 
             # Standardize event format
             formatted_event = {
@@ -63,30 +80,47 @@ class KafkaService:
                 },
             }
 
-            brokers = kafka_config.get("brokers", "localhost:9092")
-            if isinstance(brokers, list):
-                brokers = ",".join(brokers)
-            elif (
-                isinstance(brokers, str)
-                and brokers.startswith("[")
-                and brokers.endswith("]")
-            ):
-                brokers = brokers.strip("[]").replace("'", "").replace('"', "").strip()
+            # Convert to JSON bytes for aiokafka
+            message_value = json.dumps(formatted_event).encode('utf-8')
+            message_key = str(formatted_event["payload"]["recordId"]).encode('utf-8')
 
-            producer_config = {
-                "bootstrap.servers": brokers,
-                "client.id": kafka_config.get("client_id", "file-processor"),
-            }
-            self.producer = Producer(producer_config)
-            self.producer.produce(
+            # Send message and wait for delivery
+            record_metadata = await self.producer.send_and_wait(
                 topic="record-events",
-                key=str(formatted_event["payload"]["recordId"]),
-                # Properly serialize to JSON
-                value=json.dumps(formatted_event),
-                callback=self.delivery_report,
+                key=message_key,
+                value=message_value
             )
-            await asyncio.to_thread(self.producer.flush)
+
+            # Log successful delivery
+            self.logger.info(
+                "✅ Record %s successfully produced to %s [%s] at offset %s",
+                formatted_event["payload"]["recordId"],
+                record_metadata.topic,
+                record_metadata.partition,
+                record_metadata.offset
+            )
+
             return True
+
         except Exception as e:
             self.logger.error("❌ Failed to send event to Kafka: %s", str(e))
             return False
+
+    async def stop_producer(self) -> None:
+        """Stop the Kafka producer and clean up resources"""
+        if self.producer:
+            try:
+                await self.producer.stop()
+                self.producer = None
+                self.logger.info("✅ Kafka producer stopped successfully")
+            except Exception as e:
+                self.logger.error(f"❌ Error stopping Kafka producer: {str(e)}")
+
+    async def __aenter__(self) -> "KafkaService":
+        """Async context manager entry"""
+        await self._ensure_producer()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Async context manager exit"""
+        await self.stop_producer()
