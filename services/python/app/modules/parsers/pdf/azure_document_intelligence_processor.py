@@ -10,78 +10,184 @@ from azure.ai.formrecognizer.aio import (
 )
 from azure.core.credentials import AzureKeyCredential
 from spacy import Language
+from spacy.tokens import Doc
 
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 
+LENGTH_THRESHOLD = 2
+WORD_THRESHOLD = 15
+WORD_OVERLAP_THRESHOLD = 0.9
 
 class AzureOCRStrategy(OCRStrategy):
     def __init__(
         self, logger, endpoint: str, key: str, model_id: str = "prebuilt-document"
-    ):
+    ) -> None:
         self.logger = logger
+
         self.endpoint = endpoint
         self.key = key
         self.model_id = model_id
         self.document_analysis_result = None
         self.doc = None  # PyMuPDF document for initial check
-        self.nlp = None
         self._processed = False
         self.ocr_pdf_content = None  # Store the OCR-processed PDF content
 
+        # Initialize spaCy with custom tokenizer
+        self.logger.info("🧠 Loading spaCy model and creating custom tokenizer...")
+        try:
+            self.nlp = self._create_custom_tokenizer(spacy.load("en_core_web_sm"))
+            self.logger.info("✅ spaCy model loaded successfully")
+        except Exception as e:
+            self.logger.error(f"❌ Failed to load spaCy model: {e}")
+            self.nlp = None
+
     async def load_document(self, content: bytes) -> None:
         """Load and analyze document using Azure Document Intelligence"""
-        self.logger.info("🔄 Starting Azure Document Intelligence load...")
+        self.logger.info("🚀 Starting Azure Document Intelligence document loading")
+        self.logger.info(f"📊 Document size: {len(content):,} bytes")
 
-        # Load with PyMuPDF first for OCR need check
-        self.logger.debug("📄 Initial PyMuPDF load for OCR check")
-        with fitz.open(stream=content, filetype="pdf") as temp_doc:
-            # Check if any page needs OCR
-            self.logger.debug("🔍 Checking if document needs OCR")
-            needs_ocr = any(self.needs_ocr(page) for page in temp_doc)
-            self._needs_ocr = needs_ocr
-            self.logger.debug(f"🔍 OCR need check result: {needs_ocr}")
+
+        self.logger.debug("📄 Opening PDF with PyMuPDF for initial OCR need analysis")
+
+        try:
+            with fitz.open(stream=content, filetype="pdf") as temp_doc:
+                # Check if any page needs OCR
+                self.logger.info("🔍 Analyzing OCR requirements per page...")
+                pages_needing_ocr = []
+
+                for page_num, page in enumerate(temp_doc):
+                    self.logger.debug(f"🔍 Checking page {page_num + 1}/{len(temp_doc)} for OCR need")
+
+                    # Log page dimensions
+                    self.logger.debug(f"   📐 Page dimensions: {page.rect.width:.1f} x {page.rect.height:.1f}")
+
+                    page_needs_ocr = self.needs_ocr(page)
+                    if page_needs_ocr:
+                        pages_needing_ocr.append(page_num + 1)
+                        self.logger.info(f"   ✅ Page {page_num + 1}: NEEDS OCR")
+                    else:
+                        self.logger.debug(f"   ❌ Page {page_num + 1}: OCR not needed")
+
+                needs_ocr = len(pages_needing_ocr) > 0
+                self._needs_ocr = needs_ocr
+
+                self.logger.info(f"   🎯 Final decision: {'AZURE OCR' if needs_ocr else 'PYMUPDF DIRECT'}")
+
+        except Exception as e:
+            self.logger.error(f"❌ Error during OCR need analysis: {e}")
+            self.logger.warning("⚠️ Defaulting to Azure OCR due to analysis failure")
+            needs_ocr = True
+            self._needs_ocr = True
 
         if needs_ocr:
-            self.logger.info("🤖 Document needs OCR, processing with Azure...")
-            try:
-                async with AsyncDocumentAnalysisClient(
-                    endpoint=self.endpoint, credential=AzureKeyCredential(self.key)
-                ) as doc_client:
-                    document = BytesIO(content)
-                    document.seek(0)
-
-                    self.logger.debug("📤 Sending document to Azure for analysis")
-                    poller = await doc_client.begin_analyze_document(
-                        model_id=self.model_id, document=document
-                    )
-                    self.logger.debug("⏳ Waiting for Azure analysis results")
-                    self.doc = await poller.result()
-
-                    # Create searchable PDF after successful OCR
-                    # self.logger.info("📄 Creating searchable PDF...")
-                    # self.ocr_pdf_content = await self._create_searchable_pdf(content)
-                    # self.logger.info("✅ Searchable PDF created successfully")
-
-                self.logger.info("✅ Azure document analysis completed successfully")
-            except Exception as e:
-                self.logger.error(f"❌ Azure document analysis failed: {e}")
-                self.logger.info("⚠️ Falling back to direct PyMuPDF extraction")
-                self.doc = fitz.open(stream=content, filetype="pdf")
-                self._needs_ocr = False
-                self.ocr_pdf_content = None
-
+            await self._process_with_azure(content)
         else:
-            self.logger.info("📝 Document doesn't need OCR, using PyMuPDF extraction")
+            await self._process_with_pymupdf(content)
+
+        self.logger.info(f"🔄 Starting document preprocessing with OCR flag: {needs_ocr}")
+        self.document_analysis_result = self._preprocess_document(needs_ocr)
+
+        self.logger.info("✅ Document loading completed successfully!")
+        self.logger.info("📊 Final Processing Summary:")
+        result = self.document_analysis_result
+        self.logger.info(f"   📄 Pages processed: {len(result.get('pages', []))}")
+        self.logger.info(f"   📝 Lines extracted: {len(result.get('lines', []))}")
+        self.logger.info(f"   📚 Paragraphs found: {len(result.get('paragraphs', []))}")
+        self.logger.info(f"   🔤 Sentences created: {len(result.get('sentences', []))}")
+        self.logger.info(f"   📊 Tables detected: {len(result.get('tables', []))}")
+
+    async def _process_with_azure(self, content: bytes) -> None:
+        """Process document using Azure Document Intelligence"""
+        self.logger.info("🤖 Starting Azure Document Intelligence processing...")
+
+        try:
+            self.logger.debug("🔗 Creating Azure Document Analysis Client")
+            async with AsyncDocumentAnalysisClient(
+                endpoint=self.endpoint, credential=AzureKeyCredential(self.key)
+            ) as doc_client:
+
+                self.logger.debug("📤 Preparing document for Azure submission")
+                document = BytesIO(content)
+                document.seek(0)
+
+                self.logger.info(f"📤 Sending document to Azure DI (model: {self.model_id})")
+                start_time = time.time()
+
+                poller = await doc_client.begin_analyze_document(
+                    model_id=self.model_id, document=document
+                )
+
+                self.logger.info("⏳ Waiting for Azure analysis to complete...")
+                self.doc = await poller.result()
+
+                processing_time = time.time() - start_time
+                self.logger.info(f"✅ Azure processing completed in {processing_time:.2f} seconds")
+
+                # Log Azure response structure
+                self.logger.info("📊 Azure Response Analysis:")
+                if hasattr(self.doc, 'pages'):
+                    self.logger.info(f"   📄 Pages in response: {len(self.doc.pages)}")
+                    for i, page in enumerate(self.doc.pages):
+                        self.logger.debug(f"     Page {i+1}: {page.width}x{page.height} {page.unit}")
+                        if hasattr(page, 'lines'):
+                            self.logger.debug(f"       Lines: {len(page.lines)}")
+                        if hasattr(page, 'words'):
+                            self.logger.debug(f"       Words: {len(page.words) if hasattr(page, 'words') else 'N/A'}")
+
+                if hasattr(self.doc, 'paragraphs'):
+                    self.logger.info(f"   📚 Paragraphs: {len(self.doc.paragraphs)}")
+
+                if hasattr(self.doc, 'tables'):
+                    self.logger.info(f"   📊 Tables: {len(self.doc.tables)}")
+
+                self.ocr_pdf_content = None  # Commented out searchable PDF creation
+
+        except Exception as e:
+            self.logger.error(f"❌ Azure Document Intelligence processing failed: {e}")
+            self.logger.error(f"   🔍 Error type: {type(e).__name__}")
+            self.logger.error(f"   📝 Error details: {str(e)}")
+            self.logger.warning("⚠️ Falling back to PyMuPDF extraction")
+
+            await self._process_with_pymupdf(content)
+            self._needs_ocr = False
+
+    async def _process_with_pymupdf(self, content: bytes) -> None:
+        """Process document using PyMuPDF"""
+        self.logger.info("📚 Starting PyMuPDF processing...")
+
+        try:
             self.doc = fitz.open(stream=content, filetype="pdf")
+            self.logger.info("✅ PyMuPDF document loaded successfully")
+            self.logger.info(f"   📄 Page count: {len(self.doc)}")
+
+            # Log document structure
+            total_text_blocks = 0
+            total_images = 0
+
+            for page_num, page in enumerate(self.doc):
+                text_dict = page.get_text("dict")
+                blocks = text_dict.get("blocks", [])
+                images = page.get_images()
+
+                text_blocks = sum(1 for block in blocks if block.get("type") == 0)
+                total_text_blocks += text_blocks
+                total_images += len(images)
+
+                self.logger.debug(f"   Page {page_num + 1}: {text_blocks} text blocks, {len(images)} images")
+
+            self.logger.info("📊 PyMuPDF Structure Summary:")
+            self.logger.info(f"   📝 Total text blocks: {total_text_blocks}")
+            self.logger.info(f"   🖼️ Total images: {total_images}")
+
             self._needs_ocr = False
             self.ocr_pdf_content = None
 
-        self.logger.debug("🔄 Pre-processing document to match Azure's structure")
-        self.document_analysis_result = self._preprocess_document(needs_ocr)
-        self.logger.info("✅ Document loaded!")
+        except Exception as e:
+            self.logger.error(f"❌ PyMuPDF processing failed: {e}")
+            raise
 
     @Language.component("custom_sentence_boundary")
-    def custom_sentence_boundary(doc):
+    def custom_sentence_boundary(doc) -> Doc:
         for token in doc[:-1]:  # Avoid out-of-bounds errors
             next_token = doc[token.i + 1]
 
@@ -93,7 +199,7 @@ class AzureOCRStrategy(OCRStrategy):
                 # Numeric bullets (1., 2., etc)
                 (
                     next_token.like_num
-                    and len(next_token.text) <= 2
+                    and len(next_token.text) <= LENGTH_THRESHOLD
                     and next_token.i + 1 < len(doc)
                     and doc[next_token.i + 1].text == "."
                 )
@@ -112,7 +218,7 @@ class AzureOCRStrategy(OCRStrategy):
             # Check if current token is a bullet point or list marker
             is_current_bullet = (
                 token.text in ["•", "∙", "·", "○", "●", "-", "–", "—"]
-                or (token.like_num and next_token.text == "." and len(token.text) <= 2)
+                or (token.like_num and next_token.text == "." and len(token.text) <= LENGTH_THRESHOLD)
                 or (
                     len(token.text) == 1
                     and token.text.isalpha()
@@ -123,7 +229,7 @@ class AzureOCRStrategy(OCRStrategy):
             # Check if next token starts a new bullet point
             is_next_bullet_start = token.i + 2 < len(doc) and (
                 doc[token.i + 2].text in ["•", "∙", "·", "○", "●", "-", "–", "—"]
-                or (doc[token.i + 2].like_num and len(doc[token.i + 2].text) <= 2)
+                or (doc[token.i + 2].like_num and len(doc[token.i + 2].text) <= LENGTH_THRESHOLD)
                 or (len(doc[token.i + 2].text) == 1 and doc[token.i + 2].text.isalpha())
             )
 
@@ -174,7 +280,7 @@ class AzureOCRStrategy(OCRStrategy):
 
         return doc
 
-    def _create_custom_tokenizer(self, nlp):
+    def _create_custom_tokenizer(self, nlp) -> Language:
         """
         Creates a custom tokenizer that handles special cases for sentence boundaries.
         """
@@ -490,7 +596,7 @@ class AzureOCRStrategy(OCRStrategy):
         return paragraph if block_text else None
 
     def _should_merge_blocks(
-        self, block1: Dict[str, Any], block2: Dict[str, Any], word_threshold: int = 15
+        self, block1: Dict[str, Any], block2: Dict[str, Any], word_threshold: int = WORD_THRESHOLD
     ) -> bool:
         """
         Determine if blocks should be merged based on word count threshold.
@@ -545,8 +651,11 @@ class AzureOCRStrategy(OCRStrategy):
 
     def _preprocess_document(self, needs_ocr: bool) -> Dict[str, Any]:
         """Pre-process document to match PyMuPDF's structure"""
-        self.logger.debug("🔄 Starting document pre-processing")
-        # Handle both Azure and PyMuPDF document types
+        self.logger.info("🔄 Starting document preprocessing")
+        self.logger.info(f"   🤖 OCR mode: {needs_ocr}")
+        self.logger.info(f"   📄 Document type: {'Azure DI Result' if needs_ocr else 'PyMuPDF Document'}")
+
+        # Initialize result structure
         result = {
             "pages": [],
             "lines": [],
@@ -556,298 +665,296 @@ class AzureOCRStrategy(OCRStrategy):
             "key_value_pairs": [],
         }
 
+        self.logger.debug("📊 Initialized result structure with empty collections")
+
+        # Get pages to process
         if needs_ocr:
             doc_pages = self.doc.pages
-
         else:
             doc_pages = range(len(self.doc))  # PyMuPDF case
 
-        # First pass: collect all lines and paragraphs by page
-        for page in doc_pages:
+        # Process each page
+        for page_idx, page in enumerate(doc_pages):
             if hasattr(page, "page_number"):
-                self.logger.debug(f"📄 Processing page {page.page_number}")
-            else:
-                self.logger.debug(f"📄 Processing page {page}")
-
-            # Get page properties based on document type
-            if hasattr(page, "width"):
-                self.logger.debug("PAGE WIDTH: %f", page.width)
-                self.logger.debug("PAGE HEIGHT: %f", page.height)
-                self.logger.debug("PAGE UNIT: %s", page.unit)
-                self.logger.debug("PAGE NUMBER: %d", page.page_number)
-                page_width = page.width
-                page_height = page.height
-                page_unit = page.unit
                 page_number = page.page_number
+                self.logger.info(f"📄 Processing Azure page {page_number} (index {page_idx})")
             else:
                 page_number = page
                 page = self.doc[page_number]
-                page_width = page.rect.width
-                self.logger.debug("PAGE RECT WIDTH: %f", page_width)
-                page_height = page.rect.height
-                self.logger.debug("PAGE RECT HEIGHT: %f", page_height)
-                page_unit = "point"
-                self.logger.debug("PAGE RECT UNIT: %s", page_unit)
+                self.logger.info(f"📄 Processing PyMuPDF page {page_number + 1} (index {page_number})")
 
-                self.logger.debug("PAGE RECT NUMBER: %d", page_number)
-
-            page_dict = {
-                "page_number": page_number,
-                "width": page_width,
-                "height": page_height,
-                "unit": page_unit,
-                "lines": [],
-                "words": [],
-                "tables": [],
-            }
+            # Get page properties
+            page_dict = self._extract_page_properties(page, needs_ocr, page_number)
 
             if needs_ocr:
-                # Collect all lines from the page
-                page_lines = []
-                if hasattr(page, "lines"):
-                    self.logger.debug("Processing page lines")
-                    for line in page.lines:
-                        line_data = self._process_line(line, page_width, page_height)
-                        if line_data:
-                            line_data["page_number"] = page_number
-                            page_lines.append(line_data)
-                            page_dict["lines"].append(line_data)
-                            result["lines"].append(line_data)
-
-                # Process paragraphs and their associated lines
-                if hasattr(self.doc, "paragraphs"):
-                    self.logger.debug("Processing paragraphs")
-                    for idx, paragraph in enumerate(self.doc.paragraphs):
-                        processed_paragraph = self._process_block_text_azure(
-                            paragraph, page_width, page_height
-                        )
-                        if processed_paragraph:
-                            processed_paragraph["page_number"] = page_number
-                            processed_paragraph["paragraph_number"] = idx
-
-                            # Find lines that belong to this paragraph
-                            paragraph_lines = self._get_lines_for_paragraph(
-                                page_lines,
-                                processed_paragraph["content"],
-                                processed_paragraph["bounding_box"],
-                            )
-                            # Process sentences for this paragraph's lines
-                            paragraph_sentences = self._merge_lines_to_sentences(
-                                paragraph_lines
-                            )
-
-                            # Add sentences to the result with paragraph mapping
-                            for sentence in paragraph_sentences:
-                                sentence_data = {
-                                    "content": sentence["sentence"],
-                                    "bounding_box": sentence["bounding_box"],
-                                    "paragraph_numbers": [idx],
-                                    "page_number": page_number,
-                                }
-                                result["sentences"].append(sentence_data)
-
-                            processed_paragraph["sentences"] = paragraph_sentences
-                            result["paragraphs"].append(processed_paragraph)
-
-                # Process tables if present
-                if hasattr(page, "tables"):
-                    self.logger.debug("Processing tables")
-                    for table in page.tables:
-                        table_data = self._process_table(table, page)
-                        page_dict["tables"].append(table_data)
-                        result["tables"].append(table_data)
-
-                result["pages"].append(page_dict)
-
+                self._process_azure_page(page, page_dict, result, page_number)
             else:
-                self.logger.debug("📝 Extracting text blocks and paragraphs")
-                text_dict = page.get_text("dict")
-                blocks = text_dict.get("blocks", [])
+                self._process_pymupdf_page(page, page_dict, result, page_number)
 
-                # Process and merge blocks
-                merged_blocks = []
-                i = 0
-                while i < len(blocks):
-                    current_block = blocks[i]
-                    next_index = i + 1
+            result["pages"].append(page_dict)
 
-                    # Keep merging blocks until we have enough words or run out of blocks
-                    while next_index < len(blocks) and self._should_merge_blocks(
-                        current_block, blocks[next_index]
-                    ):
-                        self.logger.debug(f"Merging blocks {i} and {next_index}")
-                        current_block = self._merge_block_content(
-                            current_block, blocks[next_index]
-                        )
-                        next_index += 1
+            # Log page processing summary
+            self.logger.debug(f"✅ Page {page_number + (0 if needs_ocr else 1)} processed:")
+            self.logger.debug(f"   📝 Lines: {len(page_dict['lines'])}")
+            self.logger.debug(f"   🔤 Words: {len(page_dict['words'])}")
+            self.logger.debug(f"   📊 Tables: {len(page_dict['tables'])}")
 
-                    merged_blocks.append(current_block)
-                    i = next_index if next_index > i + 1 else i + 1
-
-                # Process merged blocks
-                for block in merged_blocks:
-                    if block.get("type") == 0:  # Text block
-                        processed_block = self._process_block_text_pymupdf(
-                            block, page_width, page_height
-                        )
-
-                        # Add to page-level collections
-                        page_dict["lines"].extend(processed_block["lines"])
-                        page_dict["words"].extend(processed_block["words"])
-
-                        # Add to document-level collections
-                        if processed_block["paragraph"]:
-                            processed_block["paragraph"]["page_number"] = (
-                                page.number + 1
-                            )
-                            result["paragraphs"].append(processed_block["paragraph"])
-                            self.logger.debug(
-                                "📚 Added paragraph to document collection (Page %s, Block %s)",
-                                page.number + 1,
-                                processed_block["paragraph"]["block_number"],
-                            )
-
-                        for sentence in processed_block["sentences"]:
-                            sentence["page_number"] = page.number + 1
-                            result["sentences"].append(sentence)
-                            self.logger.debug(
-                                "📑 Added sentence to document collection (Page %s, Block %s)",
-                                page.number + 1,
-                                sentence["block_number"],
-                            )
-
-                self.logger.debug(f"✅ Completed processing page {page.number + 1}")
-                self.logger.debug("📊 Page statistics:")
-                self.logger.debug(f"- Lines: {len(page_dict['lines'])}")
-                self.logger.debug(f"- Words: {len(page_dict['words'])}")
-                result["pages"].append(page_dict)
-
-            self.logger.debug("📊 Final document analysis result:")
-            self.logger.debug(f"- Total pages: {len(result['pages'])}")
-            self.logger.debug(f"- Total paragraphs: {len(result['paragraphs'])}")
-            self.logger.debug(f"- Total sentences: {len(result['sentences'])}")
+        # Final summary
+        self.logger.info("📊 Document preprocessing completed:")
+        self.logger.info(f"   📄 Pages: {len(result['pages'])}")
+        self.logger.info(f"   📝 Total lines: {len(result['lines'])}")
+        self.logger.info(f"   📚 Total paragraphs: {len(result['paragraphs'])}")
+        self.logger.info(f"   🔤 Total sentences: {len(result['sentences'])}")
+        self.logger.info(f"   📊 Total tables: {len(result['tables'])}")
 
         return result
 
-    def _get_lines_for_paragraph(
-        self,
-        page_lines: List[Dict[str, Any]],
-        paragraph_text: str,
-        paragraph_bbox: List[Dict[str, float]],
-        overlap_threshold: float = 0.5,
-    ) -> List[Dict[str, Any]]:
-        """Find lines that belong to a paragraph based on content and spatial overlap"""
-        self.logger.debug(f"Finding lines for paragraph: {paragraph_text[:100]}...")
+    def _extract_page_properties(self, page, needs_ocr: bool, page_number: int) -> Dict[str, Any]:
+        """Extract and log page properties"""
+        if needs_ocr and hasattr(page, "width"):
+            # Azure DI page
+            page_width = page.width
+            page_height = page.height
+            page_unit = page.unit
+            actual_page_number = page.page_number
 
-        paragraph_lines = []
-        paragraph_words = set(paragraph_text.lower().split())
+            self.logger.debug("📐 Azure page properties:")
+            self.logger.debug(f"   Width: {page_width}")
+            self.logger.debug(f"   Height: {page_height}")
+            self.logger.debug(f"   Unit: {page_unit}")
+            self.logger.debug(f"   Page number: {actual_page_number}")
 
-        for line in page_lines:
-            line_content = line["content"]
-            line_bbox = line["bounding_box"]
+        else:
+            # PyMuPDF page
+            page_width = page.rect.width
+            page_height = page.rect.height
+            page_unit = "point"
+            actual_page_number = page_number + 1
 
-            # Check for content overlap
-            line_words = set(line_content.lower().split())
-            word_overlap = len(line_words.intersection(paragraph_words)) / len(
-                line_words
-            )
+            self.logger.debug("📐 PyMuPDF page properties:")
+            self.logger.debug(f"   Width: {page_width}")
+            self.logger.debug(f"   Height: {page_height}")
+            self.logger.debug(f"   Unit: {page_unit}")
+            self.logger.debug(f"   Page number: {actual_page_number}")
 
-            # Check for spatial overlap
-            spatial_overlap = self._check_bbox_overlap(
-                line_bbox, paragraph_bbox, threshold=overlap_threshold
-            )
+        return {
+            "page_number": actual_page_number,
+            "width": page_width,
+            "height": page_height,
+            "unit": page_unit,
+            "lines": [],
+            "words": [],
+            "tables": [],
+        }
 
-            if word_overlap > 0.9 and spatial_overlap:
-                paragraph_lines.append(line)
-                self.logger.debug(f"Added line to paragraph: {line_content}")
+    def _process_azure_page(self, page, page_dict: Dict[str, Any], result: Dict[str, Any], page_number: int) -> None:
+        """Process Azure DI page"""
+        self.logger.debug(f"🤖 Processing Azure page {page_number}")
 
-        # Sort lines by vertical position
-        paragraph_lines.sort(
-            key=lambda x: sum(p["y"] for p in x["bounding_box"])
-            / len(x["bounding_box"])
-        )
+        # Process lines
+        page_lines = []
+        if hasattr(page, "lines"):
+            self.logger.debug(f"📝 Processing {len(page.lines)} lines from Azure")
+            for line_idx, line in enumerate(page.lines):
+                line_data = self._process_line(line, page_dict["width"], page_dict["height"])
+                if line_data:
+                    line_data["page_number"] = page_number
+                    line_data["line_index"] = line_idx
+                    page_lines.append(line_data)
+                    page_dict["lines"].append(line_data)
+                    result["lines"].append(line_data)
 
-        return paragraph_lines
+                    self.logger.debug(f"   Line {line_idx}: '{line_data['content'][:50]}...'")
 
-    async def extract_text(self) -> Dict[str, Any]:
-        """Extract text and layout information"""
-        self.logger.debug("📊 Starting text extraction")
-        if not self.doc or not self.document_analysis_result:
-            self.logger.error("❌ Document not loaded")
-            raise ValueError("Document not loaded. Call load_document first.")
+        # Process paragraphs
+        if hasattr(self.doc, "paragraphs"):
+            self.logger.debug(f"📚 Processing {len(self.doc.paragraphs)} paragraphs from Azure")
+            for idx, paragraph in enumerate(self.doc.paragraphs):
+                processed_paragraph = self._process_block_text_azure(
+                    paragraph, page_dict["width"], page_dict["height"]
+                )
+                if processed_paragraph:
+                    processed_paragraph["page_number"] = page_number
+                    processed_paragraph["paragraph_number"] = idx
 
-        self.logger.debug("📊 Returning document analysis result:")
-        self.logger.debug(f"- Pages: {len(self.document_analysis_result['pages'])}")
-        self.logger.debug(f"- Lines: {len(self.document_analysis_result['lines'])}")
-        self.logger.debug(
-            f"- Paragraphs: {len(self.document_analysis_result['paragraphs'])}"
-        )
-        self.logger.debug(
-            f"- Sentences: {len(self.document_analysis_result['sentences'])}"
-        )
+                    self.logger.debug(f"   Paragraph {idx}: '{processed_paragraph['content'][:50]}...'")
 
-        self.logger.info("✅ Text extraction completed")
-        return self.document_analysis_result
+                    # Find lines for this paragraph
+                    paragraph_lines = self._get_lines_for_paragraph(
+                        page_lines,
+                        processed_paragraph["content"],
+                        processed_paragraph["bounding_box"],
+                    )
 
-    def _merge_lines_to_sentences(
-        self, lines_data: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+                    self.logger.debug(f"     Found {len(paragraph_lines)} lines for paragraph {idx}")
+
+                    # Process sentences
+                    paragraph_sentences = self._merge_lines_to_sentences(paragraph_lines)
+                    self.logger.debug(f"     Created {len(paragraph_sentences)} sentences from paragraph {idx}")
+
+                    # Add sentences to result
+                    for sent_idx, sentence in enumerate(paragraph_sentences):
+                        sentence_data = {
+                            "content": sentence["sentence"],
+                            "bounding_box": sentence["bounding_box"],
+                            "paragraph_numbers": [idx],
+                            "page_number": page_number,
+                            "sentence_index": sent_idx,
+                        }
+                        result["sentences"].append(sentence_data)
+
+                    processed_paragraph["sentences"] = paragraph_sentences
+                    result["paragraphs"].append(processed_paragraph)
+
+        # Process tables
+        if hasattr(page, "tables"):
+            self.logger.debug(f"📊 Processing {len(page.tables)} tables from Azure page")
+            for table_idx, table in enumerate(page.tables):
+                table_data = self._process_table(table, page)
+                table_data["table_index"] = table_idx
+                page_dict["tables"].append(table_data)
+                result["tables"].append(table_data)
+
+                self.logger.debug(f"   Table {table_idx}: {table_data['row_count']}x{table_data['column_count']}")
+
+    def _process_pymupdf_page(self, page, page_dict: Dict[str, Any], result: Dict[str, Any], page_number: int) -> None:
+        """Process PyMuPDF page"""
+        self.logger.debug(f"📚 Processing PyMuPDF page {page_number + 1}")
+
+        text_dict = page.get_text("dict")
+        blocks = text_dict.get("blocks", [])
+
+        self.logger.debug(f"📝 Found {len(blocks)} blocks on page")
+
+        # Log block types
+        text_blocks = [b for b in blocks if b.get("type") == 0]
+        image_blocks = [b for b in blocks if b.get("type") == 1]
+
+        self.logger.debug(f"   Text blocks: {len(text_blocks)}")
+        self.logger.debug(f"   Image blocks: {len(image_blocks)}")
+
+        # Process and merge blocks
+        merged_blocks = self._merge_small_blocks(blocks)
+        self.logger.info(f"   Merged {len(blocks)} blocks into {len(merged_blocks)} blocks")
+
+        # Process each merged block
+        for block_idx, block in enumerate(merged_blocks):
+            if block.get("type") == 0:  # Text block
+                self.logger.debug(f"📝 Processing text block {block_idx}")
+
+                processed_block = self._process_block_text_pymupdf(
+                    block, page_dict["width"], page_dict["height"]
+                )
+
+                # Add to page-level collections
+                page_dict["lines"].extend(processed_block["lines"])
+                page_dict["words"].extend(processed_block["words"])
+
+                self.logger.debug(f"   Block {block_idx} added {len(processed_block['lines'])} lines, {len(processed_block['words'])} words")
+
+                # Add paragraph to document-level collections
+                if processed_block["paragraph"]:
+                    processed_block["paragraph"]["page_number"] = page.number + 1
+                    processed_block["paragraph"]["block_index"] = block_idx
+                    result["paragraphs"].append(processed_block["paragraph"])
+
+                    self.logger.debug(f"   Added paragraph from block {block_idx}: '{processed_block['paragraph']['content'][:50]}...'")
+
+                # Add sentences to document-level collections
+                for sent_idx, sentence in enumerate(processed_block["sentences"]):
+                    sentence["page_number"] = page.number + 1
+                    sentence["sentence_index"] = sent_idx
+                    result["sentences"].append(sentence)
+
+    def _merge_small_blocks(self, blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Merge small text blocks based on word count threshold"""
+        self.logger.debug("🔗 Starting block merging process")
+
+        merged_blocks = []
+        i = 0
+        merge_count = 0
+
+        while i < len(blocks):
+            current_block = blocks[i]
+            next_index = i + 1
+
+            # Keep merging blocks until we have enough words or run out of blocks
+            while next_index < len(blocks) and self._should_merge_blocks(
+                current_block, blocks[next_index]
+            ):
+                self.logger.debug(f"   Merging block {i} with block {next_index}")
+                current_block = self._merge_block_content(current_block, blocks[next_index])
+                next_index += 1
+                merge_count += 1
+
+            merged_blocks.append(current_block)
+
+            if next_index > i + 1:
+                self.logger.debug(f"   Created merged block from {i} to {next_index-1}")
+
+            i = next_index if next_index > i + 1 else i + 1
+
+        self.logger.debug(f"🔗 Block merging completed: {merge_count} merges performed")
+        return merged_blocks
+
+    def _merge_lines_to_sentences(self, lines_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Merge lines into sentences using spaCy"""
-        self.logger.debug(f"🚀 Merging lines to sentences: {lines_data}")
+        self.logger.debug(f"🔤 Starting sentence processing for {len(lines_data)} lines")
 
-        self.nlp = spacy.load("en_core_web_sm")
-        self.nlp = self._create_custom_tokenizer(
-            self.nlp
-        )  # Apply custom tokenization rules
+        if not self.nlp:
+            self.logger.error("❌ spaCy model not available for sentence processing")
+            return []
 
+        # Build full text and line mapping
         full_text = ""
         line_map = []
         char_index = 0
 
-        # Log each line being processed
-        for line_data in lines_data:
+        self.logger.debug("📝 Building text and line mapping:")
+        for line_idx, line_data in enumerate(lines_data):
             content = line_data["content"].strip()
-            self.logger.debug(f"📝 Processing line: '{content}'")
-            self.logger.debug(f"📐 Line bbox: {line_data['bounding_box']}")
 
             if not content:
+                self.logger.debug(f"   Skipping empty line {line_idx}")
                 continue
 
+            self.logger.debug(f"   Line {line_idx}: '{content}' (chars {char_index}-{char_index + len(content)})")
+
             full_text += content + " "
-            line_map.append(
-                (char_index, char_index + len(content), line_data["bounding_box"])
-            )
+            line_map.append((char_index, char_index + len(content), line_data["bounding_box"]))
             char_index += len(content) + 1
 
-        self.logger.debug(f"📄 Full text for processing: '{full_text}'")
-
+        # Process with spaCy
         doc = self.nlp(full_text)
         sentences = []
 
-        # Log each sentence being formed
-        for sent in doc.sents:
+        self.logger.debug(f"🔤 spaCy identified {len(list(doc.sents))} sentences")
+
+        # Process each sentence
+        for sent_idx, sent in enumerate(doc.sents):
             sent_text = sent.text.strip()
             sent_start, sent_end = sent.start_char, sent.end_char
 
-            self.logger.debug("================================================")
-            self.logger.debug(f"🔤 Processing sentence: '{sent_text}'")
-            self.logger.debug(f"📍 Sentence span: {sent_start} to {sent_end}")
-
+            # Find overlapping line bounding boxes
             sentence_bboxes = []
-            for start_idx, end_idx, bbox in line_map:
+            overlapping_lines = []
+
+            for line_idx, (start_idx, end_idx, bbox) in enumerate(line_map):
                 if start_idx < sent_end and end_idx > sent_start:
-                    self.logger.debug(f"📎 Including line bbox: {bbox}")
                     sentence_bboxes.append(bbox)
+                    overlapping_lines.append(line_idx)
+                    self.logger.debug(f"     Including line {line_idx} bbox")
 
-            merged_bbox = (
-                self._merge_bounding_boxes(sentence_bboxes) if sentence_bboxes else None
-            )
-            self.logger.debug(f"📐 Merged sentence bbox: {merged_bbox}")
+            merged_bbox = self._merge_bounding_boxes(sentence_bboxes) if sentence_bboxes else None
 
-            sentences.append({"sentence": sent_text, "bounding_box": merged_bbox})
+            sentences.append({
+                "sentence": sent_text,
+                "bounding_box": merged_bbox,
+                "overlapping_lines": overlapping_lines,
+                "char_span": (sent_start, sent_end)
+            })
 
-        self.logger.debug("================================================")
-        self.logger.debug(f"✅ Merged into {len(sentences)} sentences")
+        self.logger.info(f"✅ Sentence processing completed: {len(sentences)} sentences created from {len(lines_data)} lines")
         return sentences
 
     def _process_table(self, table, page) -> Dict[str, Any]:
@@ -901,7 +1008,6 @@ class AzureOCRStrategy(OCRStrategy):
         max_x = max(point["x"] for point in all_points)
         max_y = max(point["y"] for point in all_points)
 
-        self.logger.debug(f"✅ Merged bounding box: {min_x}, {min_y}, {max_x}, {max_y}")
         return [
             {"x": min_x, "y": min_y},  # top-left
             {"x": max_x, "y": min_y},  # top-right
@@ -947,7 +1053,7 @@ class AzureOCRStrategy(OCRStrategy):
         intersection = (x_right - x_left) * (y_bottom - y_top)
 
         # Calculate areas of both boxes
-        def box_area(bbox):
+        def box_area(bbox: List[Dict[str, float]]) -> float:
             width = max(p["x"] for p in bbox) - min(p["x"] for p in bbox)
             height = max(p["y"] for p in bbox) - min(p["y"] for p in bbox)
             return width * height
@@ -1028,8 +1134,6 @@ class AzureOCRStrategy(OCRStrategy):
 
                 word_count += 1
 
-            self.logger.debug(f"✅ Added {word_count} words to page {page_num + 1}")
-
         # Save the modified PDF to the output file
         self.logger.info(f"💾 Saving searchable PDF to: {output_path}")
         doc.save(output_path)
@@ -1043,3 +1147,60 @@ class AzureOCRStrategy(OCRStrategy):
 
         self.logger.info("✅ Searchable PDF creation completed")
         return ocr_pdf_content
+
+    def _get_lines_for_paragraph(
+        self,
+        page_lines: List[Dict[str, Any]],
+        paragraph_text: str,
+        paragraph_bbox: List[Dict[str, float]],
+        overlap_threshold: float = WORD_OVERLAP_THRESHOLD,
+    ) -> List[Dict[str, Any]]:
+        """Find lines that belong to a paragraph based on content and spatial overlap"""
+
+        paragraph_lines = []
+        paragraph_words = set(paragraph_text.lower().split())
+
+        for line in page_lines:
+            line_content = line["content"]
+            line_bbox = line["bounding_box"]
+
+            # Check for content overlap
+            line_words = set(line_content.lower().split())
+            word_overlap = len(line_words.intersection(paragraph_words)) / len(line_words) if len(line_words) > 0 else 0
+
+            # Check for spatial overlap
+            spatial_overlap = self._check_bbox_overlap(
+                line_bbox, paragraph_bbox, threshold=overlap_threshold
+            )
+
+            if word_overlap > WORD_OVERLAP_THRESHOLD and spatial_overlap:
+                paragraph_lines.append(line)
+                self.logger.debug(f"Added line to paragraph: {line_content}")
+
+        # Sort lines by vertical position
+        paragraph_lines.sort(
+            key=lambda x: sum(p["y"] for p in x["bounding_box"])
+            / len(x["bounding_box"])
+        )
+
+        return paragraph_lines
+
+    async def extract_text(self) -> Dict[str, Any]:
+        """Extract text and layout information"""
+        self.logger.debug("📊 Starting text extraction")
+        if not self.doc or not self.document_analysis_result:
+            self.logger.error("❌ Document not loaded")
+            raise ValueError("Document not loaded. Call load_document first.")
+
+        self.logger.debug("📊 Returning document analysis result:")
+        self.logger.debug(f"- Pages: {len(self.document_analysis_result['pages'])}")
+        self.logger.debug(f"- Lines: {len(self.document_analysis_result['lines'])}")
+        self.logger.debug(
+            f"- Paragraphs: {len(self.document_analysis_result['paragraphs'])}"
+        )
+        self.logger.debug(
+            f"- Sentences: {len(self.document_analysis_result['sentences'])}"
+        )
+
+        self.logger.info("✅ Text extraction completed")
+        return self.document_analysis_result
