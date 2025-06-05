@@ -309,7 +309,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
         block_spans = []
         block_words = []
         import json
-        print(f"Processing block: {json.dumps(block, indent=4)}")
+        # print(f"Processing block: {json.dumps(block, indent=4)}")
 
         # Process lines and their spans
         for line in block.get("lines", []):

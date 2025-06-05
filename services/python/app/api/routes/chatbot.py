@@ -150,7 +150,7 @@ async def askAI(
             )
             logger.info("Results from the AI service received")
             # Format conversation history
-            logger.debug(f"formatted_results:\n{json.dumps(results, indent=2)}")
+            # logger.debug(f"formatted_results:\n{json.dumps(results, indent=2)}")
             # Get raw search results
             # search_results = results.get("searchResults", [])
 
@@ -208,7 +208,7 @@ async def askAI(
         # else:
         #     final_results = flattened_results
         final_results = flattened_results
-        logger.debug(f"final_results: {json.dumps(final_results, indent=2)}")
+        # logger.debug(f"final_results: {json.dumps(final_results, indent=2)}")
         # Prepare the template with the final results
         if send_user_info:
             user_info = await arango_service.get_user_by_user_id(user_id)

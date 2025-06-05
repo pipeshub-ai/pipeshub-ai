@@ -787,8 +787,8 @@ class AzureOCRStrategy(OCRStrategy):
         )
 
         self.logger.info("✅ Text extraction completed")
-        import json
-        self.logger.debug(f"Document analysis result: {json.dumps(self.document_analysis_result, indent=4)}")
+        # import json
+        # self.logger.debug(f"Document analysis result: {json.dumps(self.document_analysis_result, indent=4)}")
         return self.document_analysis_result
 
     def _merge_lines_to_sentences(
