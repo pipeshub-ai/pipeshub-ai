@@ -118,6 +118,7 @@ async def retrieve_documents_node(
             limit=state["limit"],
             filter_groups=state["filters"],
             arango_service=arango_service,
+            fullmode=True,
         )
 
         status_code = results.get("status_code", 200)

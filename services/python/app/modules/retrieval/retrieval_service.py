@@ -367,6 +367,7 @@ class RetrievalService:
         filter_groups: Optional[Dict[str, List[str]]] = None,
         limit: int = 20,
         arango_service: Optional[ArangoService] = None,
+        fullmode: bool = True,  # New parameter with default True
     ) -> List[Dict[str, Any]]:
         """Perform semantic search on accessible records with multiple queries."""
 
@@ -480,6 +481,61 @@ class RetrievalService:
                         seen_chunks.add(doc.page_content)
 
             search_results = self._format_results(all_results)
+
+            # Get unique virtual record IDs from initial search results
+            unique_virtual_record_ids = list(
+                set(result["metadata"]["virtualRecordId"] for result in search_results)
+            )
+
+            # If fullmode is True, retrieve all chunks for the unique virtual record IDs
+            if fullmode and unique_virtual_record_ids:
+                self.logger.info(f"Fullmode enabled: Retrieving all chunks for {len(unique_virtual_record_ids)} virtual records")
+                
+                # Build filter for all chunks of the retrieved virtual record IDs
+                fullmode_filter = Filter(
+                    must=[
+                        FieldCondition(  # org_id condition
+                            key="metadata.orgId", match=MatchValue(value=org_id)
+                        ),
+                        Filter(  # virtualRecordId must be one of the unique virtual record IDs
+                            should=[
+                                FieldCondition(
+                                    key="metadata.virtualRecordId", match=MatchValue(value=virtual_record_id)
+                                )
+                                for virtual_record_id in unique_virtual_record_ids
+                            ]
+                        ),
+                    ]
+                )
+                
+                # Retrieve all chunks for these virtual record IDs
+                # Use a high limit to get all chunks (adjust as needed based on your data)
+                all_chunks_results = await self.vector_store.asimilarity_search_with_score(
+                    query="",  # Empty query to get all matching documents
+                    k=10000,  # High limit to get all chunks
+                    filter=fullmode_filter
+                )
+                
+                # Format and sort chunks by virtualRecordId and chunk order
+                all_chunks_formatted = self._format_results(all_chunks_results)
+                
+                # Sort chunks: first by virtualRecordId, then by chunk index/order within each record
+                def get_sort_key(result):
+                    virtual_record_id = result["metadata"].get("virtualRecordId", "")
+                    # Try different possible chunk order fields
+                    chunk_index = (
+                        result["metadata"].get("blockNum")[0]
+                    )
+                    # Ensure chunk_index is numeric
+                    try:
+                        chunk_index = int(chunk_index)
+                    except (ValueError, TypeError):
+                        chunk_index = 0
+                    
+                    return (virtual_record_id, chunk_index)
+                
+                search_results = sorted(all_chunks_formatted, key=get_sort_key)
+                self.logger.info(f"Fullmode: Retrieved and sorted {len(search_results)} total chunks")
 
             # Create mapping of virtualRecordId to first accessible record ID
             virtual_to_record_map = {}

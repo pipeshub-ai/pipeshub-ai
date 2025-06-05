@@ -47,6 +47,7 @@ export interface Metadata {
   _id: string;
   blockNum: number[];
   pageNum: number[];
+  blockText: string;
   subcategoryLevel1: string;
   subcategoryLevel2: string;
   subcategoryLevel3: string;

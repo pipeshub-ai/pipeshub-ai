@@ -98,6 +98,7 @@ async def search(
             limit=body.limit,
             filter_groups=body.filters,
             arango_service=arango_service,
+            fullmode=False,
         )
         custom_status_code = results.get("status_code", 500)
         logger.info(f"Custom status code: {custom_status_code}")

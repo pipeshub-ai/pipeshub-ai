@@ -19,6 +19,7 @@ export interface ICitationMetadata {
   recordType?: string;
   orgId: string;
   blockType?: string;
+  blockText?: string;
   mimeType: string;
   recordId: string;
   chunkIndex: number;

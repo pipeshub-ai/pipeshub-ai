@@ -252,7 +252,7 @@ const CitationSidebar = ({
                 Citation {citation.chunkIndex ? citation.chunkIndex : index + 1}
               </Typography>
 
-              <CitationContent>{citation.content}</CitationContent>
+              <CitationContent>{citation.metadata?.blockText || citation.content}</CitationContent>
 
               {citation.highlight?.position && citation.highlight?.position.pageNumber > 0 && (
                 <PageIndicator>Page {citation.highlight.position.pageNumber}</PageIndicator>

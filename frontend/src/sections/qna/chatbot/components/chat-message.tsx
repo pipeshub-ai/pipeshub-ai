@@ -838,7 +838,7 @@ const ChatMessage = ({
                             mb: 2,
                           }}
                         >
-                          {citation.content}
+                          {citation.metadata?.blockText || citation.content}
                         </Typography>
 
                         {citation.metadata?.recordId && (

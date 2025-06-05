@@ -1,5 +1,6 @@
 import asyncio
 from typing import Any, Dict, List, Optional
+import json
 
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -19,7 +20,7 @@ from app.modules.retrieval.retrieval_service import RetrievalService
 from app.setups.query_setup import AppContainer
 from app.utils.citations import process_citations
 from app.utils.query_decompose import QueryDecompositionService
-from app.utils.query_transform import setup_query_transformation
+from app.utils.query_transform import setup_query_transformation, setup_followup_query_transformation
 
 router = APIRouter()
 
@@ -29,7 +30,8 @@ class ChatQuery(BaseModel):
     query: str
     limit: Optional[int] = 50
     previousConversations: List[Dict] = []
-    useDecomposition: bool = True
+    useDecomposition: bool = False
+    useQueryExpansion: bool = False
     filters: Optional[Dict[str, Any]] = None
     retrieval_mode: Optional[str] = "HYBRID"
 
@@ -83,6 +85,16 @@ async def askAI(
                     detail="Failed to initialize LLM service. LLM configuration is missing.",
                 )
 
+        if len(query_info.previousConversations) > 0:
+            followup_query_transformation = setup_followup_query_transformation(llm)
+            followup_query = await followup_query_transformation.ainvoke({
+                "query": query_info.query,
+                "previous_conversations": query_info.previousConversations
+            })
+            query_info.query = followup_query
+
+        logger.debug(f"query_info.query {query_info.query}")
+
         logger.debug(f"useDecomposition {query_info.useDecomposition}")
         if query_info.useDecomposition:
             decomposition_service = QueryDecompositionService(llm, logger=logger)
@@ -101,28 +113,31 @@ async def askAI(
             all_queries = [{"query": query_info.query}]
 
         async def process_decomposed_query(query: str, org_id: str, user_id: str):
-            rewrite_chain, expansion_chain = setup_query_transformation(llm)
-
-            # Run query transformations in parallel
-            rewritten_query, expanded_queries = await asyncio.gather(
-                rewrite_chain.ainvoke(query), expansion_chain.ainvoke(query)
-            )
-
-            logger.debug(f"Rewritten query: {rewritten_query}")
-            logger.debug(f"Expanded queries: {expanded_queries}")
-
-            expanded_queries_list = [
-                q.strip() for q in expanded_queries.split("\n") if q.strip()
-            ]
-
-            queries = [rewritten_query.strip()] if rewritten_query.strip() else []
-            queries.extend([q for q in expanded_queries_list if q not in queries])
-            seen = set()
             unique_queries = []
-            for q in queries:
-                if q.lower() not in seen:
-                    seen.add(q.lower())
-                    unique_queries.append(q)
+            if query_info.useQueryExpansion:
+                rewrite_chain, expansion_chain = setup_query_transformation(llm)
+
+                # Run query transformations in parallel
+                rewritten_query, expanded_queries = await asyncio.gather(
+                    rewrite_chain.ainvoke(query), expansion_chain.ainvoke(query)
+                )
+
+                logger.debug(f"Rewritten query: {rewritten_query}")
+                logger.debug(f"Expanded queries: {expanded_queries}")
+
+                expanded_queries_list = [
+                    q.strip() for q in expanded_queries.split("\n") if q.strip()
+                ]
+
+                queries = [rewritten_query.strip()] if rewritten_query.strip() else []
+                queries.extend([q for q in expanded_queries_list if q not in queries])
+                seen = set()
+                for q in queries:
+                    if q.lower() not in seen:
+                        seen.add(q.lower())
+                        unique_queries.append(q)
+            else:
+                unique_queries.append(query)
 
             results = await retrieval_service.search_with_filters(
                 queries=unique_queries,
@@ -131,10 +146,11 @@ async def askAI(
                 limit=query_info.limit,
                 filter_groups=query_info.filters,
                 arango_service=arango_service,
+                fullmode=True,
             )
             logger.info("Results from the AI service received")
             # Format conversation history
-            logger.debug(f"formatted_results: {results}")
+            logger.debug(f"formatted_results:\n{json.dumps(results, indent=2)}")
             # Get raw search results
             # search_results = results.get("searchResults", [])
 
@@ -183,16 +199,16 @@ async def askAI(
 
 
         # Re-rank the combined results with the original query for better relevance
-        if len(flattened_results) > 1:
-            final_results = await reranker_service.rerank(
-                query=query_info.query,  # Use original query for final ranking
-                documents=flattened_results,
-                top_k=query_info.limit,
-            )
-        else:
-            final_results = flattened_results
-
-        logger.debug(f"final_results: {final_results}")
+        # if len(flattened_results) > 1:
+        #     final_results = await reranker_service.rerank(
+        #         query=query_info.query,  # Use original query for final ranking
+        #         documents=flattened_results,
+        #         top_k=query_info.limit,
+        #     )
+        # else:
+        #     final_results = flattened_results
+        final_results = flattened_results
+        logger.debug(f"final_results: {json.dumps(final_results, indent=2)}")
         # Prepare the template with the final results
         if send_user_info:
             user_info = await arango_service.get_user_by_user_id(user_id)
