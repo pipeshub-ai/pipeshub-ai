@@ -14,9 +14,9 @@ export interface ConfigStatus {
 }
 export const GOOGLE_WORKSPACE_SCOPE = [
   'email openid',
-  'https://www.googleapis.com/auth/drive',
+  'https://www.googleapis.com/auth/drive.readonly',
   'https://www.googleapis.com/auth/gmail.readonly',
-  'https://www.googleapis.com/auth/calendar',
+  'https://www.googleapis.com/auth/calendar.readonly',
 ].join(' ');
 
 // Define available connectors

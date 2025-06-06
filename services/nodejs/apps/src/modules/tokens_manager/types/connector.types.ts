@@ -10,6 +10,6 @@ export interface GoogleWorkspaceApps {
 
 export const scopeToAppMap: { [key: string]: GoogleWorkspaceApp } = {
   'https://www.googleapis.com/auth/gmail.readonly': GoogleWorkspaceApp.Gmail,
-  'https://www.googleapis.com/auth/calendar': GoogleWorkspaceApp.Calendar,
-  'https://www.googleapis.com/auth/drive': GoogleWorkspaceApp.Drive,
+  'https://www.googleapis.com/auth/calendar.readonly': GoogleWorkspaceApp.Calendar,
+  'https://www.googleapis.com/auth/drive.readonly': GoogleWorkspaceApp.Drive,
 };

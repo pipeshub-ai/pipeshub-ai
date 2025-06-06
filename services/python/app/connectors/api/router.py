@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, Optional
 
@@ -1557,13 +1558,24 @@ async def get_user_credentials(org_id: str, user_id: str, logger, google_token_h
 
             if cache_key in container.user_creds_cache:
                 creds = container.user_creds_cache[cache_key]
-                # Check if credentials are still valid (with some buffer time)
-                if not creds.expired:
-                    logger.info(f"User credentials cache hit: {cache_key}")
-                    return creds
-                else:
-                    logger.info(f"User credentials expired for {cache_key}")
+                logger.info(f"Expiry time: {creds.expiry}")
+                expiry = creds.expiry
 
+                try:
+                    now = datetime.now(timezone.utc).replace(tzinfo=None)
+                    # Add 5 minute buffer before expiry to ensure we refresh early
+                    buffer_time = timedelta(minutes=5)
+
+                    if expiry and (expiry - buffer_time) > now:
+                        logger.info(f"User credentials cache hit: {cache_key}")
+                        return creds
+                    else:
+                        logger.info(f"User credentials expired or expiring soon for {cache_key}")
+                        # Remove expired credentials from cache
+                        container.user_creds_cache.pop(cache_key, None)
+                except Exception as e:
+                    logger.error(f"Failed to check credentials for {cache_key}: {str(e)}")
+                    container.user_creds_cache.pop(cache_key, None)
             # Cache miss or expired - create new credentials
             logger.info(f"User credentials cache miss: {cache_key}. Creating new credentials.")
 
@@ -1579,7 +1591,7 @@ async def get_user_credentials(org_id: str, user_id: str, logger, google_token_h
                     detail="Invalid credentials. Access token not found",
                 )
 
-            creds = google.oauth2.credentials.Credentials(
+            new_creds = google.oauth2.credentials.Credentials(
                 token=creds_data.get(CredentialKeys.ACCESS_TOKEN.value),
                 refresh_token=creds_data.get(CredentialKeys.REFRESH_TOKEN.value),
                 token_uri="https://oauth2.googleapis.com/token",
@@ -1588,11 +1600,17 @@ async def get_user_credentials(org_id: str, user_id: str, logger, google_token_h
                 scopes=SCOPES,
             )
 
-            # Cache the credentials
-            container.user_creds_cache[cache_key] = creds
-            logger.info(f"Cached new user credentials for {cache_key}")
+            # Update token expiry time - make it timezone-naive for Google client compatibility
+            token_expiry = datetime.fromtimestamp(
+                creds_data.get("access_token_expiry_time", 0) / 1000, timezone.utc
+            ).replace(tzinfo=None)  # Convert to naive UTC for Google client compatibility
+            new_creds.expiry = token_expiry
 
-            return creds
+            # Cache the credentials
+            container.user_creds_cache[cache_key] = new_creds
+            logger.info(f"Cached new user credentials for {cache_key} with expiry: {new_creds.expiry}")
+
+            return new_creds
 
     except Exception as e:
         logger.error(f"Error getting user credentials: {str(e)}")
