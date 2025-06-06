@@ -21,6 +21,7 @@ from app.config.configuration_service import (
     RedisConfig,
     config_node_constants,
 )
+from app.config.utils.named_constants.arangodb_constants import AppGroups
 from app.config.utils.named_constants.http_status_code_constants import HttpStatusCode
 from app.connectors.services.kafka_service import KafkaService
 from app.connectors.services.sync_kafka_consumer import SyncKafkaRouteConsumer
@@ -75,15 +76,6 @@ async def initialize_individual_account_services_fn(org_id, container) -> None:
         logger = container.logger()
         arango_service = await container.arango_service()
 
-        # Pre-fetch service account credentials for this org
-        org_apps = await arango_service.get_org_apps(org_id)
-        for app in org_apps:
-            if app["appGroup"] == "Google Workspace":
-                logger.info("Refreshing Google Workspace user credentials")
-                asyncio.create_task(refresh_google_workspace_user_credentials(org_id, arango_service,logger, container))
-                break
-
-        print("Initializing base services")
         # Initialize base services
         container.drive_service.override(
             providers.Singleton(
@@ -235,6 +227,14 @@ async def initialize_individual_account_services_fn(org_id, container) -> None:
         sync_kafka_consumer = container.sync_kafka_consumer()
         assert isinstance(sync_kafka_consumer, SyncKafkaRouteConsumer)
 
+        # Pre-fetch service account credentials for this org
+        org_apps = await arango_service.get_org_apps(org_id)
+        for app in org_apps:
+            if app["appGroup"] == AppGroups.GOOGLE_WORKSPACE.value:
+                logger.info("Refreshing Google Workspace user credentials")
+                asyncio.create_task(refresh_google_workspace_user_credentials(org_id, arango_service,logger, container))
+                break
+
         # Start the sync Kafka consumer
         await sync_kafka_consumer.start()
         logger.info("✅ Sync Kafka consumer initialized")
@@ -264,18 +264,6 @@ async def initialize_enterprise_account_services_fn(org_id, container) -> None:
     try:
         logger = container.logger()
         arango_service = await container.arango_service()
-
-        # Initialize service credentials cache if not exists
-        if not hasattr(container, 'service_creds_cache'):
-            container.service_creds_cache = {}
-            logger.info("Created service credentials cache")
-
-        # Pre-fetch service account credentials for this org
-        org_apps = await arango_service.get_org_apps(org_id)
-        for app in org_apps:
-            if app["appGroup"] == "Google Workspace":
-                await cache_google_workspace_service_credentials(org_id, arango_service, logger, container)
-                break
 
         # Initialize base services
         container.drive_service.override(
@@ -383,9 +371,6 @@ async def initialize_enterprise_account_services_fn(org_id, container) -> None:
         google_admin_service = container.google_admin_service()
         assert isinstance(google_admin_service, GoogleAdminService)
 
-        await google_admin_service.connect_admin(org_id)
-        await google_admin_service.create_admin_watch(org_id)
-
         container.admin_webhook_handler.override(
             providers.Singleton(
                 AdminWebhookHandler, logger=logger, admin_service=google_admin_service
@@ -435,6 +420,22 @@ async def initialize_enterprise_account_services_fn(org_id, container) -> None:
         )
         sync_kafka_consumer = container.sync_kafka_consumer()
         assert isinstance(sync_kafka_consumer, SyncKafkaRouteConsumer)
+
+        # Initialize service credentials cache if not exists
+        if not hasattr(container, 'service_creds_cache'):
+            container.service_creds_cache = {}
+            logger.info("Created service credentials cache")
+
+        # Pre-fetch service account credentials for this org
+        org_apps = await arango_service.get_org_apps(org_id)
+        for app in org_apps:
+            if app["appGroup"] == AppGroups.GOOGLE_WORKSPACE.value:
+                logger.info("Caching Google Workspace service credentials")
+                await cache_google_workspace_service_credentials(org_id, arango_service, logger, container)
+                await google_admin_service.connect_admin(org_id)
+                await google_admin_service.create_admin_watch(org_id)
+                logger.info("✅ Google Workspace service credentials cached")
+                break
 
         # Start the sync Kafka consumer
         await sync_kafka_consumer.start()

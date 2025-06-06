@@ -33,6 +33,8 @@ class Connectors(Enum):
     GOOGLE_MAIL = "GMAIL"
     GOOGLE_CALENDAR = "CALENDAR"
 
+class AppGroups(Enum):
+    GOOGLE_WORKSPACE = "Google Workspace"
 
 class RecordTypes(Enum):
     FILE = "FILE"
