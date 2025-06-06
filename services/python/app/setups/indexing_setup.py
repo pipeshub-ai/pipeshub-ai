@@ -1,12 +1,8 @@
-"""
-app/setup.py
-"""
-
 import os
 
 import aiohttp
+from aiokafka import AIOKafkaConsumer
 from arango import ArangoClient
-from confluent_kafka import Consumer, KafkaError
 from dependency_injector import containers, providers
 from dotenv import load_dotenv
 from qdrant_client import QdrantClient
@@ -335,6 +331,7 @@ async def health_check_kafka(container) -> None:
     """Check the health of Kafka by attempting to create a connection."""
     logger = container.logger()
     logger.info("🔍 Starting Kafka health check...")
+    consumer = None
     try:
         kafka_config = await container.config_service().get_config(
             config_node_constants.KAFKA.value
@@ -342,26 +339,32 @@ async def health_check_kafka(container) -> None:
         brokers = kafka_config["brokers"]
         logger.debug(f"Checking Kafka connection at: {brokers}")
 
-        # Try to create a consumer with a short timeout
+        # Try to create a consumer with aiokafka
         try:
             config = {
-                "bootstrap.servers": ",".join(brokers),
-                "group.id": "test",
-                "auto.offset.reset": "earliest",
-                "enable.auto.commit": True,  # Disable auto-commit for exactly-once semantics
-                "isolation.level": "read_committed",  # Ensure we only read committed messages
-                "enable.partition.eof": False,
+                "bootstrap_servers": ",".join(brokers),
+                "group_id": "health_check_test",
+                "auto_offset_reset": "earliest",
+                "enable_auto_commit": True,
             }
-            consumer = Consumer(config)
-            # Try to list topics to verify connection
-            topics = consumer.list_topics()
-            consumer.close()
+
+            # Create and start consumer to test connection
+            consumer = AIOKafkaConsumer(**config)
+            await consumer.start()
+
+            # Try to get cluster metadata to verify connection
+            try:
+                cluster_metadata = await consumer._client.cluster
+                available_topics = list(cluster_metadata.topics())
+                logger.debug(f"Available Kafka topics: {available_topics}")
+            except Exception:
+                # If metadata fails, just try basic connection test
+                logger.debug("Basic Kafka connection test passed")
 
             logger.info("✅ Kafka health check passed")
-            logger.debug(f"Available Kafka topics: {topics}")
 
-        except KafkaError as ke:
-            error_msg = f"Failed to connect to Kafka: {str(ke)}"
+        except Exception as e:
+            error_msg = f"Failed to connect to Kafka: {str(e)}"
             logger.error(f"❌ {error_msg}")
             raise Exception(error_msg)
 
@@ -369,6 +372,14 @@ async def health_check_kafka(container) -> None:
         error_msg = f"Kafka health check failed: {str(e)}"
         logger.error(f"❌ {error_msg}")
         raise
+    finally:
+        # Clean up consumer
+        if consumer:
+            try:
+                await consumer.stop()
+                logger.debug("Health check consumer stopped")
+            except Exception as e:
+                logger.warning(f"Error stopping health check consumer: {e}")
 
 
 async def health_check_redis(container) -> None:

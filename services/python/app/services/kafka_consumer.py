@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Set
 
 import aiohttp
-from confluent_kafka import Consumer, KafkaError
+from aiokafka import AIOKafkaConsumer
 from jose import jwt
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -85,7 +85,6 @@ class KafkaConsumerManager:
 
     async def create_consumer(self) -> None:
         try:
-
             async def get_kafka_config() -> Dict:
                 kafka_config = await self.config_service.get_config(
                     config_node_constants.KAFKA.value
@@ -93,23 +92,25 @@ class KafkaConsumerManager:
                 brokers = kafka_config["brokers"]
 
                 return {
-                    "bootstrap.servers": ",".join(brokers),
-                    "group.id": "record_consumer_group",
-                    "auto.offset.reset": "earliest",
-                    "enable.auto.commit": True,
-                    "isolation.level": "read_committed",
-                    "enable.partition.eof": False,
-                    "max.poll.interval.ms": 900000,
-                    "client.id": KafkaConfig.CLIENT_ID_MAIN.value,
+                    "bootstrap_servers": ",".join(brokers),  # aiokafka uses bootstrap_servers
+                    "group_id": "record_consumer_group",
+                    "auto_offset_reset": "earliest",
+                    "enable_auto_commit": True,
+                    "client_id": KafkaConfig.CLIENT_ID_MAIN.value,
                 }
 
-            KAFKA_CONFIG = await get_kafka_config()
-            # Topic to consume from
-            KAFKA_TOPIC = "record-events"
+            kafka_config = await get_kafka_config()
 
-            self.consumer = Consumer(KAFKA_CONFIG)
-            self.consumer.subscribe([KAFKA_TOPIC])
-            self.logger.info(f"Successfully subscribed to topic: {KAFKA_TOPIC}")
+            # Initialize consumer with aiokafka
+            self.consumer = AIOKafkaConsumer(
+                "record-events",
+                **kafka_config
+            )
+
+            # Start consumer
+            await self.consumer.start()
+
+            self.logger.info("Successfully initialized aiokafka consumer for topic: record-events")
         except Exception as e:
             self.logger.error(f"Failed to create consumer: {e}")
             self.logger.info(
@@ -120,9 +121,9 @@ class KafkaConsumerManager:
     async def process_message_wrapper(self, message) -> bool | None:
         """Wrapper to handle async task cleanup and semaphore release"""
         # Extract message identifiers for logging
-        topic = message.topic()
-        partition = message.partition()
-        offset = message.offset()
+        topic = message.topic
+        partition = message.partition
+        offset = message.offset
         message_id = f"{topic}-{partition}-{offset}"
 
         try:
@@ -141,8 +142,8 @@ class KafkaConsumerManager:
 
     async def _process_message(self, message) -> bool | None:
         start_time = datetime.now()
-        topic_partition = f"{message.topic()}-{message.partition()}"
-        offset = message.offset()
+        topic_partition = f"{message.topic}-{message.partition}"
+        offset = message.offset
         message_id = f"{topic_partition}-{offset}"
         record_id = None
         error_occurred = False
@@ -157,7 +158,7 @@ class KafkaConsumerManager:
 
             # Message parsing
             try:
-                message_value = message.value()
+                message_value = message.value
                 if isinstance(message_value, bytes):
                     message_value = message_value.decode("utf-8")
                     self.logger.debug(f"Decoded message {message_id} from bytes")
@@ -412,37 +413,35 @@ class KafkaConsumerManager:
             self.logger.info("Starting Kafka consumer loop")
             while self.running:
                 try:
-                    message = self.consumer.poll(0.1)
+                    # Get messages asynchronously with timeout
+                    message_batch = await self.consumer.getmany(timeout_ms=100, max_records=1)
 
-                    if message is None:
+                    if not message_batch:
                         await asyncio.sleep(0.1)
                         continue
 
-                    if message.error():
-                        if message.error().code() == KafkaError._PARTITION_EOF:
-                            self.logger.debug("Reached end of partition")
-                            continue
-                        else:
-                            error_count += 1
-                            self.logger.error(
-                                f"Kafka error: {message.error()}, "
-                                f"Code: {message.error().code()}"
-                            )
-                            continue
+                    # Process messages from all topic partitions
+                    for topic_partition, messages in message_batch.items():
+                        for message in messages:
+                            try:
+                                await self.start_processing_task(message)
+                                processed_count += 1
 
-                    await self.start_processing_task(message)
-                    processed_count += 1
+                                # Log statistics periodically
+                                if processed_count % 100 == 0:
+                                    runtime = (datetime.now() - start_time).total_seconds()
+                                    self.logger.info(
+                                        f"Processing statistics: "
+                                        f"Messages: {processed_count}, "
+                                        f"Errors: {error_count}, "
+                                        f"Runtime: {runtime:.2f}s, "
+                                        f"Rate: {processed_count/runtime:.2f} msg/s"
+                                    )
 
-                    # Log statistics periodically
-                    if processed_count % 100 == 0:
-                        runtime = (datetime.now() - start_time).total_seconds()
-                        self.logger.info(
-                            f"Processing statistics: "
-                            f"Messages: {processed_count}, "
-                            f"Errors: {error_count}, "
-                            f"Runtime: {runtime:.2f}s, "
-                            f"Rate: {processed_count/runtime:.2f} msg/s"
-                        )
+                            except Exception as e:
+                                error_count += 1
+                                self.logger.error(f"Error starting processing task: {e}")
+                                continue
 
                 except asyncio.CancelledError:
                     self.logger.info("Kafka consumer task cancelled")
@@ -474,9 +473,16 @@ class KafkaConsumerManager:
                 )
                 await asyncio.gather(*self.active_tasks, return_exceptions=True)
 
+            await self._cleanup()
+
+    async def _cleanup(self) -> None:
+        """Clean up resources"""
+        try:
             if self.consumer:
-                self.consumer.close()
-                self.logger.info("Kafka consumer closed")
+                await self.consumer.stop()
+                self.logger.info("Kafka consumer stopped")
+        except Exception as e:
+            self.logger.error(f"Error during cleanup: {e}")
 
     async def generate_jwt(self, token_payload: dict) -> str:
         """
@@ -614,11 +620,16 @@ class KafkaConsumerManager:
             self.logger.error(f"❌ Error starting Kafka consumer: {str(e)}")
             raise
 
-    def stop(self) -> None:
+    async def stop(self) -> None:
         """Stop the consumer and scheduled update processor."""
         self.running = False
         if self.scheduled_update_task:
             self.scheduled_update_task.cancel()
+            try:
+                await self.scheduled_update_task
+            except asyncio.CancelledError:
+                pass
+        await self._cleanup()
 
     async def _update_document_status(
         self,

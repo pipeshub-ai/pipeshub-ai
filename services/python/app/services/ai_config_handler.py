@@ -2,14 +2,14 @@ import asyncio
 import json
 from typing import Dict, List
 
-from confluent_kafka import Consumer, KafkaError
+from aiokafka import AIOKafkaConsumer
 
 from app.config.configuration_service import KafkaConfig, config_node_constants
 from app.modules.retrieval.retrieval_service import RetrievalService
 
 
 class RetrievalAiConfigHandler:
-    def __init__(self, logger, config_service, retrieval_service: RetrievalService):
+    def __init__(self, logger, config_service, retrieval_service: RetrievalService) -> None:
         """Initialize the LLM config handler with required services
 
         Args:
@@ -24,38 +24,47 @@ class RetrievalAiConfigHandler:
         self.retrieval_service = retrieval_service
         self.processed_messages: Dict[str, List[int]] = {}
 
-    async def create_consumer(self):
+    async def create_consumer(self) -> None:
         """Initialize the Kafka consumer"""
         try:
-
-            async def get_kafka_config():
+            async def get_kafka_config() -> dict:
+                """Get Kafka configuration from the configuration service"""
                 kafka_config = await self.config_service.get_config(
                     config_node_constants.KAFKA.value
                 )
                 brokers = kafka_config["brokers"]
 
                 return {
-                    "bootstrap.servers": ",".join(brokers),
-                    "group.id": "llm_config_consumer_group",
-                    "auto.offset.reset": "earliest",
-                    "enable.auto.commit": True,
-                    "isolation.level": "read_committed",
-                    "enable.partition.eof": False,
-                    "client.id": KafkaConfig.CLIENT_ID_LLM.value,
+                    "bootstrap_servers": ",".join(brokers),
+                    "group_id": "llm_config_consumer_group",
+                    "auto_offset_reset": "earliest",
+                    "enable_auto_commit": True,
+                    "client_id": KafkaConfig.CLIENT_ID_LLM.value,
                 }
 
-            KAFKA_CONFIG = await get_kafka_config()
+            kafka_config = await get_kafka_config()
 
-            self.consumer = Consumer(KAFKA_CONFIG)
-            # Subscribe to entity-events topic
-            self.consumer.subscribe(["entity-events"])
-            self.logger.info("Successfully subscribed to topic: entity-events")
+            self.consumer = AIOKafkaConsumer(
+                "entity-events",
+                **kafka_config
+            )
+
+            await self.consumer.start()
+
+            self.logger.info("Successfully initialized aiokafka consumer for topic: entity-events")
         except Exception as e:
             self.logger.error(f"Failed to create consumer: {e}")
             raise
 
-    def is_message_processed(self, message_id: str) -> bool:
-        """Check if a message has already been processed."""
+    def is_message_processed(self, message_id: str) -> bool | None:
+        """Check if a message has already been processed.
+
+        Args:
+            message_id (str): The ID of the message to check
+
+        Returns:
+            bool | None: True if the message has been processed, False if not, or None if the message ID is invalid
+        """
         topic_partition = "-".join(message_id.split("-")[:-1])
         offset = int(message_id.split("-")[-1])
         return (
@@ -63,8 +72,12 @@ class RetrievalAiConfigHandler:
             and offset in self.processed_messages[topic_partition]
         )
 
-    def mark_message_processed(self, message_id: str):
-        """Mark a message as processed."""
+    def mark_message_processed(self, message_id: str) -> None:
+        """Mark a message as processed.
+
+        Args:
+            message_id (str): The ID of the message to mark as processed
+        """
         topic_partition = "-".join(message_id.split("-")[:-1])
         offset = int(message_id.split("-")[-1])
         if topic_partition not in self.processed_messages:
@@ -105,18 +118,25 @@ class RetrievalAiConfigHandler:
             self.logger.error(f"❌ Failed to fetch embedding model: {str(e)}")
             return False
 
-    async def process_message(self, message):
-        """Process incoming Kafka messages"""
+    async def process_message(self, message) -> bool:
+        """Process incoming Kafka messages
+
+        Args:
+            message (Message): The Kafka message to process
+
+        Returns:
+            bool: True if the message was processed successfully, False otherwise
+        """
         message_id = None
         try:
-            message_id = f"{message.topic()}-{message.partition()}-{message.offset()}"
+            message_id = f"{message.topic}-{message.partition}-{message.offset}"
             self.logger.debug(f"Processing AI config message {message_id}")
 
             if self.is_message_processed(message_id):
                 self.logger.info(f"Message {message_id} already processed, skipping")
                 return True
 
-            message_value = message.value()
+            message_value = message.value
             value = None
             event_type = None
 
@@ -202,39 +222,33 @@ class RetrievalAiConfigHandler:
             if message_id:
                 self.mark_message_processed(message_id)
 
-    async def consume_messages(self):
+    async def consume_messages(self) -> None:
         """Main consumption loop."""
         try:
             self.logger.info("Starting LLM config consumer loop")
             while self.running:
                 try:
-                    message = self.consumer.poll(1.0)
+                    message_batch = await self.consumer.getmany(timeout_ms=1000, max_records=1)
 
-                    if message is None:
+                    if not message_batch:
                         await asyncio.sleep(0.1)
                         continue
 
-                    if message.error():
-                        error_code = message.error().code()
-                        if error_code == KafkaError._PARTITION_EOF:
-                            self.logger.debug("Reached end of partition")
-                            continue
-                        else:
-                            self.logger.error(
-                                f"Kafka error: {message.error()}, Code: {error_code}"
-                            )
-                            continue
+                    for topic_partition, messages in message_batch.items():
+                        for message in messages:
+                            try:
+                                self.logger.debug(f"Received AI config message: topic={message.topic}, partition={message.partition}, offset={message.offset}")
+                                success = await self.process_message(message)
 
-                    try:
-                        success = await self.process_message(message)
-                        if success:
-                            self.consumer.commit(message)
-                            self.logger.debug("Successfully committed message")
-                    except Exception as e:
-                        self.logger.error(
-                            f"Failed to process/commit message: {str(e)}", exc_info=True
-                        )
-                        await asyncio.sleep(1)
+                                if success:
+                                    await self.consumer.commit({topic_partition: message.offset + 1})
+                                    self.logger.debug("Successfully committed AI config message")
+                                else:
+                                    self.logger.warning(f"Failed to process AI config message at offset {message.offset}")
+
+                            except Exception as e:
+                                self.logger.error(f"Error processing individual AI config message: {e}")
+                                continue
 
                 except asyncio.CancelledError:
                     self.logger.info("LLM config consumer task cancelled")
@@ -250,18 +264,23 @@ class RetrievalAiConfigHandler:
                 f"Fatal error in consume_messages: {str(e)}", exc_info=True
             )
         finally:
-            if self.consumer:
-                try:
-                    self.consumer.close()
-                    self.logger.info("LLM config consumer closed successfully")
-                except Exception as e:
-                    self.logger.error(f"Error closing consumer: {str(e)}")
+            await self._cleanup()
 
-    async def start(self):
+    async def _cleanup(self) -> None:
+        """Clean up resources"""
+        try:
+            if self.consumer:
+                await self.consumer.stop()
+                self.logger.info("LLM config consumer stopped successfully")
+        except Exception as e:
+            self.logger.error(f"Error closing consumer: {str(e)}")
+
+    async def start(self) -> None:
         """Start the consumer."""
         self.running = True
         await self.create_consumer()
 
-    def stop(self):
+    async def stop(self) -> None:
         """Stop the consumer."""
         self.running = False
+        await self._cleanup()

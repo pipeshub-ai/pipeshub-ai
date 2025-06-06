@@ -1,9 +1,8 @@
 import asyncio
 import json
-import time
 from typing import Dict, List
 
-from confluent_kafka import Consumer, KafkaError
+from aiokafka import AIOKafkaConsumer
 from dependency_injector.wiring import inject
 
 from app.config.configuration_service import KafkaConfig, config_node_constants
@@ -44,32 +43,32 @@ class SyncKafkaRouteConsumer:
     async def create_consumer(self) -> None:
         """Initialize the Kafka consumer"""
         try:
-
             async def get_kafka_config() -> dict:
                 kafka_config = await self.config_service.get_config(
                     config_node_constants.KAFKA.value
                 )
-
                 brokers = kafka_config["brokers"]
 
                 return {
-                    "bootstrap.servers": ",".join(brokers),
-                    "group.id": "record_consumer_group",
-                    "auto.offset.reset": "earliest",
-                    "enable.auto.commit": True,
-                    "isolation.level": "read_committed",
-                    "enable.partition.eof": False,
-                    "client.id": KafkaConfig.CLIENT_ID_RECORDS.value,
+                    "bootstrap_servers": ",".join(brokers),
+                    "group_id": "record_consumer_group",
+                    "auto_offset_reset": "earliest",
+                    "enable_auto_commit": True,
+                    "client_id": KafkaConfig.CLIENT_ID_RECORDS.value,
                 }
 
-            KAFKA_CONFIG = await get_kafka_config()
+            kafka_config = await get_kafka_config()
 
-            self.consumer = Consumer(KAFKA_CONFIG)
-            # Add a small delay to allow for topic creation
-            time.sleep(2)
-            # Subscribe to the two main topics
-            self.consumer.subscribe(["sync-events"])
-            self.logger.info("Successfully subscribed to topics: sync-events")
+            # Initialize consumer with aiokafka
+            self.consumer = AIOKafkaConsumer(
+                "sync-events",
+                **kafka_config
+            )
+
+            # Start consumer
+            await self.consumer.start()
+
+            self.logger.info("Successfully initialized aiokafka consumer for topics: sync-events")
         except Exception as e:
             self.logger.error(f"Failed to create consumer: {e}")
             raise
@@ -96,15 +95,15 @@ class SyncKafkaRouteConsumer:
         """Process incoming Kafka messages and route them to appropriate handlers"""
         message_id = None
         try:
-            message_id = f"{message.topic()}-{message.partition()}-{message.offset()}"
+            message_id = f"{message.topic}-{message.partition}-{message.offset}"
             self.logger.debug(f"Processing message {message_id}")
 
             if self.is_message_processed(message_id):
                 self.logger.info(f"Message {message_id} already processed, skipping")
                 return True
 
-            topic = message.topic()
-            message_value = message.value()
+            topic = message.topic
+            message_value = message.value
             value = None
             event_type = None
 
@@ -266,9 +265,8 @@ class SyncKafkaRouteConsumer:
                 raise ValueError("email is required")
 
             self.logger.info(f"Syncing user: {user_email}")
-            return await self.sync_tasks.drive_sync_service.sync_specific_user(
-                user_email
-            )
+            asyncio.create_task(self.sync_tasks.drive_sync_service.sync_specific_user(user_email))
+            return True
         except Exception as e:
             self.logger.error("Error syncing user: %s", str(e))
             return False
@@ -337,9 +335,8 @@ class SyncKafkaRouteConsumer:
                 raise ValueError("email is required")
 
             self.logger.info(f"Syncing user: {user_email}")
-            return await self.sync_tasks.gmail_sync_service.sync_specific_user(
-                user_email
-            )
+            asyncio.create_task(self.sync_tasks.gmail_sync_service.sync_specific_user(user_email))
+            return True
         except Exception as e:
             self.logger.error("Error syncing user: %s", str(e))
             return False
@@ -490,55 +487,74 @@ class SyncKafkaRouteConsumer:
             self.logger.info("Starting Kafka consumer loop")
             while self.running:
                 try:
-                    message = self.consumer.poll(1.0)
+                    # Get messages asynchronously with timeout
+                    message_batch = await self.consumer.getmany(timeout_ms=1000, max_records=1)
 
-                    if message is None:
+                    if not message_batch:
                         await asyncio.sleep(0.1)
                         continue
 
-                    if message.error():
-                        if message.error().code() == KafkaError._PARTITION_EOF:
-                            continue
-                        else:
-                            self.logger.error(f"Kafka error: {message.error()}")
-                            continue
+                    # Process messages from all topic partitions
+                    for topic_partition, messages in message_batch.items():
+                        for message in messages:
+                            try:
+                                self.logger.info(f"Received message: topic={message.topic}, partition={message.partition}, offset={message.offset}")
+                                success = await self.process_message(message)
 
-                    success = await self.process_message(message)
+                                if success:
+                                    # Commit the offset for this message
+                                    await self.consumer.commit({topic_partition: message.offset + 1})
+                                    self.logger.info(
+                                        f"Committed offset for topic-partition {message.topic}-{message.partition} at offset {message.offset}"
+                                    )
+                                else:
+                                    self.logger.warning(f"Failed to process message at offset {message.offset}")
 
-                    if success:
-                        self.consumer.commit(message)
-                        self.logger.info(
-                            f"Committed offset for topic-partition {message.topic()}-{message.partition()} at offset {message.offset()}"
-                        )
+                            except Exception as e:
+                                self.logger.error(f"Error processing individual message: {e}")
+                                continue
 
                 except asyncio.CancelledError:
                     self.logger.info("Kafka consumer task cancelled")
                     break
                 except Exception as e:
-                    self.logger.error(f"Error processing Kafka message: {e}")
+                    self.logger.error(f"Error in consume_messages loop: {e}")
                     await asyncio.sleep(1)
 
         except Exception as e:
             self.logger.error(f"Fatal error in consume_messages: {e}")
         finally:
+            await self._cleanup()
+
+    async def _cleanup(self) -> None:
+        """Clean up resources"""
+        try:
             if self.consumer:
-                self.consumer.close()
-                self.logger.info("Kafka consumer closed")
+                await self.consumer.stop()
+                self.logger.info("Kafka consumer stopped")
+        except Exception as e:
+            self.logger.error(f"Error during cleanup: {e}")
 
     async def start(self) -> None:
         """Start the Kafka consumer."""
         try:
             self.running = True
-            # Create a task for consuming messages
+            # Create consumer
             await self.create_consumer()
+            # Create a task for consuming messages
             self.consume_task = asyncio.create_task(self.consume_messages())
             self.logger.info("Started Kafka consumer task")
         except Exception as e:
             self.logger.error(f"Failed to start Kafka consumer: {str(e)}")
             raise
 
-    def stop(self) -> None:
+    async def stop(self) -> None:
         """Stop the Kafka consumer."""
         self.running = False
         if self.consume_task:
             self.consume_task.cancel()
+            try:
+                await self.consume_task
+            except asyncio.CancelledError:
+                pass
+        await self._cleanup()
