@@ -6,19 +6,21 @@ import fitz
 import ocrmypdf
 import spacy
 from spacy.language import Language
+from spacy.tokens import Doc
 
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 
+LENGTH_THRESHOLD = 2
 
 class PyMuPDFOCRStrategy(OCRStrategy):
-    def __init__(self, logger, language: str = "eng"):
+    def __init__(self, logger, language: str = "eng") -> None:
         self.logger = logger
         self.language = language
         self.doc = None
         self._processed_pages = {}
         self._needs_ocr = False
         self.document_analysis_result = None
-        self.nlp = None
+        self.nlp = self._create_custom_tokenizer(spacy.load("en_core_web_sm"))
         self.ocr_pdf_content = None
 
     async def load_document(self, content: bytes) -> None:
@@ -118,7 +120,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
         self.logger.info(f"✅ Document loaded with {len(self.doc)} pages")
 
     @Language.component("custom_sentence_boundary")
-    def custom_sentence_boundary(doc):
+    def custom_sentence_boundary(doc) -> Doc:
         for token in doc[:-1]:  # Avoid out-of-bounds errors
             next_token = doc[token.i + 1]
 
@@ -159,7 +161,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
             elif (
                 # Numeric bullets with period (1., 2., etc)
                 (
-                    token.like_num and next_token.text == "." and len(token.text) <= 2
+                    token.like_num and next_token.text == "." and len(token.text) <= LENGTH_THRESHOLD
                 )  # Limit to 2 digits
                 or
                 # Letter bullets with period (a., b., etc)
@@ -190,7 +192,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
 
         return doc
 
-    def _create_custom_tokenizer(self, nlp):
+    def _create_custom_tokenizer(self, nlp) -> Language:
         """
         Creates a custom tokenizer that handles special cases for sentence boundaries.
         """
@@ -236,9 +238,6 @@ class PyMuPDFOCRStrategy(OCRStrategy):
     ) -> List[Dict[str, Any]]:
         """Merge lines into sentences using spaCy"""
         self.logger.debug("🚀 Merging lines to sentences")
-
-        nlp = spacy.load("en_core_web_sm")
-        self.nlp = self._create_custom_tokenizer(nlp)  # Apply custom tokenization rules
 
         full_text = ""
         line_map = []
