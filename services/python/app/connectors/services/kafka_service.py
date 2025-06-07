@@ -46,6 +46,7 @@ class KafkaService:
                     "orgId": event_data.get("orgId"),
                     "recordId": event_data.get("recordId"),
                     "virtualRecordId": event_data.get("virtualRecordId", None),
+                    "summaryDocumentId": event_data.get("summaryDocumentId", None),
                     "recordName": event_data.get("recordName"),
                     "recordType": event_data.get("recordType"),
                     "version": event_data.get("recordVersion", 0),

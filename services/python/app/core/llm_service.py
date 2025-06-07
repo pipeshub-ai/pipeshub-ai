@@ -6,9 +6,11 @@ from langchain.callbacks.base import BaseCallbackHandler
 from langchain.chat_models.base import BaseChatModel
 from langchain_anthropic import ChatAnthropic
 from langchain_aws import ChatBedrock
-from langchain_community.chat_models import AzureChatOpenAI, ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_ollama.llms import OllamaLLM
+
+# from langchain_community.chat_models import AzureChatOpenAI, ChatOpenAI
+from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from pydantic import BaseModel, Field
 
 from app.config.utils.named_constants.ai_models_named_constants import AzureOpenAILLM
@@ -60,7 +62,7 @@ class AwsBedrockLLMConfig(BaseLLMConfig):
 class CostTrackingCallback(BaseCallbackHandler):
     """Callback handler for tracking LLM usage and costs"""
 
-    def __init__(self, logger):
+    def __init__(self, logger) -> None:
         super().__init__()
         self.logger = logger
         # Azure GPT-4 pricing (per 1K tokens)
@@ -76,13 +78,13 @@ class CostTrackingCallback(BaseCallbackHandler):
             "cost": 0.0,
         }
 
-    def on_llm_start(self, *args, **kwargs):
+    def on_llm_start(self, *args, **kwargs) -> None:
         self.current_usage["start_time"] = datetime.now()
 
-    def on_llm_end(self, *args, **kwargs):
+    def on_llm_end(self, *args, **kwargs) -> None:
         self.current_usage["end_time"] = datetime.now()
 
-    def on_llm_new_token(self, *args, **kwargs):
+    def on_llm_new_token(self, *args, **kwargs) -> None:
         pass
 
     def calculate_cost(self, model: str) -> float:

@@ -3,6 +3,7 @@
 import json
 from typing import Any, Dict, List, Optional
 
+from langchain.schema import AIMessage
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.connectors.sources.google.admin.google_admin_service import GoogleAdminService
@@ -385,7 +386,7 @@ class GoogleSheetsParser:
             f"Retrying LLM call after error. Attempt {retry_state.attempt_number}"
         ),
     )
-    async def _call_llm(self, messages) -> dict:
+    async def _call_llm(self, messages) -> AIMessage:
         """Wrapper for LLM calls with retry logic"""
         return await self.llm.ainvoke(messages)
 
@@ -469,7 +470,7 @@ class GoogleSheetsParser:
                 table_summary = await self.get_table_summary(table)
                 # Process rows in batches of 20
                 processed_rows = []
-                batch_size = 20
+                batch_size = 10
                 for i in range(0, len(table["data"]), batch_size):
                     batch = table["data"][i : i + batch_size]
                     row_texts = await self.get_rows_text(batch, table_summary)

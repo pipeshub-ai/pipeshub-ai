@@ -20,7 +20,7 @@ class SignedUrlConfig(BaseModel):
     url_prefix: str = "/api/v1/index"
 
     @classmethod
-    async def create(cls, configuration_service: ConfigurationService):
+    async def create(cls, configuration_service: ConfigurationService) -> "SignedUrlConfig":
         """Async factory method to create config using configuration service"""
         try:
             # Assuming there's a config node for JWT settings
@@ -36,7 +36,7 @@ class SignedUrlConfig(BaseModel):
         except Exception:
             raise
 
-    def __init__(self, **data):
+    def __init__(self, **data) -> None:
         super().__init__(**data)
         if not self.private_key:
             raise ValueError(
@@ -63,7 +63,7 @@ class SignedUrlHandler:
         logger,
         config: SignedUrlConfig,
         configuration_service: ConfigurationService,
-    ):
+    ) -> None:
         self.logger = logger
         self.signed_url_config = config
         self.config_service = configuration_service
@@ -94,8 +94,6 @@ class SignedUrlHandler:
                 config_node_constants.ENDPOINTS.value
             )
             connector_endpoint = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
-
-            self.logger.info(f"user_id: {user_id}")
 
             payload = TokenPayload(
                 record_id=record_id,
@@ -140,13 +138,11 @@ class SignedUrlHandler:
     ) -> TokenPayload:
         """Validate the JWT token and optional required claims"""
         try:
-            self.logger.info(f"Validating token: {token}")
             payload = jwt.decode(
                 token,
                 self.signed_url_config.private_key,
                 algorithms=[self.signed_url_config.algorithm],
             )
-            self.logger.info(f"Payload: {payload}")
 
             # Convert timestamps back to datetime for validation
             if "exp" in payload:
@@ -155,7 +151,6 @@ class SignedUrlHandler:
                 payload["iat"] = datetime.fromtimestamp(payload["iat"])
 
             token_data = TokenPayload(**payload)
-            self.logger.info(f"Token data: {token_data}")
 
             if required_claims:
                 for key, value in required_claims.items():

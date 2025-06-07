@@ -86,7 +86,7 @@ class KafkaConsumerManager:
     async def create_consumer(self) -> None:
         try:
 
-            async def get_kafka_config() -> Dict:
+            async def get_kafka_config() -> dict:
                 kafka_config = await self.config_service.get_config(
                     config_node_constants.KAFKA.value
                 )
@@ -117,7 +117,7 @@ class KafkaConsumerManager:
             )
             raise
 
-    async def process_message_wrapper(self, message) -> bool | None:
+    async def process_message_wrapper(self, message) -> bool:
         """Wrapper to handle async task cleanup and semaphore release"""
         # Extract message identifiers for logging
         topic = message.topic()
@@ -139,7 +139,7 @@ class KafkaConsumerManager:
             # Release the semaphore to allow a new task to start
             self.semaphore.release()
 
-    async def _process_message(self, message) -> bool | None:
+    async def _process_message(self, message) -> bool:
         start_time = datetime.now()
         topic_partition = f"{message.topic()}-{message.partition()}"
         offset = message.offset()
@@ -181,10 +181,12 @@ class KafkaConsumerManager:
                 raise ValueError(f"Missing event_type in message {message_id}")
 
             payload_data = data.get("payload", {})
+            org_id = payload_data.get("orgId")
             record_id = payload_data.get("recordId")
             extension = payload_data.get("extension", "unknown")
             mime_type = payload_data.get("mimeType", "unknown")
             virtual_record_id = payload_data.get("virtualRecordId")
+            summary_document_id = payload_data.get("summaryDocumentId")
 
             self.logger.info(
                 f"Processing record {record_id} with event type: {event_type}. "
@@ -195,7 +197,9 @@ class KafkaConsumerManager:
             # Handle delete event
             if event_type == EventTypes.DELETE_RECORD.value:
                 self.logger.info(f"🗑️ Deleting embeddings for record {record_id}")
-                await self.event_processor.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
+                deleted = await self.event_processor.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
+                if deleted:
+                    await self.event_processor.processor.domain_extractor.delete_summary_from_storage(org_id, record_id, summary_document_id)
                 return True
 
             if event_type == EventTypes.UPDATE_RECORD.value:
@@ -701,7 +705,7 @@ class KafkaConsumerManager:
 class RateLimiter:
     """Simple rate limiter to control how many tasks start per second"""
 
-    def __init__(self, rate_limit_per_second) -> None:
+    def __init__(self, rate_limit_per_second: int) -> None:
         self.rate = rate_limit_per_second
         self.last_check = datetime.now()
         self.tokens = rate_limit_per_second

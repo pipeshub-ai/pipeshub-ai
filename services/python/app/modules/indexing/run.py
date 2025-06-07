@@ -640,7 +640,7 @@ class IndexingPipeline:
                 details={"error": str(e)},
             )
 
-    async def delete_embeddings(self, record_id: str, virtual_record_id: str) -> None:
+    async def delete_embeddings(self, record_id: str, virtual_record_id: str) -> bool:
         """
         Delete embeddings only if this is the last record with this virtual_record_id.
         If other records exist with the same virtual_record_id, skip deletion.
@@ -673,7 +673,7 @@ class IndexingPipeline:
                     f"⏭️ Skipping embedding deletion for record {record_id} as other records "
                     f"exist with same virtual_record_id: {other_records}"
                 )
-                return
+                return False
 
             self.logger.info("🗑️ Proceeding with deletion as no other records exist")
 
@@ -705,12 +705,29 @@ class IndexingPipeline:
                     )
 
                 if ids:
-                    await self.vector_store.adelete(ids=ids)
+                    if not self.vector_store:
+                        try:
+                            await self.get_embedding_model_instance()
+                        except Exception as e:
+                            raise IndexingError(
+                                "Failed to get embedding model instance: " + str(e),
+                                details={"error": str(e)},
+                            )
+
+                    try:
+                        await self.vector_store.adelete(ids=ids)
+                    except Exception as e:
+                        raise EmbeddingDeletionError(
+                            "Failed to delete embeddings from vector store: " + str(e),
+                            record_id=record_id,
+                            details={"error": str(e)},
+                        )
+                await self.arango_service.delete_blocks_by_virtual_record_id(virtual_record_id)
 
                 self.logger.info(
                     f"✅ Successfully deleted embeddings for record {record_id}"
                 )
-
+                return True
             except Exception as e:
                 raise EmbeddingDeletionError(
                     "Failed to delete embeddings from vector store: " + str(e),
@@ -791,19 +808,6 @@ class IndexingPipeline:
             )
 
     async def check_embeddings_exist(self, record_id: str, virtual_record_id: str) -> bool:
-        """
-        Check if embeddings exist for a given virtual record ID.
-
-        Args:
-            record_id (str): ID of the record to check
-            virtual_record_id (str): Virtual record ID to check for
-
-        Returns:
-            bool: True if embeddings exist, False otherwise
-
-        Raises:
-            EmbeddingDeletionError: If there's an error during the deletion process
-        """
         try:
             if not virtual_record_id:
                 raise EmbeddingDeletionError(
@@ -878,8 +882,6 @@ class IndexingPipeline:
                 "recordName": record_name,
                 "recordType": meta.get("recordType", ""),
                 "recordVersion": meta.get("version", ""),
-                "origin": meta.get("origin", ""),
-                "connector": meta.get("connectorName", ""),
                 "blockNum": meta.get("blockNum", [0]),
                 "blockText": meta.get("blockText", ""),
                 "blockType": str(block_type),
@@ -892,6 +894,7 @@ class IndexingPipeline:
                 "languages": meta.get("languages", []),
                 "extension": meta.get("extension", ""),
                 "mimeType": meta.get("mimeType", ""),
+                "isBlock": meta.get("isBlock", False),
             }
 
             if meta.get("bounding_box"):
@@ -912,3 +915,4 @@ class IndexingPipeline:
                 f"Unexpected error processing metadata: {str(e)}",
                 details={"error_type": type(e).__name__},
             )
+

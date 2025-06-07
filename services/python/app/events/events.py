@@ -135,33 +135,29 @@ class EventProcessor:
                 if not file_buffer.closed:
                     file_buffer.close()
 
-    async def on_event(self, event_data: dict) -> None:
+    async def on_event(self, event_data: dict) -> bool:
         """
         Process events received from Kafka consumer
         Args:
             event_data: Dictionary containing:
-                - event_type: Type of event (create, update, delete)
-                - record_id: ID of the record
-                - record_version: Version of the record
-                - signed_url: Signed URL to download the file
-                - connector_name: Name of the connector
-                - metadata_route: Route to get metadata
+                - event_data: Data of the event
         """
         try:
             # Extract event type and record ID
             event_type = event_data.get(
                 "eventType", EventTypes.NEW_RECORD.value
-            )  # default to create
+            )
             event_data = event_data.get("payload")
             record_id = event_data.get("recordId")
             org_id = event_data.get("orgId")
             virtual_record_id = event_data.get("virtualRecordId")
+            summary_document_id = event_data.get("summaryDocumentId")
 
             self.logger.info(f"📥 Processing event: {event_type}: {record_id}")
 
             if not record_id:
                 self.logger.error("❌ No record ID provided in event data")
-                return
+                return False
 
             # For both create and update events, we need to process the document
             if event_type == EventTypes.REINDEX_RECORD.value or event_type == EventTypes.UPDATE_RECORD.value:
@@ -169,7 +165,9 @@ class EventProcessor:
                 self.logger.info(
                     f"""🔄 Updating record {record_id} - deleting existing embeddings"""
                 )
-                await self.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
+                deleted =await self.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
+                if deleted:
+                    await self.processor.domain_extractor.delete_summary_from_storage(org_id, record_id, summary_document_id)
 
             if virtual_record_id is None:
                 virtual_record_id = str(uuid4())
@@ -180,13 +178,11 @@ class EventProcessor:
             )
             if record is None:
                 self.logger.error(f"❌ Record {record_id} not found in database")
-                return
+                return False
             doc = dict(record)
 
             # Extract necessary data
-            record_version = event_data.get("version", 0)
             signed_url = event_data.get("signedUrl")
-            connector = event_data.get("connectorName", "")
             extension = event_data.get("extension", "unknown")
             mime_type = event_data.get("mimeType", "unknown")
 
@@ -195,17 +191,14 @@ class EventProcessor:
 
             if mime_type == "text/gmail_content":
                 self.logger.info("🚀 Processing Gmail Message")
-                result = await self.processor.process_gmail_message(
-                    recordName=f"Record-{record_id}",
+                await self.processor.process_gmail_message(
                     recordId=record_id,
-                    version=record_version,
-                    source=connector,
                     orgId=org_id,
                     html_content=event_data.get("body"),
                     virtual_record_id = virtual_record_id
                 )
 
-                return result
+                return True
 
             if signed_url:
                 self.logger.debug("Signed URL received")
@@ -261,7 +254,7 @@ class EventProcessor:
                                     processed_duplicate.get("_key"),
                                     doc.get("_key")
                                 )
-                                return
+                                return True
 
                             # Check if any duplicate is in progress
                             in_progress = next(
@@ -299,10 +292,9 @@ class EventProcessor:
                             f"Failed to decode Google Slides content: {str(e)}"
                         )
                         raise
-                result = await self.processor.process_google_slides(
-                    record_id, record_version, org_id, file_content, virtual_record_id
+                await self.processor.process_google_slides(
+                    record_id, org_id, file_content, virtual_record_id
                 )
-                return result
 
             if mime_type == MimeTypes.GOOGLE_DOCS.value:
                 self.logger.info("🚀 Processing Google Docs")
@@ -315,10 +307,9 @@ class EventProcessor:
                             f"Failed to decode Google Docs content: {str(e)}"
                         )
                         raise
-                result = await self.processor.process_google_docs(
-                    record_id, record_version, org_id, file_content, virtual_record_id
+                await self.processor.process_google_docs(
+                    record_id, org_id, file_content, virtual_record_id
                 )
-                return result
 
             if mime_type == MimeTypes.GOOGLE_SHEETS.value:
                 self.logger.info("🚀 Processing Google Sheets")
@@ -331,135 +322,101 @@ class EventProcessor:
                             f"Failed to decode Google Sheets content: {str(e)}"
                         )
                         raise
-                result = await self.processor.process_google_sheets(
-                    record_id, record_version, org_id, file_content, virtual_record_id
+                await self.processor.process_google_sheets(
+                    record_id, org_id, file_content, virtual_record_id
                 )
-                return result
 
             if extension == ExtensionTypes.PDF.value:
-                result = await self.processor.process_pdf_document(
-                    recordName=f"Record-{record_id}",
+                await self.processor.process_pdf_document(
                     recordId=record_id,
-                    version=record_version,
-                    source=connector,
                     orgId=org_id,
                     pdf_binary=file_content,
                     virtual_record_id = virtual_record_id
                 )
 
             elif extension == ExtensionTypes.DOCX.value:
-                result = await self.processor.process_docx_document(
-                    recordName=f"Record-{record_id}",
+                await self.processor.process_docx_document(
                     recordId=record_id,
-                    version=record_version,
-                    source=connector,
                     orgId=org_id,
                     docx_binary=BytesIO(file_content),
                     virtual_record_id = virtual_record_id
                 )
 
             elif extension == ExtensionTypes.DOC.value:
-                result = await self.processor.process_doc_document(
-                    recordName=f"Record-{record_id}",
+                await self.processor.process_doc_document(
                     recordId=record_id,
-                    version=record_version,
-                    source=connector,
                     orgId=org_id,
                     doc_binary=file_content,
                     virtual_record_id = virtual_record_id
                 )
+
             elif extension == ExtensionTypes.XLSX.value:
-                result = await self.processor.process_excel_document(
-                    recordName=f"Record-{record_id}",
+                await self.processor.process_excel_document(
                     recordId=record_id,
-                    version=record_version,
-                    source=connector,
                     orgId=org_id,
                     excel_binary=file_content,
                     virtual_record_id = virtual_record_id
                 )
+
             elif extension == ExtensionTypes.XLS.value:
-                result = await self.processor.process_xls_document(
-                    recordName=f"Record-{record_id}",
+                await self.processor.process_xls_document(
                     recordId=record_id,
-                    version=record_version,
-                    source=connector,
                     orgId=org_id,
                     xls_binary=file_content,
                     virtual_record_id = virtual_record_id
                 )
+
             elif extension == ExtensionTypes.CSV.value:
-                result = await self.processor.process_csv_document(
-                    recordName=f"Record-{record_id}",
+                await self.processor.process_csv_document(
                     recordId=record_id,
-                    version=record_version,
-                    source=connector,
                     orgId=org_id,
                     csv_binary=file_content,
                     virtual_record_id = virtual_record_id
                 )
 
             elif extension == ExtensionTypes.HTML.value:
-                result = await self.processor.process_html_document(
-                    recordName=f"Record-{record_id}",
+                await self.processor.process_html_document(
                     recordId=record_id,
-                    version=record_version,
-                    source=connector,
                     orgId=org_id,
                     html_content=file_content,
                     virtual_record_id = virtual_record_id
                 )
 
             elif extension == ExtensionTypes.PPTX.value:
-                result = await self.processor.process_pptx_document(
-                    recordName=f"Record-{record_id}",
+                await self.processor.process_pptx_document(
                     recordId=record_id,
-                    version=record_version,
-                    source=connector,
                     orgId=org_id,
                     pptx_binary=file_content,
                     virtual_record_id = virtual_record_id
                 )
 
             elif extension == ExtensionTypes.PPT.value:
-                result = await self.processor.process_ppt_document(
-                    recordName=f"Record-{record_id}",
+                await self.processor.process_ppt_document(
                     recordId=record_id,
-                    version=record_version,
-                    source=connector,
                     orgId=org_id,
                     ppt_binary=file_content,
                     virtual_record_id = virtual_record_id
                 )
 
             elif extension == ExtensionTypes.MD.value:
-                result = await self.processor.process_md_document(
-                    recordName=f"Record-{record_id}",
+                await self.processor.process_md_document(
                     recordId=record_id,
-                    version=record_version,
-                    source=connector,
                     orgId=org_id,
                     md_binary=file_content,
                     virtual_record_id = virtual_record_id
                 )
 
             elif extension == ExtensionTypes.MDX.value:
-                result = await self.processor.process_mdx_document(
-                    recordName=f"Record-{record_id}",
+                await self.processor.process_mdx_document(
                     recordId=record_id,
-                    version=record_version,
-                    source=connector,
                     orgId=org_id,
                     mdx_content=file_content,
                     virtual_record_id = virtual_record_id
                 )
 
             elif extension == ExtensionTypes.TXT.value:
-                result = await self.processor.process_txt_document(
-                    recordName=f"Record-{record_id}",
+                await self.processor.process_txt_document(
                     recordId=record_id,
-                    version=record_version,
-                    source=connector,
                     orgId=org_id,
                     txt_binary=file_content,
                     virtual_record_id = virtual_record_id
@@ -471,7 +428,7 @@ class EventProcessor:
             self.logger.info(
                 f"✅ Successfully processed document for record {record_id}"
             )
-            return result
+            return True
 
         except Exception as e:
             # Let the error bubble up to Kafka consumer

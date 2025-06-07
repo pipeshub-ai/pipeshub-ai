@@ -344,7 +344,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Stop sync kafka consumer if it exists
     if hasattr(app.container, "sync_kafka_consumer"):
         sync_consumer = app.container.sync_kafka_consumer()
-        if sync_consumer:
+        if sync_consumer is not None:
             sync_consumer.stop()
             logger.info("Sync Kafka consumer stopped")
 
@@ -365,7 +365,7 @@ INCLUDE_PATHS = ["/api/v1/stream/record/", "/api/v1/delete/"]
 
 
 @app.middleware("http")
-async def authenticate_requests(request: Request, call_next)-> JSONResponse:
+async def authenticate_requests(request: Request, call_next) -> JSONResponse:
     logger = app.container.logger()
     logger.info(f"Middleware request: {request.url.path}")
     # Apply middleware only to specific paths

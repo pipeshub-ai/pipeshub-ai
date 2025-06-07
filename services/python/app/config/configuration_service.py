@@ -5,7 +5,7 @@ import os
 import threading
 import time
 from enum import Enum
-from typing import Any
+from typing import Any, Dict, Union
 
 import dotenv
 from cachetools import LRUCache
@@ -76,6 +76,7 @@ class Routes(Enum):
     STORAGE_PLACEHOLDER = "/api/v1/document/internal/placeholder"
     STORAGE_DIRECT_UPLOAD = "/api/v1/document/internal/{documentId}/directUpload"
     STORAGE_UPLOAD = "/api/v1/document/internal/upload"
+    STORAGE_DELETE = "/api/v1/document/internal/{documentId}/"
 
 class WebhookConfig(Enum):
     """Constants for webhook configuration"""
@@ -114,7 +115,7 @@ class RedisConfig(Enum):
 class ConfigurationService:
     """Service to manage configuration using etcd store"""
 
-    def __init__(self, logger):
+    def __init__(self, logger) -> None:
         self.logger = logger
         self.logger.debug("🔧 Initializing ConfigurationService")
 
@@ -172,7 +173,7 @@ class ConfigurationService:
             password=os.getenv("ETCD_PASSWORD", None),
         )
 
-        def serialize(value: Any) -> bytes:
+        def serialize(value: Union[str, int, float, bool, Dict[str, Any], None]) -> bytes:
             self.logger.debug("🔄 Serializing value: %s (type: %s)", value, type(value))
             if value is None:
                 self.logger.debug("⚠️ Serializing None value to empty bytes")
@@ -185,25 +186,17 @@ class ConfigurationService:
             self.logger.debug("✅ Serialized complex value: %s", serialized)
             return serialized
 
-        def deserialize(value: bytes) -> Any:
+        def deserialize(value: bytes) -> Union[str, int, float, bool, Dict[str, Any], None]:
             if not value:
                 self.logger.debug("⚠️ Empty bytes, returning None")
                 return None
             try:
-                # First try to decode as a JSON string
                 decoded = value.decode("utf-8")
-                # self.logger.debug("📋 Decoded UTF-8 string: %s", decoded)
-
                 try:
-                    # Try parsing as JSON
                     result = json.loads(decoded)
                     return result
                 except json.JSONDecodeError:
-                    # If JSON parsing fails, return the string directly
-                    # self.logger.debug(
-                    #     "📋 Not JSON, returning string directly")
                     return decoded
-
             except UnicodeDecodeError as e:
                 self.logger.error("❌ Failed to decode bytes: %s", str(e))
                 return None
@@ -217,29 +210,7 @@ class ConfigurationService:
         self.logger.debug("✅ ETCD store created successfully")
         return store
 
-    async def load_default_config(self, overwrite: bool = False):
-        """Load default configuration into etcd."""
-        self.logger.debug("🔄 Starting to load default configuration")
-        self.logger.debug("📂 Reading default_config.json...")
-
-        with open("default_config.json", "r") as f:
-            default_config = json.load(f)
-            self.logger.debug("📋 Default config loaded: %s", default_config)
-
-        # Process and store configuration
-        for key, value in default_config.items():
-            if isinstance(value, dict):
-                # For nested dictionaries, store each value separately
-                for sub_key, sub_value in value.items():
-                    config_key = f"{key}/{sub_key}"
-                    await self._store_config_value(config_key, sub_value, overwrite)
-            else:
-                # Store non-dict values directly
-                await self._store_config_value(key, value, overwrite)
-
-        self.logger.debug("✅ Default configuration loaded completely")
-
-    async def _store_config_value(self, key: str, value: Any, overwrite: bool) -> bool:
+    async def _store_config_value(self, key: str, value, overwrite: bool) -> bool:
         """Helper method to store a single configuration value"""
         try:
             # Check if key exists
@@ -308,21 +279,20 @@ class ConfigurationService:
             self.logger.exception("Detailed error:")
             return False
 
-    def _watch_callback(self, event):
+    def _watch_callback(self, event) -> None:
         """Handle etcd watch events to update cache"""
         try:
             # etcd3 WatchResponse contains events
             for evt in event.events:
                 key = evt.key.decode()
                 self.cache.pop(key, None)
-                self.logger.debug("🔄 Cache updated for key: %s", key)
         except Exception as e:
             self.logger.error("❌ Error in watch callback: %s", str(e))
 
-    def _start_watch(self):
+    def _start_watch(self) -> None:
         """Start watching etcd changes in a background thread"""
 
-        def watch_etcd():
+        def watch_etcd() -> None:
             while self.store.client is None:
                 self.logger.debug("🔄 Waiting for ETCD client to be initialized...")
                 time.sleep(3)
@@ -331,12 +301,11 @@ class ConfigurationService:
         self.watch_thread = threading.Thread(target=watch_etcd, daemon=True)
         self.watch_thread.start()
 
-    async def get_config(self, key: str, default: Any = None) -> Any:
+    async def get_config(self, key: str, default = None) -> list :
         """Get configuration value with LRU cache"""
         try:
             # Check cache first
             if key in self.cache:
-                self.logger.debug("📦 Cache hit for key: %s", key)
                 return self.cache[key]
 
             # If not in cache, get from etcd

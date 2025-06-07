@@ -230,7 +230,7 @@ class GmailUserService:
                 details={"error": str(e)},
             )
 
-    async def disconnect(self) -> bool | None:
+    async def disconnect(self) -> bool:
         """Disconnect and cleanup Gmail service"""
         try:
             self.logger.info("🔄 Disconnecting Gmail service")
@@ -424,7 +424,6 @@ class GmailUserService:
                     .get(userId="me", id=message_id, format="full")
                     .execute()
                 )
-                self.logger.debug("📝 Message: %s", message)
             except HttpError as e:
                 if e.resp.status == HttpStatusCode.NOT_FOUND.value:
                     raise MailOperationError(
@@ -462,8 +461,6 @@ class GmailUserService:
                             )
                             header["value"] = emails if emails else []
                         header_dict[header["name"]] = header["value"]
-
-                self.logger.debug("📝 Headers: %s", header_dict)
 
                 # Extract message content
                 payload = message.get("payload", {})
