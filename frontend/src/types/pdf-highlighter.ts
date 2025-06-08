@@ -14,6 +14,7 @@ export interface PdfHighlighterCompProps {
   fileName?: string;
   initialHighlights?: Citation[];
   highlightCitation?: SearchResult | CustomCitation | null;
+  onClosePdf: () => void;
 }
 
 export interface Comment {

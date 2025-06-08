@@ -17,7 +17,8 @@ import * as pdfjsLib from 'pdfjs-dist';
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { Tip, Popup, Highlight, AreaHighlight, PdfHighlighter } from 'react-pdf-highlighter';
 
-import { Box, CircularProgress } from '@mui/material';
+import { Box, CircularProgress, IconButton, Slider, Typography } from '@mui/material';
+import { Icon } from '@iconify/react';
 
 import CitationSidebar from './highlighter-sidebar';
 
@@ -46,6 +47,7 @@ const EnhancedPdfLoader = ({
 }: EnhancedPdfLoaderProps) => {
   const [pdfDocument, setPdfDocument] = useState<PDFDocumentProxy>();
   const [error, setError] = useState(null);
+  
   useEffect(() => {
     const loadPdf = async () => {
       try {
@@ -160,6 +162,7 @@ const PdfHighlighterComp = ({
   initialHighlights = [],
   citations = [],
   highlightCitation = null,
+  onClosePdf,
 }: PdfHighlighterCompProps) => {
   const [highlights, setHighlights] = useState<HighlightType[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
@@ -168,6 +171,15 @@ const PdfHighlighterComp = ({
   const [actualPdfBuffer, setActualPdfBuffer] = useState<ArrayBuffer | null>(pdfBuffer || null);
   const scrollViewerTo = useRef<(highlight: HighlightType) => void>(() => {});
   const [processedCitations, setProcessedCitations] = useState<ProcessedCitation[]>([]);
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+  const [pdfWidth, setPdfWidth] = useState<number>(80); // Percentage of screen width
+  const [pdfScale, setPdfScale] = useState<number>(1); // Zoom scale
+  const [showWidthControls, setShowWidthControls] = useState<boolean>(false);
+  const [showZoomControls, setShowZoomControls] = useState<boolean>(false);
+  const [showResetControls, setShowResetControls] = useState<boolean>(false);
+  const [originalDimensions, setOriginalDimensions] = useState<{ width: number; scale: number }>({ width: 80, scale: 1 });
+  const containerRef = useRef<HTMLDivElement>(null);
+  const controlsRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const style = document.createElement('style');
@@ -209,10 +221,158 @@ const PdfHighlighterComp = ({
         display: flex;
         align-items: center;
       }
+
+      .fullscreen-controls {
+        position: fixed;
+        bottom: 24px;
+        right: 24px;
+        z-index: 9999;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        align-items: flex-end;
+      }
+
+      .control-button {
+        width: 48px;
+        height: 48px;
+        border-radius: 50%;
+        background: rgba(0, 0, 0, 0.75);
+        backdrop-filter: blur(8px);
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        color: white;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        box-shadow: 0 2px 12px rgba(0, 0, 0, 0.2);
+      }
+
+      .control-button:hover {
+        background: rgba(0, 0, 0, 0.85);
+        transform: scale(1.05);
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+      }
+
+      .control-button.active {
+        background: rgba(64, 158, 255, 0.8);
+        border-color: rgba(64, 158, 255, 0.4);
+        box-shadow: 0 4px 16px rgba(64, 158, 255, 0.3);
+      }
+
+      .control-bar {
+        background: rgba(0, 0, 0, 0.85);
+        backdrop-filter: blur(15px);
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        border-radius: 28px;
+        padding: 12px 20px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-width: 280px;
+        box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
+        animation: slideIn 0.25s ease-out;
+      }
+
+      .control-bar.reset-bar {
+        min-width: 360px;
+        gap: 8px;
+      }
+
+      @keyframes slideIn {
+        from {
+          opacity: 0;
+          transform: translateX(20px) translateY(5px);
+        }
+        to {
+          opacity: 1;
+          transform: translateX(0) translateY(0);
+        }
+      }
+
+      .control-bar-button {
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.1);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        color: white;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        transition: all 0.15s ease;
+      }
+
+      .control-bar-button:hover {
+        background: rgba(255, 255, 255, 0.2);
+        transform: scale(1.05);
+      }
+
+      .control-slider {
+        flex: 1;
+        color: #409eff !important;
+      }
+
+      .control-label {
+        color: white;
+        font-size: 11px;
+        font-weight: 500;
+        min-width: 55px;
+        text-align: center;
+      }
+
+      .reset-button {
+        padding: 6px 12px;
+        border-radius: 16px;
+        background: rgba(255, 255, 255, 0.1);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        color: white;
+        font-size: 10px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.15s ease;
+        white-space: nowrap;
+      }
+
+      .reset-button:hover {
+        background: rgba(255, 255, 255, 0.2);
+        transform: translateY(-1px);
+      }
+
+      .reset-button.primary {
+        background: rgba(64, 158, 255, 0.6);
+        border-color: rgba(64, 158, 255, 0.8);
+      }
+
+      .reset-button.primary:hover {
+        background: rgba(64, 158, 255, 0.8);
+      }
     `;
     document.head.appendChild(style);
     // eslint-disable-next-line no-void
     return () => void document.head.removeChild(style);
+  }, []);
+
+  useEffect(() => {
+    // Store original dimensions when component mounts
+    setOriginalDimensions({ width: pdfWidth, scale: pdfScale });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Only run once on mount - we intentionally want the initial values
+
+  useEffect(() => {
+    // Click outside to close controls
+    const handleClickOutside = (event: MouseEvent) => {
+      if (controlsRef.current && !controlsRef.current.contains(event.target as Node)) {
+        setShowWidthControls(false);
+        setShowZoomControls(false);
+        setShowResetControls(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
   useEffect(() => {
@@ -254,7 +414,6 @@ const PdfHighlighterComp = ({
 
       // Use a slightly longer delay to ensure PDF is fully rendered
       const delay = 1000;
-
 
       // Create a function to attempt scrolling
       const attemptScroll = () => {
@@ -308,7 +467,6 @@ const PdfHighlighterComp = ({
           return;
         }
 
-
         try {
           // Call the original function
           originalScrollFn(highlight);
@@ -347,6 +505,66 @@ const PdfHighlighterComp = ({
     []
   );
 
+  const handleFullscreenChange = useCallback((): void => {
+    setIsFullscreen(!!document.fullscreenElement);
+  }, []);
+
+  useEffect(() => {
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, [handleFullscreenChange]);
+
+  const toggleFullScreen = useCallback(async (): Promise<void> => {
+    try {
+      if (!document.fullscreenElement && containerRef.current) {
+        await containerRef.current.requestFullscreen();
+      } else {
+        await document.exitFullscreen();
+      }
+    } catch (err) {
+      console.error('Error toggling fullscreen:', err);
+    }
+  }, []);
+
+  const handleWidthChange = useCallback((_: Event, newValue: number | number[]) => {
+    setPdfWidth(newValue as number);
+  }, []);
+
+  const handleScaleChange = useCallback((_: Event, newValue: number | number[]) => {
+    setPdfScale(newValue as number);
+  }, []);
+
+  const increaseScale = useCallback(() => {
+    setPdfScale(prev => Math.min(prev + 0.1, 3));
+  }, []);
+
+  const decreaseScale = useCallback(() => {
+    setPdfScale(prev => Math.max(prev - 0.1, 0.5));
+  }, []);
+
+  const resetToDefaults = useCallback(() => {
+    setPdfWidth(80);
+    setPdfScale(1);
+  }, []);
+
+  const autoFitWidth = useCallback(() => {
+    setPdfWidth(100);
+  }, []);
+
+  const autoFitZoom = useCallback(() => {
+    setPdfScale(1);
+  }, []);
+
+  const fitToScreen = useCallback(() => {
+    setPdfWidth(100);
+    setPdfScale(0.9);
+  }, []);
+
+  const resetToOriginal = useCallback(() => {
+    setPdfWidth(originalDimensions.width);
+    setPdfScale(originalDimensions.scale);
+  }, [originalDimensions]);
+
   if (loading) {
     return (
       <Box
@@ -381,8 +599,190 @@ const PdfHighlighterComp = ({
   }
 
   return (
-    <Box sx={{ display: 'flex', height: '100%', width: '100%' }}>
-      <Box sx={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+    <Box 
+      ref={containerRef} 
+      sx={{ 
+        display: 'flex', 
+        height: '100%', 
+        width: '100%',
+        background: '#1a1a1a'
+      }}
+    >
+      {/* Controls - Available in both modes */}
+      <div className="fullscreen-controls" ref={controlsRef}>
+        {/* Reset Control Bar */}
+        {showResetControls && (
+          <div className="control-bar reset-bar">
+            <button 
+              className="reset-button primary"
+              onClick={resetToDefaults}
+              type="button"
+            >
+              Reset All
+            </button>
+            <button 
+              className="reset-button"
+              onClick={resetToOriginal}
+              type="button"
+            >
+              Original
+            </button>
+            <button 
+              className="reset-button"
+              onClick={autoFitWidth}
+              type="button"
+            >
+              Full Width
+            </button>
+            <button 
+              className="reset-button"
+              onClick={autoFitZoom}
+              type="button"
+            >
+              100% Zoom
+            </button>
+            <button 
+              className="reset-button"
+              onClick={fitToScreen}
+              type="button"
+            >
+              Fit Screen
+            </button>
+          </div>
+        )}
+
+        {/* Width Control Bar */}
+        {showWidthControls && (
+          <div className="control-bar">
+            <button 
+              className="control-bar-button"
+              onClick={() => setPdfWidth(prev => Math.max(prev - 5, 30))}
+              type="button"
+              aria-label="Decrease width"
+            >
+              <Icon icon="mdi:minus" style={{ fontSize: '16px' }} />
+            </button>
+            <div className="control-label">Width: {pdfWidth}%</div>
+            <Slider
+              value={pdfWidth}
+              onChange={handleWidthChange}
+              min={30}
+              max={100}
+              step={5}
+              size="small"
+              className="control-slider"
+            />
+            <button 
+              className="control-bar-button"
+              onClick={() => setPdfWidth(prev => Math.min(prev + 5, 100))}
+              type="button"
+              aria-label="Increase width"
+            >
+              <Icon icon="mdi:plus" style={{ fontSize: '16px' }} />
+            </button>
+          </div>
+        )}
+        
+        {/* Zoom Control Bar */}
+        {showZoomControls && (
+          <div className="control-bar">
+            <button 
+              className="control-bar-button"
+              onClick={decreaseScale}
+              type="button"
+              aria-label="Decrease zoom"
+            >
+              <Icon icon="mdi:magnify-minus" style={{ fontSize: '16px' }} />
+            </button>
+            <div className="control-label">Zoom: {Math.round(pdfScale * 100)}%</div>
+            <Slider
+              value={pdfScale}
+              onChange={handleScaleChange}
+              min={0.5}
+              max={3}
+              step={0.1}
+              size="small"
+              className="control-slider"
+            />
+            <button 
+              className="control-bar-button"
+              onClick={increaseScale}
+              type="button"
+              aria-label="Increase zoom"
+            >
+              <Icon icon="mdi:magnify-plus" style={{ fontSize: '16px' }} />
+            </button>
+          </div>
+        )}
+
+        {/* Control Buttons */}
+        <button 
+          className={`control-button ${showResetControls ? 'active' : ''}`}
+          onClick={() => {
+            setShowResetControls(!showResetControls);
+            setShowWidthControls(false);
+            setShowZoomControls(false);
+          }}
+          type="button"
+          aria-label="Reset controls"
+        >
+          <Icon icon="mdi:refresh" style={{ fontSize: '20px' }} />
+        </button>
+
+        <button 
+          className={`control-button ${showWidthControls ? 'active' : ''}`}
+          onClick={() => {
+            setShowWidthControls(!showWidthControls);
+            setShowZoomControls(false);
+            setShowResetControls(false);
+          }}
+          type="button"
+          aria-label="Width controls"
+        >
+          <Icon icon="mdi:resize" style={{ fontSize: '20px' }} />
+        </button>
+        
+        <button 
+          className={`control-button ${showZoomControls ? 'active' : ''}`}
+          onClick={() => {
+            setShowZoomControls(!showZoomControls);
+            setShowWidthControls(false);
+            setShowResetControls(false);
+          }}
+          type="button"
+          aria-label="Zoom controls"
+        >
+          <Icon icon="mdi:magnify" style={{ fontSize: '20px' }} />
+        </button>
+      </div>
+
+      <Box 
+        sx={{ 
+          flex: 1, 
+          position: 'relative', 
+          overflow: 'hidden',
+          width: '100%',
+          height: '100%',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+        }}
+      >
+        <Box
+          sx={{
+            width: `${pdfWidth}%`,
+            height: `${Math.max(100 / pdfScale, 100)}%`,
+            minHeight: '100%',
+            transform: `scale(${pdfScale})`,
+            transformOrigin: 'center center',
+            overflow: 'hidden',
+            background: 'white',
+            borderRadius: '8px',
+            boxShadow: '0 8px 32px rgba(0, 0, 0, 0.3)',
+            display: 'flex',
+            flexDirection: 'column',
+          }}
+        >
         <EnhancedPdfLoader
           url={actualPdfUrl}
           pdfBuffer={actualPdfBuffer || pdfBuffer}
@@ -406,7 +806,9 @@ const PdfHighlighterComp = ({
                 {
                   width: '100%',
                   height: '100%',
+                  minHeight: '100%',
                   overflow: 'auto',
+                  flex: 1,
                 } as CSSProperties
               }
             >
@@ -440,9 +842,10 @@ const PdfHighlighterComp = ({
                   screenshot,
                   isScrolledTo
                 ) => {
-                  const isHighlighted: boolean = 
-                    Boolean(isScrolledTo) || Boolean(highlightCitation && highlightCitation.metadata._id === highlight.id);
-                  
+                  const isHighlighted: boolean =
+                    Boolean(isScrolledTo) ||
+                    Boolean(highlightCitation && highlightCitation.metadata._id === highlight.id);
+
                   const isTextHighlight = !highlight.content?.image;
                   const component = isTextHighlight ? (
                     <div
@@ -490,18 +893,23 @@ const PdfHighlighterComp = ({
             </div>
           )}
         </EnhancedPdfLoader>
+        </Box>
       </Box>
-      <CitationSidebar
-        citations={processedCitations}
-        scrollViewerTo={(highlight) => {
-          if (scrollViewerTo.current && typeof scrollViewerTo.current === 'function') {
-            scrollViewerTo.current(highlight);
-          } else {
-            console.error('scrollViewerTo.current is not a function');
-          }
-        }}
-        highlightedCitationId={highlightCitation?.metadata._id || null}
-      />
+      {processedCitations.length > 0 && (
+        <CitationSidebar
+          citations={processedCitations}
+          scrollViewerTo={(highlight) => {
+            if (scrollViewerTo.current && typeof scrollViewerTo.current === 'function') {
+              scrollViewerTo.current(highlight);
+            } else {
+              console.error('scrollViewerTo.current is not a function');
+            }
+          }}
+          highlightedCitationId={highlightCitation?.metadata._id || null}
+          toggleFullScreen={toggleFullScreen}
+          onClosePdf={onClosePdf}
+        />
+      )}
     </Box>
   );
 };

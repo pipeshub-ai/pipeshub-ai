@@ -23,9 +23,10 @@ type TextViewerProps = {
   buffer?: ArrayBuffer | null;
   sx?: Record<string, unknown>;
   highlightCitation?: SearchResult | CustomCitation | null; // NEW: Added like MarkdownViewer
+  onClosePdf: () => void;
 };
 
-// similarity threshold 
+// similarity threshold
 const SIMILARITY_THRESHOLD = 0.6;
 
 // Styled components
@@ -148,6 +149,7 @@ const TextViewer: React.FC<TextViewerProps> = ({
   sx = {},
   citations = [],
   highlightCitation = null,
+  onClosePdf,
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
@@ -156,6 +158,8 @@ const TextViewer: React.FC<TextViewerProps> = ({
   const [documentText, setDocumentText] = useState<string>('');
   const [processedCitations, setProcessedCitations] = useState<ProcessedCitation[]>([]);
   const [highlightedCitationId, setHighlightedCitationId] = useState<string | null>(null); // NEW: Added like MarkdownViewer
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+  const fullScreenContainerRef = useRef<HTMLDivElement>(null);
 
   const styleAddedRef = useRef<boolean>(false);
   const processingCitationsRef = useRef<boolean>(false);
@@ -1204,8 +1208,29 @@ const TextViewer: React.FC<TextViewerProps> = ({
     [clearHighlights]
   );
 
+  const handleFullscreenChange = useCallback((): void => {
+    setIsFullscreen(!!document.fullscreenElement);
+  }, []);
+
+  useEffect(() => {
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, [handleFullscreenChange]);
+
+  const toggleFullScreen = useCallback(async (): Promise<void> => {
+    try {
+      if (!document.fullscreenElement && fullScreenContainerRef.current) {
+        await fullScreenContainerRef.current.requestFullscreen();
+      } else {
+        await document.exitFullscreen();
+      }
+    } catch (err) {
+      console.error('Error toggling fullscreen:', err);
+    }
+  }, []);
+
   return (
-    <TextViewerContainer component={Paper} sx={sx}>
+    <TextViewerContainer ref={fullScreenContainerRef} component={Paper} sx={sx}>
       {loading && (
         <LoadingOverlay>
           <CircularProgress size={40} sx={{ mb: 2 }} />
@@ -1269,6 +1294,8 @@ const TextViewer: React.FC<TextViewerProps> = ({
               citations={processedCitations}
               scrollViewerTo={scrollToHighlight}
               highlightedCitationId={highlightedCitationId}
+              toggleFullScreen={toggleFullScreen}
+              onClosePdf={onClosePdf}
             />
           </Box>
         )}

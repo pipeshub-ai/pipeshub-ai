@@ -22,6 +22,7 @@ type DocxViewerProps = {
   renderOptions?: Record<string, unknown>;
   sx?: Record<string, unknown>;
   highlightCitation?: SearchResult | CustomCitation | null;
+  onClosePdf :() => void;
 };
 
 // Styled components
@@ -143,6 +144,7 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
   sx = {},
   citations = [],
   highlightCitation = null,
+  onClosePdf
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
@@ -155,6 +157,8 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
   const processingCitationsRef = useRef<boolean>(false);
   const highlightAppliersRef = useRef<(() => void)[]>([]);
   const [highlightedCitationId, setHighlightedCitationId] = useState<string | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+  const fullScreenContainerRef = useRef<HTMLDivElement>(null);
 
   // STEP 1: Render document only once
   useEffect(() => {
@@ -1003,8 +1007,29 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
     }
   }, [documentReady, processedCitations, highlightedCitationId, scrollToHighlight]);
 
+     const handleFullscreenChange = useCallback((): void => {
+        setIsFullscreen(!!document.fullscreenElement);
+      }, []);
+    
+      useEffect(() => {
+        document.addEventListener('fullscreenchange', handleFullscreenChange);
+        return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      }, [handleFullscreenChange]);
+    
+      const toggleFullScreen = useCallback(async (): Promise<void> => {
+        try {
+          if (!document.fullscreenElement && fullScreenContainerRef.current) {
+            await fullScreenContainerRef.current.requestFullscreen();
+          } else {
+            await document.exitFullscreen();
+          }
+        } catch (err) {
+          console.error('Error toggling fullscreen:', err);
+        }
+      }, []);
+
   return (
-    <DocViewerContainer component={Paper}>
+    <DocViewerContainer ref={fullScreenContainerRef} component={Paper}>
       {loading && (
         <LoadingOverlay>
           <CircularProgress size={40} sx={{ mb: 2 }} />
@@ -1019,20 +1044,28 @@ const DocxViewer: React.FC<DocxViewerProps> = ({
         </ErrorOverlay>
       )}
 
-      <Box sx={{ display: 'flex', height: '100%' }}>
-        {/* Document container - always render this */}
-        <Box sx={{ height: '100%', width: '72%', position: 'relative' }}>
-          <DocumentContainer ref={containerRef} />
-        </Box>
+      <Box sx={{ display: 'flex', height: '100%', width: '100%' }}>
+  {/* Document container - takes remaining space */}
+  <Box sx={{ 
+    height: '100%', 
+    flex: 1, 
+    position: 'relative',
+    minWidth: 0, // Prevents flex item from overflowing
+  }}>
+    <DocumentContainer ref={containerRef} />
+  </Box>
 
-        {processedCitations.length > 0 && (
-          <CitationSidebar
-            citations={processedCitations}
-            scrollViewerTo={scrollViewerToRef.current}
-            highlightedCitationId={highlightedCitationId}
-          />
-        )}
-      </Box>
+  {/* Sidebar - takes its natural width (300px) */}
+  {processedCitations.length > 0 && (
+    <CitationSidebar
+      citations={processedCitations}
+      scrollViewerTo={scrollViewerToRef.current}
+      highlightedCitationId={highlightedCitationId}
+      toggleFullScreen={toggleFullScreen}
+      onClosePdf={onClosePdf}
+    />
+  )}
+</Box>
     </DocViewerContainer>
   );
 };

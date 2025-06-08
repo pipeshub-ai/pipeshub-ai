@@ -648,8 +648,8 @@ const RecordSalesAgent = ({ initialContext, recordId }: RecordSalesAgentProps) =
             }}
           >
             <ChatInput
-              value={inputValue}
-              onChange={handleInputChange}
+              // value={inputValue}
+              // onChange={handleInputChange}
               onSubmit={handleSendMessage}
               isLoading={isLoading}
               disabled={!selectedRecord}
@@ -679,7 +679,7 @@ const RecordSalesAgent = ({ initialContext, recordId }: RecordSalesAgentProps) =
               },
             }}
           >
-            <PdfHighlighterComp pdfUrl={pdfUrl} citations={aggregatedCitations} />
+            <PdfHighlighterComp pdfUrl={pdfUrl} citations={aggregatedCitations}  onClosePdf={onClosePdf}/>
             <StyledCloseButton
               onClick={onClosePdf}
               startIcon={<Icon icon={closeIcon} />}

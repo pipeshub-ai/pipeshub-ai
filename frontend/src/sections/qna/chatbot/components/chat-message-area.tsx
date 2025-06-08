@@ -416,7 +416,7 @@ const MessageWithControls = React.memo(
     };
 
     return (
-      <Box sx={{ position: 'relative', mb: 2, width: '100%' }}>
+      <Box sx={{ mb: 2,  }}>
         <ChatMessage
           message={message}
           index={index}

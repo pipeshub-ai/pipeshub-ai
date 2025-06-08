@@ -1,37 +1,77 @@
-// ChatInput.tsx
-import React from 'react';
+// Self-Contained ChatInput.tsx - Manages its own state
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Icon } from '@iconify/react';
 import sendIcon from '@iconify-icons/mdi/send';
 import { Box, Paper, TextField, IconButton, useTheme, alpha } from '@mui/material';
 
 type ChatInputProps = {
-  value: string;
-  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
-  onSubmit: () => Promise<void>;
+  onSubmit: (message: string) => Promise<void>; // Pass message directly
   isLoading: boolean;
   disabled?: boolean;
   placeholder?: string;
 };
 
 const ChatInput: React.FC<ChatInputProps> = ({
-  value,
-  onChange,
   onSubmit,
   isLoading,
   disabled = false,
   placeholder = 'Type your message...',
 }) => {
+  const [localValue, setLocalValue] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
 
-  const handleKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      if (value.trim() && !isLoading) {
-        onSubmit();
+  // Internal change handler - doesn't communicate with parent
+  const handleChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    setLocalValue(e.target.value);
+  }, []);
+
+  // Submit handler - only communicates final message to parent
+  const handleSubmit = useCallback(async () => {
+    const trimmedValue = localValue.trim();
+    if (!trimmedValue || isLoading || isSubmitting || disabled) {
+      return;
+    }
+
+    setIsSubmitting(true);
+    
+    try {
+      // Clear input immediately for better UX
+      setLocalValue('');
+      
+      // Send message to parent (this is the ONLY parent communication)
+      await onSubmit(trimmedValue);
+    } catch (error) {
+      console.error('Failed to send message:', error);
+      // Restore message on error
+      setLocalValue(trimmedValue);
+    } finally {
+      setIsSubmitting(false);
+      
+      // Refocus input
+      if (inputRef.current) {
+        inputRef.current.focus();
       }
     }
-  };
+  }, [localValue, isLoading, isSubmitting, disabled, onSubmit]);
+
+  const handleKeyPress = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSubmit();
+    }
+  }, [handleSubmit]);
+
+  // Auto-focus on mount
+  useEffect(() => {
+    if (inputRef.current) {
+      inputRef.current.focus();
+    }
+  }, []);
+
+  const canSubmit = localValue.trim() && !isLoading && !isSubmitting && !disabled;
 
   return (
     <Box sx={{ p: 1, width: { xs: '90%', sm: '80%', md: '70%' }, mx: 'auto' }}>
@@ -59,8 +99,9 @@ const ChatInput: React.FC<ChatInputProps> = ({
         }}
       >
         <TextField
+          ref={inputRef}
           fullWidth
-          placeholder={placeholder || "Type your message..."}
+          placeholder={placeholder}
           variant="standard"
           InputProps={{
             disableUnderline: true,
@@ -80,30 +121,30 @@ const ChatInput: React.FC<ChatInputProps> = ({
               padding: '6px 0',
             }
           }}
-          value={value}
-          onChange={onChange}
+          value={localValue} // Use local state only
+          onChange={handleChange} // Use local handler only
           onKeyPress={handleKeyPress}
-          disabled={disabled}
+          disabled={disabled || isSubmitting}
           multiline
           maxRows={4}
         />
 
         <IconButton
           size="small"
-          onClick={onSubmit}
-          disabled={!value.trim() || isLoading || disabled}
+          onClick={handleSubmit}
+          disabled={!canSubmit}
           sx={{
-            backgroundColor: (value.trim() && !isLoading && !disabled) 
+            backgroundColor: canSubmit
               ? alpha(theme.palette.primary.main, isDark ? 0.15 : 0.08) 
               : 'transparent',
             width: 34,
             height: 34,
             transition: 'all 0.2s',
-            color: (value.trim() && !isLoading && !disabled)
+            color: canSubmit
               ? theme.palette.primary.main
               : isDark ? 'rgba(255, 255, 255, 0.4)' : 'rgba(0, 0, 0, 0.3)',
             '&:hover': {
-              backgroundColor: (value.trim() && !isLoading && !disabled)
+              backgroundColor: canSubmit
                 ? alpha(theme.palette.primary.main, isDark ? 0.25 : 0.12) 
                 : isDark ? 'rgba(255, 255, 255, 0.04)' : 'rgba(0, 0, 0, 0.03)',
             },
@@ -119,4 +160,5 @@ const ChatInput: React.FC<ChatInputProps> = ({
   );
 };
 
-export default ChatInput;
+// CRITICAL: Wrap in React.memo to prevent unnecessary re-renders
+export default React.memo(ChatInput);

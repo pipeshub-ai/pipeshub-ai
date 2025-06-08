@@ -28,6 +28,7 @@ type MarkdownViewerProps = {
   buffer?: ArrayBuffer | null;
   sx?: Record<string, unknown>;
   highlightCitation?: SearchResult | CustomCitation | null;
+  onClosePdf :() => void;
 };
 
 const SIMILARITY_THRESHOLD = 0.6;
@@ -263,6 +264,7 @@ const MarkdownViewer: React.FC<MarkdownViewerProps> = ({
   sx = {},
   citations = [],
   highlightCitation = null,
+  onClosePdf
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
@@ -281,6 +283,8 @@ const MarkdownViewer: React.FC<MarkdownViewerProps> = ({
   const highlightCleanupsRef = useRef<Map<string, () => void>>(new Map()); 
   const theme = useTheme();
   const scrollableStyles = createScrollableContainerStyle(theme);
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+  const fullScreenContainerRef = useRef<HTMLDivElement>(null);
 
   const createHighlightStyles = useCallback((): (() => void) | undefined => {
     const styleId = 'markdown-highlight-styles';
@@ -1331,8 +1335,29 @@ const MarkdownViewer: React.FC<MarkdownViewerProps> = ({
     [clearHighlights]
   );
 
+   const handleFullscreenChange = useCallback((): void => {
+      setIsFullscreen(!!document.fullscreenElement);
+    }, []);
+  
+    useEffect(() => {
+      document.addEventListener('fullscreenchange', handleFullscreenChange);
+      return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+    }, [handleFullscreenChange]);
+  
+    const toggleFullScreen = useCallback(async (): Promise<void> => {
+      try {
+        if (!document.fullscreenElement && fullScreenContainerRef.current) {
+          await fullScreenContainerRef.current.requestFullscreen();
+        } else {
+          await document.exitFullscreen();
+        }
+      } catch (err) {
+        console.error('Error toggling fullscreen:', err);
+      }
+    }, []);
+
   return (
-    <ViewerContainer component={Paper} sx={sx}>
+    <ViewerContainer ref={fullScreenContainerRef} component={Paper} sx={sx}>
       {loading && (
         <LoadingOverlay>
           <CircularProgress size={40} sx={{ mb: 2 }} />
@@ -1404,6 +1429,8 @@ const MarkdownViewer: React.FC<MarkdownViewerProps> = ({
               citations={processedCitations}
               scrollViewerTo={scrollToHighlight}
               highlightedCitationId={highlightedCitationId}
+              toggleFullScreen={toggleFullScreen}
+              onClosePdf={onClosePdf}
             />
           </Box>
         )}

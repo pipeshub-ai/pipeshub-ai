@@ -565,6 +565,7 @@ export default function KnowledgeBaseSearch() {
           pdfBuffer={fileBuffer}
           citations={recordCitations?.documents || []}
           highlightCitation={highlightedCitation}
+          onClosePdf={handleCloseViewer}
         />
       );
     }
@@ -582,6 +583,7 @@ export default function KnowledgeBaseSearch() {
             renderHeaders: true,
             renderFooters: true,
           }}
+          onClosePdf={handleCloseViewer}
         />
       );
     }
@@ -594,6 +596,7 @@ export default function KnowledgeBaseSearch() {
           citations={recordCitations?.documents || []}
           excelBuffer={fileBuffer}
           highlightCitation={highlightedCitation}
+          onClosePdf={handleCloseViewer}
         />
       );
     }
@@ -606,6 +609,7 @@ export default function KnowledgeBaseSearch() {
           citations={recordCitations?.documents || []}
           buffer={fileBuffer}
           highlightCitation={highlightedCitation}
+          onClosePdf={handleCloseViewer}
         />
       );
     }
@@ -618,6 +622,7 @@ export default function KnowledgeBaseSearch() {
           citations={recordCitations?.documents || []}
           buffer={fileBuffer}
           highlightCitation={highlightedCitation}
+          onClosePdf={handleCloseViewer}
         />
       );
     }
@@ -629,6 +634,7 @@ export default function KnowledgeBaseSearch() {
           citations={recordCitations?.documents || []}
           buffer={fileBuffer}
           highlightCitation={highlightedCitation}
+          onClosePdf={handleCloseViewer}
         />
       );
     }
@@ -719,7 +725,7 @@ export default function KnowledgeBaseSearch() {
         )}
 
         {/* Close Button for document viewers */}
-        {isCitationViewerOpen && (
+        {/* {isCitationViewerOpen && (
           <StyledCloseButton
             onClick={handleCloseViewer}
             startIcon={<Icon icon={closeIcon} />}
@@ -727,7 +733,7 @@ export default function KnowledgeBaseSearch() {
           >
             Close
           </StyledCloseButton>
-        )}
+        )} */}
       </Box>
 
       {/* Error Snackbar */}

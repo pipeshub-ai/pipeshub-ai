@@ -1,6 +1,7 @@
+// RecordDocumentViewer.tsx - Viewport Mode (Full height below navbar)
 import dayjs from 'dayjs';
 import { Icon } from '@iconify/react';
-import React, { useState } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import downloadIcon from '@iconify-icons/mdi/download';
 import zipIcon from '@iconify-icons/vscode-icons/file-type-zip';
 import pdfIcon from '@iconify-icons/vscode-icons/file-type-pdf2';
@@ -9,25 +10,50 @@ import imageIcon from '@iconify-icons/vscode-icons/file-type-image';
 import excelIcon from '@iconify-icons/vscode-icons/file-type-excel2';
 import defaultFileIcon from '@iconify-icons/mdi/file-document-outline';
 import powerpointIcon from '@iconify-icons/vscode-icons/file-type-powerpoint2';
+import eyeIcon from '@iconify-icons/mdi/eye';
+import closeIcon from '@iconify-icons/mdi/close';
+import fullscreenIcon from '@iconify-icons/mdi/fullscreen';
+import fullscreenExitIcon from '@iconify-icons/mdi/fullscreen-exit';
 
 import {
   Box,
-  Card,
   Stack,
   Typography,
   IconButton,
-  CardContent,
   CircularProgress,
+  Fade,
+  Alert,
+  Snackbar,
+  useTheme,
 } from '@mui/material';
 
+import axios from 'src/utils/axios';
+import { CONFIG } from 'src/config-global';
 import { handleDownloadDocument } from './utils';
-
 import type { Record } from './types/record-details';
+import { getConnectorPublicUrl } from '../accountdetails/account-settings/services/utils/services-configuration-service';
+import { ORIGIN } from './constants/knowledge-search';
+import PdfHighlighterComp from '../qna/chatbot/components/pdf-highlighter';
+import DocxViewer from '../qna/chatbot/components/docx-highlighter';
+import ExcelViewer from '../qna/chatbot/components/excel-highlighter';
+import HtmlViewer from '../qna/chatbot/components/html-highlighter';
+import TextViewer from '../qna/chatbot/components/text-highlighter';
+import MarkdownViewer from '../qna/chatbot/components/markdown-highlighter';
+
+// Simplified state management for viewport mode
+interface DocumentViewerState {
+  phase: 'idle' | 'loading' | 'ready' | 'error' | 'closing';
+  documentType: string | null;
+  fileUrl: string;
+  fileBuffer: ArrayBuffer | null;
+  recordCitations: any | null;
+  error: string | null;
+  loadingStep: string;
+}
 
 // Keep the existing utility functions
 const getFileIcon = (extension: string) => {
   const ext = extension?.replace('.', '').toLowerCase();
-
   switch (ext) {
     case 'pdf':
       return pdfIcon;
@@ -54,7 +80,6 @@ const getFileIcon = (extension: string) => {
 
 const getExtensionColor = (extension: string) => {
   const ext = extension?.replace('.', '').toLowerCase();
-
   switch (ext) {
     case 'pdf':
       return '#FF4B4B';
@@ -76,24 +101,335 @@ const getExtensionColor = (extension: string) => {
   }
 };
 
+function getDocumentType(extension: string) {
+  if (extension === 'pdf') return 'pdf';
+  if (['xlsx', 'xls', 'csv'].includes(extension)) return 'excel';
+  if (extension === 'docx') return 'docx';
+  if (extension === 'html') return 'html';
+  if (extension === 'txt') return 'text';
+  if (extension === 'md') return 'md';
+  return 'other';
+}
+
 interface RecordDocumentViewerProps {
   record: Record;
 }
 
+// Professional Minimalistic Loading Animation
+const ViewportLoadingAnimation = ({ fileName, step }: { fileName: string; step: string }) => {
+  const theme = useTheme();
+
+  return (
+    <Box
+      sx={{
+        position: 'fixed',
+        top: 64,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        zIndex: 1400,
+        backgroundColor: theme.palette.background.default,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+    >
+      <Box
+        sx={{
+          textAlign: 'center',
+          maxWidth: 320,
+          mx: 2,
+        }}
+      >
+        {/* Minimalistic Document Icon */}
+        <Box
+          sx={{
+            width: 48,
+            height: 48,
+            mx: 'auto',
+            mb: 3,
+            position: 'relative',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <Box
+            sx={{
+              width: 32,
+              height: 40,
+              borderRadius: 1,
+              border: `2px solid ${theme.palette.text.secondary}`,
+              position: 'relative',
+              opacity: 0.7,
+              '&::before': {
+                content: '""',
+                position: 'absolute',
+                top: -2,
+                right: -2,
+                width: 8,
+                height: 8,
+                borderLeft: `2px solid ${theme.palette.text.secondary}`,
+                borderBottom: `2px solid ${theme.palette.text.secondary}`,
+                backgroundColor: theme.palette.background.default,
+              },
+              '&::after': {
+                content: '""',
+                position: 'absolute',
+                top: 8,
+                left: 6,
+                right: 6,
+                height: 2,
+                backgroundColor: theme.palette.text.secondary,
+                opacity: 0.3,
+                boxShadow: `0 6px 0 ${theme.palette.text.secondary}30, 0 12px 0 ${theme.palette.text.secondary}30`,
+              },
+            }}
+          />
+        </Box>
+
+        {/* Clean Typography */}
+        <Typography
+          variant="h6"
+          sx={{
+            mb: 1,
+            fontWeight: 500,
+            color: theme.palette.text.primary,
+            letterSpacing: '-0.02em',
+          }}
+        >
+          Opening Document
+        </Typography>
+
+        <Typography
+          variant="body2"
+          color="text.primary"
+          sx={{
+            mb: 1,
+            fontWeight: 400,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {fileName}
+        </Typography>
+
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          sx={{
+            mb: 4,
+            display: 'block',
+          }}
+        >
+          {step}
+        </Typography>
+
+        {/* Minimalistic Progress Indicator */}
+        <Box sx={{ position: 'relative', display: 'inline-flex' }}>
+          {/* Subtle spinning indicator */}
+          <Box
+            sx={{
+              width: 24,
+              height: 24,
+              border: `2px solid ${theme.palette.divider}`,
+              borderTop: `2px solid ${theme.palette.primary.main}`,
+              borderRadius: '50%',
+              animation: 'spin 1s linear infinite',
+              '@keyframes spin': {
+                '0%': { transform: 'rotate(0deg)' },
+                '100%': { transform: 'rotate(360deg)' },
+              },
+            }}
+          />
+        </Box>
+
+        {/* Optional: Three dot indicator as alternative */}
+        <Box
+          sx={{
+            display: 'flex',
+            justifyContent: 'center',
+            gap: 0.5,
+            mt: 3,
+          }}
+        >
+          {[0, 1, 2].map((index) => (
+            <Box
+              key={index}
+              sx={{
+                width: 4,
+                height: 4,
+                borderRadius: '50%',
+                backgroundColor: theme.palette.text.secondary,
+                opacity: 0.4,
+                animation: `dot-pulse 1.4s ${index * 0.2}s infinite ease-in-out`,
+                '@keyframes dot-pulse': {
+                  '0%, 80%, 100%': {
+                    opacity: 0.4,
+                    transform: 'scale(1)',
+                  },
+                  '40%': {
+                    opacity: 1,
+                    transform: 'scale(1.2)',
+                  },
+                },
+              }}
+            />
+          ))}
+        </Box>
+      </Box>
+    </Box>
+  );
+};
+
 const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
   const [isDownloading, setIsDownloading] = useState<boolean>(false);
+  const [snackbar, setSnackbar] = useState({
+    open: false,
+    message: '',
+    severity: 'error' as 'error' | 'warning' | 'info' | 'success',
+  });
+
+  // Enhanced state management with fullscreen tracking
+  const [viewerState, setViewerState] = useState<DocumentViewerState>({
+    phase: 'idle',
+    documentType: null,
+    fileUrl: '',
+    fileBuffer: null,
+    recordCitations: null,
+    error: null,
+    loadingStep: '',
+  });
+
+  // Fullscreen state management
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Single cleanup timeout
+  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(
+    () => () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    },
+    []
+  );
+
+  // Fullscreen event handlers
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      const isCurrentlyFullscreen = !!document.fullscreenElement;
+      setIsFullscreen(isCurrentlyFullscreen);
+
+      // If user exits fullscreen using browser controls, we should detect it
+      if (!isCurrentlyFullscreen && isFullscreen) {
+        // User exited fullscreen, but we're still in ready state - this is fine
+        // We'll just update our fullscreen state
+      }
+    };
+
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+    };
+  }, [isFullscreen]);
+
+  const resetViewerState = useCallback(() => {
+    setViewerState({
+      phase: 'idle',
+      documentType: null,
+      fileUrl: '',
+      fileBuffer: null,
+      recordCitations: null,
+      error: null,
+      loadingStep: '',
+    });
+  }, []);
+
+  const handleCloseViewer = useCallback(() => {
+    // Exit fullscreen if we're in it
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(console.error);
+    }
+
+    setViewerState((prev) => ({ ...prev, phase: 'closing' }));
+
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+
+    timeoutRef.current = setTimeout(() => {
+      resetViewerState();
+      timeoutRef.current = null;
+    }, 300);
+  }, [resetViewerState]);
+
+  const toggleFullscreen = useCallback(async () => {
+    try {
+      if (!document.fullscreenElement && containerRef.current) {
+        // Enter fullscreen
+        await containerRef.current.requestFullscreen();
+      } else {
+        // Exit fullscreen
+        await document.exitFullscreen();
+      }
+    } catch (err) {
+      console.error('Error toggling fullscreen:', err);
+      setSnackbar({
+        open: true,
+        message: 'Unable to toggle fullscreen mode.',
+        severity: 'warning',
+      });
+    }
+  }, []);
+
+  const showErrorAndRedirect = useCallback(
+    (errorMessage: string) => {
+      setSnackbar({
+        open: true,
+        message: 'Failed to load preview. Redirecting to the original document shortly...',
+        severity: 'info',
+      });
+
+      let webUrl = record.fileRecord?.webUrl || record.mailRecord?.webUrl;
+
+      if (record.origin === 'UPLOAD' && webUrl && !webUrl.startsWith('http')) {
+        const baseUrl = `${window.location.protocol}//${window.location.host}`;
+        webUrl = baseUrl + webUrl;
+      }
+
+      setTimeout(() => {
+        handleCloseViewer();
+      }, 500);
+
+      setTimeout(() => {
+        if (webUrl) {
+          try {
+            window.open(webUrl, '_blank', 'noopener,noreferrer');
+          } catch (openError) {
+            console.error('Error opening new tab:', openError);
+            setSnackbar({
+              open: true,
+              message:
+                'Failed to automatically open the document. Please check your browser pop-up settings.',
+              severity: 'error',
+            });
+          }
+        } else {
+          setSnackbar({
+            open: true,
+            message: 'Failed to load preview and cannot redirect (document URL not found).',
+            severity: 'error',
+          });
+        }
+      }, 2500);
+    },
+    [record, handleCloseViewer]
+  );
+
+  // Early return AFTER all hooks
   if (!record?.fileRecord) return null;
 
-  const {
-    recordName,
-    externalRecordId,
-    departments,
-    appSpecificRecordType,
-    modules,
-    createdAtTimestamp,
-    fileRecord,
-    origin,
-  } = record;
+  const { recordName, externalRecordId, createdAtTimestamp, fileRecord, origin } = record;
 
   const handleDownload = async () => {
     try {
@@ -108,15 +444,278 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
       await handleDownloadDocument(externalRecordId, recordName);
     } catch (error) {
       console.error('Failed to download document:', error);
+      setSnackbar({
+        open: true,
+        message: 'Failed to download document. Please try again.',
+        severity: 'error',
+      });
     } finally {
       setIsDownloading(false);
     }
   };
 
+  const viewDocument = async (): Promise<void> => {
+    // Start with loading phase
+    setViewerState((prev) => ({
+      ...prev,
+      phase: 'loading',
+      loadingStep: 'Preparing to load document...',
+      error: null,
+    }));
+
+    try {
+      const recordId = record._id;
+
+      if (!record) {
+        console.error('Record not found for ID:', recordId);
+        setSnackbar({
+          open: true,
+          message: 'Record not found. Please try again.',
+          severity: 'error',
+        });
+        handleCloseViewer();
+        return;
+      }
+
+      let fileDataLoaded = false;
+      let loadedFileUrl = '';
+      let loadedFileBuffer: ArrayBuffer | null = null;
+
+      if (record.origin === ORIGIN.UPLOAD) {
+        try {
+          setViewerState((prev) => ({ ...prev, loadingStep: 'Downloading document...' }));
+
+          const downloadResponse = await axios.get(
+            `/api/v1/document/${externalRecordId}/download`,
+            { responseType: 'blob' }
+          );
+
+          setViewerState((prev) => ({ ...prev, loadingStep: 'Processing document data...' }));
+
+          const reader = new FileReader();
+          const textPromise = new Promise<string>((resolve) => {
+            reader.onload = () => {
+              resolve(reader.result?.toString() || '');
+            };
+          });
+
+          reader.readAsText(downloadResponse.data);
+          const text = await textPromise;
+
+          try {
+            const jsonData = JSON.parse(text);
+            if (jsonData && jsonData.signedUrl) {
+              loadedFileUrl = jsonData.signedUrl;
+              fileDataLoaded = true;
+            }
+          } catch (e) {
+            const bufferReader = new FileReader();
+            const arrayBufferPromise = new Promise<ArrayBuffer>((resolve) => {
+              bufferReader.onload = () => {
+                resolve(bufferReader.result as ArrayBuffer);
+              };
+              bufferReader.readAsArrayBuffer(downloadResponse.data);
+            });
+
+            loadedFileBuffer = await arrayBufferPromise;
+            fileDataLoaded = true;
+          }
+        } catch (error) {
+          console.error('Error downloading document:', error);
+          showErrorAndRedirect('Failed to load document from upload');
+          return;
+        }
+      } else if (record.origin === ORIGIN.CONNECTOR) {
+        try {
+          setViewerState((prev) => ({ ...prev, loadingStep: 'Connecting to document source...' }));
+
+          let params = {};
+          if (record?.fileRecord && ['pptx', 'ppt'].includes(record?.fileRecord?.extension)) {
+            params = { convertTo: 'pdf' };
+            if (record.fileRecord.sizeInBytes / 1048576 > 5) {
+              throw new Error('Large file size, redirecting to web page');
+            }
+          }
+
+          const publicConnectorUrlResponse = await getConnectorPublicUrl();
+          let connectorResponse;
+
+          if (publicConnectorUrlResponse && publicConnectorUrlResponse.url) {
+            const CONNECTOR_URL = publicConnectorUrlResponse.url;
+            connectorResponse = await axios.get(
+              `${CONNECTOR_URL}/api/v1/stream/record/${recordId}`,
+              { responseType: 'blob', params }
+            );
+          } else {
+            connectorResponse = await axios.get(
+              `${CONFIG.backendUrl}/api/v1/knowledgeBase/stream/record/${recordId}`,
+              { responseType: 'blob', params }
+            );
+          }
+
+          if (!connectorResponse) return;
+
+          setViewerState((prev) => ({ ...prev, loadingStep: 'Processing document...' }));
+
+          const bufferReader = new FileReader();
+          const arrayBufferPromise = new Promise<ArrayBuffer>((resolve, reject) => {
+            bufferReader.onload = () => {
+              const originalBuffer = bufferReader.result as ArrayBuffer;
+              const bufferCopy = originalBuffer.slice(0);
+              resolve(bufferCopy);
+            };
+            bufferReader.onerror = () => {
+              reject(new Error('Failed to read blob as array buffer'));
+            };
+            bufferReader.readAsArrayBuffer(connectorResponse.data);
+          });
+
+          loadedFileBuffer = await arrayBufferPromise;
+          fileDataLoaded = true;
+        } catch (err) {
+          console.error('Error downloading document:', err);
+          showErrorAndRedirect('Failed to load document from connector');
+          return;
+        }
+      }
+
+      if (fileDataLoaded && record.fileRecord) {
+        const documentType = getDocumentType(record.fileRecord.extension);
+
+        setViewerState((prev) => ({ ...prev, loadingStep: 'Opening in viewport...' }));
+
+        // Small delay to show final step
+        setTimeout(() => {
+          setViewerState((prev) => ({
+            ...prev,
+            phase: 'ready',
+            documentType,
+            fileUrl: loadedFileUrl,
+            fileBuffer: loadedFileBuffer,
+            recordCitations: null,
+          }));
+        }, 800);
+
+        if (!['pdf', 'excel', 'docx', 'html', 'text', 'md'].includes(documentType)) {
+          setSnackbar({
+            open: true,
+            message: `Unsupported document type: ${record.fileRecord.extension}`,
+            severity: 'warning',
+          });
+          handleCloseViewer();
+        }
+      } else {
+        setSnackbar({
+          open: true,
+          message: 'No document data was loaded. Please try again.',
+          severity: 'error',
+        });
+        handleCloseViewer();
+      }
+    } catch (error) {
+      console.error('Error fetching document:', error);
+      setViewerState((prev) => ({
+        ...prev,
+        phase: 'error',
+        error: 'Failed to load document. Please try again.',
+      }));
+
+      setTimeout(() => {
+        handleCloseViewer();
+      }, 2000);
+    }
+  };
+
+  const renderDocumentViewer = () => {
+    const { documentType, fileUrl, fileBuffer, recordCitations } = viewerState;
+
+    if (!documentType || (!fileUrl && !fileBuffer)) return null;
+
+    const commonProps = {
+      key: `${documentType}-viewer-${recordCitations?.recordId || 'new'}`,
+      onClosePdf: handleCloseViewer,
+    };
+
+    switch (documentType) {
+      case 'pdf':
+        return (
+          <PdfHighlighterComp
+            {...commonProps}
+            pdfUrl={fileUrl}
+            pdfBuffer={fileBuffer}
+            citations={[]}
+            // viewportMode={!isFullscreen} // Use viewport mode when not in fullscreen
+            // fullScreen={isFullscreen} // Use fullscreen when in fullscreen mode
+          />
+        );
+      case 'docx':
+        return (
+          <DocxViewer
+            {...commonProps}
+            url={fileUrl}
+            buffer={fileBuffer}
+            citations={[]}
+            renderOptions={{
+              breakPages: true,
+              renderHeaders: true,
+              renderFooters: true,
+            }}
+          />
+        );
+      case 'excel':
+        return (
+          <ExcelViewer
+            {...commonProps}
+            fileUrl={fileUrl}
+            citations={recordCitations?.documents || []}
+            excelBuffer={fileBuffer}
+          />
+        );
+      case 'html':
+        return (
+          <HtmlViewer
+            {...commonProps}
+            url={fileUrl}
+            citations={recordCitations?.documents || []}
+            buffer={fileBuffer}
+          />
+        );
+      case 'text':
+        return (
+          <TextViewer
+            {...commonProps}
+            url={fileUrl}
+            citations={recordCitations?.documents || []}
+            buffer={fileBuffer}
+          />
+        );
+      case 'md':
+        return (
+          <MarkdownViewer
+            {...commonProps}
+            url={fileUrl}
+            citations={recordCitations?.documents || []}
+            buffer={fileBuffer}
+          />
+        );
+      default:
+        return null;
+    }
+  };
+
   return (
-    <Box sx={{ maxWidth: 800, width: '100%',p:2 }}>
-      <Box>
-        {/* Document Header */}
+    <>
+      {/* Main Document Card */}
+      <Box
+        sx={{
+          maxWidth: 800,
+          width: '100%',
+          p: 2,
+          opacity: viewerState.phase === 'loading' ? 0.5 : 1,
+          transition: 'opacity 0.3s ease-in-out',
+          pointerEvents: viewerState.phase === 'loading' ? 'none' : 'auto',
+        }}
+      >
         <Stack direction="row" spacing={2} alignItems="center" sx={{ mb: 3 }}>
           <Icon
             icon={getFileIcon(fileRecord.extension)}
@@ -132,92 +731,206 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
               Added on {dayjs(createdAtTimestamp).format('MMM DD, YYYY')}
             </Typography>
           </Box>
+
+          {/* Download Button */}
           {isDownloading ? (
             <CircularProgress size={28} />
           ) : (
-            <IconButton onClick={handleDownload} sx={{ color: 'primary.main' }}>
+            <IconButton
+              onClick={handleDownload}
+              sx={{ color: 'primary.main' }}
+              disabled={viewerState.phase === 'loading'}
+            >
               <Icon icon={downloadIcon} width={24} />
             </IconButton>
           )}
+
+          {/* View Document Button */}
+          <IconButton
+            onClick={viewDocument}
+            sx={{
+              color: 'primary.main',
+              '&:hover': {
+                backgroundColor: 'primary.light',
+                color: 'white',
+              },
+            }}
+            disabled={viewerState.phase === 'loading'}
+          >
+            <Icon icon={eyeIcon} width={24} />
+          </IconButton>
         </Stack>
-
-        {/* {certificate && (
-          <Stack direction="row" spacing={1} alignItems="flex-start">
-            <Typography variant="body2" color="text.secondary">
-              Certificate:
-            </Typography>
-            <Stack direction="row" spacing={1} flexWrap="wrap">
-              <Chip
-                label={certificate.certificateType}
-                size="small"
-                variant="outlined"
-                color="primary"
-              />
-            </Stack>
-          </Stack>
-        )} */}
-
-        {/* Document Details */}
-        {/* <Stack spacing={2}>
-          
-          <Stack direction="row" spacing={1} alignItems="center">
-            <Typography variant="body2" color="text.secondary" sx={{ width: 120 }}>
-              Status:
-            </Typography>
-            <Chip
-              label={status}
-              size="small"
-              color={status === 'PROCESSING' ? 'warning' : 'success'}
-            />
-          </Stack>
-
-          
-          {departments?.length > 0 && (
-            <Stack direction="row" spacing={1} alignItems="flex-start">
-              <Typography variant="body2" color="text.secondary" sx={{ width: 120 }}>
-                Departments:
-              </Typography>
-              <Stack direction="row" spacing={1} flexWrap="wrap">
-                {departments.map((dept) => (
-                  <Chip key={dept._id} label={dept.name} size="small" variant="outlined" />
-                ))}
-              </Stack>
-            </Stack>
-          )}
-
-          
-          {appSpecificRecordType?.length > 0 && (
-            <Stack direction="row" spacing={1} alignItems="flex-start">
-              <Typography variant="body2" color="text.secondary" sx={{ width: 120 }}>
-                Record Type:
-              </Typography>
-              <Stack direction="row" spacing={1} flexWrap="wrap">
-                {appSpecificRecordType.map((type) => (
-                  <Chip key={type._id} label={type.name} size="small" variant="outlined" />
-                ))}
-              </Stack>
-            </Stack>
-          )}
-
-         
-          {certificate && (
-            <Stack direction="row" spacing={1} alignItems="flex-start">
-              <Typography variant="body2" color="text.secondary" sx={{ width: 120 }}>
-                Certificate:
-              </Typography>
-              <Stack direction="row" spacing={1} flexWrap="wrap">
-                <Chip
-                  label={certificate.certificateType}
-                  size="small"
-                  variant="outlined"
-                  color="primary"
-                />
-              </Stack>
-            </Stack>
-          )}
-        </Stack> */}
       </Box>
-    </Box>
+
+      {/* Beautiful Loading Animation */}
+      {viewerState.phase === 'loading' && (
+        <ViewportLoadingAnimation fileName={recordName} step={viewerState.loadingStep} />
+      )}
+
+      {/* Clean Viewport Document Viewer */}
+      {viewerState.phase === 'ready' && (
+        <Fade in={Boolean(true)} timeout={600}>
+          <Box
+            ref={containerRef}
+            sx={{
+              position: 'fixed',
+              top: isFullscreen ? 0 : 64, // Full height when fullscreen, below navbar otherwise
+              left: 0,
+              right: 0,
+              bottom: 0,
+              zIndex: 1300,
+              backgroundColor: '#fff',
+              display: 'flex',
+              flexDirection: 'column',
+            }}
+          >
+            {/* Header with Close Button - Hide in fullscreen */}
+            {!isFullscreen && (
+              <Box
+                sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  p: 2,
+                  borderBottom: '1px solid',
+                  borderColor: 'divider',
+                  backgroundColor: 'background.paper',
+                }}
+              >
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                  <Icon
+                    icon={getFileIcon(fileRecord.extension)}
+                    width={24}
+                    height={24}
+                    style={{ color: getExtensionColor(fileRecord.extension) }}
+                  />
+                  <Typography variant="h6" noWrap>
+                    {recordName}
+                  </Typography>
+                </Box>
+
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  {/* Fullscreen Toggle Button */}
+                  <IconButton
+                    onClick={toggleFullscreen}
+                    sx={{
+                      color: 'text.secondary',
+                      '&:hover': {
+                        backgroundColor: 'action.hover',
+                      },
+                    }}
+                    title="Enter fullscreen"
+                  >
+                    <Icon icon={fullscreenIcon} width={20} />
+                  </IconButton>
+
+                  {/* Close Button */}
+                  <IconButton
+                    onClick={handleCloseViewer}
+                    sx={{
+                      color: 'text.secondary',
+                      '&:hover': {
+                        backgroundColor: 'action.hover',
+                      },
+                    }}
+                    title="Close document"
+                  >
+                    <Icon icon={closeIcon} width={20} />
+                  </IconButton>
+                </Box>
+              </Box>
+            )}
+
+            {/* Fullscreen Controls - Show only in fullscreen */}
+            {isFullscreen && (
+              <Box
+                sx={{
+                  position: 'absolute',
+                  top: 16,
+                  right: 16,
+                  zIndex: 1400,
+                  display: 'flex',
+                  gap: 1,
+                }}
+              >
+                {/* Exit Fullscreen Button */}
+                <IconButton
+                  onClick={toggleFullscreen}
+                  sx={{
+                    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+                    color: 'white',
+                    '&:hover': {
+                      backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                    },
+                  }}
+                  title="Exit fullscreen"
+                >
+                  <Icon icon={fullscreenExitIcon} width={20} />
+                </IconButton>
+
+                {/* Close Button */}
+                <IconButton
+                  onClick={handleCloseViewer}
+                  sx={{
+                    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+                    color: 'white',
+                    '&:hover': {
+                      backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                    },
+                  }}
+                  title="Close document"
+                >
+                  <Icon icon={closeIcon} width={20} />
+                </IconButton>
+              </Box>
+            )}
+
+            {/* Document Content */}
+            <Box sx={{ flex: 1, overflow: 'hidden' }}>{renderDocumentViewer()}</Box>
+          </Box>
+        </Fade>
+      )}
+
+      {/* Error State */}
+      {viewerState.phase === 'error' && (
+        <Fade in={Boolean(true)} timeout={300}>
+          <Box
+            sx={{
+              position: 'fixed',
+              top: 64,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              zIndex: 1300,
+              backgroundColor: 'rgba(0, 0, 0, 0.8)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <Alert severity="error" sx={{ maxWidth: 400, mx: 2 }}>
+              {viewerState.error}
+            </Alert>
+          </Box>
+        </Fade>
+      )}
+
+      {/* Snackbar for notifications */}
+      <Snackbar
+        open={snackbar.open}
+        autoHideDuration={6000}
+        onClose={() => setSnackbar((prev) => ({ ...prev, open: false }))}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      >
+        <Alert
+          onClose={() => setSnackbar((prev) => ({ ...prev, open: false }))}
+          severity={snackbar.severity}
+          sx={{ width: '100%' }}
+        >
+          {snackbar.message}
+        </Alert>
+      </Snackbar>
+    </>
   );
 };
 

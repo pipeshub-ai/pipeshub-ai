@@ -1115,8 +1115,8 @@ const ChatInterface = () => {
                 }}
               >
                 <ChatInput
-                  value={inputValue}
-                  onChange={handleInputChange}
+                  // value={inputValue}
+                  // onChange={handleInputChange}
                   onSubmit={handleSendMessage}
                   isLoading={isCurrentConversationLoading()}
                 />
@@ -1170,6 +1170,7 @@ const ChatInterface = () => {
                   fileUrl={pdfUrl}
                   excelBuffer={fileBuffer}
                   highlightCitation={highlightedCitation}
+                  onClosePdf={onClosePdf}
                 />
               ) : isDocx ? (
                 <DocxHighlighterComp
@@ -1183,6 +1184,7 @@ const ChatInterface = () => {
                     renderHeaders: true,
                     renderFooters: true,
                   }}
+                  onClosePdf={onClosePdf}
                 />
               ) : isMarkdown ? (
                 <MarkdownViewer
@@ -1191,6 +1193,7 @@ const ChatInterface = () => {
                   buffer={fileBuffer}
                   citations={aggregatedCitations}
                   highlightCitation={highlightedCitation}
+                  onClosePdf={onClosePdf}
                 />
               ) : isHtml ? (
                 <HtmlViewer
@@ -1199,6 +1202,7 @@ const ChatInterface = () => {
                   buffer={fileBuffer}
                   citations={aggregatedCitations}
                   highlightCitation={highlightedCitation}
+                  onClosePdf={onClosePdf}
                 />
               ) : isTextFile ? (
                 <TextViewer
@@ -1207,6 +1211,7 @@ const ChatInterface = () => {
                   buffer={fileBuffer}
                   citations={aggregatedCitations}
                   highlightCitation={highlightedCitation}
+                  onClosePdf={onClosePdf}
                 />
               ) : (
                 <PdfHighlighterComp
@@ -1215,15 +1220,16 @@ const ChatInterface = () => {
                   pdfBuffer={fileBuffer}
                   citations={aggregatedCitations}
                   highlightCitation={highlightedCitation}
+                  onClosePdf={onClosePdf}
                 />
               ))}
-            <StyledCloseButton
+            {/* <StyledCloseButton
               onClick={onClosePdf}
               startIcon={<Icon icon={closeIcon} />}
               size="small"
             >
               Close
-            </StyledCloseButton>
+            </StyledCloseButton> */}
           </Box>
         )}
       </Box>

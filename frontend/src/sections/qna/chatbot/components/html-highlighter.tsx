@@ -25,6 +25,7 @@ type HtmlViewerProps = {
   buffer?: ArrayBuffer | null;
   sx?: Record<string, unknown>;
   highlightCitation?: SearchResult | CustomCitation | null;
+  onClosePdf :() => void;
 };
 
 const SIMILARITY_THRESHOLD = 0.6;
@@ -183,6 +184,7 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
   sx = {},
   citations = [],
   highlightCitation = null,
+  onClosePdf
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const contentWrapperRef = useRef<HTMLDivElement | null>(null);
@@ -192,6 +194,8 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
   const [documentReady, setDocumentReady] = useState<boolean>(false);
   const [processedCitations, setProcessedCitations] = useState<ProcessedCitation[]>([]);
   const [highlightedCitationId, setHighlightedCitationId] = useState<string | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+  const fullScreenContainerRef = useRef<HTMLDivElement>(null);
 
   const styleAddedRef = useRef<boolean>(false);
   const processingCitationsRef = useRef<boolean>(false);
@@ -1425,9 +1429,30 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
     [clearHighlights]
   );
 
+  const handleFullscreenChange = useCallback((): void => {
+    setIsFullscreen(!!document.fullscreenElement);
+  }, []);
+
+  useEffect(() => {
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, [handleFullscreenChange]);
+
+  const toggleFullScreen = useCallback(async (): Promise<void> => {
+    try {
+      if (!document.fullscreenElement && fullScreenContainerRef.current) {
+        await fullScreenContainerRef.current.requestFullscreen();
+      } else {
+        await document.exitFullscreen();
+      }
+    } catch (err) {
+      console.error('Error toggling fullscreen:', err);
+    }
+  }, []);
+
   // --- Render logic ---
   return (
-    <HtmlViewerContainer component={Paper} sx={sx}>
+    <HtmlViewerContainer ref={fullScreenContainerRef} component={Paper} sx={sx}>
       {loading && (
         <LoadingOverlay>
           <CircularProgress size={40} sx={{ mb: 2 }} />
@@ -1490,6 +1515,8 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
               citations={processedCitations}
               scrollViewerTo={scrollToHighlight}
               highlightedCitationId={highlightedCitationId}
+              toggleFullScreen={toggleFullScreen}
+              onClosePdf={onClosePdf}
             />
           </Box>
         )}

@@ -108,6 +108,8 @@ export function DashboardLayout({ sx, children, header, data }: DashboardLayoutP
                   [theme.breakpoints.up(layoutQuery)]: {
                     height: 'var(--layout-nav-horizontal-height)',
                   },
+                   borderBottom: `1px solid ${theme.palette.divider}`,
+                boxShadow: theme.shadows[1],
                 }),
               },
             },

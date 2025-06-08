@@ -53,6 +53,10 @@ import {
   Dialog,
   DialogContent,
   DialogTitle,
+  Menu,
+  MenuItem,
+  ListItemIcon,
+  ListItemText,
 } from '@mui/material';
 
 import axios from 'src/utils/axios';
@@ -156,6 +160,16 @@ export default function RecordDetails() {
   const [isSummaryDialogOpen, setSummaryDialogOpen] = useState<boolean>(false);
   const [summary, setSummary] = useState<string>('');
   const [summaryLoading, setSummaryLoading] = useState<boolean>(false);
+  const [actionMenuAnchor, setActionMenuAnchor] = useState(null);
+  const isActionMenuOpen = Boolean(actionMenuAnchor);
+
+  const handleActionMenuOpen = (event: any) => {
+    setActionMenuAnchor(event.currentTarget);
+  };
+
+  const handleActionMenuClose = () => {
+    setActionMenuAnchor(null);
+  };
 
   useEffect(() => {
     const fetchData = async () => {
@@ -331,7 +345,7 @@ export default function RecordDetails() {
   // Render chips function for metadata items
   const renderChips = (items: MetadataItem[]) => {
     if (!items || items.length === 0) return null;
-    const validItems = items.filter((item : MetadataItem) => item && item.name);
+    const validItems = items.filter((item: MetadataItem) => item && item.name);
     if (validItems.length === 0) return null;
 
     return (
@@ -440,37 +454,654 @@ export default function RecordDetails() {
                   </Stack>
                 </Box>
               </Box>
-              <Stack
-                direction={{ xs: 'column', sm: 'row' }}
-                spacing={{ xs: 1.5, sm: 1.2 }}
-                width={{ xs: '100%', sm: 'auto' }}
-                alignItems={{ xs: 'stretch', sm: 'center' }}
-                justifyContent="flex-end"
+              <Box
+                sx={{
+                  display: { xs: 'none', lg: 'flex' },
+                  flexWrap: 'wrap',
+                  gap: 0.75,
+                  alignItems: 'center',
+                  justifyContent: 'flex-end',
+                  '& > *': {
+                    flexShrink: 0,
+                  },
+                }}
               >
-                {/* Main actions */}
+                {/* Edit button */}
+                {!isRecordConnector && (
+                  <Button
+                    variant="outlined"
+                    startIcon={<Icon icon={pencilIcon} style={{ fontSize: '1rem' }} />}
+                    onClick={() => setIsEditDialogOpen(true)}
+                    sx={{
+                      height: 32,
+                      px: 1.75,
+                      py: 0.75,
+                      borderRadius: '4px',
+                      textTransform: 'none',
+                      fontSize: '0.8125rem',
+                      fontWeight: 500,
+                      minWidth: 100,
+                      borderColor: (themeVal) =>
+                        themeVal.palette.mode === 'dark'
+                          ? alpha(themeVal.palette.primary.main, 0.7)
+                          : themeVal.palette.primary.main,
+                      color: (themeVal) =>
+                        themeVal.palette.mode === 'dark'
+                          ? themeVal.palette.primary.light
+                          : themeVal.palette.primary.main,
+                      borderWidth: '1px',
+                      bgcolor: 'transparent',
+                      '&:hover': {
+                        borderColor: (themeVal) =>
+                          themeVal.palette.mode === 'dark'
+                            ? themeVal.palette.primary.light
+                            : themeVal.palette.primary.dark,
+                        bgcolor: (themeVal) =>
+                          themeVal.palette.mode === 'dark'
+                            ? alpha(themeVal.palette.primary.main, 0.1)
+                            : alpha(themeVal.palette.primary.main, 0.05),
+                      },
+                    }}
+                  >
+                    Edit
+                  </Button>
+                )}
+
+                {/* Summary button */}
+                {record.summaryDocumentId && (
+                  <Button
+                    variant="outlined"
+                    startIcon={<Icon icon={descriptionIcon} style={{ fontSize: '1rem' }} />}
+                    onClick={handleShowSummary}
+                    sx={{
+                      height: 32,
+                      px: 1.75,
+                      py: 0.75,
+                      borderRadius: '4px',
+                      textTransform: 'none',
+                      fontSize: '0.8125rem',
+                      fontWeight: 500,
+                      minWidth: 100,
+                      borderColor: (themeVal) =>
+                        themeVal.palette.mode === 'dark'
+                          ? 'rgba(255,255,255,0.23)'
+                          : 'rgba(0,0,0,0.23)',
+                      color: (themeVal) =>
+                        themeVal.palette.mode === 'dark' ? '#E0E0E0' : '#4B5563',
+                      borderWidth: '1px',
+                      bgcolor: 'transparent',
+                      '&:hover': {
+                        borderColor: (themeVal) =>
+                          themeVal.palette.mode === 'dark'
+                            ? 'rgba(255,255,255,0.4)'
+                            : 'rgba(0,0,0,0.4)',
+                        bgcolor: (themeVal) =>
+                          themeVal.palette.mode === 'dark'
+                            ? 'rgba(255,255,255,0.05)'
+                            : 'rgba(0,0,0,0.03)',
+                      },
+                    }}
+                  >
+                    Summary
+                  </Button>
+                )}
+
+                {/* Reindex button */}
+                {!isRecordConnector && recordId && (
+                  <Tooltip title={getReindexTooltip(record.indexingStatus)} placement="top" arrow>
+                    <span>
+                      <Button
+                        variant="outlined"
+                        startIcon={<Icon icon={refreshIcon} style={{ fontSize: '1rem' }} />}
+                        disabled={
+                          record.indexingStatus === 'FILE_TYPE_NOT_SUPPORTED' ||
+                          record.indexingStatus === 'IN_PROGRESS'
+                        }
+                        onClick={() => handleRetryIndexing(recordId)}
+                        sx={{
+                          height: 32,
+                          px: 1.75,
+                          py: 0.75,
+                          borderRadius: '4px',
+                          textTransform: 'none',
+                          fontSize: '0.8125rem',
+                          fontWeight: 500,
+                          minWidth: 100,
+                          borderColor: (themeVal) =>
+                            record.indexingStatus === 'FAILED'
+                              ? themeVal.palette.mode === 'dark'
+                                ? '#FACC15'
+                                : '#D97706'
+                              : themeVal.palette.mode === 'dark'
+                                ? 'rgba(255,255,255,0.23)'
+                                : 'rgba(0,0,0,0.23)',
+                          color: (themeVal) =>
+                            record.indexingStatus === 'FAILED'
+                              ? themeVal.palette.mode === 'dark'
+                                ? '#FACC15'
+                                : '#D97706'
+                              : themeVal.palette.mode === 'dark'
+                                ? '#E0E0E0'
+                                : '#4B5563',
+                          borderWidth: '1px',
+                          bgcolor: 'transparent',
+                          '&:hover': {
+                            borderColor: (themeVal) =>
+                              record.indexingStatus === 'FAILED'
+                                ? themeVal.palette.mode === 'dark'
+                                  ? '#FDE68A'
+                                  : '#B45309'
+                                : themeVal.palette.mode === 'dark'
+                                  ? 'rgba(255,255,255,0.4)'
+                                  : 'rgba(0,0,0,0.4)',
+                            bgcolor: (themeVal) =>
+                              record.indexingStatus === 'FAILED'
+                                ? themeVal.palette.mode === 'dark'
+                                  ? 'rgba(250,204,21,0.08)'
+                                  : 'rgba(217,119,6,0.04)'
+                                : themeVal.palette.mode === 'dark'
+                                  ? 'rgba(255,255,255,0.05)'
+                                  : 'rgba(0,0,0,0.03)',
+                          },
+                          '&.Mui-disabled': {
+                            borderColor: (themeVal) =>
+                              themeVal.palette.mode === 'dark'
+                                ? 'rgba(255,255,255,0.12)'
+                                : 'rgba(0,0,0,0.12)',
+                            color: (themeVal) =>
+                              themeVal.palette.mode === 'dark'
+                                ? 'rgba(255,255,255,0.3)'
+                                : 'rgba(0,0,0,0.38)',
+                          },
+                        }}
+                      >
+                        {getReindexButtonText(record.indexingStatus)}
+                      </Button>
+                    </span>
+                  </Tooltip>
+                )}
+
+                {/* Delete button */}
+                <Button
+                  variant="outlined"
+                  color="error"
+                  startIcon={<Icon icon={trashCanIcon} style={{ fontSize: '1rem' }} />}
+                  onClick={() => setIsDeleteDialogOpen(true)}
+                  sx={{
+                    height: 32,
+                    px: 1.75,
+                    py: 0.75,
+                    borderRadius: '4px',
+                    textTransform: 'none',
+                    fontSize: '0.8125rem',
+                    fontWeight: 500,
+                    minWidth: 100,
+                    borderColor: (themeVal) =>
+                      themeVal.palette.mode === 'dark' ? '#EF4444' : '#DC2626',
+                    color: (themeVal) => (themeVal.palette.mode === 'dark' ? '#EF4444' : '#DC2626'),
+                    borderWidth: '1px',
+                    bgcolor: 'transparent',
+                    '&:hover': {
+                      borderColor: (themeVal) =>
+                        themeVal.palette.mode === 'dark' ? '#F87171' : '#B91C1C',
+                      bgcolor: (themeVal) =>
+                        themeVal.palette.mode === 'dark'
+                          ? 'rgba(239,68,68,0.08)'
+                          : 'rgba(220,38,38,0.04)',
+                    },
+                  }}
+                >
+                  Delete
+                </Button>
+              </Box>
+              <Box
+                sx={{
+                  display: { xs: 'none', sm: 'none', md: 'flex', lg: 'none' },
+                  flexWrap: 'wrap',
+                  gap: 0.75,
+                  alignItems: 'center',
+                  justifyContent: 'flex-end',
+                  '& > *': {
+                    flexShrink: 0,
+                  },
+                }}
+              >
+                {/* Edit button */}
+                {!isRecordConnector && (
+                  <Button
+                    variant="outlined"
+                    startIcon={<Icon icon={pencilIcon} style={{ fontSize: '1rem' }} />}
+                    onClick={() => setIsEditDialogOpen(true)}
+                    sx={{
+                      height: 32,
+                      px: 1.75,
+                      py: 0.75,
+                      borderRadius: '4px',
+                      textTransform: 'none',
+                      fontSize: '0.8125rem',
+                      fontWeight: 500,
+                      minWidth: 100,
+                      borderColor: (themeVal) =>
+                        themeVal.palette.mode === 'dark'
+                          ? alpha(themeVal.palette.primary.main, 0.7)
+                          : themeVal.palette.primary.main,
+                      color: (themeVal) =>
+                        themeVal.palette.mode === 'dark'
+                          ? themeVal.palette.primary.light
+                          : themeVal.palette.primary.main,
+                      borderWidth: '1px',
+                      bgcolor: 'transparent',
+                      '&:hover': {
+                        borderColor: (themeVal) =>
+                          themeVal.palette.mode === 'dark'
+                            ? themeVal.palette.primary.light
+                            : themeVal.palette.primary.dark,
+                        bgcolor: (themeVal) =>
+                          themeVal.palette.mode === 'dark'
+                            ? alpha(themeVal.palette.primary.main, 0.1)
+                            : alpha(themeVal.palette.primary.main, 0.05),
+                      },
+                    }}
+                  >
+                    Edit
+                  </Button>
+                )}
+
+                {/* Summary button */}
+                {record.summaryDocumentId && (
+                  <Button
+                    variant="outlined"
+                    startIcon={<Icon icon={descriptionIcon} style={{ fontSize: '1rem' }} />}
+                    onClick={handleShowSummary}
+                    sx={{
+                      height: 32,
+                      px: 1.75,
+                      py: 0.75,
+                      borderRadius: '4px',
+                      textTransform: 'none',
+                      fontSize: '0.8125rem',
+                      fontWeight: 500,
+                      minWidth: 100,
+                      borderColor: (themeVal) =>
+                        themeVal.palette.mode === 'dark'
+                          ? 'rgba(255,255,255,0.23)'
+                          : 'rgba(0,0,0,0.23)',
+                      color: (themeVal) =>
+                        themeVal.palette.mode === 'dark' ? '#E0E0E0' : '#4B5563',
+                      borderWidth: '1px',
+                      bgcolor: 'transparent',
+                      '&:hover': {
+                        borderColor: (themeVal) =>
+                          themeVal.palette.mode === 'dark'
+                            ? 'rgba(255,255,255,0.4)'
+                            : 'rgba(0,0,0,0.4)',
+                        bgcolor: (themeVal) =>
+                          themeVal.palette.mode === 'dark'
+                            ? 'rgba(255,255,255,0.05)'
+                            : 'rgba(0,0,0,0.03)',
+                      },
+                    }}
+                  >
+                    Summary
+                  </Button>
+                )}
+
+                {/* Reindex button */}
+                {!isRecordConnector && recordId && (
+                  <Tooltip title={getReindexTooltip(record.indexingStatus)} placement="top" arrow>
+                    <span>
+                      <Button
+                        variant="outlined"
+                        startIcon={<Icon icon={refreshIcon} style={{ fontSize: '1rem' }} />}
+                        disabled={
+                          record.indexingStatus === 'FILE_TYPE_NOT_SUPPORTED' ||
+                          record.indexingStatus === 'IN_PROGRESS'
+                        }
+                        onClick={() => handleRetryIndexing(recordId)}
+                        sx={{
+                          height: 32,
+                          px: 1.75,
+                          py: 0.75,
+                          borderRadius: '4px',
+                          textTransform: 'none',
+                          fontSize: '0.8125rem',
+                          fontWeight: 500,
+                          minWidth: 100,
+                          borderColor: (themeVal) =>
+                            record.indexingStatus === 'FAILED'
+                              ? themeVal.palette.mode === 'dark'
+                                ? '#FACC15'
+                                : '#D97706'
+                              : themeVal.palette.mode === 'dark'
+                                ? 'rgba(255,255,255,0.23)'
+                                : 'rgba(0,0,0,0.23)',
+                          color: (themeVal) =>
+                            record.indexingStatus === 'FAILED'
+                              ? themeVal.palette.mode === 'dark'
+                                ? '#FACC15'
+                                : '#D97706'
+                              : themeVal.palette.mode === 'dark'
+                                ? '#E0E0E0'
+                                : '#4B5563',
+                          borderWidth: '1px',
+                          bgcolor: 'transparent',
+                          '&:hover': {
+                            borderColor: (themeVal) =>
+                              record.indexingStatus === 'FAILED'
+                                ? themeVal.palette.mode === 'dark'
+                                  ? '#FDE68A'
+                                  : '#B45309'
+                                : themeVal.palette.mode === 'dark'
+                                  ? 'rgba(255,255,255,0.4)'
+                                  : 'rgba(0,0,0,0.4)',
+                            bgcolor: (themeVal) =>
+                              record.indexingStatus === 'FAILED'
+                                ? themeVal.palette.mode === 'dark'
+                                  ? 'rgba(250,204,21,0.08)'
+                                  : 'rgba(217,119,6,0.04)'
+                                : themeVal.palette.mode === 'dark'
+                                  ? 'rgba(255,255,255,0.05)'
+                                  : 'rgba(0,0,0,0.03)',
+                          },
+                          '&.Mui-disabled': {
+                            borderColor: (themeVal) =>
+                              themeVal.palette.mode === 'dark'
+                                ? 'rgba(255,255,255,0.12)'
+                                : 'rgba(0,0,0,0.12)',
+                            color: (themeVal) =>
+                              themeVal.palette.mode === 'dark'
+                                ? 'rgba(255,255,255,0.3)'
+                                : 'rgba(0,0,0,0.38)',
+                          },
+                        }}
+                      >
+                        {getReindexButtonText(record.indexingStatus)}
+                      </Button>
+                    </span>
+                  </Tooltip>
+                )}
+
+                {/* Delete button */}
+                <Button
+                  variant="outlined"
+                  color="error"
+                  startIcon={<Icon icon={trashCanIcon} style={{ fontSize: '1rem' }} />}
+                  onClick={() => setIsDeleteDialogOpen(true)}
+                  sx={{
+                    height: 32,
+                    px: 1.75,
+                    py: 0.75,
+                    borderRadius: '4px',
+                    textTransform: 'none',
+                    fontSize: '0.8125rem',
+                    fontWeight: 500,
+                    minWidth: 100,
+                    borderColor: (themeVal) =>
+                      themeVal.palette.mode === 'dark' ? '#EF4444' : '#DC2626',
+                    color: (themeVal) => (themeVal.palette.mode === 'dark' ? '#EF4444' : '#DC2626'),
+                    borderWidth: '1px',
+                    bgcolor: 'transparent',
+                    '&:hover': {
+                      borderColor: (themeVal) =>
+                        themeVal.palette.mode === 'dark' ? '#F87171' : '#B91C1C',
+                      bgcolor: (themeVal) =>
+                        themeVal.palette.mode === 'dark'
+                          ? 'rgba(239,68,68,0.08)'
+                          : 'rgba(220,38,38,0.04)',
+                    },
+                  }}
+                >
+                  Delete
+                </Button>
+              </Box>
+
+              {/* Tablet: Compact buttons with text */}
+              <Box
+                sx={{
+                  display: { xs: 'none', sm: 'flex', lg: 'none', md: 'none' },
+                  gap: 0.5,
+                  alignItems: 'center',
+                  justifyContent: 'flex-end',
+                  flexWrap: 'wrap',
+                }}
+              >
+                {/* Edit button - Compact */}
+                {!isRecordConnector && (
+                  <Button
+                    variant="outlined"
+                    startIcon={<Icon icon={pencilIcon} style={{ fontSize: '14px' }} />}
+                    onClick={() => setIsEditDialogOpen(true)}
+                    sx={{
+                      height: 28,
+                      px: 1,
+                      py: 0.25,
+                      borderRadius: '6px',
+                      textTransform: 'none',
+                      fontSize: '0.75rem',
+                      fontWeight: 500,
+                      minWidth: 0,
+                      borderColor: (themeVal) =>
+                        themeVal.palette.mode === 'dark'
+                          ? alpha(themeVal.palette.primary.main, 0.7)
+                          : themeVal.palette.primary.main,
+                      color: (themeVal) =>
+                        themeVal.palette.mode === 'dark'
+                          ? themeVal.palette.primary.light
+                          : themeVal.palette.primary.main,
+                      borderWidth: '1px',
+                      bgcolor: 'transparent',
+                      '&:hover': {
+                        borderColor: (themeVal) =>
+                          themeVal.palette.mode === 'dark'
+                            ? themeVal.palette.primary.light
+                            : themeVal.palette.primary.dark,
+                        bgcolor: (themeVal) =>
+                          themeVal.palette.mode === 'dark'
+                            ? alpha(themeVal.palette.primary.main, 0.1)
+                            : alpha(themeVal.palette.primary.main, 0.05),
+                      },
+                      '& .MuiButton-startIcon': {
+                        marginRight: '4px',
+                        marginLeft: 0,
+                      },
+                    }}
+                  >
+                    Edit
+                  </Button>
+                )}
+
+                {/* Summary button - Compact */}
+                {record.summaryDocumentId && (
+                  <Button
+                    variant="outlined"
+                    startIcon={<Icon icon={descriptionIcon} style={{ fontSize: '14px' }} />}
+                    onClick={handleShowSummary}
+                    sx={{
+                      height: 28,
+                      px: 1,
+                      py: 0.25,
+                      borderRadius: '6px',
+                      textTransform: 'none',
+                      fontSize: '0.75rem',
+                      fontWeight: 500,
+                      minWidth: 0,
+                      borderColor: (themeVal) =>
+                        themeVal.palette.mode === 'dark'
+                          ? 'rgba(255,255,255,0.23)'
+                          : 'rgba(0,0,0,0.23)',
+                      color: (themeVal) =>
+                        themeVal.palette.mode === 'dark' ? '#E0E0E0' : '#4B5563',
+                      borderWidth: '1px',
+                      bgcolor: 'transparent',
+                      '&:hover': {
+                        borderColor: (themeVal) =>
+                          themeVal.palette.mode === 'dark'
+                            ? 'rgba(255,255,255,0.4)'
+                            : 'rgba(0,0,0,0.4)',
+                        bgcolor: (themeVal) =>
+                          themeVal.palette.mode === 'dark'
+                            ? 'rgba(255,255,255,0.05)'
+                            : 'rgba(0,0,0,0.03)',
+                      },
+                      '& .MuiButton-startIcon': {
+                        marginRight: '4px',
+                        marginLeft: 0,
+                      },
+                    }}
+                  >
+                    Summary
+                  </Button>
+                )}
+
+                {/* Reindex button - Compact */}
+                {!isRecordConnector && recordId && (
+                  <Tooltip title={getReindexTooltip(record.indexingStatus)} arrow>
+                    <span>
+                      <Button
+                        variant="outlined"
+                        startIcon={<Icon icon={refreshIcon} style={{ fontSize: '14px' }} />}
+                        onClick={() => handleRetryIndexing(recordId)}
+                        disabled={
+                          record.indexingStatus === 'FILE_TYPE_NOT_SUPPORTED' ||
+                          record.indexingStatus === 'IN_PROGRESS'
+                        }
+                        sx={{
+                          height: 28,
+                          px: 1,
+                          py: 0.25,
+                          borderRadius: '6px',
+                          textTransform: 'none',
+                          fontSize: '0.75rem',
+                          fontWeight: 500,
+                          minWidth: 0,
+                          borderColor: (themeVal) =>
+                            record.indexingStatus === 'FAILED'
+                              ? themeVal.palette.mode === 'dark'
+                                ? '#FACC15'
+                                : '#D97706'
+                              : themeVal.palette.mode === 'dark'
+                                ? 'rgba(255,255,255,0.23)'
+                                : 'rgba(0,0,0,0.23)',
+                          color: (themeVal) =>
+                            record.indexingStatus === 'FAILED'
+                              ? themeVal.palette.mode === 'dark'
+                                ? '#FACC15'
+                                : '#D97706'
+                              : themeVal.palette.mode === 'dark'
+                                ? '#E0E0E0'
+                                : '#4B5563',
+                          borderWidth: '1px',
+                          bgcolor: 'transparent',
+                          '&:hover': {
+                            borderColor: (themeVal) =>
+                              record.indexingStatus === 'FAILED'
+                                ? themeVal.palette.mode === 'dark'
+                                  ? '#FDE68A'
+                                  : '#B45309'
+                                : themeVal.palette.mode === 'dark'
+                                  ? 'rgba(255,255,255,0.4)'
+                                  : 'rgba(0,0,0,0.4)',
+                            bgcolor: (themeVal) =>
+                              record.indexingStatus === 'FAILED'
+                                ? themeVal.palette.mode === 'dark'
+                                  ? 'rgba(250,204,21,0.08)'
+                                  : 'rgba(217,119,6,0.04)'
+                                : themeVal.palette.mode === 'dark'
+                                  ? 'rgba(255,255,255,0.05)'
+                                  : 'rgba(0,0,0,0.03)',
+                          },
+                          '&.Mui-disabled': {
+                            borderColor: (themeVal) =>
+                              themeVal.palette.mode === 'dark'
+                                ? 'rgba(255,255,255,0.12)'
+                                : 'rgba(0,0,0,0.12)',
+                            color: (themeVal) =>
+                              themeVal.palette.mode === 'dark'
+                                ? 'rgba(255,255,255,0.3)'
+                                : 'rgba(0,0,0,0.38)',
+                          },
+                          '& .MuiButton-startIcon': {
+                            marginRight: '4px',
+                            marginLeft: 0,
+                          },
+                        }}
+                      >
+                        {record.indexingStatus === 'FAILED' ? 'Retry' : 'Sync'}
+                      </Button>
+                    </span>
+                  </Tooltip>
+                )}
+
+                {/* Delete button - Compact */}
+                <Button
+                  variant="outlined"
+                  startIcon={<Icon icon={trashCanIcon} style={{ fontSize: '14px' }} />}
+                  onClick={() => setIsDeleteDialogOpen(true)}
+                  sx={{
+                    height: 28,
+                    px: 1,
+                    py: 0.25,
+                    borderRadius: '6px',
+                    textTransform: 'none',
+                    fontSize: '0.75rem',
+                    fontWeight: 500,
+                    minWidth: 0,
+                    borderColor: (themeVal) =>
+                      themeVal.palette.mode === 'dark' ? '#EF4444' : '#DC2626',
+                    color: (themeVal) => (themeVal.palette.mode === 'dark' ? '#EF4444' : '#DC2626'),
+                    borderWidth: '1px',
+                    bgcolor: 'transparent',
+                    '&:hover': {
+                      borderColor: (themeVal) =>
+                        themeVal.palette.mode === 'dark' ? '#F87171' : '#B91C1C',
+                      bgcolor: (themeVal) =>
+                        themeVal.palette.mode === 'dark'
+                          ? 'rgba(239,68,68,0.08)'
+                          : 'rgba(220,38,38,0.04)',
+                    },
+                    '& .MuiButton-startIcon': {
+                      marginRight: '4px',
+                      marginLeft: 0,
+                    },
+                  }}
+                >
+                  Delete
+                </Button>
+              </Box>
+
+              {/* Mobile: Priority action + Hamburger Menu */}
+              <Box
+                sx={{
+                  display: { xs: 'flex', sm: 'none' },
+                  flexDirection: 'column',
+                  gap: 1,
+                  width: '100%',
+                }}
+              >
                 <Box
                   sx={{
                     display: 'flex',
-                    flexDirection: { xs: 'column', sm: 'row' },
-                    gap: { xs: 1, sm: 0.75 },
-                    width: { xs: '100%', sm: 'auto' },
+                    gap: 2,
+                    width: '80%',
+                    mx:'auto',
+                    mt:1
                   }}
                 >
-                  {/* Edit button - outlined instead of filled */}
+                  {/* Most important action - Edit (if available) */}
                   {!isRecordConnector && (
                     <Button
                       variant="outlined"
-                      startIcon={<Icon icon={pencilIcon} style={{ fontSize: '1rem' }} />}
+                      startIcon={<Icon icon={pencilIcon} style={{ fontSize: '0.875rem' }} />}
                       onClick={() => setIsEditDialogOpen(true)}
                       sx={{
-                        height: 32,
-                        px: 1.75,
+                        height: 36,
+                        px: 1.5,
                         py: 0.75,
                         borderRadius: '4px',
                         textTransform: 'none',
                         fontSize: '0.8125rem',
                         fontWeight: 500,
-                        minWidth: { sm: 80 }, // Set minimum width for consistency
+                        flex: 1,
                         borderColor: (themeVal) =>
                           themeVal.palette.mode === 'dark'
                             ? alpha(themeVal.palette.primary.main, 0.7)
@@ -491,233 +1122,252 @@ export default function RecordDetails() {
                               ? alpha(themeVal.palette.primary.main, 0.1)
                               : alpha(themeVal.palette.primary.main, 0.05),
                         },
-                        '&:focus': {
-                          boxShadow: (themeVal) =>
-                            themeVal.palette.mode === 'dark'
-                              ? `0 0 0 3px ${alpha(themeVal.palette.primary.main, 0.2)}`
-                              : `0 0 0 3px ${alpha(themeVal.palette.primary.main, 0.1)}`,
-                        },
                       }}
                     >
                       Edit
                     </Button>
                   )}
 
-                  {/* Summary button - outlined */}
-                  {record.summaryDocumentId && (
-                    <Button
-                      variant="outlined"
-                      startIcon={<Icon icon={descriptionIcon} style={{ fontSize: '1rem' }} />}
-                      onClick={handleShowSummary}
-                      sx={{
-                        height: 32,
-                        px: 1.75,
-                        py: 0.75,
-                        borderRadius: '4px',
-                        textTransform: 'none',
-                        fontSize: '0.8125rem',
-                        fontWeight: 500,
-                        minWidth: { sm: 0 }, // Allow button to size to content
+                  {/* Actions Menu Button */}
+                  <Button
+                    variant="outlined"
+                    startIcon={<Icon icon="mdi:dots-horizontal" style={{ fontSize: '0.875rem' }} />}
+                    onClick={handleActionMenuOpen}
+                    sx={{
+                      height: 36,
+                      px: 1.5,
+                      py: 0.75,
+                      borderRadius: '4px',
+                      textTransform: 'none',
+                      fontSize: '0.8125rem',
+                      fontWeight: 500,
+                      flex: 1,
+                      borderColor: (themeVal) =>
+                        themeVal.palette.mode === 'dark'
+                          ? 'rgba(255,255,255,0.23)'
+                          : 'rgba(0,0,0,0.23)',
+                      color: (themeVal) =>
+                        themeVal.palette.mode === 'dark' ? '#E0E0E0' : '#4B5563',
+                      borderWidth: '1px',
+                      bgcolor: 'transparent',
+                      '&:hover': {
                         borderColor: (themeVal) =>
                           themeVal.palette.mode === 'dark'
-                            ? 'rgba(255,255,255,0.23)'
-                            : 'rgba(0,0,0,0.23)',
-                        color: (themeVal) =>
-                          themeVal.palette.mode === 'dark' ? '#E0E0E0' : '#4B5563',
-                        borderWidth: '1px',
-                        bgcolor: 'transparent',
-                        '&:hover': {
-                          borderColor: (themeVal) =>
-                            themeVal.palette.mode === 'dark'
-                              ? 'rgba(255,255,255,0.4)'
-                              : 'rgba(0,0,0,0.4)',
-                          bgcolor: (themeVal) =>
-                            themeVal.palette.mode === 'dark'
-                              ? 'rgba(255,255,255,0.05)'
-                              : 'rgba(0,0,0,0.03)',
-                        },
-                      }}
-                    >
-                      Summary
-                    </Button>
-                  )}
-
-                  {/* Reindex button - outlined */}
-                  {!isRecordConnector && recordId && (
-                    <Tooltip title={getReindexTooltip(record.indexingStatus)} placement="top" arrow>
-                      <span>
-                        <Button
-                          variant="outlined"
-                          startIcon={<Icon icon={refreshIcon} style={{ fontSize: '1rem' }} />}
-                          disabled={
-                            record.indexingStatus === 'FILE_TYPE_NOT_SUPPORTED' ||
-                            record.indexingStatus === 'IN_PROGRESS'
-                          }
-                          onClick={() => handleRetryIndexing(recordId)}
-                          sx={{
-                            height: 32,
-                            px: 1.75,
-                            py: 0.75,
-                            borderRadius: '4px',
-                            textTransform: 'none',
-                            fontSize: '0.8125rem',
-                            fontWeight: 500,
-                            minWidth: { sm: 0 }, // Allow button to size to content
-                            borderColor: (themeVal) =>
-                              record.indexingStatus === 'FAILED'
-                                ? themeVal.palette.mode === 'dark'
-                                  ? '#FACC15'
-                                  : '#D97706'
-                                : themeVal.palette.mode === 'dark'
-                                  ? 'rgba(255,255,255,0.23)'
-                                  : 'rgba(0,0,0,0.23)',
-                            color: (themeVal) =>
-                              record.indexingStatus === 'FAILED'
-                                ? themeVal.palette.mode === 'dark'
-                                  ? '#FACC15'
-                                  : '#D97706'
-                                : themeVal.palette.mode === 'dark'
-                                  ? '#E0E0E0'
-                                  : '#4B5563',
-                            borderWidth: '1px',
-                            bgcolor: 'transparent',
-                            '&:hover': {
-                              borderColor: (themeVal) =>
-                                record.indexingStatus === 'FAILED'
-                                  ? themeVal.palette.mode === 'dark'
-                                    ? '#FDE68A'
-                                    : '#B45309'
-                                  : themeVal.palette.mode === 'dark'
-                                    ? 'rgba(255,255,255,0.4)'
-                                    : 'rgba(0,0,0,0.4)',
-                              bgcolor: (themeVal) =>
-                                record.indexingStatus === 'FAILED'
-                                  ? themeVal.palette.mode === 'dark'
-                                    ? 'rgba(250,204,21,0.08)'
-                                    : 'rgba(217,119,6,0.04)'
-                                  : themeVal.palette.mode === 'dark'
-                                    ? 'rgba(255,255,255,0.05)'
-                                    : 'rgba(0,0,0,0.03)',
-                            },
-                            '&.Mui-disabled': {
-                              borderColor: (themeVal) =>
-                                themeVal.palette.mode === 'dark'
-                                  ? 'rgba(255,255,255,0.12)'
-                                  : 'rgba(0,0,0,0.12)',
-                              color: (themeVal) =>
-                                themeVal.palette.mode === 'dark'
-                                  ? 'rgba(255,255,255,0.3)'
-                                  : 'rgba(0,0,0,0.38)',
-                            },
-                          }}
-                        >
-                          {getReindexButtonText(record.indexingStatus)}
-                        </Button>
-                      </span>
-                    </Tooltip>
-                  )}
-
-                  {/* Chat button - outlined */}
-                  {/* <Button
-      variant="outlined"
-      startIcon={<Icon icon={robotIcon} style={{ fontSize: '1rem' }} />}
-      onClick={toggleChat}
-      sx={{
-        height: 32,
-        px: 1.75,
-        py: 0.75,
-        borderRadius: '4px',
-        textTransform: 'none',
-        fontSize: '0.8125rem',
-        fontWeight: 500,
-        minWidth: { sm: 0 }, // Allow button to size to content
-        borderColor: (theme) => 
-          theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.23)' : 'rgba(0,0,0,0.23)',
-        color: (theme) => 
-          theme.palette.mode === 'dark' ? '#E0E0E0' : '#4B5563',
-        borderWidth: '1px',
-        bgcolor: 'transparent',
-        '&:hover': {
-          borderColor: (theme) => 
-            theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.4)',
-          bgcolor: (theme) => 
-            theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.03)',
-        },
-      }}
-    >
-      AI Chat
-    </Button> */}
+                            ? 'rgba(255,255,255,0.4)'
+                            : 'rgba(0,0,0,0.4)',
+                        bgcolor: (themeVal) =>
+                          themeVal.palette.mode === 'dark'
+                            ? 'rgba(255,255,255,0.05)'
+                            : 'rgba(0,0,0,0.03)',
+                      },
+                    }}
+                  >
+                    Actions
+                  </Button>
                 </Box>
 
-                {/* Delete button - outline button with error color */}
-                <Button
-                  variant="outlined"
-                  color="error"
-                  startIcon={<Icon icon={trashCanIcon} style={{ fontSize: '1rem' }} />}
-                  onClick={() => setIsDeleteDialogOpen(true)}
-                  sx={{
-                    height: 32,
-                    px: 1.75,
-                    py: 0.75,
-                    borderRadius: '4px',
-                    textTransform: 'none',
-                    fontSize: '0.8125rem',
-                    fontWeight: 500,
-                    minWidth: { xs: '100%', sm: 0 }, // Full width on mobile, auto on desktop
-                    borderColor: (themeVal) =>
-                      themeVal.palette.mode === 'dark' ? '#EF4444' : '#DC2626',
-                    color: (themeVal) => (themeVal.palette.mode === 'dark' ? '#EF4444' : '#DC2626'),
-                    borderWidth: '1px',
-                    bgcolor: 'transparent',
-                    '&:hover': {
-                      borderColor: (themeVal) =>
-                        themeVal.palette.mode === 'dark' ? '#F87171' : '#B91C1C',
-                      bgcolor: (themeVal) =>
+                {/* Actions Menu */}
+                <Menu
+                  anchorEl={actionMenuAnchor}
+                  open={isActionMenuOpen}
+                  onClose={handleActionMenuClose}
+                  anchorOrigin={{
+                    vertical: 'bottom',
+                    horizontal: 'right',
+                  }}
+                  transformOrigin={{
+                    vertical: 'top',
+                    horizontal: 'right',
+                  }}
+                  PaperProps={{
+                    sx: {
+                      mt: 1,
+                      maxWidth: 350,
+                      borderRadius: '8px',
+                      boxShadow: (themeVal) =>
                         themeVal.palette.mode === 'dark'
-                          ? 'rgba(239,68,68,0.08)'
-                          : 'rgba(220,38,38,0.04)',
+                          ? '0 8px 32px rgba(0, 0, 0, 0.4)'
+                          : '0 8px 32px rgba(0, 0, 0, 0.12)',
+                      border: (themeVal) =>
+                        themeVal.palette.mode === 'dark'
+                          ? '1px solid rgba(255, 255, 255, 0.08)'
+                          : '1px solid rgba(0, 0, 0, 0.08)',
                     },
                   }}
                 >
-                  Delete
-                </Button>
-              </Stack>
+                  {/* Summary */}
+                  {record.summaryDocumentId && (
+                    <MenuItem
+                      onClick={() => {
+                        handleShowSummary();
+                        handleActionMenuClose();
+                      }}
+                      sx={{
+                        py: 1,
+                        px: 1,
+                        '&:hover': {
+                          bgcolor: (themeVal) =>
+                            themeVal.palette.mode === 'dark'
+                              ? 'rgba(255, 255, 255, 0.05)'
+                              : 'rgba(0, 0, 0, 0.04)',
+                        },
+                      }}
+                    >
+                      <ListItemIcon sx={{ minWidth: 36 }}>
+                        <Icon icon={descriptionIcon} style={{ fontSize: '1.125rem' }} />
+                      </ListItemIcon>
+                      <ListItemText
+                        primary="View Summary"
+                        secondary="Show document summary"
+                        primaryTypographyProps={{
+                          fontSize: '0.775rem',
+                          fontWeight: 500,
+                        }}
+                        secondaryTypographyProps={{
+                          fontSize: '0.65rem',
+                        }}
+                      />
+                    </MenuItem>
+                  )}
+
+                  {/* Reindex */}
+                  {!isRecordConnector && recordId && (
+                    <MenuItem
+                      onClick={() => {
+                        handleRetryIndexing(recordId);
+                        handleActionMenuClose();
+                      }}
+                      disabled={
+                        record.indexingStatus === 'FILE_TYPE_NOT_SUPPORTED' ||
+                        record.indexingStatus === 'IN_PROGRESS'
+                      }
+                      sx={{
+                        py: 1,
+                        px: 1,
+                        '&:hover': {
+                          bgcolor: (themeVal) =>
+                            themeVal.palette.mode === 'dark'
+                              ? 'rgba(255, 255, 255, 0.05)'
+                              : 'rgba(0, 0, 0, 0.04)',
+                        },
+                      }}
+                    >
+                      <ListItemIcon sx={{ minWidth: 36 }}>
+                        <Icon
+                          icon={refreshIcon}
+                          style={{
+                            fontSize: '1rem',
+                            color: record.indexingStatus === 'FAILED' ? '#FACC15' : 'inherit',
+                          }}
+                        />
+                      </ListItemIcon>
+                      <ListItemText
+                        primary={getReindexButtonText(record.indexingStatus)}
+                        secondary={getReindexTooltip(record.indexingStatus)}
+                        primaryTypographyProps={{
+                          fontSize: '0.775rem',
+                          fontWeight: 500,
+                          color: record.indexingStatus === 'FAILED' ? '#FACC15' : 'inherit',
+                        }}
+                        secondaryTypographyProps={{
+                          fontSize: '0.65rem',
+                        }}
+                      />
+                    </MenuItem>
+                  )}
+
+                  <Divider sx={{ my: 0.5 }} />
+
+                  {/* Delete - Dangerous action at bottom */}
+                  <MenuItem
+                    onClick={() => {
+                      setIsDeleteDialogOpen(true);
+                      handleActionMenuClose();
+                    }}
+                    sx={{
+                      py: 1,
+                      px: 1,
+                      color: '#DC2626',
+                      '&:hover': {
+                        bgcolor: 'rgba(220, 38, 38, 0.04)',
+                      },
+                    }}
+                  >
+                    <ListItemIcon sx={{ minWidth: 36 }}>
+                      <Icon
+                        icon={trashCanIcon}
+                        style={{
+                          fontSize: '1.125rem',
+                          color: '#DC2626',
+                        }}
+                      />
+                    </ListItemIcon>
+                    <ListItemText
+                      primary="Delete Record"
+                      secondary="Permanently remove this record"
+                      primaryTypographyProps={{
+                        fontSize: '0.775rem',
+                        fontWeight: 500,
+                      }}
+                      secondaryTypographyProps={{
+                        fontSize: '0.65rem',
+                      }}
+                    />
+                  </MenuItem>
+                </Menu>
+              </Box>
             </Box>
 
             <Divider />
 
-            <Box sx={{ px: 3, py: 2 }}>
-              <Grid container spacing={3}>
-                <Grid item xs={12} sm={Boolean(true)}>
+            <Box sx={{ px: { xs: 2, sm: 3 }, py: 2 }}>
+              <Grid container spacing={{ xs: 2, sm: 3 }}>
+                <Grid item xs={12} sm={6} md={3}>
                   <Typography
                     variant="body2"
                     color="text.secondary"
-                    sx={{ display: 'flex', alignItems: 'center', gap: 1 }}
+                    sx={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 1,
+                      fontSize: { xs: '0.8125rem', sm: '0.875rem' },
+                    }}
                   >
                     <Icon icon={clockIcon} style={{ fontSize: '16px' }} />
                     Created: {createdAt}
                   </Typography>
                 </Grid>
 
-                <Grid item xs={12} sm={Boolean(true)}>
+                <Grid item xs={12} sm={6} md={3}>
                   <Typography
                     variant="body2"
                     color="text.secondary"
-                    sx={{ display: 'flex', alignItems: 'center', gap: 1 }}
+                    sx={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 1,
+                      fontSize: { xs: '0.8125rem', sm: '0.875rem' },
+                    }}
                   >
                     <Icon icon={updateIcon} style={{ fontSize: '16px' }} />
                     Updated: {updatedAt}
                   </Typography>
                 </Grid>
 
-                <Grid item xs={12} sm={Boolean(true)}>
+                <Grid item xs={12} sm={6} md={3}>
                   <Typography
                     variant="body2"
                     color="text.secondary"
-                    sx={{ display: 'flex', alignItems: 'center', gap: 1 }}
+                    sx={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 1,
+                      fontSize: { xs: '0.8125rem', sm: '0.875rem' },
+                      flexWrap: 'wrap',
+                    }}
                   >
                     <Icon icon={updateIcon} style={{ fontSize: '16px' }} />
-                    Indexing Status:{' '}
+                    <Box component="span">Indexing Status:</Box>
                     <Chip
                       label={record.indexingStatus.replace('_', ' ')}
                       size="small"
@@ -732,11 +1382,17 @@ export default function RecordDetails() {
                   </Typography>
                 </Grid>
 
-                <Grid item xs={12} sm={Boolean(true)}>
+                <Grid item xs={12} sm={6} md={3}>
                   <Typography
                     variant="body2"
                     color="text.secondary"
-                    sx={{ display: 'flex', alignItems: 'center', gap: 1 }}
+                    sx={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 1,
+                      fontSize: { xs: '0.8125rem', sm: '0.875rem' },
+                      flexWrap: 'wrap',
+                    }}
                   >
                     <Icon
                       icon={record?.origin === 'CONNECTOR' ? connectorIcon : dbIcon}
@@ -1097,6 +1753,7 @@ export default function RecordDetails() {
                   height: '100%',
                   display: 'flex',
                   flexDirection: 'column',
+                  zIndex:'-708'
                 }}
               >
                 <CardHeader
@@ -1197,25 +1854,27 @@ export default function RecordDetails() {
                     )}
 
                     {/* Departments */}
-                    {metadata?.departments && metadata.departments.length > 0 && hasValidNames(metadata.departments) &&(
-                      <Box>
-                        <Typography
-                          variant="caption"
-                          color="text.secondary"
-                          gutterBottom
-                          sx={{
-                            textTransform: 'uppercase',
-                            fontWeight: 500,
-                            letterSpacing: '0.5px',
-                            display: 'block',
-                            mb: 0.75,
-                          }}
-                        >
-                          Departments
-                        </Typography>
-                        {renderChips(metadata.departments)}
-                      </Box>
-                    )}
+                    {metadata?.departments &&
+                      metadata.departments.length > 0 &&
+                      hasValidNames(metadata.departments) && (
+                        <Box>
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            gutterBottom
+                            sx={{
+                              textTransform: 'uppercase',
+                              fontWeight: 500,
+                              letterSpacing: '0.5px',
+                              display: 'block',
+                              mb: 0.75,
+                            }}
+                          >
+                            Departments
+                          </Typography>
+                          {renderChips(metadata.departments)}
+                        </Box>
+                      )}
 
                     {metadata?.categories &&
                       metadata.categories.length > 0 &&
@@ -1309,46 +1968,50 @@ export default function RecordDetails() {
                       )}
 
                     {/* Topics */}
-                    {metadata?.topics && metadata.topics.length > 0 && hasValidNames(metadata.topics) && (
-                      <Box>
-                        <Typography
-                          variant="caption"
-                          color="text.secondary"
-                          gutterBottom
-                          sx={{
-                            textTransform: 'uppercase',
-                            fontWeight: 500,
-                            letterSpacing: '0.5px',
-                            display: 'block',
-                            mb: 0.75,
-                          }}
-                        >
-                          Topics
-                        </Typography>
-                        {renderChips(metadata.topics)}
-                      </Box>
-                    )}
+                    {metadata?.topics &&
+                      metadata.topics.length > 0 &&
+                      hasValidNames(metadata.topics) && (
+                        <Box>
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            gutterBottom
+                            sx={{
+                              textTransform: 'uppercase',
+                              fontWeight: 500,
+                              letterSpacing: '0.5px',
+                              display: 'block',
+                              mb: 0.75,
+                            }}
+                          >
+                            Topics
+                          </Typography>
+                          {renderChips(metadata.topics)}
+                        </Box>
+                      )}
 
                     {/* Languages */}
-                    {metadata?.languages && metadata.languages.length > 0 && hasValidNames(metadata.languages) && (
-                      <Box>
-                        <Typography
-                          variant="caption"
-                          color="text.secondary"
-                          gutterBottom
-                          sx={{
-                            textTransform: 'uppercase',
-                            fontWeight: 500,
-                            letterSpacing: '0.5px',
-                            display: 'block',
-                            mb: 0.75,
-                          }}
-                        >
-                          Languages
-                        </Typography>
-                        {renderChips(metadata.languages)}
-                      </Box>
-                    )}
+                    {metadata?.languages &&
+                      metadata.languages.length > 0 &&
+                      hasValidNames(metadata.languages) && (
+                        <Box>
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            gutterBottom
+                            sx={{
+                              textTransform: 'uppercase',
+                              fontWeight: 500,
+                              letterSpacing: '0.5px',
+                              display: 'block',
+                              mb: 0.75,
+                            }}
+                          >
+                            Languages
+                          </Typography>
+                          {renderChips(metadata.languages)}
+                        </Box>
+                      )}
 
                     {(record.departments || record.appSpecificRecordType) && <Divider />}
 
