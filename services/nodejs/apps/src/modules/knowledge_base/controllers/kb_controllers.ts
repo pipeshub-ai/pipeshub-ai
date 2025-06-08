@@ -106,7 +106,6 @@ export const createRecords =
               .substring(originalname.lastIndexOf('.') + 1)
               .toLowerCase()
           : null;
-        console.log("File information ",file)
         // Generate a unique ID for the record
         const key: string = uuidv4();
 
