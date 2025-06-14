@@ -28,7 +28,7 @@ class OpenAIEmbeddingConfig(BaseEmbeddingConfig):
 class OpenAICompatibleEmbeddingConfig(BaseEmbeddingConfig):
     """OpenAI-compatible configuration"""
     organization_id: Optional[str] = None
-    endpoint: str = Field(default="", description="The endpoint for the OpenAI-compatible API")
+    endpoint: str = Field(description="The endpoint for the OpenAI-compatible API")
 
 
 class HuggingFaceEmbeddingConfig(BaseEmbeddingConfig):
@@ -121,7 +121,7 @@ class EmbeddingFactory:
                 model=config.model,
                 api_key=config.api_key,
                 organization=config.organization_id,
-                endpoint=config.endpoint
+                base_url=config.endpoint
             )
 
         raise ValueError(f"Unsupported embedding config type: {type(config)}")

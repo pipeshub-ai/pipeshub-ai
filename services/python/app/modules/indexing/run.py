@@ -471,7 +471,7 @@ class IndexingPipeline:
                     embedding_model = OpenAICompatibleEmbeddingConfig(
                         model=config['configuration']['model'],
                         api_key=config['configuration']['apiKey'],
-                        organization_id=config['configuration']['organizationId'],
+                        organization_id=config['configuration'].get('organizationId', None),
                         endpoint=config['configuration']['endpoint'],
                     )
                 elif provider == EmbeddingProvider.DEFAULT.value:
