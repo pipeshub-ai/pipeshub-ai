@@ -56,7 +56,7 @@ class EmbeddingFactory:
     @staticmethod
     def create_embedding_model(config: Union[AzureEmbeddingConfig, OpenAIEmbeddingConfig,
                                             HuggingFaceEmbeddingConfig, SentenceTransformersEmbeddingConfig,
-                                            GeminiEmbeddingConfig, CohereEmbeddingConfig, OpenAICompatibleEmbeddingConfig, None]):
+                                            GeminiEmbeddingConfig, CohereEmbeddingConfig, OpenAICompatibleEmbeddingConfig, None]) -> BaseEmbeddingConfig:
         if isinstance(config, AzureEmbeddingConfig):
             return AzureOpenAIEmbeddings(
                 model=config.model,
