@@ -1,10 +1,9 @@
 import asyncio
 import json
-import time
 from typing import Dict, List
 from uuid import uuid4
 
-from confluent_kafka import Consumer, KafkaError, Producer
+from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from dependency_injector.wiring import inject
 
 # Import required services
@@ -58,32 +57,35 @@ class EntityKafkaRouteConsumer:
                 )
                 brokers = kafka_config['brokers']
                 return {
-                    'bootstrap.servers': ",".join(brokers),
-                    'group.id': 'record_consumer_group',
-                    'auto.offset.reset': 'earliest',
-                    'enable.auto.commit': True,
-                    'isolation.level': 'read_committed',
-                    'enable.partition.eof': False,
-                    'client.id': KafkaConfig.CLIENT_ID_RECORDS.value
+                    'bootstrap_servers': ",".join(brokers),
+                    'group_id': 'record_consumer_group',
+                    'auto_offset_reset': 'earliest',
+                    'enable_auto_commit': True,
+                    'client_id': KafkaConfig.CLIENT_ID_RECORDS.value
                 }
 
-            KAFKA_CONFIG = await get_kafka_config()
+            kafka_config = await get_kafka_config()
 
-            self.consumer = Consumer(KAFKA_CONFIG)
-            # Initialize producer with the same broker config
+            # Initialize consumer with aiokafka
+            self.consumer = AIOKafkaConsumer(
+                'entity-events',
+                **kafka_config
+            )
+
+            # Initialize producer with aiokafka
             producer_config = {
-                'bootstrap.servers': KAFKA_CONFIG['bootstrap.servers'],
-                'client.id': 'entity_producer'
+                'bootstrap_servers': kafka_config['bootstrap_servers'],
+                'client_id': 'entity_producer'
             }
-            self.producer = Producer(producer_config)
+            self.producer = AIOKafkaProducer(**producer_config)
 
-            # Add a small delay to allow for topic creation
-            time.sleep(2)
-            # Subscribe to the two main topics
-            self.consumer.subscribe(['entity-events'])
-            self.logger.info("Successfully subscribed to topics: entity-events")
+            # Start consumer and producer
+            await self.consumer.start()
+            await self.producer.start()
+
+            self.logger.info("Successfully initialized aiokafka consumer and producer for topics: entity-events")
         except Exception as e:
-            self.logger.error(f"Failed to create consumer: {e}")
+            self.logger.error(f"Failed to create consumer and producer: {e}")
             raise
 
     def is_message_processed(self, message_id: str) -> bool:
@@ -108,15 +110,15 @@ class EntityKafkaRouteConsumer:
         """Process incoming Kafka messages and route them to appropriate handlers"""
         message_id = None
         try:
-            message_id = f"{message.topic()}-{message.partition()}-{message.offset()}"
+            message_id = f"{message.topic}-{message.partition}-{message.offset}"
             self.logger.debug(f"Processing message {message_id}")
 
             if self.is_message_processed(message_id):
                 self.logger.info(f"Message {message_id} already processed, skipping")
                 return True
 
-            topic = message.topic()
-            message_value = message.value()
+            topic = message.topic
+            message_value = message.value
             value = None
             event_type = None
 
@@ -217,18 +219,14 @@ class EntityKafkaRouteConsumer:
                 'timestamp': get_epoch_timestamp_in_ms()
             }
 
-            # Convert message to JSON string
-            message_str = json.dumps(message)
+            # Convert message to JSON string and encode to bytes
+            message_bytes = json.dumps(message).encode('utf-8')
 
-            # Send the message to sync-events topic
-            self.producer.produce(
-                'sync-events',
-                value=message_str,
-                callback=lambda err, msg: self.logger.error(f"Failed to deliver message: {err}") if err else None
+            # Send the message to sync-events topic using aiokafka
+            await self.producer.send_and_wait(
+                topic='sync-events',
+                value=message_bytes
             )
-
-            # Flush to ensure the message is sent
-            self.producer.flush()
 
             self.logger.info(f"Successfully sent sync event: {event_type}")
             return True
@@ -825,47 +823,64 @@ class EntityKafkaRouteConsumer:
             self.logger.info("Starting Kafka consumer loop")
             while self.running:
                 try:
-                    message = self.consumer.poll(1.0)
+                    # Get messages asynchronously with timeout
+                    message_batch = await self.consumer.getmany(timeout_ms=1000, max_records=1)
 
-                    if message is None:
+                    if not message_batch:
                         await asyncio.sleep(0.1)
                         continue
 
-                    if message.error():
-                        if message.error().code() == KafkaError._PARTITION_EOF:
-                            continue
-                        else:
-                            self.logger.error(f"Kafka error: {message.error()}")
-                            continue
+                    # Process messages from all topic partitions
+                    for topic_partition, messages in message_batch.items():
+                        for message in messages:
+                            try:
+                                self.logger.info(f"Received message: topic={message.topic}, partition={message.partition}, offset={message.offset}")
+                                success = await self.process_message(message)
 
-                    self.logger.info(f"Received message: {message}")
-                    success = await self.process_message(message)
+                                if success:
+                                    # Commit the offset for this message
+                                    await self.consumer.commit({topic_partition: message.offset + 1})
+                                    self.logger.info(
+                                        f"Committed offset for topic-partition {message.topic}-{message.partition} at offset {message.offset}"
+                                    )
+                                else:
+                                    self.logger.warning(f"Failed to process message at offset {message.offset}")
 
-                    if success:
-                        self.consumer.commit(message)
-                        self.logger.info(
-                            f"Committed offset for topic-partition {message.topic()}-{message.partition()} at offset {message.offset()}"
-                        )
+                            except Exception as e:
+                                self.logger.error(f"Error processing individual message: {e}")
+                                continue
 
                 except asyncio.CancelledError:
                     self.logger.info("Kafka consumer task cancelled")
                     break
                 except Exception as e:
-                    self.logger.error(f"Error processing Kafka message: {e}")
+                    self.logger.error(f"Error in consume_messages loop: {e}")
                     await asyncio.sleep(1)
 
         except Exception as e:
             self.logger.error(f"Fatal error in consume_messages: {e}")
         finally:
+            await self._cleanup()
+
+    async def _cleanup(self) -> None:
+        """Clean up resources"""
+        try:
             if self.consumer:
-                self.consumer.close()
-                self.logger.info("Kafka consumer closed")
+                await self.consumer.stop()
+                self.logger.info("Kafka consumer stopped")
+
+            if self.producer:
+                await self.producer.stop()
+                self.logger.info("Kafka producer stopped")
+        except Exception as e:
+            self.logger.error(f"Error during cleanup: {e}")
 
     async def start(self) -> None:
         """Start the consumer."""
         self.running = True
         await self.create_consumer_and_producer()
 
-    def stop(self) -> None:
+    async def stop(self) -> None:
         """Stop the consumer."""
         self.running = False
+        await self._cleanup()
