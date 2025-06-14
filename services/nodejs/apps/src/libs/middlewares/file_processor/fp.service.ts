@@ -88,6 +88,10 @@ export class FileProcessorService implements IFileUploadService {
           fileNames: files.map((f) => f.originalname),
         });
 
+        // Process file metadata (including lastModified) immediately after multer processing
+        this.processFileMetadata(req, files);
+
+
         // If strict mode and no files, throw an error
         if (files.length === 0) {
           if (this.configuration.strictFileUpload) {
@@ -100,13 +104,107 @@ export class FileProcessorService implements IFileUploadService {
             logger.debug('No files to process, skipping file processing');
             return next();
           }
-        } 
+        }
 
         // multer layer completed, moving to next layer
         logger.debug('Multer upload completed successfully');
         next();
       });
     };
+  }
+
+  /**
+   * Process file metadata including lastModified
+   * This method extracts lastModified values from request body and attaches them to file objects
+   */
+  private processFileMetadata(
+    req: Request,
+    files: Express.Multer.File[],
+  ): void {
+    if (files.length === 0) {
+      return;
+    }
+
+    // Get lastModified values from request body
+    const lastModifiedValues = req.body.lastModified
+      ? Array.isArray(req.body.lastModified)
+        ? req.body.lastModified
+        : [req.body.lastModified]
+      : [];
+
+    console.log('File Processor Service - Request body:', {
+      lastModifiedValues,
+      bodyKeys: Object.keys(req.body),
+      filesCount: files.length,
+    });
+
+    // Attach lastModified to each file
+    files.forEach((file, index) => {
+      const lastModifiedValue = lastModifiedValues[index];
+
+      console.log('File Processor Service - Processing file metadata:', {
+        fileName: file.originalname,
+        index,
+        lastModifiedValue: lastModifiedValue,
+        lastModifiedType: typeof lastModifiedValue,
+      });
+
+      let lastModified: number;
+
+      try {
+        if (lastModifiedValue !== undefined && lastModifiedValue !== null) {
+          // First try parsing as a number directly
+          const timestamp = Number(lastModifiedValue);
+          if (!isNaN(timestamp) && timestamp > 0) {
+            lastModified = timestamp;
+          } else {
+            // If not a valid number, try parsing as a date string
+            const date = new Date(lastModifiedValue);
+            if (!isNaN(date.getTime())) {
+              lastModified = date.getTime();
+            } else {
+              // If parsing fails, use current time
+              lastModified = Date.now();
+              console.warn(
+                'Failed to parse lastModified, using current time:',
+                {
+                  fileName: file.originalname,
+                  lastModifiedValue,
+                  fallbackTime: lastModified,
+                },
+              );
+            }
+          }
+        } else {
+          // If no lastModified provided, use current time
+          lastModified = Date.now();
+          console.warn('No lastModified provided, using current time:', {
+            fileName: file.originalname,
+            index,
+            fallbackTime: lastModified,
+          });
+        }
+      } catch (error) {
+        // If parsing fails, use current time
+        lastModified = Date.now();
+        console.error('Error parsing lastModified, using current time:', {
+          fileName: file.originalname,
+          lastModifiedValue,
+          error,
+          fallbackTime: lastModified,
+        });
+      }
+
+      console.log('File Processor Service - Final metadata result:', {
+        fileName: file.originalname,
+        lastModifiedValue: lastModifiedValue,
+        parsedLastModified: lastModified,
+        isValidTimestamp: lastModified > 0,
+      });
+
+      // Store the parsed timestamp on the file object
+      (file as any).lastModified = lastModified;
+    });
   }
 
   processFiles(): RequestHandler {
@@ -169,7 +267,9 @@ export class FileProcessorService implements IFileUploadService {
           JSON.parse(file.buffer.toString('utf-8')),
         );
       } else {
-        req.body.fileContent = JSON.parse(files[0]?.buffer?.toString('utf-8') as string);
+        req.body.fileContent = JSON.parse(
+          files[0]?.buffer?.toString('utf-8') as string,
+        );
       }
     } catch (error) {
       logger.error('Error parsing JSON file', { error });
@@ -185,27 +285,51 @@ export class FileProcessorService implements IFileUploadService {
       isMultipleFilesAllowed: this.configuration.isMultipleFilesAllowed,
       files: files.map((file) => file.originalname),
     });
+
     try {
       if (this.configuration.isMultipleFilesAllowed) {
-        req.body.fileBuffers = files.map(
-          (file) =>
-            ({
-              originalname: file?.originalname,
-              buffer: file?.buffer,
-              mimetype: file?.mimetype,
-              size: file?.size,
-            }) as FileBufferInfo,
-        );
-        logger.debug('Processed multiple buffer files', { count: files.length });
+        req.body.fileBuffers = files
+          .map((file) => {
+            if (!file) return null;
+            const lastModified = (file as any).lastModified || Date.now();
+            console.log('File Processor Service - Creating buffer info:', {
+              fileName: file.originalname,
+              lastModified,
+              hasLastModified: !!(file as any).lastModified,
+            });
+
+            return {
+              originalname: file.originalname,
+              buffer: file.buffer,
+              mimetype: file.mimetype,
+              size: file.size,
+              lastModified: lastModified,
+            } as FileBufferInfo;
+          })
+          .filter(Boolean);
+        logger.debug('Processed multiple buffer files', {
+          count: files.length,
+        });
       } else if (files.length === 1) {
         const file = files[0];
-        req.body.fileBuffer = {
-          originalname: file?.originalname,
-          buffer: file?.buffer,
-          mimetype: file?.mimetype,
-          size: file?.size,
-        } as FileBufferInfo;
-        logger.debug('Processed single buffer file');
+        if (file) {
+          const lastModified = (file as any).lastModified || Date.now();
+
+          console.log('File Processor Service - Creating single buffer info:', {
+            fileName: file.originalname,
+            lastModified,
+            hasLastModified: !!(file as any).lastModified,
+          });
+
+          req.body.fileBuffer = {
+            originalname: file.originalname,
+            buffer: file.buffer,
+            mimetype: file.mimetype,
+            size: file.size,
+            lastModified: lastModified,
+          } as FileBufferInfo;
+          logger.debug('Processed single buffer file');
+        }
       } else {
         logger.warn('No files available to process in processBufferFiles');
       }

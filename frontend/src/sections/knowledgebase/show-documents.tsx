@@ -429,7 +429,7 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
   // Early return AFTER all hooks
   if (!record?.fileRecord) return null;
 
-  const { recordName, externalRecordId, createdAtTimestamp, fileRecord, origin } = record;
+  const { recordName, externalRecordId, sourceCreatedAtTimestamp, fileRecord, origin } = record;
 
   const handleDownload = async () => {
     try {
@@ -728,7 +728,7 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
               {recordName}
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              Added on {dayjs(createdAtTimestamp).format('MMM DD, YYYY')}
+              Added on {dayjs(sourceCreatedAtTimestamp).format('MMM DD, YYYY')}
             </Typography>
           </Box>
 

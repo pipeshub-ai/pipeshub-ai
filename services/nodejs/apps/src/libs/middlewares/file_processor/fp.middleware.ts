@@ -70,8 +70,94 @@ export class FileUploadMiddleware {
     );
   }
 
+// Process file metadata including lastModified
+private processFileMetadata(req: Request) {
+  if (!req.file && (!req.files || (Array.isArray(req.files) && req.files.length === 0))) {
+    return;
+  }
+
+  const files = req.file ? [req.file] : Array.isArray(req.files) ? req.files : [];
+  
+  // Get lastModified values from request body
+  const lastModifiedValues = req.body.lastModified ? 
+    (Array.isArray(req.body.lastModified) ? req.body.lastModified : [req.body.lastModified]) 
+    : [];
+
+  console.log('File Processor Middleware - Request body:', {
+    lastModifiedValues,
+    bodyKeys: Object.keys(req.body)
+  });
+
+  // Attach lastModified to each file
+  files.forEach((file, index) => {
+    // Parse the lastModified timestamp from string to number
+    let lastModified: number;
+    
+    const lastModifiedValue = lastModifiedValues[index];
+    
+    console.log('File Processor Middleware - Processing file:', {
+      fileName: file.originalname,
+      lastModifiedValue: lastModifiedValue,
+      lastModifiedType: typeof lastModifiedValue
+    });
+    
+    try {
+      if (lastModifiedValue) {
+        // First try parsing as a number directly
+        const timestamp = Number(lastModifiedValue);
+        if (!isNaN(timestamp) && timestamp > 0) {
+          lastModified = timestamp;
+        } else {
+          // If not a valid number, try parsing as a date string
+          const date = new Date(lastModifiedValue);
+          if (!isNaN(date.getTime())) {
+            lastModified = date.getTime();
+          } else {
+            // If parsing fails, use current time
+            lastModified = Date.now();
+            console.warn('Failed to parse lastModified, using current time:', {
+              fileName: file.originalname,
+              lastModifiedValue,
+              fallbackTime: lastModified
+            });
+          }
+        }
+      } else {
+        // If no lastModified provided, use current time
+        lastModified = Date.now();
+        console.warn('No lastModified provided, using current time:', {
+          fileName: file.originalname,
+          fallbackTime: lastModified
+        });
+      }
+    } catch (error) {
+      // If parsing fails, use current time
+      lastModified = Date.now();
+      console.error('Error parsing lastModified, using current time:', {
+        fileName: file.originalname,
+        lastModifiedValue,
+        error,
+        fallbackTime: lastModified
+      });
+    }
+    
+    console.log('File Processor Middleware - Final result:', {
+      fileName: file.originalname,
+      lastModifiedValue: lastModifiedValue,
+      parsedLastModified: lastModified,
+      isValidTimestamp: lastModified > 0
+    });
+    
+    // Store the parsed timestamp on the file object
+    (file as any).lastModified = lastModified;
+  });
+}
+
   public validateJSONContent() {
     return (req: Request, _res: Response, next: NextFunction) => {
+      // Process file metadata first
+      this.processFileMetadata(req);
+
       if (
         !req.file &&
         (!req.files || (Array.isArray(req.files) && req.files.length === 0))

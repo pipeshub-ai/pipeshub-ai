@@ -29,6 +29,8 @@ export interface Record {
   indexingStatus: string | null;
   createdAtTimestamp: number;
   updatedAtTimestamp: number;
+  sourceCreatedAtTimestamp: number;
+  sourceLastModifiedTimestamp: number;
   orgId: string;
   version: number | null;
   isDeleted: boolean;

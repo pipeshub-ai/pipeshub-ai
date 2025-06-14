@@ -1747,6 +1747,8 @@ export class RecordRelationService {
         indexingStatus: item.record.indexingStatus,
         createdAtTimestamp: item.record.createdAtTimestamp,
         updatedAtTimestamp: item.record.updatedAtTimestamp,
+        sourceCreatedAtTimestamp: item.record.sourceCreatedAtTimestamp,
+        sourceLastModifiedTimestamp: item.record.sourceLastModifiedTimestamp,
         orgId: item.record.orgId,
         version: item.record.version,
         isDeleted: item.record.isDeleted,
