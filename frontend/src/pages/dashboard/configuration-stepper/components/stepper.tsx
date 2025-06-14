@@ -1,0 +1,872 @@
+// import closeIcon from '@iconify-icons/eva/close-outline';
+import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
+
+import {
+  Step,
+  Alert,
+  Button,
+  Dialog,
+  Stepper,
+  useTheme,
+  Snackbar,
+  StepLabel,
+  Typography,
+  // IconButton,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  CircularProgress,
+  alpha,
+} from '@mui/material';
+
+import axios from 'src/utils/axios';
+// import { Iconify } from 'src/components/iconify';
+import { createScrollableContainerStyle } from 'src/sections/qna/chatbot/utils/styles/scrollbar';
+
+// Universal imports for config types
+import UniversalConfigForm, { UniversalConfigFormRef } from './universal-config-form';
+import {
+  getLlmConfig,
+  updateLlmConfig,
+  getEmbeddingConfig,
+  updateEmbeddingConfig,
+  getStorageConfig,
+  updateStorageConfig,
+  getUrlConfig,
+  updateUrlConfig,
+  getSmtpConfig,
+  updateSmtpConfig,
+} from '../services/config-services';
+
+// Configuration steps definition
+const CONFIGURATION_STEPS = [
+  {
+    id: 'llm',
+    label: 'LLM',
+    title: 'Large Language Model',
+    description: 'Configure your LLM provider to enable AI capabilities in your application.',
+    infoMessage:
+      'LLM configuration is required to proceed with setup. All fields marked with * are required.',
+    isRequired: true,
+    canSkip: false,
+    documentationUrl: 'https://docs.pipeshub.com/ai-models/overview',
+  },
+  {
+    id: 'embedding',
+    label: 'Embeddings',
+    title: 'Embeddings Configuration',
+    description:
+      'Configure the embedding model for generating text embeddings. Embeddings are used for semantic search and document retrieval.',
+    infoMessage:
+      'Select the embedding provider to use. You can use the default system embeddings or configure a specific provider.',
+    isRequired: false,
+    canSkip: true,
+    documentationUrl: 'https://docs.pipeshub.com/ai-models/overview',
+  },
+  {
+    id: 'storage',
+    label: 'Storage',
+    title: 'Storage Configuration',
+    description: 'Configure storage settings for your application data.',
+    infoMessage:
+      'Choose your preferred storage solution. Local storage is used by default if skipped.',
+    isRequired: false,
+    canSkip: true,
+    documentationUrl: 'https://docs.pipeshub.com/storage/overview',
+  },
+  {
+    id: 'url',
+    label: 'Public URLs',
+    title: 'Public URL Configuration',
+    description:
+      'Configure the public URLs for your frontend and connector services. These URLs are used for OAuth redirects and webhook callbacks.',
+    infoMessage:
+      'Set up public URLs for external integrations. These are optional but recommended for production.',
+    isRequired: false,
+    canSkip: true,
+    documentationUrl: 'https://docs.pipeshub.com/deployment/urls',
+  },
+  {
+    id: 'smtp',
+    label: 'SMTP',
+    title: 'SMTP Configuration',
+    description: 'Configure SMTP settings for email notifications.',
+    infoMessage:
+      'Set up email delivery for notifications and alerts. This is optional but recommended.',
+    isRequired: false,
+    canSkip: true,
+    documentationUrl: 'https://docs.pipeshub.com/smtp/overview',
+  },
+] as const;
+
+// API endpoints
+const ORG_API_BASE_URL = '/api/v1/org';
+
+interface OnBoardingStepperProps {
+  open: boolean;
+  onClose: () => void;
+  onComplete?: () => void;
+}
+
+interface StepState {
+  completed: boolean;
+  skipped: boolean;
+  hasValidData: boolean;
+  formData: any | null;
+}
+
+const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, onComplete }) => {
+  const theme = useTheme();
+  const scrollableStyles = createScrollableContainerStyle(theme);
+
+  // Core state
+  const [activeStep, setActiveStep] = useState<number>(0);
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const [submissionError, setSubmissionError] = useState<string>('');
+  const [submissionSuccess, setSubmissionSuccess] = useState<boolean>(false);
+
+  const [stepStates, setStepStates] = useState<Record<string, StepState>>(() => {
+    const initial: Record<string, StepState> = {};
+    CONFIGURATION_STEPS.forEach((step) => {
+      initial[step.id] = {
+        completed: false,
+        skipped: false,
+        hasValidData: false,
+        formData: null,
+      };
+    });
+    return initial;
+  });
+
+  // Individual useRef calls (must be at component top level)
+  const llmRef = useRef<UniversalConfigFormRef>(null);
+  const embeddingRef = useRef<UniversalConfigFormRef>(null);
+  const storageRef = useRef<UniversalConfigFormRef>(null);
+  const urlRef = useRef<UniversalConfigFormRef>(null);
+  const smtpRef = useRef<UniversalConfigFormRef>(null);
+
+  // Group them into a stable object reference
+  const formRefs = useMemo(
+    () => ({
+      llm: llmRef,
+      embedding: embeddingRef,
+      storage: storageRef,
+      url: urlRef,
+      smtp: smtpRef,
+    }),
+    []
+  );
+
+  // Snackbar state
+  const [snackbar, setSnackbar] = useState({
+    open: false,
+    message: '',
+    severity: 'success' as 'success' | 'error' | 'info' | 'warning',
+  });
+
+  // Onboarding status tracking
+  const statusUpdated = useRef<boolean>(false);
+
+  // Reset state when dialog opens
+  useEffect(() => {
+    if (open) {
+      setActiveStep(0);
+      setSubmissionSuccess(false);
+      setSubmissionError('');
+      statusUpdated.current = false;
+
+      // Reset step states completely
+      const resetStates: Record<string, StepState> = {};
+      CONFIGURATION_STEPS.forEach((step) => {
+        resetStates[step.id] = {
+          completed: false,
+          skipped: false,
+          hasValidData: false,
+          formData: null,
+        };
+      });
+      setStepStates(resetStates);
+    }
+  }, [open]);
+
+  // Update onboarding status
+  const updateOnboardingStatus = async (status: 'configured' | 'skipped'): Promise<void> => {
+    if (statusUpdated.current) return;
+    try {
+      await axios.put(`${ORG_API_BASE_URL}/onboarding-status`, { status });
+      statusUpdated.current = true;
+    } catch (error) {
+      console.error('Error updating onboarding status:', error);
+    }
+  };
+
+  // Get current step configuration
+  const getCurrentStep = useCallback(() => CONFIGURATION_STEPS[activeStep], [activeStep]);
+  const getCurrentFormRef = useCallback(() => {
+    const stepId = getCurrentStep()?.id;
+    return stepId ? formRefs[stepId as keyof typeof formRefs] : null;
+  }, [formRefs, getCurrentStep]);
+
+  const handleValidationChange = useCallback(
+    (stepId: string, isValid: boolean, formData?: any) => {
+      // Only update the specific step that triggered the validation change
+      setStepStates((prev) => {
+        // Don't update if it's not the current step to prevent cross-contamination
+        const currentStep = getCurrentStep();
+        if (currentStep?.id !== stepId) {
+          return prev;
+        }
+
+        const newState = {
+          ...prev,
+          [stepId]: {
+            ...prev[stepId],
+            hasValidData: isValid,
+            formData: formData || null,
+            // Don't auto-complete until user clicks continue
+            completed: prev[stepId].completed && isValid,
+          },
+        };
+
+        return newState;
+      });
+    },
+    [getCurrentStep]
+  );
+
+  // Continue handler with proper isolation and validation
+  const handleContinue = async () => {
+    const currentStep = getCurrentStep();
+    if (!currentStep) return;
+
+    setSubmissionError('');
+
+    const formRef = getCurrentFormRef();
+    const stepState = stepStates[currentStep.id];
+
+    // ALWAYS fresh validation for the current form only
+    if (formRef?.current) {
+      try {
+        // Get isolated form data for this specific form
+        const formData = await formRef.current.getFormData();
+        const hasData = await formRef.current.hasFormData();
+        const isFormValid = await formRef.current.validateForm();
+
+        // Better validation logic for different step types
+        if (currentStep.isRequired) {
+          // Required steps must have valid data
+          if (!hasData || !isFormValid) {
+            setSubmissionError(
+              `${currentStep.title} configuration is required. Please complete all required fields.`
+            );
+            return;
+          }
+
+          // Mark as completed with valid data
+          setStepStates((prev) => ({
+            ...prev,
+            [currentStep.id]: {
+              ...prev[currentStep.id],
+              hasValidData: true,
+              formData,
+              completed: true,
+              skipped: false,
+            },
+          }));
+        } else if (hasData) {
+          // Optional steps handling - if user entered data, it must be valid
+          if (!isFormValid) {
+            setSubmissionError(
+              `Please complete all required fields for ${currentStep.title} or use the "Skip" button to proceed without configuration.`
+            );
+            return;
+          }
+
+          // Valid data provided
+          setStepStates((prev) => ({
+            ...prev,
+            [currentStep.id]: {
+              ...prev[currentStep.id],
+              hasValidData: true,
+              formData,
+              completed: true,
+              skipped: false,
+            },
+          }));
+        } else if (currentStep.id === 'storage') {
+          // Storage: Check if local storage is selected (always valid)
+          if (formData?.providerType === 'local') {
+            setStepStates((prev) => ({
+              ...prev,
+              [currentStep.id]: {
+                ...prev[currentStep.id],
+                hasValidData: true,
+                formData,
+                completed: true,
+                skipped: false,
+              },
+            }));
+          } else {
+            // No data for non-local storage - skip it
+            setStepStates((prev) => ({
+              ...prev,
+              [currentStep.id]: {
+                ...prev[currentStep.id],
+                hasValidData: false,
+                formData: null,
+                completed: true,
+                skipped: true,
+              },
+            }));
+          }
+        } else if (currentStep.id === 'embedding') {
+          // Embedding: Check if default is selected
+          if (formData?.providerType === 'default') {
+            setStepStates((prev) => ({
+              ...prev,
+              [currentStep.id]: {
+                ...prev[currentStep.id],
+                hasValidData: true,
+                formData,
+                completed: true,
+                skipped: false,
+              },
+            }));
+          } else {
+            // No data for other embedding types - skip it
+            setStepStates((prev) => ({
+              ...prev,
+              [currentStep.id]: {
+                ...prev[currentStep.id],
+                hasValidData: false,
+                formData: null,
+                completed: true,
+                skipped: true,
+              },
+            }));
+          }
+        } else {
+          // Other optional steps with no data - mark as skipped
+          setStepStates((prev) => ({
+            ...prev,
+            [currentStep.id]: {
+              ...prev[currentStep.id],
+              hasValidData: false,
+              formData: null,
+              completed: true,
+              skipped: true,
+            },
+          }));
+        }
+      } catch (error) {
+        console.error('Error validating form:', error);
+        setSubmissionError('Error validating form. Please try again.');
+        return;
+      }
+    } else {
+      // No form ref available
+      if (currentStep.isRequired) {
+        setSubmissionError(
+          `${currentStep.title} configuration is required but form is not available.`
+        );
+        return;
+      }
+
+      // Optional step with no form - mark as skipped
+      setStepStates((prev) => ({
+        ...prev,
+        [currentStep.id]: {
+          ...prev[currentStep.id],
+          hasValidData: false,
+          formData: null,
+          completed: true,
+          skipped: true,
+        },
+      }));
+    }
+
+    // Move to next step or complete
+    if (activeStep < CONFIGURATION_STEPS.length - 1) {
+      setActiveStep(activeStep + 1);
+    } else {
+      // This is the last step, complete configuration with current data
+      await completeConfiguration();
+    }
+  };
+
+  const handleSkip = () => {
+    const currentStep = getCurrentStep();
+    if (!currentStep || !currentStep.canSkip) return;
+
+    // Mark step as skipped
+    setStepStates((prev) => ({
+      ...prev,
+      [currentStep.id]: {
+        ...prev[currentStep.id],
+        skipped: true,
+        completed: true,
+        hasValidData: false,
+        formData: null,
+      },
+    }));
+
+    // Move to next step or complete
+    if (activeStep < CONFIGURATION_STEPS.length - 1) {
+      setActiveStep(activeStep + 1);
+    } else {
+      completeConfiguration();
+    }
+  };
+
+  const handleBack = () => {
+    if (activeStep > 0) {
+      setActiveStep(activeStep - 1);
+      setSubmissionError(''); // Clear any error when going back
+    }
+  };
+
+  useEffect(() => {
+    const currentStep = getCurrentStep();
+    const formRef = getCurrentFormRef();
+
+    if (currentStep && formRef?.current && open) {
+      // Delay to ensure form is fully rendered and isolated
+      const timer = setTimeout(async () => {
+        try {
+          // Get current form data without affecting other forms
+          const formData = await formRef.current!.getFormData();
+          const hasData = await formRef.current!.hasFormData();
+          const isValid = await formRef.current!.validateForm();
+
+          // Update validation state for this specific step only
+          handleValidationChange(currentStep.id, isValid, hasData ? formData : null);
+        } catch (error) {
+          console.error(`Error re-validating step ${currentStep.id}:`, error);
+          // Reset validation state on error
+          handleValidationChange(currentStep.id, false, null);
+        }
+      }, 300); // Reduced delay but still enough for form isolation
+
+      return () => clearTimeout(timer);
+    }
+
+    return () => {};
+  }, [getCurrentStep, getCurrentFormRef, handleValidationChange, activeStep, open]);
+
+  // Complete configuration process
+  const completeConfiguration = async () => {
+    try {
+      setIsSubmitting(true);
+      setSubmissionError('');
+
+      // Check if LLM is configured (required)
+      const llmConfigured = stepStates.llm.completed && stepStates.llm.hasValidData;
+      if (!llmConfigured) {
+        setSubmissionError('LLM configuration is required to complete setup.');
+        return;
+      }
+
+      setSnackbar({
+        open: true,
+        message: 'Saving all configurations, this may take a few seconds...',
+        severity: 'info',
+      });
+
+      // Before completing, try to get the latest form data from current step if it's the last step
+      if (activeStep === CONFIGURATION_STEPS.length - 1) {
+        const currentStep = getCurrentStep();
+        const formRef = getCurrentFormRef();
+
+        if (currentStep && formRef?.current && currentStep.id === 'smtp') {
+          try {
+            // Get the latest SMTP form data
+            const latestFormData = await formRef.current.getFormData();
+            const hasData = await formRef.current.hasFormData();
+            const isValid = await formRef.current.validateForm();
+
+            // Update step state with latest data if valid
+            if (hasData && isValid) {
+              setStepStates((prev) => ({
+                ...prev,
+                smtp: {
+                  ...prev.smtp,
+                  hasValidData: true,
+                  formData: latestFormData,
+                  completed: true,
+                  skipped: false,
+                },
+              }));
+
+              // Wait a bit for state to update
+              await new Promise((resolve) => setTimeout(resolve, 100));
+            }
+          } catch (error) {
+            console.error('Error getting latest form data:', error);
+          }
+        }
+      }
+
+      // Collect all valid configurations
+      const configurationsToSave = [];
+
+      // Add LLM configuration (required)
+      if (stepStates.llm.hasValidData && stepStates.llm.formData) {
+        configurationsToSave.push({
+          type: 'llm',
+          data: stepStates.llm.formData,
+          updateFn: updateLlmConfig,
+        });
+      }
+
+      // Add optional configurations that are not skipped
+      Object.keys(stepStates).forEach((stepId) => {
+        if (stepId !== 'llm') {
+          const state = stepStates[stepId];
+          if (state.hasValidData && state.formData && !state.skipped) {
+            const updateFns = {
+              embedding: updateEmbeddingConfig,
+              storage: updateStorageConfig,
+              url: updateUrlConfig,
+              smtp: updateSmtpConfig,
+            };
+
+            if (updateFns[stepId as keyof typeof updateFns]) {
+              configurationsToSave.push({
+                type: stepId,
+                data: state.formData,
+                updateFn: updateFns[stepId as keyof typeof updateFns],
+              });
+            }
+          }
+        }
+      });
+
+      // Ensure we have at least LLM configuration
+      if (configurationsToSave.length === 0) {
+        setSubmissionError('No valid configurations found to save.');
+        return;
+      }
+
+      // Save all configurations
+      const savePromises = configurationsToSave.map((config) =>
+        config.updateFn(config.data).catch((error) => {
+          console.error(`Error saving ${config.type}:`, error);
+          throw new Error(`Failed to save ${config.type} configuration`);
+        })
+      );
+
+      await Promise.all(savePromises);
+
+      // Update onboarding status
+      await updateOnboardingStatus('configured');
+
+      setSubmissionSuccess(true);
+      setSnackbar({
+        open: true,
+        message: `All configurations saved successfully! (${configurationsToSave.length} services configured)`,
+        severity: 'success',
+      });
+
+      // Close dialog after a short delay
+      setTimeout(() => {
+        if (onComplete) onComplete();
+        onClose();
+      }, 2000);
+    } catch (error: any) {
+      console.error('Error completing configuration:', error);
+      setSubmissionError(error.message || 'Failed to save configurations. Please try again.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // Handle close with status update
+  const handleCloseWithStatus = async () => {
+    try {
+      setIsSubmitting(true);
+
+      // If LLM is configured, mark as configured, otherwise skipped
+      const llmConfigured = stepStates.llm.completed && stepStates.llm.hasValidData;
+      await updateOnboardingStatus(llmConfigured ? 'configured' : 'skipped');
+    } catch (error) {
+      console.error('Error updating status on close:', error);
+    } finally {
+      setIsSubmitting(false);
+      onClose();
+    }
+  };
+
+  // Render step content
+  const renderStepContent = (stepIndex: number): React.ReactNode => {
+    const step = CONFIGURATION_STEPS[stepIndex];
+    if (!step) return null;
+
+    // Get service functions based on step type
+    const getServiceFunctions = (configType: string) => {
+      switch (configType) {
+        case 'llm':
+          return { getConfig: getLlmConfig, updateConfig: updateLlmConfig };
+        case 'embedding':
+          return { getConfig: getEmbeddingConfig, updateConfig: updateEmbeddingConfig };
+        case 'storage':
+          return { getConfig: getStorageConfig, updateConfig: updateStorageConfig };
+        case 'url':
+          return { getConfig: getUrlConfig, updateConfig: updateUrlConfig };
+        case 'smtp':
+          return { getConfig: getSmtpConfig, updateConfig: updateSmtpConfig };
+        default:
+          return { getConfig: async () => null, updateConfig: async (config: any) => config };
+      }
+    };
+
+    const { getConfig, updateConfig } = getServiceFunctions(step.id);
+
+    return (
+      <div key={`${step.id}-${stepIndex}`}>
+        <Typography variant="subtitle1" gutterBottom sx={{ fontWeight: 600, mb: 1 }}>
+          {step.title}
+        </Typography>
+
+        <UniversalConfigForm
+          ref={formRefs[step.id as keyof typeof formRefs]}
+          configType={step.id as any}
+          title=""
+          description={step.description}
+          infoMessage={step.infoMessage}
+          documentationUrl={step.documentationUrl}
+          onValidationChange={(isValid, formData) =>
+            handleValidationChange(step.id, isValid, formData)
+          }
+          onSaveSuccess={() => {}}
+          getConfig={getConfig}
+          updateConfig={updateConfig}
+          isRequired={step.isRequired}
+          stepperMode
+          key={`form-${step.id}-${stepIndex}`}
+        />
+      </div>
+    );
+  };
+
+  // Render footer buttons
+  const renderFooterButtons = () => {
+    if (submissionSuccess) {
+      return (
+        <Typography variant="body2" color="success.main" sx={{ fontWeight: 500 }}>
+          Configuration completed successfully!
+        </Typography>
+      );
+    }
+
+    const currentStep = getCurrentStep();
+    const isLastStep = activeStep === CONFIGURATION_STEPS.length - 1;
+    const canGoBack = activeStep > 0;
+    const canSkip = currentStep?.canSkip && !currentStep?.isRequired;
+
+    return (
+      <>
+        {/* Back button */}
+        {canGoBack && (
+          <Button onClick={handleBack} disabled={isSubmitting} sx={{ mr: 1 }}>
+            Back
+          </Button>
+        )}
+
+        {/* Skip button */}
+        {canSkip && (
+          <Button color="inherit" onClick={handleSkip} disabled={isSubmitting} sx={{ mr: 1 }}>
+            Skip {currentStep?.label}
+          </Button>
+        )}
+
+        {/* Cancel button (only show after first step) */}
+        {/* {canGoBack && (
+          <Button onClick={handleCloseWithStatus} disabled={isSubmitting} sx={{ mr: 'auto' }}>
+            Cancel
+          </Button>
+        )} */}
+
+        {/* Primary action button */}
+        <Button
+          variant="contained"
+          color="primary"
+          onClick={handleContinue}
+          disabled={isSubmitting}
+          startIcon={isSubmitting ? <CircularProgress size={16} /> : null}
+          sx={{ px: 3 }}
+        >
+          {isSubmitting ? 'Saving...' : isLastStep ? 'Complete Setup' : 'Continue'}
+        </Button>
+      </>
+    );
+  };
+
+  // Get step status for stepper display
+  const getStepStatus = (stepIndex: number): 'completed' | 'active' | undefined => {
+    if (activeStep === stepIndex) return 'active';
+
+    if (stepIndex < activeStep) {
+      const step = CONFIGURATION_STEPS[stepIndex];
+      const state = stepStates[step.id];
+      return state.completed ? 'completed' : undefined;
+    }
+
+    return undefined;
+  };
+
+  // Get step label with skip indicator
+  const getStepLabel = (step: (typeof CONFIGURATION_STEPS)[number], index: number) => {
+    const state = stepStates[step.id];
+    return (
+      <span>
+        {step.label}
+        {state.skipped && (
+          <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 0.5 }}>
+            (Skipped)
+          </Typography>
+        )}
+      </span>
+    );
+  };
+
+  return (
+    <Dialog
+      open={open}
+      BackdropProps={{
+        sx: {
+          backdropFilter: 'blur(1px)',
+          backgroundColor: alpha(theme.palette.common.black, 0.3),
+        },
+      }}
+      onClose={(event, reason) => {
+        if (isSubmitting || reason === 'backdropClick' || reason === 'escapeKeyDown') {
+          return;
+        }
+        onClose();
+      }}
+      maxWidth="md"
+      fullWidth
+      PaperProps={{
+        sx: {
+          borderRadius: 2,
+          maxHeight: '90vh',
+        },
+      }}
+      disableEscapeKeyDown={isSubmitting}
+    >
+      {/* Dialog Header */}
+      <DialogTitle
+        sx={{
+          px: 3,
+          pt: 2.5,
+          pb: 2,
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          borderBottom: `1px solid ${theme.palette.divider}`,
+        }}
+      >
+        <Typography variant="h6" sx={{ fontWeight: 600 }}>
+          System Configuration
+        </Typography>
+        {/* <IconButton
+          edge="end"
+          color="inherit"
+          onClick={handleCloseWithStatus}
+          disabled={isSubmitting}
+          aria-label="close"
+          sx={{ ml: 2 }}
+        >
+          <Iconify icon={closeIcon} />
+        </IconButton> */}
+      </DialogTitle>
+
+      {/* Dialog Content */}
+      <DialogContent
+        sx={{
+          px: 3,
+          pt: 3,
+          pb: 1,
+          mt: 2,
+          ...scrollableStyles,
+          minHeight: 400,
+        }}
+      >
+        {/* Progress Stepper */}
+        <Stepper
+          activeStep={activeStep}
+          alternativeLabel
+          sx={{
+            mb: 4,
+            '& .MuiStepLabel-label': {
+              fontSize: '0.875rem',
+            },
+          }}
+        >
+          {CONFIGURATION_STEPS.map((step, index) => (
+            <Step key={step.id} completed={getStepStatus(index) === 'completed'}>
+              <StepLabel>{getStepLabel(step, index)}</StepLabel>
+            </Step>
+          ))}
+        </Stepper>
+
+        {/* Error Alert */}
+        {submissionError && (
+          <Alert
+            severity="error"
+            sx={{ mb: 3, borderRadius: 1 }}
+            onClose={() => setSubmissionError('')}
+          >
+            {submissionError}
+          </Alert>
+        )}
+
+        {/* Success Alert */}
+        {submissionSuccess && (
+          <Alert severity="success" sx={{ mb: 3, borderRadius: 1 }}>
+            Configuration completed successfully! The dialog will close automatically.
+          </Alert>
+        )}
+
+        {/* Step Content */}
+        {!submissionSuccess && renderStepContent(activeStep)}
+      </DialogContent>
+
+      {/* Dialog Actions */}
+      <DialogActions
+        sx={{
+          px: 3,
+          py: 2.5,
+          borderTop: `1px solid ${theme.palette.divider}`,
+          backgroundColor: alpha(theme.palette.background.default, 0.5),
+        }}
+      >
+        {renderFooterButtons()}
+      </DialogActions>
+
+      {/* Snackbar for notifications */}
+      <Snackbar
+        open={snackbar.open}
+        autoHideDuration={4000}
+        onClose={() => setSnackbar((prev) => ({ ...prev, open: false }))}
+        anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
+        sx={{ mt: 8 }}
+      >
+        <Alert
+          severity={snackbar.severity}
+          variant="filled"
+          sx={{
+            width: '100%',
+            boxShadow: theme.shadows[8],
+            fontSize: '0.875rem',
+          }}
+          onClose={() => setSnackbar((prev) => ({ ...prev, open: false }))}
+        >
+          {snackbar.message}
+        </Alert>
+      </Snackbar>
+    </Dialog>
+  );
+};
+
+export default OnBoardingStepper;
