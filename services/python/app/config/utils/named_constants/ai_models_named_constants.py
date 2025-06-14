@@ -20,6 +20,7 @@ class OCRProvider(Enum):
 class EmbeddingProvider(Enum):
     AZURE_OPENAI = "azureOpenAI"
     OPENAI = "openAI"
+    OPENAI_COMPATIBLE = "openAICompatible"
     HUGGING_FACE = "huggingFace"
     SENTENCE_TRANSFOMERS = "sentenceTransformers"
     GEMINI = "gemini"

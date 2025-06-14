@@ -22,6 +22,7 @@ from app.core.embedding_service import (
     EmbeddingFactory,
     GeminiEmbeddingConfig,
     HuggingFaceEmbeddingConfig,
+    OpenAICompatibleEmbeddingConfig,
     OpenAIEmbeddingConfig,
     SentenceTransformersEmbeddingConfig,
 )
@@ -465,6 +466,13 @@ class IndexingPipeline:
                     embedding_model = CohereEmbeddingConfig(
                         model=config['configuration']['model'],
                         api_key=config['configuration']['apiKey'],
+                    )
+                elif provider == EmbeddingProvider.OPENAI_COMPATIBLE.value:
+                    embedding_model = OpenAICompatibleEmbeddingConfig(
+                        model=config['configuration']['model'],
+                        api_key=config['configuration']['apiKey'],
+                        organization_id=config['configuration']['organizationId'],
+                        endpoint=config['configuration']['endpoint'],
                     )
                 elif provider == EmbeddingProvider.DEFAULT.value:
                     embedding_model = DEFAULT_EMBEDDING_MODEL

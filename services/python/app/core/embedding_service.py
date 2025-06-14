@@ -25,6 +25,12 @@ class AzureEmbeddingConfig(BaseEmbeddingConfig):
 class OpenAIEmbeddingConfig(BaseEmbeddingConfig):
     organization_id: Optional[str] = None
 
+class OpenAICompatibleEmbeddingConfig(BaseEmbeddingConfig):
+    """OpenAI-compatible configuration"""
+    organization_id: Optional[str] = None
+    endpoint: str = Field(default="", description="The endpoint for the OpenAI-compatible API")
+
+
 class HuggingFaceEmbeddingConfig(BaseEmbeddingConfig):
     """Hugging Face embedding models"""
     model_kwargs: Optional[Dict[str, Any]] = Field(default_factory=dict)
@@ -50,7 +56,7 @@ class EmbeddingFactory:
     @staticmethod
     def create_embedding_model(config: Union[AzureEmbeddingConfig, OpenAIEmbeddingConfig,
                                             HuggingFaceEmbeddingConfig, SentenceTransformersEmbeddingConfig,
-                                            GeminiEmbeddingConfig, CohereEmbeddingConfig]):
+                                            GeminiEmbeddingConfig, CohereEmbeddingConfig, OpenAICompatibleEmbeddingConfig, None]):
         if isinstance(config, AzureEmbeddingConfig):
             return AzureOpenAIEmbeddings(
                 model=config.model,
@@ -108,6 +114,14 @@ class EmbeddingFactory:
             return GoogleGenerativeAIEmbeddings(
                 model=model_name,  # Now properly formatted as models/text-embedding-004
                 google_api_key=config.api_key,
+            )
+
+        elif isinstance(config, OpenAICompatibleEmbeddingConfig):
+            return OpenAIEmbeddings(
+                model=config.model,
+                api_key=config.api_key,
+                organization=config.organization_id,
+                endpoint=config.endpoint
             )
 
         raise ValueError(f"Unsupported embedding config type: {type(config)}")
