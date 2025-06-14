@@ -30,6 +30,7 @@ export const createRecordSchema = z.object({
             ),
           originalname: z.string(),
           size: z.number(),
+          lastModified: z.number().optional(),
         }),
       )
       .optional(),
@@ -44,6 +45,7 @@ export const createRecordSchema = z.object({
           ),
         originalname: z.string(),
         size: z.number(),
+        lastModified: z.number().optional(),
       })
       .optional(),
   }),
