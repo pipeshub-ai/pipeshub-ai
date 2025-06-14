@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, Optional
 
+import aiohttp
 import google.oauth2.credentials
 import jwt
 from dependency_injector.wiring import Provide, inject
@@ -54,6 +55,19 @@ from app.connectors.sources.google.gmail.gmail_webhook_handler import (
 )
 from app.connectors.sources.google.google_drive.drive_webhook_handler import (
     AbstractDriveWebhookHandler,
+)
+from app.connectors.sources.notion.notion_app import NotionApp
+from app.connectors.sources.notion.notion_credentials_handler import (
+    NotionCredentialsHandler,
+)
+from app.connectors.sources.notion.notion_router_service import NotionRouterService
+from app.models.blocks import (
+    Block,
+    BlockType,
+    Record,
+    RecordStatus,
+    RecordType,
+    TextFormat,
 )
 from app.modules.parsers.google_files.google_docs_parser import GoogleDocsParser
 from app.modules.parsers.google_files.google_sheets_parser import GoogleSheetsParser
@@ -528,7 +542,8 @@ async def download_file(
                                             logger.info(f"Message not found with ID {message_id}, searching for related messages...")
 
                                             # Get messageIdHeader from the original mail
-                                            file_key = await arango_service.get_key_by_external_message_id(message_id)
+                                            file_key = await arango_service.get_key_by_external_record_id(message_id)
+                                            file_key = await arango_service.get_key_by_external_record_id(message_id)
                                             aql_query = """
                                             FOR mail IN mails
                                                 FILTER mail._key == @file_key
@@ -884,7 +899,8 @@ async def stream_record(
                                 logger.info(f"Message not found with ID {file_id}, searching for related messages...")
 
                                 # Get messageIdHeader from the original mail
-                                file_key = await arango_service.get_key_by_external_message_id(file_id)
+                                file_key = await arango_service.get_key_by_external_record_id(file_id)
+                                file_key = await arango_service.get_key_by_external_record_id(file_id)
                                 aql_query = """
                                 FOR mail IN mails
                                     FILTER mail._key == @file_key
@@ -1040,7 +1056,8 @@ async def stream_record(
                                     logger.info(f"Message not found with ID {message_id}, searching for related messages...")
 
                                     # Get messageIdHeader from the original mail
-                                    file_key = await arango_service.get_key_by_external_message_id(message_id)
+                                    file_key = await arango_service.get_key_by_external_record_id(message_id)
+                                    file_key = await arango_service.get_key_by_external_record_id(message_id)
                                     aql_query = """
                                     FOR mail IN mails
                                         FILTER mail._key == @file_key
@@ -1620,3 +1637,355 @@ async def get_user_credentials(org_id: str, user_id: str, logger, google_token_h
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error accessing user credentials"
         )
+
+@router.get("/api/v1/{org_id}/{workspace_id}/notion/record/page/{record_id}/signedUrl", response_model=Record)
+@inject
+async def get_notion_page_blocks(
+    org_id: str,
+    workspace_id: str,
+    record_id: str,
+    notion_app: NotionApp = Depends(Provide[AppContainer.notion_app]),
+    arango_service=Depends(Provide[AppContainer.arango_service]),
+    config_service=Depends(Provide[AppContainer.config_service]),
+) -> Record:
+    """Get blocks from a Notion page and return structured Record with Blocks"""
+    page_id = None
+    try:
+        logger.info(f"Getting notion id from record {record_id}")
+        arango_record = await arango_service.get_document(record_id, CollectionNames.RECORDS.value)
+        if not arango_record:
+            raise HTTPException(status_code=404, detail=f"Record {record_id} not found")
+
+        # Convert ArangoDB record to Pydantic Record
+        record = _convert_arango_record_to_pydantic(arango_record)
+        page_id = record.external_record_id
+
+        if not page_id:
+            raise HTTPException(status_code=404, detail=f"No external record ID found for record {record_id}")
+
+        logger.info(f"Getting blocks for page {page_id} (org: {org_id}, workspace: {workspace_id})")
+
+        notion_credentials_handler = NotionCredentialsHandler(
+            logger=logger,
+            config_service=config_service,
+            arango_service=arango_service
+        )
+        notion_secrets_response = await notion_credentials_handler.get_notion_secret(org_id)
+
+        integration_secrets = notion_secrets_response.get('integrationSecrets', [])
+        if not integration_secrets:
+            raise HTTPException(status_code=404, detail="No Notion integrations found for this organization")
+
+        # Find the correct integration secret by matching workspace_id
+        selected_secret = None
+
+        for i, notion_secret in enumerate(integration_secrets):
+            try:
+                # Check workspace info for this integration secret
+                url = "https://api.notion.com/v1/users/me"
+
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, headers={
+                        "Authorization": f"Bearer {notion_secret}",
+                        "Notion-Version": "2022-06-28",
+                        "Content-Type": "application/json",
+                    }) as response:
+                        if response.status != 200:
+                            error_text = await response.text()
+                            logger.warning(f"Failed to fetch workspace info for integration {i}: {error_text}")
+                            continue
+
+                        workspace_data = await response.json()
+                        current_workspace_id = workspace_data.get("id", "")
+
+                        if workspace_id.replace("-", "") == current_workspace_id.replace("-", ""):
+                            selected_secret = notion_secret
+                            logger.info(f"Found matching integration for workspace {workspace_id}")
+                            break
+
+            except Exception as e:
+                logger.warning(f"Error checking integration {i}: {str(e)}")
+                continue
+
+        if not selected_secret:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No Notion integration found for workspace {workspace_id}"
+            )
+
+        # Initialize Notion Service with the correct integration secret
+        notion_service = NotionRouterService(
+            integration_secret=selected_secret,
+            org_id=org_id,
+            logger=logger,
+            arango_service=arango_service,
+        )
+
+        # Fetch blocks from the page
+        raw_blocks = await notion_service.fetch_blocks_of_page(page_id)
+        logger.info(f"Notion service returned {len(raw_blocks)} blocks")
+
+        # Convert Notion blocks to Pydantic Block models
+        pydantic_blocks = []
+        for raw_block in raw_blocks:
+            try:
+                pydantic_block = _convert_notion_block_to_pydantic(raw_block)
+                pydantic_blocks.append(pydantic_block)
+            except Exception as e:
+                logger.warning(f"Failed to convert block {raw_block.get('block_id', 'unknown')}: {str(e)}")
+                continue
+
+        # Add blocks to the record
+        record.blocks = pydantic_blocks
+        logger.info(f"pydantic_blocks: {pydantic_blocks}")
+
+        logger.info(f"Successfully converted {len(pydantic_blocks)} blocks for page {page_id}")
+
+        return record
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting blocks for page {page_id}: {repr(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/api/v1/{org_id}/{workspace_id}/notion/file/{record_id}/signedUrl")
+@inject
+async def get_notion_file_block(
+    org_id: str,
+    workspace_id: str,
+    record_id: str,
+    notion_app: NotionApp = Depends(Provide[AppContainer.notion_app]),
+    arango_service=Depends(Provide[AppContainer.arango_service]),
+    config_service=Depends(Provide[AppContainer.config_service]),
+):
+    """Get blocks from a Notion page"""
+    block_id = None
+    try:
+        logger.info(f"Getting notion id from record {record_id}")
+        record = await arango_service.get_document(record_id, CollectionNames.RECORDS.value)
+
+        if not record:
+            raise HTTPException(status_code=404, detail=f"Record {record_id} not found")
+
+        block_id = record.get("externalRecordId", None)
+
+        if not block_id:
+            raise HTTPException(status_code=404, detail=f"No external record ID found for record {record_id}")
+
+        notion_credentials_handler = NotionCredentialsHandler(
+            logger=logger,
+            config_service=config_service,
+            arango_service=arango_service
+        )
+        notion_secrets_response = await notion_credentials_handler.get_notion_secret(org_id)
+
+        integration_secrets = notion_secrets_response.get('integrationSecrets', [])
+        if not integration_secrets:
+            raise HTTPException(status_code=404, detail="No Notion integrations found for this organization")
+
+        # Find the correct integration secret by matching workspace_id
+        selected_secret = None
+
+
+        for i, notion_secret in enumerate(integration_secrets):
+            try:
+                # Check workspace info for this integration secret
+                url = "https://api.notion.com/v1/users/me"
+
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, headers={
+                        "Authorization": f"Bearer {notion_secret}",
+                        "Notion-Version": "2022-06-28",
+                        "Content-Type": "application/json",
+                    }) as response:
+                        if response.status != 200:
+                            error_text = await response.text()
+                            logger.warning(f"Failed to fetch workspace info for integration {i}: {error_text}")
+                            continue
+
+                        workspace_data = await response.json()
+
+                        # Extract workspace ID from the response
+                        current_workspace_id = workspace_data.get("id", "")
+
+                        # Match workspace_id (remove dashes for comparison)
+                        if workspace_id.replace("-", "") == current_workspace_id.replace("-", ""):
+                            selected_secret = notion_secret
+                            logger.info(f"Found matching integration for workspace {workspace_id}")
+                            break
+
+            except Exception as e:
+                logger.warning(f"Error checking integration {i}: {str(e)}")
+                continue
+
+        if not selected_secret:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No Notion integration found for workspace {workspace_id}"
+            )
+
+        # Initialize Notion Service with the correct integration secret
+        notion_service = NotionRouterService(
+            integration_secret=selected_secret,
+            org_id=org_id,
+            logger=logger,
+            arango_service=arango_service,
+        )
+
+        data = await notion_service.fetch_file_data(block_id)
+
+        logger.info("Successfully retrieved file data")
+
+        return {
+            "success": True,
+            "org_id": org_id,
+            "workspace_id": workspace_id,
+            "record_data": data
+        }
+
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as e:
+        logger.error(f"Error getting file data for file {block_id}: {repr(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _convert_arango_record_to_pydantic(arango_record: Dict[str, Any]) -> Record:
+    """Convert ArangoDB record to Pydantic Record model"""
+    # Handle the mapping from ArangoDB field names to Pydantic field names
+    record_data = {
+        "record_id": arango_record.get("_key", ""),
+        "org_id": arango_record.get("orgId", ""),
+        "record_name": arango_record.get("recordName", ""),
+        "record_type": RecordType(arango_record.get("recordType", "OTHERS")),
+        "record_status": RecordStatus(arango_record.get("indexingStatus", "NOT_STARTED")),
+        "external_record_id": arango_record.get("externalRecordId", ""),
+        "external_revision_id": arango_record.get("externalRevisionId"),
+        "version": arango_record.get("version", 0),
+        "origin": arango_record.get("origin", "CONNECTOR"),
+        "connector_name": arango_record.get("connectorName"),
+        "virtual_record_id": arango_record.get("virtualRecordId"),
+        "summary_document_id": arango_record.get("summaryDocumentId"),
+        "md5_hash": arango_record.get("md5Checksum"),
+        "created_at": arango_record.get("createdAtTimestamp", 0),
+        "updated_at": arango_record.get("updatedAtTimestamp", 0),
+        "source_created_at": arango_record.get("sourceCreatedAtTimestamp"),
+        "source_updated_at": arango_record.get("sourceLastModifiedTimestamp"),
+        "weburl": arango_record.get("webUrl"),
+        # Initialize empty blocks list - will be populated later
+        "blocks": []
+    }
+
+    return Record(**record_data)
+
+def _convert_notion_block_to_pydantic(notion_block: Dict[str, Any]) -> Block:
+    """Convert Notion block data to Pydantic Block model"""
+
+    # Map Notion block types to our BlockType enum
+    block_type_mapping = {
+        "paragraph": BlockType.PARAGRAPH,
+        "heading": BlockType.HEADING,
+        "heading_1": BlockType.HEADING,
+        "heading_2": BlockType.HEADING,
+        "heading_3": BlockType.HEADING,
+        "bulleted_list_item": BlockType.BULLET_LIST,
+        "numbered_list_item": BlockType.NUMBERED_LIST,
+        "to_do": BlockType.BULLET_LIST,
+        "quote": BlockType.QUOTE,
+        "code": BlockType.CODE,
+        "table": BlockType.TABLE,
+        "image": BlockType.IMAGE,
+        "video": BlockType.VIDEO,
+        "audio": BlockType.AUDIO,
+        "file": BlockType.FILE,
+        "link_preview": BlockType.LINK,
+        "divider": BlockType.DIVIDER,
+    }
+
+    notion_block_type = notion_block.get("block_type", "paragraph")
+    pydantic_block_type = block_type_mapping.get(notion_block_type, BlockType.PARAGRAPH)
+
+    # Map block format
+    format_mapping = {
+        "txt": TextFormat.TXT,
+        "markdown": TextFormat.MARKDOWN,
+        "bin": TextFormat.BIN,
+        "html": TextFormat.HTML,
+        "json": TextFormat.JSON,
+    }
+
+    notion_format = notion_block.get("block_format", "txt")
+    pydantic_format = format_mapping.get(notion_format, TextFormat.TXT)
+
+    # Convert timestamps if they exist
+    creation_date = None
+    update_date = None
+
+    if notion_block.get("created_time"):
+        try:
+            creation_date = datetime.fromisoformat(notion_block["created_time"].replace("Z", "+00:00"))
+        except Exception:
+            pass
+
+    if notion_block.get("last_edited_time"):
+        try:
+            update_date = datetime.fromisoformat(notion_block["last_edited_time"].replace("Z", "+00:00"))
+        except Exception:
+            pass
+
+    # Helper function to handle URL fields that might be empty strings
+    def safe_url(url_value: Any) -> Optional[str]:
+        """Convert URL value to None if empty/invalid, otherwise return the value"""
+        if not url_value or (isinstance(url_value, str) and url_value.strip() == ""):
+            return None
+        return url_value
+
+    # Create the block
+    block_data = {
+        "block_id": notion_block.get("block_id", ""),
+        "block_type": pydantic_block_type,
+        "block_name": notion_block.get("block_name"),
+        "block_format": pydantic_format,
+        "block_source_creation_date": creation_date,
+        "block_source_update_date": update_date,
+        "block_source_id": notion_block.get("block_id"),
+        "block_source_name": "Notion",
+        "block_source_type": "notion",
+        "data": notion_block.get("data"),
+        "links": notion_block.get("links", []),
+        "weburl": safe_url(notion_block.get("weburl")),
+        "public_data_link": safe_url(notion_block.get("public_data_link")),
+        "public_data_link_expiration_epoch_time_in_ms": notion_block.get("public_data_link_expiration_epoch_time_in_ms"),
+        "record_id": notion_block.get("record_id"),
+    }
+
+    # Add type-specific metadata based on block type
+    if pydantic_block_type == BlockType.FILE:
+        file_metadata_data = {}
+        if notion_block.get("name"):
+            file_metadata_data["file_name"] = notion_block.get("name")
+        if notion_block.get("mimetype"):
+            file_metadata_data["mime_type"] = notion_block.get("mimetype")
+        if notion_block.get("file_url"):
+            file_metadata_data["file_path"] = notion_block.get("file_url")
+
+        if file_metadata_data:  # Only add if we have data
+            from app.models.blocks import FileMetadata
+            block_data["file_metadata"] = FileMetadata(**file_metadata_data)
+
+    elif pydantic_block_type in [BlockType.IMAGE, BlockType.VIDEO, BlockType.AUDIO]:
+        media_metadata_data = {}
+        if notion_block.get("mimetype"):
+            media_metadata_data["mime_type"] = notion_block.get("mimetype")
+        if notion_block.get("name"):
+            media_metadata_data["alt_text"] = notion_block.get("name")
+
+        if media_metadata_data:  # Only add if we have data
+            from app.models.blocks import MediaMetadata
+            block_data["media_metadata"] = MediaMetadata(**media_metadata_data)
+
+    return Block(**block_data)
+

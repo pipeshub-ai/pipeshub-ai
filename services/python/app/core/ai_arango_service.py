@@ -84,157 +84,52 @@ class ArangoService:
             self.logger.error("❌ Failed to disconnect from ArangoDB: %s", str(e))
             return False
 
-    async def get_key_by_external_file_id(
-        self, external_file_id: str, transaction: Optional[TransactionDatabase] = None
+    async def get_key_by_external_record_id(
+        self, external_record_id: str, transaction: Optional[TransactionDatabase] = None
     ) -> Optional[str]:
         """
-        Get internal file key using the external file ID
+        Get internal record key using the external record ID
 
         Args:
-            external_file_id (str): External file ID to look up
+            external_record_id (str): External record ID to look up
             transaction (Optional[TransactionDatabase]): Optional database transaction
 
         Returns:
-            Optional[str]: Internal file key if found, None otherwise
+            Optional[str]: Internal record key if found, None otherwise
         """
         try:
             self.logger.info(
-                "🚀 Retrieving internal key for external file ID %s", external_file_id
+                "🚀 Retrieving internal key for external record ID %s", external_record_id
             )
 
             query = f"""
             FOR record IN {CollectionNames.RECORDS.value}
-                FILTER record.externalRecordId == @external_file_id
+                FILTER record.externalRecordId == @external_record_id
                 RETURN record._key
             """
+
             db = transaction if transaction else self.db
             cursor = db.aql.execute(
-                query, bind_vars={"external_file_id": external_file_id}
+                query, bind_vars={"external_record_id": external_record_id}
             )
             result = next(cursor, None)
 
             if result:
                 self.logger.info(
-                    "✅ Successfully retrieved internal key for external file ID %s",
-                    external_file_id,
+                    "✅ Successfully retrieved internal key for external record ID %s",
+                    external_record_id,
                 )
                 return result
             else:
                 self.logger.warning(
-                    "⚠️ No internal key found for external file ID %s", external_file_id
+                    "⚠️ No internal key found for external record ID %s", external_record_id
                 )
                 return None
 
         except Exception as e:
             self.logger.error(
-                "❌ Failed to retrieve internal key for external file ID %s: %s",
-                external_file_id,
-                str(e),
-            )
-            return None
-
-    async def get_key_by_external_message_id(
-        self,
-        external_message_id: str,
-        transaction: Optional[TransactionDatabase] = None,
-    ) -> Optional[str]:
-        """
-        Get internal message key using the external message ID
-
-        Args:
-            external_message_id (str): External message ID to look up
-            transaction (Optional[TransactionDatabase]): Optional database transaction
-
-        Returns:
-            Optional[str]: Internal message key if found, None otherwise
-        """
-        try:
-            self.logger.info(
-                "🚀 Retrieving internal key for external message ID %s",
-                external_message_id,
-            )
-
-            query = f"""
-            FOR doc IN {CollectionNames.RECORDS.value}
-                FILTER doc.externalRecordId == @external_message_id
-                RETURN doc._key
-            """
-            db = transaction if transaction else self.db
-            cursor = db.aql.execute(
-                query, bind_vars={"external_message_id": external_message_id}
-            )
-            result = next(cursor, None)
-
-            if result:
-                self.logger.info(
-                    "✅ Successfully retrieved internal key for external message ID %s",
-                    external_message_id,
-                )
-                return result
-            else:
-                self.logger.warning(
-                    "⚠️ No internal key found for external message ID %s",
-                    external_message_id,
-                )
-                return None
-
-        except Exception as e:
-            self.logger.error(
-                "❌ Failed to retrieve internal key for external message ID %s: %s",
-                external_message_id,
-                str(e),
-            )
-            return None
-
-    async def get_key_by_attachment_id(
-        self,
-        external_attachment_id: str,
-        transaction: Optional[TransactionDatabase] = None,
-    ) -> Optional[str]:
-        """
-        Get internal attachment key using the external attachment ID
-
-        Args:
-            external_attachment_id (str): External attachment ID to look up
-            transaction (Optional[TransactionDatabase]): Optional database transaction
-
-        Returns:
-            Optional[str]: Internal attachment key if found, None otherwise
-        """
-        try:
-            self.logger.info(
-                "🚀 Retrieving internal key for external attachment ID %s",
-                external_attachment_id,
-            )
-
-            query = """
-            FOR attachment IN attachments
-                FILTER attachment.externalAttachmentId == @external_attachment_id
-                RETURN attachment._key
-            """
-            db = transaction if transaction else self.db
-            cursor = db.aql.execute(
-                query, bind_vars={"external_attachment_id": external_attachment_id}
-            )
-            result = next(cursor, None)
-
-            if result:
-                self.logger.info(
-                    "✅ Successfully retrieved internal key for external attachment ID %s",
-                    external_attachment_id,
-                )
-                return result
-            else:
-                self.logger.warning(
-                    "⚠️ No internal key found for external attachment ID %s",
-                    external_attachment_id,
-                )
-                return None
-
-        except Exception as e:
-            self.logger.error(
-                "❌ Failed to retrieve internal key for external attachment ID %s: %s",
-                external_attachment_id,
+                "❌ Failed to retrieve internal key for external record ID %s: %s",
+                external_record_id,
                 str(e),
             )
             return None
@@ -381,10 +276,9 @@ class ArangoService:
             List[str]: List of file keys that match both criteria
         """
         try:
+            size_str = "None" if size_in_bytes is None else f"{size_in_bytes} bytes"
             self.logger.info(
-                "🔍 Finding duplicate files with MD5: %s and size: %d bytes",
-                md5_checksum,
-                size_in_bytes,
+                f"🔍 Finding duplicate files with MD5: {md5_checksum} and size: {size_str}"
             )
 
             query = f"""

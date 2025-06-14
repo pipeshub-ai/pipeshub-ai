@@ -32,9 +32,11 @@ class Connectors(Enum):
     GOOGLE_DRIVE = "DRIVE"
     GOOGLE_MAIL = "GMAIL"
     GOOGLE_CALENDAR = "CALENDAR"
+    NOTION = "NOTION"
 
 class AppGroups(Enum):
     GOOGLE_WORKSPACE = "Google Workspace"
+    NOTION = "NOTION"
 
 class RecordTypes(Enum):
     FILE = "FILE"
@@ -42,6 +44,8 @@ class RecordTypes(Enum):
     LINK = "LINK"
     MAIL = "MAIL"
     DRIVE = "DRIVE"
+    COMMENT= "COMMENT"
+    PAGE_COMMENTS="PAGE_COMMENTS"
 
 
 class RecordRelations(Enum):
@@ -67,7 +71,7 @@ class CollectionNames(Enum):
     # Records and Record relations
     RECORDS = "records"
     RECORD_RELATIONS = "recordRelations"
-
+    RECORD_GROUPS = "recordGroups"
     # Knowledge base
     KNOWLEDGE_BASE = "knowledgeBase"
     IS_OF_TYPE = "isOfType"
@@ -123,6 +127,11 @@ class CollectionNames(Enum):
 
     BLOCKS = "blocks"
 
+    NOTION_PAGE_RECORD="notionPageRecord"
+    NOTION_DATABASE_RECORD="notionDatabaseRecord"
+    NOTION_COMMENT_RECORD="notionCommentRecord"
+    BELONGS_TO_RECORD_GROUP="belongsToRecordGroup"
+
 
 class QdrantCollectionNames(Enum):
     RECORDS = "records"
@@ -157,6 +166,9 @@ class MimeTypes(Enum):
     XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     XLS = "application/vnd.ms-excel"
     CSV = "text/csv"
+    BIN = "application/octet-stream"
+    NOTION_TEXT = "notion/text"
+    NOTION_PAGE_COMMENT_TEXT = "notion/pageCommentText"
 
 
 class ProgressStatus(Enum):

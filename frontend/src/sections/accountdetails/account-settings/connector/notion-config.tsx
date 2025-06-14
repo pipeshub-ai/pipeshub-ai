@@ -1,6 +1,5 @@
-import { useSearchParams } from 'react-router-dom';
 import infoIcon from '@iconify-icons/eva/info-outline';
-import { useRef, useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import settingsIcon from '@iconify-icons/eva/settings-2-outline';
 
 import { alpha, useTheme } from '@mui/material/styles';
@@ -8,6 +7,7 @@ import { alpha, useTheme } from '@mui/material/styles';
 import {
   Box,
   Grid,
+  Link,
   Alert,
   Paper,
   Switch,
@@ -24,8 +24,7 @@ import axios from 'src/utils/axios';
 
 import { Iconify } from 'src/components/iconify';
 
-import ConnectorStatistics from './connector-stats';
-import { CONNECTORS_LIST, GOOGLE_WORKSPACE_SCOPE } from './components/connectors-list';
+import { CONNECTORS_LIST } from './components/connectors-list';
 import ConfigureConnectorDialog from './components/configure-connector-individual-dialog';
 
 interface Connector {
@@ -33,9 +32,8 @@ interface Connector {
   isEnabled: boolean;
 }
 
-const GoogleWorkspaceIndividualPage = () => {
+const NotionConfigPage = () => {
   const theme = useTheme();
-  const [searchParams] = useSearchParams();
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
@@ -44,12 +42,8 @@ const GoogleWorkspaceIndividualPage = () => {
   const [checkingConfigs, setCheckingConfigs] = useState(true);
   const [connectorStatus, setConnectorStatus] = useState<boolean>(false);
   const [configuredStatus, setConfiguredStatus] = useState<boolean>(false);
-  const processedCodeRef = useRef<string | null>(null);
-  const connectorNames = ['DRIVE', 'GMAIL'];
-
-  const connector = CONNECTORS_LIST.find((current) => current.id === 'googleWorkspace');
-  const connectorID = 'googleWorkspace';
-
+  const connector = CONNECTORS_LIST.find((current) => current.id === 'notion');
+  const connectorID = 'notion';
   // Fetch connector config
   const fetchConnectorConfig = useCallback(async (connectorId: string) => {
     try {
@@ -61,17 +55,10 @@ const GoogleWorkspaceIndividualPage = () => {
       return response.data;
     } catch (err) {
       console.error(`Error fetching ${connectorId} configuration:`, err);
+      setErrorMessage(`Failed to fetch ${connectorId} connector configuration. ${err.message}`);
       return null;
     }
   }, []);
-
-  const getCleanRedirectUri = () => {
-    const url = new URL(window.location.href);
-    // Remove hash and search parameters
-    url.hash = '';
-    url.search = '';
-    return url.toString();
-  };
 
   // Check configurations separately
   const checkConnectorConfigurations = useCallback(async () => {
@@ -79,9 +66,12 @@ const GoogleWorkspaceIndividualPage = () => {
     try {
       // Check all configurations in parallel
       const results = await Promise.allSettled([fetchConnectorConfig(connectorID)]);
-      const googleConfigured =
-        results[0].status === 'fulfilled' && results[0].value && !!results[0].value.googleClientId;
-      setConfiguredStatus(googleConfigured);
+
+      // Check if each configuration has required fields
+      // Ensure property names match what's returned by the API
+      const notionConfigured = results[0].status === 'fulfilled' && results[0].value;
+
+      setConfiguredStatus(notionConfigured);
     } catch (err) {
       console.error('Error checking connector configurations:', err);
       setErrorMessage(`Failed to check connector config. ${err.message}`);
@@ -94,16 +84,17 @@ const GoogleWorkspaceIndividualPage = () => {
   const fetchConnectorStatuses = useCallback(async () => {
     setIsLoading(true);
     try {
-      // First get connector status from the API
+      // API call to get current connectors status
+      await checkConnectorConfigurations();
       const response = await axios.get('/api/v1/connectors/status');
       const data = response.data as Connector[];
+
       // Initialize status objects
+      // Process data from API
+      const notion = data.find((connectorResult) => connectorResult.key === connectorID);
+      setConnectorStatus(notion ? notion.isEnabled : false);
 
-      const googleWorkspace = data.find((connectorResult) => connectorResult.key === connectorID);
-      setConnectorStatus(googleWorkspace ? googleWorkspace.isEnabled : false);
-
-      // After setting the status, check configurations separately
-      await checkConnectorConfigurations();
+      // After setting the status, check configurations to ensure they're up to date
     } catch (err) {
       console.error('Failed to fetch connectors:', err);
       setErrorMessage(`Failed to load connector settings ${err.message}`);
@@ -113,8 +104,31 @@ const GoogleWorkspaceIndividualPage = () => {
   }, [checkConnectorConfigurations]);
 
   useEffect(() => {
+    // Fetch existing connector statuses from the backend
     fetchConnectorStatuses();
   }, [fetchConnectorStatuses]);
+
+  // Check configurations when lastConfigured changes
+  useEffect(() => {
+    const checkConfigurations = async () => {
+      setCheckingConfigs(true);
+      try {
+        // Check all configurations in parallel
+        const results = await Promise.allSettled([fetchConnectorConfig(connectorID)]);
+        const notionConfigured = results[0].status === 'fulfilled' && results[0].value;
+
+        setConfiguredStatus(notionConfigured);
+      } catch (err) {
+        console.error('Error checking connector configurations:', err);
+        setErrorMessage(`Failed to check connector config ${err.message}`);
+      } finally {
+        setCheckingConfigs(false);
+      }
+    };
+
+    // Call the function to check configurations
+    checkConfigurations();
+  }, [fetchConnectorConfig]);
 
   // Handle toggling connectors
   const handleToggleConnector = async (connectorId: string) => {
@@ -128,35 +142,11 @@ const GoogleWorkspaceIndividualPage = () => {
     setIsLoading(true);
     try {
       if (newStatus) {
-        try {
-          const data = await fetchConnectorConfig(connectorID);
-          if (!data) {
-            throw new Error('Failed to fetch Google Workspace Config');
-          }
-          const response = await axios.get(`/api/v1/configurationManager/frontendPublicUrl`);
-          const frontendBaseUrl = response.data.url;
-          // Ensure the URL ends with a slash if needed
-          const frontendUrl = frontendBaseUrl.endsWith('/')
-            ? `${frontendBaseUrl}account/individual/settings/connector/googleWorkspace`
-            : `${frontendBaseUrl}/account/individual/settings/connector/googleWorkspace`;
-
-          const redirectUri = frontendUrl || getCleanRedirectUri();
-          const googleAuthUrl = `https://accounts.google.com/o/oauth2/v2/auth?${new URLSearchParams(
-            {
-              client_id: data.googleClientId,
-              redirect_uri: redirectUri,
-              response_type: 'code',
-              scope: GOOGLE_WORKSPACE_SCOPE,
-              access_type: 'offline',
-              prompt: 'consent',
-            }
-          ).toString()}`;
-          window.location.href = googleAuthUrl;
-        } catch (err) {
-          console.error('Failed to update connector status:', err);
-          setErrorMessage(`Failed to update connector status. Please try again.
-               ${err.message} `);
-        }
+        const response = await axios.post(`/api/v1/connectors/enable`, null, {
+          params: {
+            service: connectorId,
+          },
+        });
       } else {
         const response = await axios.post(`/api/v1/connectors/disable`, null, {
           params: {
@@ -164,16 +154,14 @@ const GoogleWorkspaceIndividualPage = () => {
           },
         });
       }
-
       setSuccessMessage(
         `${getConnectorTitle()} ${newStatus ? 'enabled' : 'disabled'} successfully`
       );
-
       setSuccess(true);
       setConnectorStatus(newStatus);
     } catch (err) {
       console.error('Failed to update connector status:', err);
-      setErrorMessage(`Failed to update connector status.  ${err.message} `);
+      setErrorMessage(`Failed to update connector status. Please try again. ${err.message}`);
     } finally {
       setIsLoading(false);
     }
@@ -186,22 +174,22 @@ const GoogleWorkspaceIndividualPage = () => {
   };
 
   // Handle save in configure dialog
-  const handleSaveConfiguration = async () => {
-    const connectorTitle = 'Google Workspace';
-
-    setConfigDialogOpen(false);
-
+  const handleSaveConfiguration = () => {
+    // Display appropriate success message
+    const connectorTitle = 'Notion';
     setSuccessMessage(`${connectorTitle} configured successfully`);
+    setConfigDialogOpen(false);
     setSuccess(true);
 
-    // Finally, refresh connector statuses
+    setConfiguredStatus(true);
+
+    // Refresh connector statuses to get latest from server
     fetchConnectorStatuses();
   };
 
   // Helper to get connector title from ID
   const getConnectorTitle = (): string => connector?.title || 'Connector';
 
-  // Helper to get connector info from ID
   // Handle close for success message
   const handleCloseSuccess = () => {
     setSuccess(false);
@@ -231,64 +219,17 @@ const GoogleWorkspaceIndividualPage = () => {
     return '';
   };
 
-  // Process OAuth response code from the URL
-  useEffect(() => {
-    const exchangeToken = async () => {
-      const code = searchParams.get('code');
-      if (!code) return;
-
-      // Use a ref or state to track if we've already processed this code
-      if (processedCodeRef.current === code) return;
-      processedCodeRef.current = code;
-
-      setIsLoading(true);
-
-      try {
-        const response = await axios.post(`/api/v1/connectors/getTokenFromCode`, {
-          tempCode: code,
-        });
-
-        if (response.status === 200 || response.status === 201) {
-          window.history.replaceState(null, '', `${window.location.pathname}`);
-
-          // Update connector status
-          setConnectorStatus(true);
-
-          // Set a specific success message for authentication
-          const connectorTitle = connector?.title || 'Google Workspace';
-          setSuccessMessage(`${connectorTitle} authentication successful`);
-          setSuccess(true);
-
-          // Refresh connector statuses to ensure UI is updated
-          fetchConnectorStatuses();
-        }
-      } catch (err) {
-        setErrorMessage(`Failed to authenticate connector  ${err.message} `);
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    if (searchParams.has('code')) {
-      exchangeToken();
-    }
-  }, [searchParams, fetchConnectorStatuses, connector]);
-
   return (
-    <Container maxWidth="lg" sx={{ py: 3 }}>
+    <Container maxWidth="lg">
       <Paper
-        elevation={0}
         sx={{
           overflow: 'hidden',
           position: 'relative',
-          p: { xs: 2, md: 3 },
-          borderRadius: 1,
+          p: 3,
+          borderRadius: 2,
+          boxShadow: (themeShadow) => `0 2px 20px ${alpha(themeShadow.palette.grey[500], 0.15)}`,
           border: '1px solid',
-          borderColor: theme.palette.divider,
-          backgroundColor:
-            theme.palette.mode === 'dark'
-              ? alpha(theme.palette.background.paper, 0.6)
-              : theme.palette.background.paper,
+          borderColor: 'divider',
         }}
       >
         {/* Loading overlay */}
@@ -304,11 +245,10 @@ const GoogleWorkspaceIndividualPage = () => {
               alignItems: 'center',
               justifyContent: 'center',
               backgroundColor: alpha(theme.palette.background.paper, 0.7),
-              backdropFilter: 'blur(4px)',
               zIndex: 10,
             }}
           >
-            <CircularProgress size={28} />
+            <CircularProgress size={32} />
           </Box>
         )}
 
@@ -320,17 +260,18 @@ const GoogleWorkspaceIndividualPage = () => {
             sx={{
               mb: 3,
               borderRadius: 1,
-              border: 'none',
+              border: `1px solid ${alpha(theme.palette.error.main, 0.2)}`,
               '& .MuiAlert-icon': {
                 color: theme.palette.error.main,
               },
             }}
           >
-            <AlertTitle sx={{ fontWeight: 500, fontSize: '0.875rem' }}>Error</AlertTitle>
-            <Typography variant="body2">{errorMessage}</Typography>
+            <AlertTitle sx={{ fontWeight: 500 }}>Error</AlertTitle>
+            {errorMessage}
           </Alert>
         )}
 
+        {/* Grid for connectors */}
         <Grid container spacing={3}>
           {connector && (
             <Grid item xs={12} key={connector.id}>
@@ -464,50 +405,43 @@ const GoogleWorkspaceIndividualPage = () => {
         {/* Info box */}
         <Box
           sx={{
-            mt: 3,
-            p: 2.5,
-            borderRadius: 1,
-            bgcolor:
-              theme.palette.mode === 'dark'
-                ? alpha(theme.palette.info.main, 0.08)
-                : alpha(theme.palette.info.main, 0.04),
-            border: `1px solid ${alpha(theme.palette.info.main, theme.palette.mode === 'dark' ? 0.2 : 0.1)}`,
+            mt: 4,
+            p: 3,
+            borderRadius: 2,
+            bgcolor: alpha(theme.palette.info.main, 0.04),
+            border: `1px solid ${alpha(theme.palette.info.main, 0.1)}`,
             display: 'flex',
             alignItems: 'flex-start',
-            gap: 1.5,
+            gap: 2,
           }}
         >
           <Box sx={{ color: theme.palette.info.main, mt: 0.5 }}>
-            <Iconify icon={infoIcon} width={18} height={18} />
+            <Iconify icon={infoIcon} width={20} height={20} />
           </Box>
           <Box>
-            <Typography
-              variant="subtitle2"
-              color="text.primary"
-              sx={{
-                mb: 0.5,
-                fontWeight: 600,
-                fontSize: '0.875rem',
-              }}
-            >
-              Connector Configuration
+            <Typography variant="subtitle2" color="text.primary" sx={{ mb: 0.5, fontWeight: 500 }}>
+              Notion Configuration
             </Typography>
-            <Typography
-              variant="body2"
-              color="text.secondary"
-              sx={{
-                fontSize: '0.8125rem',
-                lineHeight: 1.5,
-              }}
-            >
+            <Typography variant="body2" color="text.secondary">
               Connectors must be properly configured before they can be enabled. Click the settings
               icon to set up the necessary credentials and authentication for each service. Once
               configured, you can enable or disable the connector as needed.
             </Typography>
+            <Typography variant="body2" color="primary.main" sx={{ mt: 1, fontWeight: 500 }}>
+              Important: To configure Notion integration, you need to add integration secrets
+              connected to thre respective notion workspaces.
+              <Link
+                href="https://www.notion.so/profile/integrations"
+                target="_blank"
+                rel="noopener"
+                sx={{ fontWeight: 500 }}
+              >
+                Notion integrations
+              </Link>
+              .
+            </Typography>
           </Box>
         </Box>
-
-        <ConnectorStatistics connectorNames={connectorNames} />
       </Paper>
 
       {/* Configure Connector Dialog */}
@@ -516,13 +450,13 @@ const GoogleWorkspaceIndividualPage = () => {
         onClose={() => setConfigDialogOpen(false)}
         onSave={handleSaveConfiguration}
         connectorType={connectorID}
-        isEnabled={connectorStatus}
+        isEnabled={connectorStatus || false}
       />
 
       {/* Success snackbar */}
       <Snackbar
         open={success}
-        autoHideDuration={4000}
+        autoHideDuration={5000}
         onClose={handleCloseSuccess}
         anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
         sx={{ mt: 6 }}
@@ -533,14 +467,7 @@ const GoogleWorkspaceIndividualPage = () => {
           variant="filled"
           sx={{
             width: '100%',
-            boxShadow:
-              theme.palette.mode === 'dark'
-                ? '0px 3px 8px rgba(0, 0, 0, 0.3)'
-                : '0px 3px 8px rgba(0, 0, 0, 0.12)',
-            '& .MuiAlert-icon': {
-              opacity: 0.8,
-            },
-            fontSize: '0.8125rem',
+            boxShadow: '0px 3px 8px rgba(0, 0, 0, 0.12)',
           }}
         >
           {successMessage}
@@ -550,4 +477,4 @@ const GoogleWorkspaceIndividualPage = () => {
   );
 };
 
-export default GoogleWorkspaceIndividualPage;
+export default NotionConfigPage;

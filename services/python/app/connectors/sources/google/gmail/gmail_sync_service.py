@@ -1411,7 +1411,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                     for metadata in batch_metadata:
                         for message_data in metadata["messages"]:
                             message = message_data["message"]
-                            message_key = await self.arango_service.get_key_by_external_message_id(
+                            message_key = await self.arango_service.get_key_by_external_record_id(
                                 message["id"]
                             )
                             user_id = user["userId"]
@@ -1451,7 +1451,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                         # Attachment events
                         for attachment in metadata["attachments"]:
                             attachment_key = (
-                                await self.arango_service.get_key_by_attachment_id(
+                                await self.arango_service.get_key_by_external_record_id(
                                     attachment["attachment_id"]
                                 )
                             )
@@ -1739,7 +1739,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                     for message_data in metadata["messages"]:
                         message = message_data["message"]
                         message_key = (
-                            await self.arango_service.get_key_by_external_message_id(
+                            await self.arango_service.get_key_by_external_record_id(
                                 message["id"]
                             )
                         )
@@ -1779,7 +1779,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
                     # Attachment events
                     for attachment in metadata["attachments"]:
                         attachment_key = (
-                            await self.arango_service.get_key_by_attachment_id(
+                            await self.arango_service.get_key_by_external_record_id(
                                 attachment["attachment_id"]
                             )
                         )
@@ -2372,7 +2372,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                     for message_data in metadata["messages"]:
                         message = message_data["message"]
                         message_key = (
-                            await self.arango_service.get_key_by_external_message_id(
+                            await self.arango_service.get_key_by_external_record_id(
                                 message["id"]
                             )
                         )
@@ -2412,7 +2412,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
                     # Attachment events
                     for attachment in metadata["attachments"]:
                         attachment_key = (
-                            await self.arango_service.get_key_by_attachment_id(
+                            await self.arango_service.get_key_by_external_record_id(
                                 attachment["attachment_id"]
                             )
                         )
