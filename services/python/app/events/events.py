@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import hashlib
 import json
 from io import BytesIO
@@ -8,6 +9,7 @@ import aiohttp
 
 from app.config.utils.named_constants.arangodb_constants import (
     CollectionNames,
+    Connectors,
     EventTypes,
     ExtensionTypes,
     MimeTypes,
@@ -24,6 +26,39 @@ class EventProcessor:
         self.logger.info("🚀 Initializing EventProcessor")
         self.processor = processor
         self.arango_service = arango_service
+
+    def _is_binary_content(self, content: bytes) -> bool:
+        """
+        Detect if content is binary by checking for common binary file signatures
+        Returns True if content appears to be binary, False otherwise
+        """
+        if not content or len(content) < 4:
+            return False
+
+        # Check for common binary file signatures
+        binary_signatures = [
+            b'%PDF',           # PDF files
+            b'\x50\x4B\x03\x04',  # ZIP/DOCX/XLSX files
+            b'\xD0\xCF\x11\xE0',  # DOC/XLS files (OLE format)
+            b'GIF8',           # GIF images
+            b'\xFF\xD8\xFF',  # JPEG images
+            b'\x89PNG',        # PNG images
+            b'BM',             # BMP images
+            b'RIFF',           # WAV/AVI files
+        ]
+
+        content_start = content[:10]
+        return any(content_start.startswith(sig) for sig in binary_signatures)
+
+    def _should_skip_utf8_decoding(self, content: bytes, connector: str) -> bool:
+        """
+        Determine if UTF-8 decoding should be skipped for Notion content
+        """
+        if connector != Connectors.NOTION.value:
+            return False
+
+        # return self._is_binary_content(content)
+        return True
 
     async def _download_from_signed_url(
         self, signed_url: str, record_id: str, doc: dict
@@ -190,10 +225,10 @@ class EventProcessor:
             extension = event_data.get("extension", "unknown")
             mime_type = event_data.get("mimeType", "unknown")
 
-            if extension is None and mime_type != "text/gmail_content":
+            if extension is None and mime_type != MimeTypes.GMAIL.value:
                 extension = event_data["recordName"].split(".")[-1]
 
-            if mime_type == "text/gmail_content":
+            if mime_type == MimeTypes.GMAIL.value:
                 self.logger.info("🚀 Processing Gmail Message")
                 result = await self.processor.process_gmail_message(
                     recordName=f"Record-{record_id}",
@@ -215,9 +250,77 @@ class EventProcessor:
             else:
                 file_content = event_data.get("buffer")
 
+            # Convert file_content to bytes if it's a string
+            if isinstance(file_content, str):
+                try:
+                    file_content = base64.b64decode(file_content)
+                    self.logger.info("✅ Successfully decoded base64 file content")
+                except Exception as e:
+                    # If base64 fails, try UTF-8 encoding
+                    try:
+                        file_content = file_content.encode('utf-8')
+                        self.logger.info("✅ Successfully encoded file content to UTF-8 bytes")
+                    except Exception as utf8_error:
+                        self.logger.error(f"❌ Failed to convert string content to bytes: {repr(e)}, {repr(utf8_error)}")
+                        raise Exception(f"Unable to convert file content from string to bytes for record {record_id}")
+
+            self.logger.info(f"file_content: {type(file_content)} with length {len(file_content) if file_content else 0}")
             self.logger.debug(f"file_content type: {type(file_content)}")
 
             record_type = doc.get("recordType")
+
+            if connector == Connectors.NOTION.value:
+                if isinstance(file_content, bytes) or isinstance(file_content, BytesIO):
+                    # Get the actual bytes content
+                    if isinstance(file_content, BytesIO):
+                        file_content = file_content.getvalue()
+                    else:
+                        file_content = file_content
+
+                    # Check if this is binary content that should skip UTF-8 decoding
+                    if self._should_skip_utf8_decoding(file_content, connector):
+                        self.logger.info("🚀 Detected binary content from Notion (likely PDF or other binary file), skipping JSON decoding")
+                        # Keep file_content as bytes and let it fall through to appropriate handlers
+                    else:
+                        try:
+                            # Try to decode as UTF-8 first
+                            decoded_content = file_content.decode("utf-8")
+                            # If successful, try to parse as JSON
+                            file_content = json.loads(decoded_content)
+                        except UnicodeDecodeError as e:
+                            self.logger.error(f"❌ Failed to decode Notion content as UTF-8: {str(e)}")
+                            self.logger.info("🚀 Treating as binary content and skipping JSON decoding")
+                            # Keep as bytes and continue processing
+                        except json.JSONDecodeError as e:
+                            self.logger.error(f"❌ Failed to parse Notion content as JSON: {str(e)}")
+                            raise
+                        except Exception as e:
+                            self.logger.error(f"❌ Unexpected error decoding Notion content: {str(e)}")
+                            raise
+
+                # Only process as Notion block content if we successfully decoded JSON
+                if record_type == RecordTypes.FILE.value:
+                    if isinstance(file_content, list):
+                        stream_data = file_content[0]
+                    else:
+                        stream_data = file_content
+
+                    if stream_data and not isinstance(stream_data, bytes):
+                        file_content = json.dumps(stream_data).encode("utf-8")
+
+                elif mime_type == MimeTypes.NOTION_TEXT.value:
+                    self.logger.info("🚀 Processing Notion Text")
+                    result = await self.processor.process_notion_text(file_content)
+                    return result
+
+                elif mime_type == MimeTypes.NOTION_PAGE_COMMENT_TEXT.value:
+                    self.logger.info("🚀 Processing Notion Page Comment Text")
+                    result = await self.processor.process_notion_page_comment_text(file_content)
+                    return result
+
+                else:
+                    raise Exception(f"Unsupported Notion record type: {record_type}")
+
             if record_type == RecordTypes.FILE.value:
                 try:
                     file = await self.arango_service.get_document(

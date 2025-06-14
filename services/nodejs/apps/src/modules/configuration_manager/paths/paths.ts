@@ -12,6 +12,9 @@ export const configPaths = {
       },
       config: '/services/connectors/googleWorkspace/oauth/config',
     },
+    notion: {
+      credentials: '/services/connectors/notion/credentials',
+    },
   },
   smtp: '/services/smtp',
   auth: {

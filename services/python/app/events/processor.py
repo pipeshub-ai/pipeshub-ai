@@ -203,6 +203,8 @@ class Processor:
                 self.logger.debug(f"📑 Indexing {len(sentence_data)} sentences")
                 pipeline = self.indexing_pipeline
                 await pipeline.index_documents(sentence_data)
+            else:
+                await self._update_record_status_no_sentences(record_id, virtual_record_id)
 
             self.logger.info("✅ Google Slides processing completed successfully")
             return {
@@ -414,6 +416,8 @@ class Processor:
                 self.logger.debug(f"📑 Indexing {len(sentence_data)} sentences")
                 pipeline = self.indexing_pipeline
                 await pipeline.index_documents(sentence_data)
+            else:
+                await self._update_record_status_no_sentences(record_id, virtual_record_id)
 
             self.logger.info("✅ Google Docs processing completed successfully")
             return {
@@ -497,6 +501,8 @@ class Processor:
                 self.logger.debug(f"📑 Indexing {len(sentence_data)} sentences")
                 pipeline = self.indexing_pipeline
                 await pipeline.index_documents(sentence_data, merge_documents=False)
+            else:
+                await self._update_record_status_no_sentences(record_id, virtual_record_id)
 
             self.logger.info("✅ Google sheets processing completed successfully")
             return {
@@ -612,23 +618,7 @@ class Processor:
                 pipeline = self.indexing_pipeline
                 await pipeline.index_documents(sentence_data)
             else:
-                self.logger.info(" NO SENTENCES TO INDEX")
-                record = await self.arango_service.get_document(
-                    recordId, CollectionNames.RECORDS.value
-                )
-                record.update(
-                    {
-                        "indexingStatus": "COMPLETED",
-                        "extractionStatus": "COMPLETED",
-                        "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
-                        "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
-                        "virtualRecordId": virtual_record_id,
-                        "isDirty": False
-                    }
-                )
-                await self.arango_service.batch_upsert_nodes(
-                    [record], CollectionNames.RECORDS.value
-                )
+                await self._update_record_status_no_sentences(recordId, virtual_record_id)
 
             # Prepare metadata
             metadata = {
@@ -813,9 +803,11 @@ class Processor:
 
             # Index sentences if available
             if sentence_data:
+                self.logger.debug(f"📑 Indexing {len(sentence_data)} sentences")
                 pipeline = self.indexing_pipeline
-                # Get chunks (these will be merged based on semantic similarity)
                 await pipeline.index_documents(sentence_data)
+            else:
+                await self._update_record_status_no_sentences(recordId, virtual_record_id)
 
             # Prepare metadata
             self.logger.debug("📋 Preparing metadata")
@@ -971,6 +963,8 @@ class Processor:
                 self.logger.debug(f"📑 Indexing {len(sentence_data)} sentences")
                 pipeline = self.indexing_pipeline
                 await pipeline.index_documents(sentence_data)
+            else:
+                await self._update_record_status_no_sentences(recordId, virtual_record_id)
 
             # Prepare metadata
             metadata = {
@@ -1133,6 +1127,9 @@ class Processor:
                 self.logger.debug(f"📑 Indexing {len(sentence_data)} sentences")
                 pipeline = self.indexing_pipeline
                 await pipeline.index_documents(sentence_data, merge_documents=False)
+            else:
+                await self._update_record_status_no_sentences(recordId, virtual_record_id)
+
             # Prepare metadata
             self.logger.debug("📋 Preparing metadata")
             metadata = {
@@ -1311,6 +1308,8 @@ class Processor:
                 self.logger.debug(f"📑 Indexing {len(sentence_data)} sentences")
                 pipeline = self.indexing_pipeline
                 await pipeline.index_documents(sentence_data, merge_documents=False)
+            else:
+                await self._update_record_status_no_sentences(recordId, virtual_record_id)
 
             # Prepare metadata
             self.logger.debug("📋 Preparing metadata")
@@ -1523,6 +1522,8 @@ class Processor:
                 self.logger.debug(f"📑 Indexing {len(sentence_data)} sentences")
                 pipeline = self.indexing_pipeline
                 await pipeline.index_documents(sentence_data)
+            else:
+                await self._update_record_status_no_sentences(recordId, virtual_record_id)
 
             # Prepare metadata
             metadata = {
@@ -1724,8 +1725,11 @@ class Processor:
 
             # Index sentences if available
             if sentence_data:
+                self.logger.debug(f"📑 Indexing {len(sentence_data)} sentences")
                 pipeline = self.indexing_pipeline
                 await pipeline.index_documents(sentence_data)
+            else:
+                await self._update_record_status_no_sentences(recordId, virtual_record_id)
 
             # Prepare metadata
             self.logger.debug("📋 Preparing metadata")
@@ -1879,6 +1883,8 @@ class Processor:
                 self.logger.debug(f"📑 Indexing {len(sentence_data)} sentences")
                 pipeline = self.indexing_pipeline
                 await pipeline.index_documents(sentence_data)
+            else:
+                await self._update_record_status_no_sentences(recordId, virtual_record_id)
 
             # Prepare metadata
             metadata = {
@@ -2114,6 +2120,8 @@ class Processor:
                 self.logger.debug("📑 Indexing %s sentences", len(sentence_data))
                 pipeline = self.indexing_pipeline
                 await pipeline.index_documents(sentence_data)
+            else:
+                await self._update_record_status_no_sentences(recordId, virtual_record_id)
 
             # Prepare metadata
             metadata = {
@@ -2149,7 +2157,7 @@ class Processor:
                     "items": numbered_items,
                     "document_structure": {
                         "body": doc_dict.get("body"),
-                        "groups": doc_dict.get("groups"),
+                        "groups": doc_dict.get("groups", []),
                     },
                     "metadata": domain_metadata,
                 },
@@ -2185,3 +2193,293 @@ class Processor:
         )
 
         return {"status": "success", "message": "PPT processed successfully"}
+
+    async def process_notion_text(self, content):
+        """Process Notion page content and extract structured content from blocks
+
+        Args:
+            content (dict): Notion page content with blocks array and metadata
+        """
+        self.logger.info("🚀 Starting Notion page processing")
+
+        try:
+            # Extract metadata from content
+            record_id = content.get("record_id")
+            org_id = content.get("org_id")
+            record_name = content.get("record_name", "")
+            version = content.get("version", 0)
+            source = "NOTION"
+            virtual_record_id = content.get("virtual_record_id")
+
+            self.logger.info(f"📄 Processing Notion page: {record_name} (ID: {record_id})")
+
+            # Extract blocks from content
+            blocks = content.get("blocks", [])
+            if not blocks:
+                self.logger.warning("⚠️ No blocks found in Notion page content")
+                return {"status": "success", "message": "No blocks to process"}
+
+            self.logger.info(f"📑 Processing {len(blocks)} blocks")
+
+            # Process each block and extract text content
+            ordered_content = []
+            full_text_parts = []
+
+            for idx, block in enumerate(blocks, 1):
+                block_type = block.get("block_type", "unknown")
+                block_data = block.get("data")
+                block_id = block.get("block_id")
+                block_format = block.get("block_format", "txt")
+
+                # Extract text based on block type
+                text_content = self._extract_text_from_notion_block(block_type, block_data)
+
+                if text_content and text_content.strip():
+                    # Create context for this block
+                    context = {
+                        "block_id": block_id,
+                        "block_type": block_type,
+                        "block_format": block_format,
+                        "block_number": idx,
+                        "weburl": block.get("weburl"),
+                    }
+
+                    ordered_content.append({
+                        "text": text_content.strip(),
+                        "context": context
+                    })
+
+                    full_text_parts.append(text_content.strip())
+
+            # Combine all text content
+            text_content = "\n".join(full_text_parts)
+
+            # Extract domain metadata
+            self.logger.info("🎯 Extracting domain metadata")
+            domain_metadata = None
+            if text_content:
+                try:
+                    self.logger.info("🎯 Extracting metadata from Notion content")
+                    metadata = await self.domain_extractor.extract_metadata(
+                        text_content, org_id
+                    )
+                    record = await self.domain_extractor.save_metadata_to_db(
+                        org_id, record_id, metadata, virtual_record_id
+                    )
+                    file = await self.arango_service.get_document(
+                        record_id, CollectionNames.NOTION_PAGE_RECORD.value
+                    )
+                    domain_metadata = {**record, **file}
+                except Exception as e:
+                    self.logger.error(f"❌ Error extracting metadata: {str(e)}")
+                    domain_metadata = None
+
+            # Create sentence data for indexing
+            self.logger.debug("📑 Creating semantic sentences")
+            sentence_data = []
+
+            # Keep track of previous items for context
+            context_window = []
+            context_window_size = 3  # Number of previous items to include for context
+
+            for idx, item in enumerate(ordered_content, 1):
+                if item["text"].strip():
+                    context = item["context"]
+
+                    # Create context text from previous items
+                    previous_context = " ".join(
+                        [prev["text"].strip() for prev in context_window]
+                    )
+
+                    # Current item's context with previous items
+                    full_context = {
+                        "previous": previous_context,
+                        "current": item["text"].strip(),
+                    }
+
+                    sentence_data.append(
+                        {
+                            "text": item["text"].strip(),
+                            "metadata": {
+                                **(domain_metadata or {}),
+                                "recordId": record_id,
+                                "blockType": context.get("block_type", "text"),
+                                "blockNum": [idx],
+                                "blockText": json.dumps(full_context),
+                                "virtualRecordId": virtual_record_id,
+                            },
+                        }
+                    )
+
+                    # Update context window
+                    context_window.append(item)
+                    if len(context_window) > context_window_size:
+                        context_window.pop(0)
+
+            # Index sentences if available
+            if sentence_data:
+                self.logger.debug(f"📑 Indexing {len(sentence_data)} sentences")
+                pipeline = self.indexing_pipeline
+                await pipeline.index_documents(sentence_data)
+            else:
+                await self._update_record_status_no_sentences(record_id, virtual_record_id)
+
+            # Create formatted content
+            formatted_content = ""
+            numbered_items = []
+
+            for idx, item in enumerate(ordered_content, 1):
+                context = item["context"]
+                block_type = context.get("block_type", "text")
+
+                # Format based on block type
+                if block_type.startswith("heading"):
+                    level = 1
+                    if "heading_2" in context.get("block_id", ""):
+                        level = 2
+                    elif "heading_3" in context.get("block_id", ""):
+                        level = 3
+                    formatted_content += f"{'#' * level} {item['text']}\n\n"
+                elif block_type == "bullet_list":
+                    formatted_content += f"• {item['text']}\n"
+                elif block_type == "numbered_list":
+                    formatted_content += f"{idx}. {item['text']}\n"
+                elif block_type == "quote":
+                    formatted_content += f"> {item['text']}\n\n"
+                elif block_type == "code":
+                    formatted_content += f"```\n{item['text']}\n```\n\n"
+                elif block_type == "divider":
+                    formatted_content += f"{item['text']}\n\n"
+                else:
+                    formatted_content += f"{item['text']}\n\n"
+
+                numbered_items.append({
+                    "number": idx,
+                    "content": item["text"].strip(),
+                    "type": block_type,
+                    "block_id": context.get("block_id"),
+                    "weburl": context.get("weburl"),
+                })
+
+            # Prepare metadata
+            metadata = {
+                "recordId": record_id,
+                "recordName": record_name,
+                "orgId": org_id,
+                "version": version,
+                "source": source,
+                "domain_metadata": domain_metadata,
+                "document_info": {
+                    "origin": "NOTION",
+                    "connector_name": content.get("connector_name"),
+                    "external_record_id": content.get("external_record_id"),
+                },
+                "structure_info": {
+                    "total_blocks": len(blocks),
+                    "text_blocks": len([b for b in blocks if b.get("data") and str(b.get("data")).strip()]),
+                    "block_types": list(set(block.get("block_type") for block in blocks)),
+                    "heading_count": len([b for b in blocks if b.get("block_type") == "heading"]),
+                    "paragraph_count": len([b for b in blocks if b.get("block_type") == "paragraph"]),
+                    "list_count": len([b for b in blocks if "list" in b.get("block_type", "")]),
+                },
+            }
+
+            self.logger.info("✅ Notion page processing completed successfully")
+            return {
+                "notion_result": {
+                    "blocks": numbered_items,
+                    "metadata": domain_metadata,
+                },
+                "formatted_content": formatted_content.strip(),
+                "numbered_items": numbered_items,
+                "metadata": metadata,
+            }
+
+        except Exception as e:
+            self.logger.error(f"❌ Error processing Notion page: {str(e)}")
+            raise
+
+    def _extract_text_from_notion_block(self, block_type: str, block_data) -> str:
+        """Extract text content from a Notion block based on its type and data
+
+        Args:
+            block_type (str): Type of the block (paragraph, heading, etc.)
+            block_data: The data content of the block
+
+        Returns:
+            str: Extracted text content
+        """
+        if not block_data:
+            return ""
+
+        # Handle different data types
+        if isinstance(block_data, str):
+            return block_data
+        elif isinstance(block_data, dict):
+            # Handle special block types with structured data
+            if block_type in ["bullet_list", "numbered_list"] and "text" in block_data:
+                # For todo items with checked status
+                if "checked" in block_data:
+                    status = "✓" if block_data["checked"] else "☐"
+                    return f"{status} {block_data['text']}"
+                return block_data["text"]
+            elif block_type == "code" and "code" in block_data:
+                # For code blocks
+                language = block_data.get("language", "")
+                code = block_data["code"]
+                return f"Code ({language}):\n{code}" if language else code
+            elif "url" in block_data:
+                # For bookmark/link blocks
+                caption = block_data.get("caption", "")
+                url = block_data["url"]
+                return f"{caption} ({url})" if caption else url
+            elif "text" in block_data:
+                return block_data["text"]
+            else:
+                # Try to extract any string values from the dict
+                text_parts = []
+                for value in block_data.values():
+                    if isinstance(value, str) and value.strip():
+                        text_parts.append(value.strip())
+                return " ".join(text_parts)
+        elif isinstance(block_data, list):
+            # Handle list data
+            text_parts = []
+            for item in block_data:
+                if isinstance(item, str):
+                    text_parts.append(item)
+                elif isinstance(item, dict) and "text" in item:
+                    text_parts.append(item["text"])
+            return " ".join(text_parts)
+        else:
+            # Convert other types to string
+            return str(block_data)
+
+    async def _update_record_status_no_sentences(
+        self,
+        record_id: str,
+        virtual_record_id: str
+    ) -> None:
+        """Update record status when there are no sentences to index.
+
+        Args:
+            record_id (str): The ID of the record to update
+            virtual_record_id (str): The virtual record ID associated with the record
+        """
+        self.logger.info("NO SENTENCES TO INDEX")
+        record = await self.arango_service.get_document(
+            record_id, CollectionNames.RECORDS.value
+        )
+        record.update(
+            {
+                "indexingStatus": "COMPLETED",
+                "extractionStatus": "COMPLETED",
+                "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
+                "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
+                "virtualRecordId": virtual_record_id,
+                "isDirty": False
+            }
+        )
+        await self.arango_service.batch_upsert_nodes(
+            [record], CollectionNames.RECORDS.value
+        )

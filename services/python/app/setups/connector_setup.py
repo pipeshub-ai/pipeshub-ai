@@ -61,6 +61,11 @@ from app.connectors.sources.google.google_drive.drive_webhook_handler import (
     EnterpriseDriveWebhookHandler,
     IndividualDriveWebhookHandler,
 )
+from app.connectors.sources.notion.notion_app import NotionApp
+from app.connectors.sources.notion.notion_credentials_handler import (
+    NotionCredentialsHandler,
+)
+from app.connectors.sources.notion.notion_service import NotionService
 from app.connectors.utils.rate_limiter import GoogleAPIRateLimiter
 from app.core.celery_app import CeleryApp
 from app.core.signed_url import SignedUrlConfig, SignedUrlHandler
@@ -671,6 +676,27 @@ class AppContainer(containers.DeclarativeContainer):
         config=signed_url_config,
         configuration_service=config_service,
     )
+
+    notion_app = providers.Singleton(
+        NotionApp,
+        logger=logger
+    )
+
+    notion_service = providers.Singleton(
+        NotionService,
+        logger=logger,
+        config_service=config_service,
+        arango_service=arango_service,
+    )
+
+    # Notion Credentials Handler for managing Notion secrets
+    notion_credentials_handler = providers.Singleton(
+        NotionCredentialsHandler,
+        logger=logger,
+        config_service=config_service,
+        arango_service=arango_service,
+    )
+
 
     # Services that will be initialized based on account type
     # Define lazy dependencies for account-based services:
