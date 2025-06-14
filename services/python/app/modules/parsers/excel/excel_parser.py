@@ -1,8 +1,9 @@
 import io
 import json
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
+from langchain.schema import AIMessage
 from openpyxl import load_workbook
 from openpyxl.cell.cell import MergedCell
 from openpyxl.utils import get_column_letter
@@ -21,7 +22,7 @@ from app.modules.parsers.excel.prompt_template import (
 
 
 class ExcelParser:
-    def __init__(self, logger):
+    def __init__(self, logger) -> None:
         self.logger = logger
         self.workbook = None
         self.file_binary = None
@@ -216,7 +217,7 @@ class ExcelParser:
             tables = []
             visited_cells = set()  # Track already processed cells
 
-            def get_table(start_row, start_col):
+            def get_table(start_row, start_col) -> Optional[Dict[str, Any]]:
                 """Extract a table starting from (start_row, start_col)."""
                 # Find the last column of the table
                 max_col = start_col
@@ -316,7 +317,7 @@ class ExcelParser:
         except Exception:
             raise
 
-    def _process_cell(self, cell, header, row, col):
+    def _process_cell(self, cell, header, row, col) -> Dict[str, Any]:
         """Process a single cell and return its data with denormalized merged cell values."""
         try:
             # Check if the cell is a merged cell
@@ -380,7 +381,7 @@ class ExcelParser:
             f"Retrying LLM call after error. Attempt {retry_state.attempt_number}"
         ),
     )
-    async def _call_llm(self, messages):
+    async def _call_llm(self, messages) -> AIMessage:
         """Wrapper for LLM calls with retry logic"""
         return await self.llm.ainvoke(messages)
 
@@ -564,7 +565,7 @@ class ExcelParser:
 
             # Process rows in batches of 20
             processed_rows = []
-            batch_size = 20
+            batch_size = 10
 
             for i in range(0, len(table["data"]), batch_size):
                 batch = table["data"][i : i + batch_size]

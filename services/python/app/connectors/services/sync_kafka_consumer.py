@@ -465,7 +465,6 @@ class SyncKafkaRouteConsumer:
     async def reindex_failed(self, payload) -> bool:
         """Reindex failed records"""
         try:
-            self.logger.info(f"Payload: {payload}")
             org_id = payload.get("orgId")
             connector = payload.get("connector")
             if not org_id or not connector:
