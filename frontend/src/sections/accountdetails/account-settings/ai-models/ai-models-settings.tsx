@@ -20,7 +20,7 @@ import axios from 'src/utils/axios';
 import { Iconify } from 'src/components/iconify';
 
 import ConfigureModelDialog from './components/configure-model-dialog';
-import { MODEL_TYPE_NAMES, MODEL_TYPE_ICONS, MODEL_TYPE_DESCRIPTIONS } from './utils/types';
+import { MODEL_TYPE_NAMES, MODEL_TYPE_ICONS, MODEL_TYPE_DESCRIPTIONS } from './types';
 
 // AI model types - updated to include embedding
 const AI_MODEL_TYPES = ['llm', 'embedding'];

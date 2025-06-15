@@ -17,25 +17,12 @@ import {
 
 import { Iconify } from 'src/components/iconify';
 
-import LlmConfigForm from '../llm/components/llm-config-form';
-import EmbeddingConfigForm from '../embedding/components/embedding-config-form';
-import { MODEL_TYPE_NAMES, MODEL_TYPE_ICONS } from '../utils/types';
+import LlmConfigForm, { LlmConfigFormRef } from './llm-config-form';
+import EmbeddingConfigForm, {
+  EmbeddingConfigFormRef,
+} from './embedding-config-form';
+import { MODEL_TYPE_NAMES, MODEL_TYPE_ICONS } from '../types';
 
-import type { LlmConfigFormRef } from './llm-config-form';
-import type { EmbeddingConfigFormRef } from './embedding-config-form';
-// import OcrConfigForm, { OcrConfigFormRef } from './model-forms/ocr-config-form';
-// import SlmConfigForm, { SlmConfigFormRef } from './model-forms/slm-config-form';
-// import ReasoningConfigForm, { ReasoningConfigFormRef } from './model-forms/reasoning-config-form';
-// import MultiModalConfigForm, { MultiModalConfigFormRef } from './model-forms/multimodal-config-form';
-
-// Method configurations
-interface ModelConfigType {
-  [key: string]: {
-    icon: string;
-    title: string;
-    color: string;
-  };
-}
 
 // Expected save result interface
 interface SaveResult {
@@ -52,9 +39,7 @@ interface ConfigureModelDialogProps {
 }
 
 // Create a type for any form ref that has a handleSave method
-type AnyFormRef = {
-  handleSave: () => Promise<SaveResult | boolean>;
-};
+type AnyFormRef = LlmConfigFormRef | EmbeddingConfigFormRef;
 
 const ConfigureModelDialog = ({ open, onClose, onSave, modelType }: ConfigureModelDialogProps) => {
   const theme = useTheme();
@@ -111,65 +96,47 @@ const ConfigureModelDialog = ({ open, onClose, onSave, modelType }: ConfigureMod
 
   // Handle save button click - triggers the form's save method based on the active model type
   const handleSaveClick = async () => {
-    let currentRef: React.RefObject<AnyFormRef> | null = null;
     setIsSaving(true);
     setDialogError(null);
 
-    // Determine which form ref to use based on model type
-    switch (modelType) {
-      case 'llm':
-        currentRef = llmConfigFormRef;
-        break;
-      case 'embedding':
-        currentRef = embeddingConfigFormRef;
-        break;
-      //   case 'ocr':
-      //     currentRef = ocrConfigFormRef;
-      //     break;
-      //   case 'slm':
-      //     currentRef = slmConfigFormRef;
-      //     break;
-      //   case 'reasoning':
-      //     currentRef = reasoningConfigFormRef;
-      //     break;
-      //   case 'multiModal':
-      //     currentRef = multiModalConfigFormRef;
-      //     break;
-      default:
-        currentRef = null;
-    }
-
     try {
-      // If we have a valid ref with handleSave method
-      if (currentRef?.current?.handleSave) {
-        const result = await currentRef.current.handleSave();
+      let result: SaveResult | undefined;
 
-        // Handle different types of results
-        if (result === false) {
-          // Legacy support: false means error
-          setDialogError('Failed to save configuration');
+      switch (modelType) {
+        case 'llm':
+          if (llmConfigFormRef.current?.handleSave) {
+            result = await llmConfigFormRef.current.handleSave();
+          }
+          break;
+        case 'embedding':
+          if (embeddingConfigFormRef.current?.handleSave) {
+            result = await embeddingConfigFormRef.current.handleSave();
+          }
+          break;
+        default:
+          setDialogError('Unknown model type');
           setIsSaving(false);
           return;
-        }
-
-        if (typeof result === 'object') {
-          // New system with structured result
-          if (result.success) {
-            // Pass any warnings to the parent component for snackbar display
-            onSave(result);
-          } else {
-            // Show error in dialog and don't close
-            setDialogError(result.error || 'Failed to save configuration');
-            setIsSaving(false);
-          }
-        } else {
-          // Legacy support: any other result (true or undefined) means success
-          onSave({ success: true });
-        }
       }
-    } catch (error) {
+
+      if (result) {
+        if (result.success) {
+          // Pass result to parent for snackbar display
+          onSave(result);
+        } else {
+          // Show error in dialog and don't close
+          setDialogError(result.error || 'Failed to save configuration');
+          setIsSaving(false);
+        }
+      } else {
+        // No result returned - treat as error
+        setDialogError('No response from form');
+        setIsSaving(false);
+      }
+    } catch (error: any) {
       console.error('Error saving configuration:', error);
-      setDialogError(`An unexpected error occurred: ${error.message}`);
+      const errorMessage = error?.message || 'An unexpected error occurred';
+      setDialogError(`An unexpected error occurred: ${errorMessage}`);
 
       // Also pass the error to parent for snackbar display
       onSave({
