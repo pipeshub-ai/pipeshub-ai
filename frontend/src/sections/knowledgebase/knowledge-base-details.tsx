@@ -693,8 +693,8 @@ export default function KnowledgeBaseDetails({
       field: 'fileRecord',
       headerName: 'Size',
       width: 100,
-      align: 'right',
-      headerAlign: 'right',
+      align: 'left',
+      headerAlign: 'left',
       renderCell: (params) => {
         // Handle undefined, NaN, or invalid size values
         const size = params.value?.sizeInBytes;
@@ -715,8 +715,8 @@ export default function KnowledgeBaseDetails({
         );
       },
     },
-    {
-      field: 'createdAtTimestamp',
+     {
+      field: 'sourceCreatedAtTimestamp',
       headerName: 'Created',
       width: 160,
       align: 'left',
@@ -745,7 +745,7 @@ export default function KnowledgeBaseDetails({
           }
 
           return (
-            <Box sx={{ pl: 1.5, mt: 1.5 }}>
+            <Box sx={{ pl: 0.5, mt: 1.5 }}>
               <Typography
                 variant="caption"
                 display="block"
@@ -776,7 +776,7 @@ export default function KnowledgeBaseDetails({
       },
     },
     {
-      field: 'updatedAtTimestamp',
+      field: 'sourceLastModifiedTimestamp',
       headerName: 'Updated',
       width: 160,
       align: 'left',
@@ -1325,6 +1325,7 @@ export default function KnowledgeBaseDetails({
         // Add current batch of files to FormData
         currentBatch.forEach((file) => {
           batchFormData.append('files', file);
+          batchFormData.append('lastModified', file.lastModified.toString());
         });
 
         batches.push({
@@ -1332,7 +1333,6 @@ export default function KnowledgeBaseDetails({
           size: currentBatch.length,
         });
       }
-
       // Process all batches sequentially to maintain reliable progress updates
       const totalBatches = batches.length;
       let completedBatches = 0;

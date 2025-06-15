@@ -71,8 +71,10 @@ export interface Record {
   recordType: string;
   origin: string;
   connectorName: string;
-  createdAtTimestamp: string;
-  updatedAtTimestamp: string;
+  createdAtTimestamp: number;
+  updatedAtTimestamp: number;
+  sourceCreatedAtTimestamp: number;
+  sourceLastModifiedTimestamp: number;
   isDeleted: boolean;
   isArchived: boolean;
   indexingStatus: string;

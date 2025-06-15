@@ -309,8 +309,8 @@ export default function RecordDetails() {
   }
 
   const { record, knowledgeBase, permissions, metadata } = recordData;
-  const createdAt = new Date(record.createdAtTimestamp).toLocaleString();
-  const updatedAt = new Date(record.updatedAtTimestamp).toLocaleString();
+  const createdAt = new Date(record.sourceCreatedAtTimestamp).toLocaleString();
+  const updatedAt = new Date(record.sourceLastModifiedTimestamp).toLocaleString();
 
   // Check record type
   const isFileRecord = record.recordType === 'FILE' && record.fileRecord;

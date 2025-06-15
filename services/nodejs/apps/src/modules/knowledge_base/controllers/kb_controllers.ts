@@ -100,7 +100,7 @@ export const createRecords =
 
       // Process files
       for (const file of files) {
-        const { originalname, mimetype, size } = file;
+        const { originalname, mimetype, size, lastModified } = file;
         const extension = originalname.includes('.')
           ? originalname
               .substring(originalname.lastIndexOf('.') + 1)
@@ -111,6 +111,27 @@ export const createRecords =
 
         const webUrl = `/record/${key}`;
 
+        console.log('Create Records - File metadata:', {
+          fileName: file.originalname,
+          lastModified,
+          lastModifiedType: typeof lastModified,
+          fileKeys: Object.keys(file),
+        });
+
+        // Ensure lastModified is a valid Unix timestamp
+        const validLastModified =
+          lastModified && !isNaN(lastModified) && lastModified > 0
+            ? lastModified
+            : currentTime;
+
+        console.log('Create Records - Timestamp validation:', {
+          fileName: file.originalname,
+          originalLastModified: lastModified,
+          validLastModified,
+          currentTime,
+          usingFallback: validLastModified === currentTime,
+        });
+
         const record = {
           _key: key,
           orgId: orgId,
@@ -120,6 +141,8 @@ export const createRecords =
           origin: ORIGIN_TYPE.UPLOAD,
           createdAtTimestamp: currentTime,
           updatedAtTimestamp: currentTime,
+          sourceCreatedAtTimestamp: validLastModified, // Use the file's last modified time
+          sourceLastModifiedTimestamp: validLastModified, // Also store it as last modified
           isDeleted: false,
           isArchived: false,
           indexingStatus: INDEXING_STATUS.NOT_STARTED,
