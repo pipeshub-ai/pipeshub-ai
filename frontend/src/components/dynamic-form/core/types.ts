@@ -59,12 +59,5 @@ export interface SaveResult {
   error?: string;
 }
 
-export interface ConfigFormRef {
-  handleSave: () => Promise<SaveResult>;
-  getFormData: () => Promise<any>;
-  validateForm: () => Promise<boolean>;
-  hasFormData: () => Promise<boolean>;
-  handleSubmit?: () => Promise<SaveResult>; // Legacy alias
-}
 
 export type AnyFormValues = LlmFormValues | EmbeddingFormValues | StorageFormValues | UrlFormValues | SmtpFormValues;

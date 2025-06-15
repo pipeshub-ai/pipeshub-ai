@@ -37,7 +37,7 @@ export const FIELD_TEMPLATES = {
     required: true,
     validation: z.string().min(1, 'API Key is required'),
   },
-
+  
   clientId: {
     name: 'clientId',
     label: 'Client ID',
@@ -149,9 +149,7 @@ export const FIELD_TEMPLATES = {
     placeholder: 'https://yourdomain.com',
     icon: linkIcon,
     required: true,
-    validation: z
-      .string()
-      .refine((val) => val === '' || /^https?:\/\/.+/.test(val), 'Please enter a valid URL'),
+    validation: z.string().refine((val) => val === '' || /^https?:\/\/.+/.test(val), 'Please enter a valid URL'),
   },
 
   connectorUrl: {
@@ -161,9 +159,7 @@ export const FIELD_TEMPLATES = {
     placeholder: 'https://connector.yourdomain.com',
     icon: linkIcon,
     required: true,
-    validation: z
-      .string()
-      .refine((val) => val === '' || /^https?:\/\/.+/.test(val), 'Please enter a valid URL'),
+    validation: z.string().refine((val) => val === '' || /^https?:\/\/.+/.test(val), 'Please enter a valid URL'),
   },
 
   // STORAGE FIELDS - S3
@@ -248,7 +244,7 @@ export const FIELD_TEMPLATES = {
     options: [
       { value: 'https', label: 'HTTPS' },
       { value: 'http', label: 'HTTP' },
-    ] as { value: string; label: string }[],
+    ]as { value: string; label: string }[],
   },
 
   endpointSuffix: {
@@ -279,22 +275,18 @@ export const FIELD_TEMPLATES = {
     placeholder: 'http://localhost:3000/files',
     icon: linkIcon,
     required: false,
-    validation: z
-      .string()
-      .optional()
-      .or(z.literal(''))
-      .refine(
-        (val) => {
-          if (!val || val.trim() === '') return true;
-          try {
-            const url = new URL(val);
-            return !!url;
-          } catch {
-            return false;
-          }
-        },
-        { message: 'Must be a valid URL' }
-      ),
+    validation: z.string().optional().or(z.literal('')).refine(
+      (val) => {
+        if (!val || val.trim() === '') return true;
+        try {
+          const url = new URL(val);
+          return !!url;
+        } catch {
+          return false;
+        }
+      },
+      { message: 'Must be a valid URL' }
+    ),
     gridSize: { xs: 12, sm: 6 },
   },
 

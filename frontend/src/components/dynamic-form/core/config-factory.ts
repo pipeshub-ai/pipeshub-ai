@@ -67,7 +67,7 @@ export class DynamicConfigFactory {
         providerType: definition.id,
       };
 
-      allFields.forEach((field: any) => {
+      allFields.forEach((field: FieldTemplate) => {
         if (field.type === 'number') {
           defaultValues[field.name] = field.name === 'port' ? 587 : 0;
         } else if (field.type === 'checkbox') {
@@ -103,7 +103,7 @@ export class DynamicConfigFactory {
       providerType: definition.id,
     };
 
-    allFields.forEach((field: any) => {
+    allFields.forEach((field: FieldTemplate) => {
       if (field.validation) {
         schemaFields[field.name] = field.required !== false
           ? field.validation

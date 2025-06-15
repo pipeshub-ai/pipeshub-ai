@@ -1,5 +1,5 @@
 import React, { useState, memo, useCallback } from 'react';
-import { Controller } from 'react-hook-form';
+import { Control, Controller, FieldValues } from 'react-hook-form';
 import { alpha, useTheme } from '@mui/material/styles';
 import eyeIcon from '@iconify-icons/eva/eye-fill';
 import eyeOffIcon from '@iconify-icons/eva/eye-off-fill';
@@ -37,8 +37,8 @@ import { Iconify } from 'src/components/iconify';
 interface DynamicFieldProps {
   name: string;
   label: string;
-  control: any;
-  required?: boolean;
+ control: Control<FieldValues>;
+   required?: boolean;
   isEditing: boolean;
   isDisabled?: boolean;
   type?: 'text' | 'password' | 'email' | 'number' | 'url' | 'select' | 'file' | 'checkbox';
@@ -52,8 +52,8 @@ interface DynamicFieldProps {
   // File upload specific props
   acceptedFileTypes?: string[];
   maxFileSize?: number;
-  onFileProcessed?: (data: any, fileName: string) => void;
-  fileProcessor?: (data: any) => any;
+  onFileProcessed?: (data: Record<string, unknown>, fileName: string) => void;
+  fileProcessor?: (data: Record<string, unknown>) => Record<string, unknown>;
 }
 
 const DynamicField = memo(({

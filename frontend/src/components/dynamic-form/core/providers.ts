@@ -17,6 +17,40 @@ export interface ProviderConfig {
   accountType?: 'individual' | 'business';
 }
 
+
+export const createUrlValidator = (optional: boolean = true) => {
+  const baseValidator = z.string().refine(
+    (val) => {
+      if (!val || val.trim() === '') return optional;
+      try {
+        const url = new URL(val);
+        return !!url;
+      } catch {
+        return false;
+      }
+    },
+    { message: 'Must be a valid URL' }
+  );
+
+  return optional ? baseValidator.optional().or(z.literal('')) : baseValidator;
+};
+
+export const URL_VALIDATOR = createUrlValidator(true);
+
+export const ENHANCED_FIELD_TEMPLATES = {
+  ...FIELD_TEMPLATES,
+  baseUrl: {
+    name: 'baseUrl',
+    label: 'Base URL (Optional)',
+    type: 'url' as const,
+    placeholder: 'http://localhost:3000/files',
+    icon: 'linkIcon', // Assuming you import this
+    required: false,
+    validation: URL_VALIDATOR, // ✅ Use the reusable validator
+    gridSize: { xs: 12, sm: 6 },
+  },
+} as const;
+
 // LLM PROVIDERS
 export const LLM_PROVIDERS: readonly ProviderConfig[] = [
   {
@@ -127,19 +161,6 @@ export const STORAGE_PROVIDERS: readonly ProviderConfig[] = [
       z.object({
         providerType: z.literal('local'),
         modelType: z.literal('local'),
-        mountName: z.string().optional().or(z.literal('')),
-        baseUrl: z.string().optional().or(z.literal('')).refine(
-          (val) => {
-            if (!val || val.trim() === '') return true;
-            try {
-              const url = new URL(val);
-              return !!url;
-            } catch {
-              return false;
-            }
-          },
-          { message: 'Must be a valid URL' }
-        ),
       }),
   },
   {

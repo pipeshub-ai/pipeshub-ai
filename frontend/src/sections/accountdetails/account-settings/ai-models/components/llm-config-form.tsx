@@ -16,12 +16,8 @@ interface SaveResult {
 }
 
 // 🔥 CRITICAL: This interface MUST have all 4 methods to match DynamicFormRef
-export interface LlmConfigFormRef {
-  handleSave: () => Promise<SaveResult>;
-  getFormData: () => Promise<any>;
-  validateForm: () => Promise<boolean>;
-  hasFormData: () => Promise<boolean>;
-  handleSubmit?: () => Promise<SaveResult>; // Legacy alias
+export interface LlmConfigFormRef extends DynamicFormRef {
+
 }
 
 const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
