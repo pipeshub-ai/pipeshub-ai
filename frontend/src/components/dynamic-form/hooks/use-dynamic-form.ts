@@ -1,85 +1,22 @@
+// ===================================================================
+// 📁 src/entities/dynamic-forms/hooks/use-dynamic-form.ts
+// ===================================================================
+
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useForm, UseFormReturn } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
+import { ConfigType, getProviderById, getProvidersForType } from '../core/config-registry';
+import { GeneratedProvider } from '../core/config-factory';
+import { BaseFormValues } from '../core/types';
 
-import { 
-  getLlmProviders, 
-  getLlmProviderById,
-  getEmbeddingProviders,
-  getEmbeddingProviderById,
-  getStorageProviders,
-  getStorageProviderById,
-  getUrlProviders,
-  getUrlProviderById,
-  getSmtpProviders,
-  getSmtpProviderById,
-  type LlmFormValues,
-  type EmbeddingFormValues,
-  type StorageFormValues,
-  type UrlFormValues,
-  type SmtpFormValues,
-  type BaseFormValues,
-} from '../core/universal-model-factory';
-
-type ConfigType = 'llm' | 'embedding' | 'storage' | 'url' | 'smtp';
-type AnyFormValues = LlmFormValues | EmbeddingFormValues | StorageFormValues | UrlFormValues | SmtpFormValues;
-
-type UniversalProviderFormReturn = UseFormReturn<any> & {
-  providerConfig: any;
-};
-
-// Helper functions to get providers and provider getters
-const getProvidersForType = (configType: ConfigType, accountType?: string) => {  
-  const providers = (() => {
-    switch (configType) {
-      case 'llm':
-        return getLlmProviders();
-      case 'embedding':
-        return getEmbeddingProviders();
-      case 'storage':
-        return getStorageProviders();
-      case 'url':
-        return getUrlProviders();
-      case 'smtp':
-        return getSmtpProviders();
-      default:
-        console.error(`Unknown config type: ${configType}`);
-        return [];
-    }
-  })();
-  return providers;
-};
-
-const getProviderByIdForType = (configType: ConfigType, id: string) => {  
-  const provider = (() => {
-    switch (configType) {
-      case 'llm':
-        return getLlmProviderById(id);
-      case 'embedding':
-        return getEmbeddingProviderById(id);
-      case 'storage':
-        return getStorageProviderById(id);
-      case 'url':
-        return getUrlProviderById(id);
-      case 'smtp':
-        return getSmtpProviderById(id);
-      default:
-        console.error(`Unknown config type: ${configType}`);
-        return null;
-    }
-  })();
-  return provider;
-};
-
-export const useUniversalProviderForm = (
+export const useDynamicProviderForm = (
   configType: ConfigType,
   providerType: string
-): UniversalProviderFormReturn => {
-  
-  const providerConfig = useMemo(() => {
-    const config = getProviderByIdForType(configType, providerType);
-    return config;
-  }, [configType, providerType]);
+): UseFormReturn<any> & { providerConfig: GeneratedProvider | null } => {
+  const providerConfig = useMemo(
+    () => getProviderById(configType, providerType),
+    [configType, providerType]
+  );
 
   const form = useForm({
     resolver: providerConfig ? zodResolver(providerConfig.schema) : undefined,
@@ -101,41 +38,34 @@ export const useUniversalProviderForm = (
   };
 };
 
-export const useUniversalConfigForm = (configType: ConfigType, initialProvider: string, accountType?: string) => {
+export const useDynamicForm = (
+  configType: ConfigType,
+  initialProvider: string,
+  accountType?: string
+) => {
   const stateKey = useMemo(() => `${configType}-${Date.now()}-${Math.random()}`, [configType]);
-  
+
   // Get providers based on config type - memoize to prevent re-initialization
-  const providers = useMemo(() => {
-    const providerList = getProvidersForType(configType, accountType);
-    return providerList;
-  }, [configType, accountType]);
-  
+  const providers = useMemo(() => getProvidersForType(configType), [configType]);
+
   const [currentProvider, setCurrentProvider] = useState<string>(() => {
-    let provider = '';
-    
     // If we have an initial provider and it exists in the providers list, use it
-    if (initialProvider && providers.find(p => p.id === initialProvider)) {
-      provider = initialProvider;
-    } else {
-      // Otherwise, use the first available provider for this config type
-      provider = providers[0]?.id || '';
+    if (initialProvider && providers.find((p) => p.id === initialProvider)) {
+      return initialProvider;
     }
-    
-    return provider;
+    // Otherwise, use the first available provider for this config type
+    return providers[0]?.id || '';
   });
-  
+
   const configFormStateRef = useRef<Record<string, BaseFormValues>>({});
   const [initialDataLoaded, setInitialDataLoaded] = useState(false);
   const [isSwitchingProvider, setIsSwitchingProvider] = useState(false);
 
-  // Update currentProvider when providers change - CRITICAL FIX
+  // Update currentProvider when providers change
   useEffect(() => {
     if (providers.length > 0) {
-      // Check if current provider still exists in the new providers list
-      const currentExists = providers.find(p => p.id === currentProvider);
-      
+      const currentExists = providers.find((p) => p.id === currentProvider);
       if (!currentExists) {
-        // Current provider doesn't exist, switch to the first available provider
         const newProvider = providers[0]?.id;
         if (newProvider && newProvider !== currentProvider) {
           setCurrentProvider(newProvider);
@@ -153,8 +83,7 @@ export const useUniversalConfigForm = (configType: ConfigType, initialProvider: 
     watch,
     clearErrors,
     providerConfig,
-  } = useUniversalProviderForm(configType, currentProvider);
-
+  } = useDynamicProviderForm(configType, currentProvider);
 
   useEffect(() => {
     if (isSwitchingProvider) return () => {};
@@ -178,9 +107,9 @@ export const useUniversalConfigForm = (configType: ConfigType, initialProvider: 
       if (!data) return;
 
       const isDataForThisProvider =
-        data.providerType === currentProvider || 
-        data.modelType === currentProvider || 
-        data._provider === currentProvider || 
+        data.providerType === currentProvider ||
+        data.modelType === currentProvider ||
+        data._provider === currentProvider ||
         !data._provider;
 
       if (isDataForThisProvider) {
@@ -230,12 +159,11 @@ export const useUniversalConfigForm = (configType: ConfigType, initialProvider: 
 
   const initializeForm = useCallback(
     (apiData: BaseFormValues | null) => {
-      
       if (!apiData) return;
 
       // Handle both providerType and modelType for backward compatibility
       const providerType = apiData.providerType || (apiData as any).modelType;
-      
+
       if (providerType) {
         const uniqueStateKey = `${configType}__${providerType}__${stateKey}`;
         configFormStateRef.current[uniqueStateKey] = {
@@ -243,7 +171,7 @@ export const useUniversalConfigForm = (configType: ConfigType, initialProvider: 
           providerType,
           _provider: providerType,
         };
-        
+
         if (providerType === currentProvider) {
           clearErrors();
           reset(
@@ -267,7 +195,7 @@ export const useUniversalConfigForm = (configType: ConfigType, initialProvider: 
   );
 
   const switchProvider = useCallback(
-    (newProvider: string, currentValues: any = null) => {      
+    (newProvider: string, currentValues: any = null) => {
       if (newProvider === currentProvider) return;
 
       setIsSwitchingProvider(true);
@@ -291,14 +219,14 @@ export const useUniversalConfigForm = (configType: ConfigType, initialProvider: 
           try {
             // Check if we have saved state for this specific config type + provider + instance combination
             const newUniqueStateKey = `${configType}__${newProvider}__${stateKey}`;
-          
+
             if (configFormStateRef.current[newUniqueStateKey]) {
               reset(configFormStateRef.current[newUniqueStateKey], {
                 keepErrors: false,
                 keepIsValid: false,
               });
             } else {
-              const newProviderConfig = getProviderByIdForType(configType, newProvider);
+              const newProviderConfig = getProviderById(configType, newProvider);
               const defaults = newProviderConfig?.defaultValues
                 ? { ...newProviderConfig.defaultValues, _provider: newProvider }
                 : { providerType: newProvider, _provider: newProvider };
@@ -323,7 +251,7 @@ export const useUniversalConfigForm = (configType: ConfigType, initialProvider: 
   );
 
   const resetToProvider = useCallback(
-    (providerType: string, data: BaseFormValues) => {      
+    (providerType: string, data: BaseFormValues) => {
       if (providerType === currentProvider) {
         clearErrors();
         reset(
@@ -398,7 +326,7 @@ export const useUniversalConfigForm = (configType: ConfigType, initialProvider: 
     isValid,
     isSwitchingProvider,
     providerConfig,
-    providers, // This is now safely memoized
+    providers,
     getAllFormStates,
     formStates: configFormStateRef.current,
     initialDataLoaded,

@@ -1,4 +1,7 @@
-// import closeIcon from '@iconify-icons/eva/close-outline';
+// ===================================================================
+// 📁 Updated OnBoarding Stepper with Dynamic Form System
+// ===================================================================
+
 import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 
 import {
@@ -11,7 +14,6 @@ import {
   Snackbar,
   StepLabel,
   Typography,
-  // IconButton,
   DialogTitle,
   DialogContent,
   DialogActions,
@@ -20,11 +22,9 @@ import {
 } from '@mui/material';
 
 import axios from 'src/utils/axios';
-// import { Iconify } from 'src/components/iconify';
 import { createScrollableContainerStyle } from 'src/sections/qna/chatbot/utils/styles/scrollbar';
-
-// Universal imports for config types
-import UniversalConfigForm, { UniversalConfigFormRef } from './universal-config-form';
+import { ConfigType } from 'src/components/dynamic-form';
+import DynamicForm, { DynamicFormRef } from 'src/components/dynamic-form/components/dynamic-form';
 import {
   getLlmConfig,
   updateLlmConfig,
@@ -38,10 +38,10 @@ import {
   updateSmtpConfig,
 } from '../services/config-services';
 
-// Configuration steps definition
+// Configuration steps definition with ConfigType
 const CONFIGURATION_STEPS = [
   {
-    id: 'llm',
+    id: 'llm' as ConfigType,
     label: 'LLM',
     title: 'Large Language Model',
     description: 'Configure your LLM provider to enable AI capabilities in your application.',
@@ -52,7 +52,7 @@ const CONFIGURATION_STEPS = [
     documentationUrl: 'https://docs.pipeshub.com/ai-models/overview',
   },
   {
-    id: 'embedding',
+    id: 'embedding' as ConfigType,
     label: 'Embeddings',
     title: 'Embeddings Configuration',
     description:
@@ -64,7 +64,7 @@ const CONFIGURATION_STEPS = [
     documentationUrl: 'https://docs.pipeshub.com/ai-models/overview',
   },
   {
-    id: 'storage',
+    id: 'storage' as ConfigType,
     label: 'Storage',
     title: 'Storage Configuration',
     description: 'Configure storage settings for your application data.',
@@ -75,7 +75,7 @@ const CONFIGURATION_STEPS = [
     documentationUrl: 'https://docs.pipeshub.com/storage/overview',
   },
   {
-    id: 'url',
+    id: 'url' as ConfigType,
     label: 'Public URLs',
     title: 'Public URL Configuration',
     description:
@@ -87,7 +87,7 @@ const CONFIGURATION_STEPS = [
     documentationUrl: 'https://docs.pipeshub.com/deployment/urls',
   },
   {
-    id: 'smtp',
+    id: 'smtp' as ConfigType,
     label: 'SMTP',
     title: 'SMTP Configuration',
     description: 'Configure SMTP settings for email notifications.',
@@ -138,12 +138,12 @@ const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, on
     return initial;
   });
 
-  // Individual useRef calls (must be at component top level)
-  const llmRef = useRef<UniversalConfigFormRef>(null);
-  const embeddingRef = useRef<UniversalConfigFormRef>(null);
-  const storageRef = useRef<UniversalConfigFormRef>(null);
-  const urlRef = useRef<UniversalConfigFormRef>(null);
-  const smtpRef = useRef<UniversalConfigFormRef>(null);
+  // Individual useRef calls for each dynamic form
+  const llmRef = useRef<DynamicFormRef>(null);
+  const embeddingRef = useRef<DynamicFormRef>(null);
+  const storageRef = useRef<DynamicFormRef>(null);
+  const urlRef = useRef<DynamicFormRef>(null);
+  const smtpRef = useRef<DynamicFormRef>(null);
 
   // Group them into a stable object reference
   const formRefs = useMemo(
@@ -206,6 +206,27 @@ const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, on
     const stepId = getCurrentStep()?.id;
     return stepId ? formRefs[stepId as keyof typeof formRefs] : null;
   }, [formRefs, getCurrentStep]);
+
+  // Service functions mapping
+  const getServiceFunctions = useCallback((configType: ConfigType) => {
+    switch (configType) {
+      case 'llm':
+        return { getConfig: getLlmConfig, updateConfig: updateLlmConfig };
+      case 'embedding':
+        return { getConfig: getEmbeddingConfig, updateConfig: updateEmbeddingConfig };
+      case 'storage':
+        return { getConfig: getStorageConfig, updateConfig: updateStorageConfig };
+      case 'url':
+        return { getConfig: getUrlConfig, updateConfig: updateUrlConfig };
+      case 'smtp':
+        return { getConfig: getSmtpConfig, updateConfig: updateSmtpConfig };
+      default:
+        return { 
+          getConfig: async () => null, 
+          updateConfig: async (config: any) => config 
+        };
+    }
+  }, []);
 
   const handleValidationChange = useCallback(
     (stepId: string, isValid: boolean, formData?: any) => {
@@ -596,28 +617,10 @@ const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, on
     }
   };
 
-  // Render step content
+  // Render step content using DynamicForm
   const renderStepContent = (stepIndex: number): React.ReactNode => {
     const step = CONFIGURATION_STEPS[stepIndex];
     if (!step) return null;
-
-    // Get service functions based on step type
-    const getServiceFunctions = (configType: string) => {
-      switch (configType) {
-        case 'llm':
-          return { getConfig: getLlmConfig, updateConfig: updateLlmConfig };
-        case 'embedding':
-          return { getConfig: getEmbeddingConfig, updateConfig: updateEmbeddingConfig };
-        case 'storage':
-          return { getConfig: getStorageConfig, updateConfig: updateStorageConfig };
-        case 'url':
-          return { getConfig: getUrlConfig, updateConfig: updateUrlConfig };
-        case 'smtp':
-          return { getConfig: getSmtpConfig, updateConfig: updateSmtpConfig };
-        default:
-          return { getConfig: async () => null, updateConfig: async (config: any) => config };
-      }
-    };
 
     const { getConfig, updateConfig } = getServiceFunctions(step.id);
 
@@ -627,9 +630,9 @@ const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, on
           {step.title}
         </Typography>
 
-        <UniversalConfigForm
+        <DynamicForm
           ref={formRefs[step.id as keyof typeof formRefs]}
-          configType={step.id as any}
+          configType={step.id}
           title=""
           description={step.description}
           infoMessage={step.infoMessage}
@@ -678,13 +681,6 @@ const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, on
             Skip {currentStep?.label}
           </Button>
         )}
-
-        {/* Cancel button (only show after first step) */}
-        {/* {canGoBack && (
-          <Button onClick={handleCloseWithStatus} disabled={isSubmitting} sx={{ mr: 'auto' }}>
-            Cancel
-          </Button>
-        )} */}
 
         {/* Primary action button */}
         <Button
@@ -769,16 +765,6 @@ const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, on
         <Typography variant="h6" sx={{ fontWeight: 600 }}>
           System Configuration
         </Typography>
-        {/* <IconButton
-          edge="end"
-          color="inherit"
-          onClick={handleCloseWithStatus}
-          disabled={isSubmitting}
-          aria-label="close"
-          sx={{ ml: 2 }}
-        >
-          <Iconify icon={closeIcon} />
-        </IconButton> */}
       </DialogTitle>
 
       {/* Dialog Content */}

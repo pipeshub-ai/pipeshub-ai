@@ -18,26 +18,35 @@ import {
 
 import { Iconify } from 'src/components/iconify';
 import { useAuthContext } from 'src/auth/hooks';
-import { UniversalField } from './universal-field';
-import { useUniversalConfigForm } from '../hooks/use-universal-config-form';
+import { useDynamicForm } from '../hooks/use-dynamic-form';
+import { ConfigType } from '../core/config-registry';
+import DynamicField from './dynamic-field';
 
-// Import for account type support
-
-type ConfigType = 'llm' | 'embedding' | 'storage' | 'url' | 'smtp';
-
-interface UniversalConfigFormProps {
+interface DynamicFormProps {
+  // Core configuration
   configType: ConfigType;
+  
+  // Callbacks
   onValidationChange: (isValid: boolean, formData?: any) => void;
   onSaveSuccess?: () => void;
-  initialProvider?: string;
+  
+  // Data management
   getConfig: () => Promise<any>;
   updateConfig: (config: any) => Promise<any>;
-  title: string;
-  description: string;
+  
+  // UI customization
+  title?: string;
+  description?: string;
   infoMessage?: string;
   documentationUrl?: string;
-  isRequired?: boolean;
-  stepperMode?: boolean;
+  
+  // Behavior modes
+  stepperMode?: boolean;      // For stepper/wizard mode
+  isRequired?: boolean;       // For required fields validation
+  initialProvider?: string;   // Initial provider selection
+  
+  // Legacy support (backward compatibility)
+  modelType?: 'llm' | 'embedding'; // Deprecated: Use configType instead
 }
 
 interface SaveResult {
@@ -46,35 +55,39 @@ interface SaveResult {
   error?: string;
 }
 
-export interface UniversalConfigFormRef {
+export interface DynamicFormRef {
   handleSave: () => Promise<SaveResult>;
   getFormData: () => Promise<any>;
   validateForm: () => Promise<boolean>;
   hasFormData: () => Promise<boolean>;
+  
+  // Legacy method names for backward compatibility
+  handleSubmit?: () => Promise<SaveResult>; // Alias for handleSave
 }
 
-const UniversalConfigForm = forwardRef<UniversalConfigFormRef, UniversalConfigFormProps>(
-  (
-    {
+const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>(
+  (props, ref) => {
+    const {
       configType,
+      modelType, // Legacy support
       onValidationChange,
       onSaveSuccess,
-      initialProvider,
       getConfig,
       updateConfig,
       title,
       description,
       infoMessage,
       documentationUrl,
-      isRequired = false,
       stepperMode = false,
-    },
-    ref
-  ) => {
+      isRequired = false,
+      initialProvider,
+    } = props;
+
     const theme = useTheme();
     const { user } = useAuthContext();
     const accountType = user?.accountType || 'individual';
 
+    // State management
     const [isLoading, setIsLoading] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
     const [isEditing, setIsEditing] = useState(isRequired || stepperMode);
@@ -82,10 +95,20 @@ const UniversalConfigForm = forwardRef<UniversalConfigFormRef, UniversalConfigFo
     const [formSubmitSuccess, setFormSubmitSuccess] = useState(false);
     const [fetchError, setFetchError] = useState<boolean>(false);
     const [formDataLoaded, setFormDataLoaded] = useState(stepperMode);
+    const [providerHeights, setProviderHeights] = useState<Record<string, number>>({});
 
+    // Refs
+    const formContainerRef = useRef<HTMLDivElement>(null);
     const formInstanceKey = useRef(`${configType}-${Date.now()}-${Math.random()}`);
+    const originalApiConfigRef = useRef<any>(null);
 
-    // Initialize provider form system with isolated state
+    // Determine final config type (support legacy modelType)
+    const finalConfigType = configType || modelType;
+    if (!finalConfigType) {
+      throw new Error('Either configType or modelType must be provided');
+    }
+
+    // Use the unified dynamic form hook
     const {
       currentProvider,
       switchProvider,
@@ -99,12 +122,13 @@ const UniversalConfigForm = forwardRef<UniversalConfigFormRef, UniversalConfigFo
       providers,
       getValues,
       watch,
-    } = useUniversalConfigForm(configType, '', accountType);
+      resetToProvider,
+    } = useDynamicForm(finalConfigType as ConfigType, initialProvider || '', accountType);
 
+    // Enhanced validation change handler for stepper mode
     useEffect(() => {
       if (stepperMode) {
-        const subscription = watch((data, { name, type }) => {
-          // Debounce validation changes to prevent excessive updates
+        const subscription = watch((data: any, { name, type }: any) => {
           const timeoutId = setTimeout(() => {
             let hasData = false;
             let validationResult = false;
@@ -114,15 +138,13 @@ const UniversalConfigForm = forwardRef<UniversalConfigFormRef, UniversalConfigFo
             if (isSpecialProvider) {
               hasData = true;
               validationResult = true;
-            } else if (configType === 'storage' && data.providerType === 'local') {
-              hasData = true; // Local storage always has "data"
-              validationResult = true; // Always valid for local storage, even with empty optional fields
-            } else if (configType === 'url') {
-              // For URLs, check if at least one URL is provided
+            } else if (finalConfigType === 'storage' && data.providerType === 'local') {
+              hasData = true;
+              validationResult = true;
+            } else if (finalConfigType === 'url') {
               hasData = !!(data.frontendUrl?.trim() || data.connectorUrl?.trim());
-              validationResult = hasData ? isValid : true; // Valid if no data (optional) or if data is valid
+              validationResult = hasData ? isValid : true;
             } else {
-              // Standard validation for other types
               const nonMetaKeys = Object.keys(data).filter(
                 (key) => key !== 'providerType' && key !== 'modelType' && key !== '_provider'
               );
@@ -138,15 +160,16 @@ const UniversalConfigForm = forwardRef<UniversalConfigFormRef, UniversalConfigFo
                 validationResult = hasData ? isValid : true;
               }
             }
-            // Only notify parent if this is a meaningful change
+
             onValidationChange(validationResult, hasData ? data : null);
-          }, 100); // Reduced debounce time for better responsiveness
+          }, 100);
 
           return () => clearTimeout(timeoutId);
         });
 
         return () => subscription.unsubscribe();
       }
+
       return () => {};
     }, [
       watch,
@@ -154,40 +177,63 @@ const UniversalConfigForm = forwardRef<UniversalConfigFormRef, UniversalConfigFo
       isRequired,
       onValidationChange,
       stepperMode,
-      configType,
+      finalConfigType,
       providerConfig,
       currentProvider,
+    ]);
+
+    // Regular validation change handler for non-stepper mode
+    useEffect(() => {
+      if (!stepperMode) {
+        if (isSwitchingProvider) return () => {};
+
+        const handler = setTimeout(() => {
+          const isLegacyModelType = ['llm', 'embedding'].includes(finalConfigType);
+          const shouldReportValid = isLegacyModelType 
+            ? (isValid && isEditing && !isSwitchingProvider)
+            : (isRequired ? isValid : isValid && isEditing);
+            
+          onValidationChange(shouldReportValid && !isSwitchingProvider);
+        }, 100);
+
+        return () => clearTimeout(handler);
+      }
+      return () => {};
+    }, [
+      stepperMode, 
+      isValid, 
+      isEditing, 
+      onValidationChange, 
+      isSwitchingProvider, 
+      isRequired,
+      finalConfigType
     ]);
 
     // Expose methods to parent component
     useImperativeHandle(ref, () => ({
       handleSave: async (): Promise<SaveResult> => {
         if (stepperMode) {
-          // In stepper mode, just validate without saving
+          // Stepper mode validation without saving
           const formData = getValues();
 
-          // Special providers are always valid
           if (providerConfig?.isSpecial) {
             return { success: true };
           }
 
-          if (configType === 'storage' && formData.providerType === 'local') {
+          if (finalConfigType === 'storage' && formData.providerType === 'local') {
             return { success: true };
           }
 
-          // Check if form has meaningful data
-          const hasData =
-            Object.keys(formData).filter(
-              (key) =>
-                key !== 'providerType' &&
-                key !== 'modelType' &&
-                key !== '_provider' &&
-                formData[key] &&
-                formData[key].toString().trim() !== ''
-            ).length > 0;
+          const hasData = Object.keys(formData).filter(
+            (key) =>
+              key !== 'providerType' &&
+              key !== 'modelType' &&
+              key !== '_provider' &&
+              formData[key] &&
+              formData[key].toString().trim() !== ''
+          ).length > 0;
 
           if (isRequired) {
-            // Required forms must have data and be valid
             if (hasData && isValid) {
               return { success: true };
             }
@@ -199,7 +245,7 @@ const UniversalConfigForm = forwardRef<UniversalConfigFormRef, UniversalConfigFo
             }
             return { success: false, error: 'Please complete all required fields correctly.' };
           }
-          // Optional forms are valid if they have no data, or if they have valid data
+
           if (!hasData || (hasData && isValid)) {
             return { success: true };
           }
@@ -216,22 +262,34 @@ const UniversalConfigForm = forwardRef<UniversalConfigFormRef, UniversalConfigFo
           setFormSubmitSuccess(false);
 
           return await new Promise<SaveResult>((resolve) => {
-            handleSubmit(async (data) => {
+            handleSubmit(async (data: any) => {
               try {
+                const isLegacyModelType = ['llm', 'embedding'].includes(finalConfigType);
                 const saveData = {
                   ...data,
-                  providerType: currentProvider,
-                  modelType: currentProvider,
+                  [isLegacyModelType ? 'modelType' : 'providerType']: currentProvider,
                   _provider: currentProvider,
                 };
 
                 await updateConfig(saveData);
+                
                 if (onSaveSuccess) {
                   onSaveSuccess();
                 }
 
                 setFormSubmitSuccess(true);
                 setIsEditing(false);
+                
+                // Store for legacy mode cancel functionality
+                if (isLegacyModelType) {
+                  originalApiConfigRef.current = saveData;
+                  
+                  // Refresh config in legacy mode
+                  setTimeout(() => {
+                    fetchConfig(true);
+                  }, 100);
+                }
+
                 resolve({ success: true });
               } catch (error: any) {
                 const errorMessage =
@@ -255,28 +313,25 @@ const UniversalConfigForm = forwardRef<UniversalConfigFormRef, UniversalConfigFo
 
       getFormData: async (): Promise<any> => {
         const formData = getValues();
-        const result = {
+        const isLegacyModelType = ['llm', 'embedding'].includes(finalConfigType);
+        return {
           ...formData,
-          providerType: currentProvider,
-          modelType: currentProvider,
+          [isLegacyModelType ? 'modelType' : 'providerType']: currentProvider,
           _provider: currentProvider,
         };
-        return result;
       },
 
       validateForm: async (): Promise<boolean> => {
         const formData = getValues();
-        // For special providers (like default), always valid
+        
         if (providerConfig?.isSpecial) {
           return true;
         }
 
-        // Local storage with all optional fields - always valid
-        if (configType === 'storage' && formData.providerType === 'local') {
+        if (finalConfigType === 'storage' && formData.providerType === 'local') {
           return true;
         }
 
-        // Check if form has data in non-meta fields
         const nonMetaKeys = Object.keys(formData).filter(
           (key) => key !== 'providerType' && key !== 'modelType' && key !== '_provider'
         );
@@ -286,154 +341,172 @@ const UniversalConfigForm = forwardRef<UniversalConfigFormRef, UniversalConfigFo
           return value && value.toString().trim() !== '';
         });
 
-        // For optional forms, if no data it's valid, if has data it must be valid
         if (isRequired) {
-          const result = hasData && isValid;
-          return result;
+          return hasData && isValid;
         }
-        const result = !hasData || isValid;
-        return result;
+        return !hasData || isValid;
       },
 
       hasFormData: async (): Promise<boolean> => {
         const formData = getValues();
 
-        // For special providers, consider them as having data
         if (providerConfig?.isSpecial) {
           return true;
         }
 
-        // Local storage always has "data" (even if fields are empty)
-        if (configType === 'storage' && formData.providerType === 'local') {
+        if (finalConfigType === 'storage' && formData.providerType === 'local') {
           return true;
         }
 
-        // For URLs, consider it has data if at least one URL is provided
-        if (configType === 'url') {
-          const hasUrlData = !!(formData.frontendUrl?.trim() || formData.connectorUrl?.trim());
-          return hasUrlData;
+        if (finalConfigType === 'url') {
+          return !!(formData.frontendUrl?.trim() || formData.connectorUrl?.trim());
         }
 
-        // Check if any non-meta field has data
         const nonMetaKeys = Object.keys(formData).filter(
           (key) => key !== 'providerType' && key !== 'modelType' && key !== '_provider'
         );
 
-        const hasData = nonMetaKeys.some((key) => {
+        return nonMetaKeys.some((key) => {
           const value = formData[key];
           return value && value.toString().trim() !== '';
         });
-
-        return hasData;
       },
+
+      // Legacy support
+      handleSubmit: undefined, // Will be set below
     }));
 
-    // Load config data (only in non-stepper mode)
-    useEffect(() => {
-      if (!stepperMode && !formDataLoaded) {
-        const fetchConfig = async () => {
-          setIsLoading(true);
-          try {
-            const config = await getConfig();
-            setFetchError(false);
+    // Add legacy method alias
+    const refMethods = ref as any;
+    if (refMethods?.current) {
+      refMethods.current.handleSubmit = refMethods.current.handleSave;
+    }
 
-            if (config) {
-              const providerType = config.providerType || config.modelType;
-              if (providerType && providerType !== currentProvider) {
-                switchProvider(providerType, null);
-              }
-              initializeForm(config);
+    // Config loading for non-stepper mode
+    const fetchConfig = React.useCallback(async (forceRefresh = false) => {
+      if (!stepperMode && (!formDataLoaded || forceRefresh)) {
+        setIsLoading(true);
+        try {
+          const config = await getConfig();
+          setFetchError(false);
+
+          if (config) {
+            originalApiConfigRef.current = config;
+            
+            const providerType = config.providerType || config.modelType;
+            if (providerType && providerType !== currentProvider) {
+              switchProvider(providerType, null);
             }
-            setFormDataLoaded(true);
-          } catch (error) {
-            console.error(`Failed to load ${configType} configuration:`, error);
-            setFetchError(true);
-            setSaveError('Failed to load configuration. View-only mode enabled.');
-          } finally {
-            setIsLoading(false);
+            initializeForm(config);
           }
-        };
-
-        fetchConfig();
+          setFormDataLoaded(true);
+        } catch (error) {
+          console.error(`Failed to load ${finalConfigType} configuration:`, error);
+          setFetchError(true);
+          setSaveError('Failed to load configuration. View-only mode enabled.');
+        } finally {
+          setIsLoading(false);
+        }
       }
     }, [
       stepperMode,
       formDataLoaded,
       getConfig,
-      configType,
+      finalConfigType,
       switchProvider,
       initializeForm,
       currentProvider,
     ]);
 
-    // Reset saveError when it changes
     useEffect(() => {
-      if (saveError) {
-        const timer = setTimeout(() => {
-          setSaveError(null);
-        }, 5000);
+      if (!stepperMode && !formDataLoaded) {
+        fetchConfig();
+      }
+    }, [fetchConfig, stepperMode, formDataLoaded]);
 
+    // Height tracking for smooth transitions
+    useEffect(() => {
+      if (formContainerRef.current && !isSwitchingProvider && !isLoading) {
+        const timer = setTimeout(() => {
+          if (formContainerRef.current) {
+            const height = formContainerRef.current.getBoundingClientRect().height;
+            if (height > 0) {
+              setProviderHeights(prev => ({
+                ...prev,
+                [currentProvider]: height
+              }));
+            }
+          }
+        }, 100);
+        
         return () => clearTimeout(timer);
       }
+      return () => {};
+    }, [currentProvider, isSwitchingProvider, isLoading, formDataLoaded]);
 
+    // Auto-clear save errors
+    useEffect(() => {
+      if (saveError) {
+        const timer = setTimeout(() => setSaveError(null), 5000);
+        return () => clearTimeout(timer);
+      }
       return () => {};
     }, [saveError]);
 
-    // Notify parent of validation status (for non-stepper mode)
-    useEffect(() => {
-      if (!stepperMode) {
-        if (isSwitchingProvider) {
-          return () => {};
-        }
-
-        const handler = setTimeout(() => {
-          const shouldReportValid = isRequired ? isValid : isValid && isEditing;
-          onValidationChange(shouldReportValid && !isSwitchingProvider);
-        }, 100);
-
-        return () => clearTimeout(handler);
-      }
-      return () => {};
-    }, [stepperMode, isValid, isEditing, onValidationChange, isSwitchingProvider, isRequired]);
-
-    // Provider change handler
+    // Event handlers
     const handleProviderChange = (event: any, newValue: any) => {
       if (newValue) {
         switchProvider(newValue.id);
       }
     };
 
-    // Toggle edit mode
     const handleToggleEdit = () => {
       if (isEditing) {
-        // Cancel edit - reload current data
         setIsEditing(false);
         setSaveError(null);
         setFormSubmitSuccess(false);
-        // Reset form to original state
-        if (formDataLoaded) {
-          getConfig()
-            .then((config) => {
-              if (config) {
-                const providerType = config.providerType || config.modelType;
-                if (providerType) {
-                  switchProvider(providerType, null);
-                  initializeForm(config);
-                }
-              }
-            })
-            .catch((error) => {
-              console.error('Error reloading configuration:', error);
-              setFetchError(true);
-              setSaveError('Failed to reload configuration.');
-            });
+        
+        const isLegacyModelType = ['llm', 'embedding'].includes(finalConfigType);
+        if (isLegacyModelType && originalApiConfigRef.current) {
+          const originalProvider = originalApiConfigRef.current.modelType;
+          if (resetToProvider) {
+            resetToProvider(originalProvider, originalApiConfigRef.current);
+          }
+        } else if (!stepperMode) {
+          // Reload config for non-legacy types
+          fetchConfig(true);
         }
       } else {
         setIsEditing(true);
       }
     };
 
-    // Render form fields dynamically
+    const getTransitionHeight = () => {
+      if (isSwitchingProvider && providerHeights[currentProvider]) {
+        return providerHeights[currentProvider];
+      }
+      return providerHeights[currentProvider] || 'auto';
+    };
+
+    // Generate default description based on config type
+    const getDefaultDescription = () => {
+      switch (finalConfigType) {
+        case 'llm':
+          return 'Configure your LLM model to enable AI capabilities in your application.';
+        case 'embedding':
+          return 'Configure your embedding model to enable semantic search and document retrieval in your application.';
+        case 'storage':
+          return 'Configure your storage settings for file management.';
+        case 'smtp':
+          return 'Configure SMTP settings for email notifications.';
+        case 'url':
+          return 'Configure the public URLs for your services.';
+        default:
+          return `Configure your ${String(finalConfigType).toUpperCase()} settings.`;
+      }
+    };
+
+    // Render form fields
     const renderFieldStructure = () => {
       if (!providerConfig) {
         return (
@@ -445,8 +518,8 @@ const UniversalConfigForm = forwardRef<UniversalConfigFormRef, UniversalConfigFo
         );
       }
 
-      // Special handling for providers with no fields (like 'default')
-      if (providerConfig.isSpecial) {
+      // Handle special providers (like default)
+      if (providerConfig.isSpecial || currentProvider === 'default') {
         return (
           <Grid item xs={12}>
             <Alert severity="info" sx={{ mt: 1 }}>
@@ -456,13 +529,9 @@ const UniversalConfigForm = forwardRef<UniversalConfigFormRef, UniversalConfigFo
         );
       }
 
-      // Get fields from providerConfig.allFields
       const fieldsToRender = providerConfig.allFields || [];
 
       if (fieldsToRender.length === 0) {
-        console.warn(
-          `No fields found for provider ${currentProvider} in config type ${configType} (instance: ${formInstanceKey.current})`
-        );
         return (
           <Grid item xs={12}>
             <Alert severity="warning" sx={{ mt: 1 }}>
@@ -472,13 +541,15 @@ const UniversalConfigForm = forwardRef<UniversalConfigFormRef, UniversalConfigFo
         );
       }
 
-      // Render all fields for the current provider
       return fieldsToRender.map((field: any) => {
-        const gridSize = field.gridSize || { xs: 12, md: 6 };
+        const gridSize = field.gridSize || { 
+          xs: 12, 
+          md: field.name === 'model' && fieldsToRender.length === 2 ? 6 : 6 
+        };
 
         return (
           <Grid item {...gridSize} key={`${field.name}-${formInstanceKey.current}`}>
-            <UniversalField
+            <DynamicField
               name={field.name}
               label={field.label}
               control={control}
@@ -504,6 +575,7 @@ const UniversalConfigForm = forwardRef<UniversalConfigFormRef, UniversalConfigFo
                     if (key !== field.name) {
                       // Auto-populate other fields from file data
                       const otherField = fieldsToRender.find((f: any) => f.name === key);
+                      // Could implement auto-population logic here
                     }
                   });
                 }
@@ -514,7 +586,7 @@ const UniversalConfigForm = forwardRef<UniversalConfigFormRef, UniversalConfigFo
       });
     };
 
-    // Show loading state only for initial load (non-stepper mode)
+    // Loading state for initial load
     if (!stepperMode && isLoading && !formDataLoaded) {
       return (
         <Box sx={{ display: 'flex', justifyContent: 'center', my: 4 }}>
@@ -547,9 +619,11 @@ const UniversalConfigForm = forwardRef<UniversalConfigFormRef, UniversalConfigFo
           />
           <Box>
             <Typography variant="body2" color="text.secondary">
-              {infoMessage || description}
+              {infoMessage || 
+               description || 
+               getDefaultDescription()}
+              {providerConfig?.description && ` ${providerConfig.description}`}
               {fetchError && ' (View-only mode due to connection error)'}
-             
             </Typography>
           </Box>
         </Box>
@@ -569,93 +643,106 @@ const UniversalConfigForm = forwardRef<UniversalConfigFormRef, UniversalConfigFo
           </Box>
         )}
 
-        {/* Provider selector (show if multiple providers) */}
-        {providers.length > 1 && (
-          <Grid container spacing={2.5} sx={{ mb: 2 }}>
-            <Grid item xs={12}>
-              <Autocomplete
-                size="small"
-                disabled={!isEditing || fetchError || isSwitchingProvider}
-                value={providers.find((p) => p.id === currentProvider) || null}
-                onChange={handleProviderChange}
-                options={providers}
-                getOptionLabel={(option) => option.label}
-                isOptionEqualToValue={(option, value) => option.id === value.id}
-                renderInput={(params) => (
-                  <TextField
-                    {...params}
-                    label="Provider Type"
-                    variant="outlined"
-                    sx={{
-                      '& .MuiOutlinedInput-root': {
-                        '& fieldset': {
-                          borderColor:
-                            theme.palette.mode === 'dark'
-                              ? alpha(theme.palette.common.white, 0.23)
-                              : alpha(theme.palette.common.black, 0.23),
+        {/* Form container with transition support */}
+        <Box
+          ref={formContainerRef}
+          sx={{
+            position: 'relative',
+            ...(isSwitchingProvider && {
+              height: getTransitionHeight(),
+              overflow: 'hidden'
+            }),
+            transition: 'height 0.3s ease-in-out',
+            mb: 2
+          }}
+        >
+          {/* Provider selector (show if multiple providers) */}
+          {providers.length > 1 && (
+            <Grid container spacing={2.5} sx={{ mb: 2 }}>
+              <Grid item xs={12}>
+                <Autocomplete
+                  size="small"
+                  disabled={!isEditing || fetchError || isSwitchingProvider}
+                  value={providers.find((p: any) => p.id === currentProvider) || null}
+                  onChange={handleProviderChange}
+                  options={providers}
+                  getOptionLabel={(option: any) => option.label}
+                  isOptionEqualToValue={(option: any, value: any) => option.id === value.id}
+                  renderInput={(params) => (
+                    <TextField
+                      {...params}
+                      label="Provider Type"
+                      variant="outlined"
+                      sx={{
+                        '& .MuiOutlinedInput-root': {
+                          '& fieldset': {
+                            borderColor:
+                              theme.palette.mode === 'dark'
+                                ? alpha(theme.palette.common.white, 0.23)
+                                : alpha(theme.palette.common.black, 0.23),
+                          },
+                          '&:hover fieldset': {
+                            borderColor:
+                              theme.palette.mode === 'dark'
+                                ? alpha(theme.palette.common.white, 0.5)
+                                : alpha(theme.palette.common.black, 0.87),
+                          },
+                          '&.Mui-focused fieldset': {
+                            borderColor: theme.palette.primary.main,
+                          },
                         },
-                        '&:hover fieldset': {
-                          borderColor:
-                            theme.palette.mode === 'dark'
-                              ? alpha(theme.palette.common.white, 0.5)
-                              : alpha(theme.palette.common.black, 0.87),
-                        },
-                        '&.Mui-focused fieldset': {
-                          borderColor: theme.palette.primary.main,
-                        },
-                      },
-                    }}
-                  />
-                )}
-              />
+                      }}
+                    />
+                  )}
+                />
+              </Grid>
             </Grid>
-          </Grid>
-        )}
+          )}
 
-        {/* Form fields content area */}
-        <Box sx={{ position: 'relative' }}>
-          {/* Main form fields with cross-fade transition */}
-          <Fade
-            in={!isSwitchingProvider}
-            timeout={{ enter: 300, exit: 200 }}
-            style={{
-              position: 'relative',
-              width: '100%',
-              visibility: isSwitchingProvider ? 'hidden' : 'visible',
-            }}
-          >
-            <Grid container spacing={2.5}>
-              {renderFieldStructure()}
-            </Grid>
-          </Fade>
+          {/* Form fields content area with cross-fade transition */}
+          <Box sx={{ position: 'relative' }}>
+            <Fade
+              in={!isSwitchingProvider}
+              timeout={{ enter: 300, exit: 200 }}
+              style={{
+                position: 'relative',
+                width: '100%',
+                visibility: isSwitchingProvider ? 'hidden' : 'visible',
+              }}
+            >
+              <Grid container spacing={2.5}>
+                {renderFieldStructure()}
+              </Grid>
+            </Fade>
 
-          {/* Switching provider overlay */}
-          <Fade
-            in={isSwitchingProvider}
-            timeout={{ enter: 200, exit: 300 }}
-            style={{
-              position: 'absolute',
-              width: '100%',
-              height: '100%',
-              top: 0,
-              left: 0,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              backgroundColor: alpha(theme.palette.background.paper, 0.7),
-              backdropFilter: 'blur(2px)',
-              zIndex: 10,
-              borderRadius: '4px',
-            }}
-          >
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-              <CircularProgress size={20} />
-              <Typography variant="body2" color="text.secondary">
-                Switching to{' '}
-                {providers.find((p) => p.id === currentProvider)?.label || 'new provider'}...
-              </Typography>
-            </Box>
-          </Fade>
+            {/* Switching provider overlay */}
+            <Fade
+              in={isSwitchingProvider}
+              timeout={{ enter: 200, exit: 300 }}
+              style={{
+                position: 'absolute',
+                width: '100%',
+                height: '100%',
+                top: 0,
+                left: 0,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                backgroundColor: alpha(theme.palette.background.paper, 0.7),
+                backdropFilter: 'blur(2px)',
+                zIndex: 10,
+                borderRadius: '4px',
+              }}
+            >
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                <CircularProgress size={20} />
+                <Typography variant="body2" color="text.secondary">
+                  Switching to{' '}
+                  {providers.find((p: any) => p.id === currentProvider)?.label || 'new provider'}...
+                </Typography>
+              </Box>
+            </Fade>
+          </Box>
         </Box>
 
         {/* Error/Success alerts */}
@@ -712,9 +799,18 @@ const UniversalConfigForm = forwardRef<UniversalConfigFormRef, UniversalConfigFo
             </Typography>
           </Box>
         )}
+
+        {/* Loading indicator for data refresh */}
+        {isLoading && formDataLoaded && (
+          <Box sx={{ display: 'flex', justifyContent: 'center', my: 2 }}>
+            <CircularProgress size={20} />
+          </Box>
+        )}
       </Box>
     );
   }
 );
 
-export default UniversalConfigForm;
+DynamicForm.displayName = 'DynamicForm';
+
+export default DynamicForm;

@@ -1,3 +1,5 @@
+// src/entities/dynamic-forms/core/field-templates.ts
+
 import { z } from 'zod';
 import keyIcon from '@iconify-icons/mdi/key';
 import linkIcon from '@iconify-icons/mdi/link';
@@ -5,12 +7,27 @@ import robotIcon from '@iconify-icons/mdi/robot';
 import serverIcon from '@iconify-icons/mdi/server';
 import cubeIcon from '@iconify-icons/mdi/cube-outline';
 import mailLineIcon from '@iconify-icons/ri/mail-line';
+import type { IconifyIcon } from '@iconify/react';
 
-// UNIVERSAL FIELD TEMPLATES LIBRARY
+export interface FieldTemplate {
+  name: string;
+  label: string;
+  placeholder?: string;
+  type?: 'text' | 'password' | 'email' | 'number' | 'url' | 'select' | 'checkbox' | 'file';
+  icon?: string | IconifyIcon;
+  required?: boolean;
+  validation?: z.ZodType;
+  gridSize?: { xs?: number; sm?: number; md?: number };
+  options?: { value: string; label: string }[];
+  multiline?: boolean;
+  rows?: number;
+  acceptedFileTypes?: string[];
+  maxFileSize?: number;
+  fileProcessor?: (data: any) => any;
+}
 
 export const FIELD_TEMPLATES = {
   // AUTHENTICATION FIELDS
-
   apiKey: {
     name: 'apiKey',
     label: 'API Key',
@@ -41,7 +58,6 @@ export const FIELD_TEMPLATES = {
   },
 
   // MODEL FIELDS
-
   model: {
     name: 'model',
     label: 'Model Name',
@@ -52,7 +68,6 @@ export const FIELD_TEMPLATES = {
   },
 
   // ENDPOINT FIELDS
-
   endpoint: {
     name: 'endpoint',
     label: 'Endpoint URL',
@@ -73,7 +88,6 @@ export const FIELD_TEMPLATES = {
   },
 
   // EMAIL FIELDS
-
   fromEmail: {
     name: 'fromEmail',
     label: 'From Email Address',
@@ -85,7 +99,6 @@ export const FIELD_TEMPLATES = {
   },
 
   // SERVER FIELDS
-
   host: {
     name: 'host',
     label: 'SMTP Host',
@@ -129,7 +142,6 @@ export const FIELD_TEMPLATES = {
   },
 
   // URL FIELDS
-
   frontendUrl: {
     name: 'frontendUrl',
     label: 'Frontend URL',
@@ -155,7 +167,6 @@ export const FIELD_TEMPLATES = {
   },
 
   // STORAGE FIELDS - S3
-
   s3AccessKeyId: {
     name: 's3AccessKeyId',
     label: 'Access Key ID',
@@ -196,7 +207,6 @@ export const FIELD_TEMPLATES = {
   },
 
   // STORAGE FIELDS - AZURE BLOB
-
   accountName: {
     name: 'accountName',
     label: 'Account Name',
@@ -238,7 +248,7 @@ export const FIELD_TEMPLATES = {
     options: [
       { value: 'https', label: 'HTTPS' },
       { value: 'http', label: 'HTTP' },
-    ],
+    ] as { value: string; label: string }[],
   },
 
   endpointSuffix: {
@@ -252,7 +262,6 @@ export const FIELD_TEMPLATES = {
   },
 
   // LOCAL STORAGE FIELDS
-
   mountName: {
     name: 'mountName',
     label: 'Mount Name (Optional)',
@@ -276,7 +285,6 @@ export const FIELD_TEMPLATES = {
       .or(z.literal(''))
       .refine(
         (val) => {
-          // Allow empty string or valid URL
           if (!val || val.trim() === '') return true;
           try {
             const url = new URL(val);
@@ -288,5 +296,54 @@ export const FIELD_TEMPLATES = {
         { message: 'Must be a valid URL' }
       ),
     gridSize: { xs: 12, sm: 6 },
+  },
+
+  // AWS BEDROCK FIELDS
+  region: {
+    name: 'region',
+    label: 'Region',
+    placeholder: 'us-east-1',
+    icon: serverIcon,
+    required: true,
+    validation: z.string().min(1, 'Region is required'),
+  },
+
+  accessKeyId: {
+    name: 'accessKeyId',
+    label: 'Access Key ID',
+    type: 'password' as const,
+    placeholder: 'AKIAIOSFODNN7EXAMPLE',
+    icon: keyIcon,
+    required: true,
+    validation: z.string().min(1, 'Access Key ID is required'),
+  },
+
+  secretAccessKey: {
+    name: 'secretAccessKey',
+    label: 'Secret Access Key',
+    type: 'password' as const,
+    placeholder: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+    icon: keyIcon,
+    required: true,
+    validation: z.string().min(1, 'Secret Access Key is required'),
+  },
+
+  // ADDITIONAL FIELDS
+  organizationId: {
+    name: 'organizationId',
+    label: 'Organization ID',
+    placeholder: 'org-xxxxxxxxxxxxxxxxxxxxxxxx',
+    icon: cubeIcon,
+    required: false,
+    validation: z.string().optional(),
+  },
+
+  projectId: {
+    name: 'projectId',
+    label: 'Project ID',
+    placeholder: 'your-project-id',
+    icon: cubeIcon,
+    required: false,
+    validation: z.string().optional(),
   },
 } as const;

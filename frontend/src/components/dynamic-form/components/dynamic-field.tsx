@@ -34,7 +34,7 @@ import {
 
 import { Iconify } from 'src/components/iconify';
 
-interface UniversalFieldProps {
+interface DynamicFieldProps {
   name: string;
   label: string;
   control: any;
@@ -56,7 +56,7 @@ interface UniversalFieldProps {
   fileProcessor?: (data: any) => any;
 }
 
-const UniversalField = memo(({
+const DynamicField = memo(({
   name,
   label,
   control,
@@ -75,7 +75,7 @@ const UniversalField = memo(({
   maxFileSize = 5 * 1024 * 1024, // 5MB
   onFileProcessed,
   fileProcessor,
-}: UniversalFieldProps) => {
+}: DynamicFieldProps) => {
   const theme = useTheme();
   const [showPassword, setShowPassword] = useState(false);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
@@ -83,13 +83,15 @@ const UniversalField = memo(({
   const [isDragging, setIsDragging] = useState(false);
   const [uploadError, setUploadError] = useState<string>('');
 
+  // Field type detection
   const isPasswordField = type === 'password';
   const isSelectField = type === 'select';
   const isFileField = type === 'file';
-  const isCheckboxField = type === 'checkbox'; // FIX 1: Added checkbox type
+  const isCheckboxField = type === 'checkbox';
   const isModelField = name === 'model';
   const isNumberField = type === 'number';
 
+  // Icon selection logic
   const fieldIcon = icon || defaultIcon || (
     name === 'apiKey' ? keyIcon : 
     name === 'model' ? robotIcon : 
@@ -129,7 +131,7 @@ const UniversalField = memo(({
         try {
           const jsonData = JSON.parse(e.target.result);
           
-          // FIX 2: Use custom file processor if provided
+          // Use custom file processor if provided
           if (fileProcessor) {
             try {
               const extractedData = fileProcessor(jsonData);
@@ -218,7 +220,7 @@ const UniversalField = memo(({
     setUploadError('');
   }, []);
 
-  // FIX 1: Handle checkbox fields
+  // Checkbox field renderer
   if (isCheckboxField) {
     return (
       <Box>
@@ -267,7 +269,7 @@ const UniversalField = memo(({
     );
   }
 
-  // For file upload fields
+  // File upload field renderer
   if (isFileField) {
     const uploadAreaStyles = {
       border: `2px dashed ${
@@ -552,7 +554,7 @@ const UniversalField = memo(({
     );
   }
 
-  // For select fields
+  // Select field renderer
   if (isSelectField && options) {
     return (
       <Box>
@@ -602,7 +604,7 @@ const UniversalField = memo(({
     );
   }
 
-  // For regular input fields (including multiline)
+  // Regular input field renderer (text, password, email, url, number, multiline)
   return (
     <Box>
       <Controller
@@ -696,6 +698,7 @@ const UniversalField = memo(({
   );
 });
 
-UniversalField.displayName = 'UniversalField';
+DynamicField.displayName = 'DynamicField';
 
-export { UniversalField };
+// 🔥 FIX: Export the component directly, not as an object
+export default DynamicField;
