@@ -1,6 +1,7 @@
 import type { Icon as IconifyIcon } from '@iconify/react';
 
 import googleIcon from '@iconify-icons/mdi/google';
+import notionIcon from '@iconify-icons/ri/notion-fill';
 
 export interface ConnectorConfig {
   id: string;
@@ -28,5 +29,13 @@ export const CONNECTORS_LIST: ConnectorConfig[] = [
     description:
       'Integrate with Google Workspace for calendar, gmail, spreadsheets, drive and document sharing',
     color: '#4285F4',
+  },
+  {
+    id: 'notion',
+    icon: notionIcon,
+    title: 'Notion',
+    description:
+      'Integrate with Notion Workspaces for pages, databases, comments and document sharing',
+    color: '#000000',
   },
 ];

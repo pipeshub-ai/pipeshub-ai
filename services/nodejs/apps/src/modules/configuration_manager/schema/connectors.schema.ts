@@ -3,6 +3,7 @@ import mongoose, { Schema, Document, Types, Model } from 'mongoose';
 // Enum for Connector Types
 export enum ConnectorsType {
   GOOGLE_WORKSPACE = 'Google Workspace',
+  NOTION = 'Notion',
 }
 
 // Interface for ConnectorsConfig

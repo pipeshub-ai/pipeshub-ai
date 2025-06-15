@@ -168,7 +168,7 @@ class DriveChangeHandler:
                 change_type == EventTypes.NEW_RECORD.value
                 or change_type == EventTypes.UPDATE_RECORD.value
             ):
-                file_key = await self.arango_service.get_key_by_external_file_id(
+                file_key = await self.arango_service.get_key_by_external_record_id(
                     file_id
                 )
                 self.logger.info(f"🚀 File key: {file_key}")

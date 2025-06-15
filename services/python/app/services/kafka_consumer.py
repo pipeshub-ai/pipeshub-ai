@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Set
@@ -175,6 +176,10 @@ class KafkaConsumerManager:
                 )
                 raise
 
+            self.logger.info(f"Event: {data}")
+
+            self.logger.info(f"Event: {data}")
+
             # Event processing
             event_type = data.get("eventType")
             if not event_type:
@@ -241,6 +246,8 @@ class KafkaConsumerManager:
                 MimeTypes.GOOGLE_SLIDES.value,
                 MimeTypes.GOOGLE_DOCS.value,
                 MimeTypes.GOOGLE_SHEETS.value,
+                MimeTypes.NOTION_TEXT.value,
+                MimeTypes.NOTION_PAGE_COMMENT_TEXT.value,
             ]
 
             supported_extensions = [
@@ -255,8 +262,8 @@ class KafkaConsumerManager:
                 ExtensionTypes.PPT.value,
                 ExtensionTypes.MD.value,
                 ExtensionTypes.MDX.value,
-                ExtensionTypes.TXT.value,
-            ]
+                ExtensionTypes.TXT.value
+                ]
 
             if (
                 mime_type not in supported_mime_types
@@ -305,16 +312,29 @@ class KafkaConsumerManager:
                     response = await make_api_call(
                         payload_data["signedUrlRoute"], token
                     )
+
                     self.logger.debug(
                         f"Received signed URL response for message {message_id}"
                     )
 
-                    if response.get("is_json"):
+                    if response.get("is_json") and "signedUrl" in response["data"]:
                         signed_url = response["data"]["signedUrl"]
                         payload_data["signedUrl"] = signed_url
+                    if response.get("is_json") and "record_data" in response["data"]:
+                        file_data = response.get("data").get("record_data")
+                        if isinstance(file_data, bytes):
+                            file_data = base64.b64encode(file_data).decode('utf-8')
+                        elif isinstance(file_data, dict):
+                            # If file_data is a dict, extract the actual data
+                            file_data = file_data.get("data")
+
+                        payload_data["buffer"] = file_data
+                        payload_data.update(response["data"])
                     else:
                         payload_data["buffer"] = response["data"]
                     data["payload"] = payload_data
+
+                    self.logger.info(f"Data: {data}")
 
                     await self.event_processor.on_event(data)
                     processing_time = (datetime.now() - start_time).total_seconds()
@@ -570,7 +590,7 @@ class KafkaConsumerManager:
                                     f"Received signed URL response for record {record_id}"
                                 )
 
-                                if response.get("is_json"):
+                                if response.get("is_json") and "signedUrl" in response["data"]:
                                     signed_url = response["data"]["signedUrl"]
                                     payload_data["signedUrl"] = signed_url
                                 else:

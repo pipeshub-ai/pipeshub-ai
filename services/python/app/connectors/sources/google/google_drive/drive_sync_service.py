@@ -1087,7 +1087,7 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                                 if file_metadata:
                                     file_id = file_metadata.get("id")
 
-                                    file_key = await self.arango_service.get_key_by_external_file_id(
+                                    file_key = await self.arango_service.get_key_by_external_record_id(
                                         file_id
                                     )
                                     record = await self.arango_service.get_document(
@@ -1363,7 +1363,7 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
                             if file_metadata:
                                 file_id = file_metadata.get("id")
 
-                                file_key = await self.arango_service.get_key_by_external_file_id(
+                                file_key = await self.arango_service.get_key_by_external_record_id(
                                     file_id
                                 )
                                 record = await self.arango_service.get_document(
@@ -1951,7 +1951,7 @@ class DriveSyncIndividualService(BaseDriveSyncService):
                             if file_metadata:
                                 file_id = file_metadata.get("id")
 
-                                file_key = await self.arango_service.get_key_by_external_file_id(
+                                file_key = await self.arango_service.get_key_by_external_record_id(
                                     file_id
                                 )
                                 record = await self.arango_service.get_document(
