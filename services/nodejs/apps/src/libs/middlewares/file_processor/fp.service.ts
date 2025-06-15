@@ -1,5 +1,6 @@
 import multer from 'multer';
 import {
+  CustomMulterFile,
   FileBufferInfo,
   FileProcessorConfiguration,
   IFileUploadService,
@@ -91,7 +92,6 @@ export class FileProcessorService implements IFileUploadService {
         // Process file metadata (including lastModified) immediately after multer processing
         this.processFileMetadata(req, files);
 
-
         // If strict mode and no files, throw an error
         if (files.length === 0) {
           if (this.configuration.strictFileUpload) {
@@ -132,7 +132,7 @@ export class FileProcessorService implements IFileUploadService {
         : [req.body.lastModified]
       : [];
 
-    console.log('File Processor Service - Request body:', {
+    logger.debug('File Processor Service - Request body:', {
       lastModifiedValues,
       bodyKeys: Object.keys(req.body),
       filesCount: files.length,
@@ -142,7 +142,7 @@ export class FileProcessorService implements IFileUploadService {
     files.forEach((file, index) => {
       const lastModifiedValue = lastModifiedValues[index];
 
-      console.log('File Processor Service - Processing file metadata:', {
+      logger.debug('File Processor Service - Processing file metadata:', {
         fileName: file.originalname,
         index,
         lastModifiedValue: lastModifiedValue,
@@ -165,7 +165,7 @@ export class FileProcessorService implements IFileUploadService {
             } else {
               // If parsing fails, use current time
               lastModified = Date.now();
-              console.warn(
+              logger.error(
                 'Failed to parse lastModified, using current time:',
                 {
                   fileName: file.originalname,
@@ -178,7 +178,7 @@ export class FileProcessorService implements IFileUploadService {
         } else {
           // If no lastModified provided, use current time
           lastModified = Date.now();
-          console.warn('No lastModified provided, using current time:', {
+          logger.debug('No lastModified provided, using current time:', {
             fileName: file.originalname,
             index,
             fallbackTime: lastModified,
@@ -187,7 +187,7 @@ export class FileProcessorService implements IFileUploadService {
       } catch (error) {
         // If parsing fails, use current time
         lastModified = Date.now();
-        console.error('Error parsing lastModified, using current time:', {
+        logger.debug('Error parsing lastModified, using current time:', {
           fileName: file.originalname,
           lastModifiedValue,
           error,
@@ -195,7 +195,7 @@ export class FileProcessorService implements IFileUploadService {
         });
       }
 
-      console.log('File Processor Service - Final metadata result:', {
+      logger.debug('File Processor Service - Final metadata result:', {
         fileName: file.originalname,
         lastModifiedValue: lastModifiedValue,
         parsedLastModified: lastModified,
@@ -203,7 +203,7 @@ export class FileProcessorService implements IFileUploadService {
       });
 
       // Store the parsed timestamp on the file object
-      (file as any).lastModified = lastModified;
+      (file as CustomMulterFile).lastModified = lastModified;
     });
   }
 
@@ -291,8 +291,8 @@ export class FileProcessorService implements IFileUploadService {
         req.body.fileBuffers = files
           .map((file) => {
             if (!file) return null;
-            const lastModified = (file as any).lastModified || Date.now();
-            console.log('File Processor Service - Creating buffer info:', {
+            const lastModified = (file as CustomMulterFile).lastModified!;
+            logger.debug('File Processor Service - Creating buffer info:', {
               fileName: file.originalname,
               lastModified,
               hasLastModified: !!(file as any).lastModified,
@@ -313,13 +313,15 @@ export class FileProcessorService implements IFileUploadService {
       } else if (files.length === 1) {
         const file = files[0];
         if (file) {
-          const lastModified = (file as any).lastModified || Date.now();
-
-          console.log('File Processor Service - Creating single buffer info:', {
-            fileName: file.originalname,
-            lastModified,
-            hasLastModified: !!(file as any).lastModified,
-          });
+          const lastModified = (file as CustomMulterFile).lastModified!;
+          logger.debug(
+            'File Processor Service - Creating single buffer info:',
+            {
+              fileName: file.originalname,
+              lastModified,
+              hasLastModified: !!(file as any).lastModified,
+            },
+          );
 
           req.body.fileBuffer = {
             originalname: file.originalname,
