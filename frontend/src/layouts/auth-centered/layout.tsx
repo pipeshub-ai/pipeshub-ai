@@ -9,7 +9,7 @@ import { stylesMode } from 'src/theme/styles';
 import { Main } from './main';
 import { HeaderSection } from '../core/header-section';
 import { LayoutSection } from '../core/layout-section';
-import { SettingsButton } from '../components/settings-button';
+import { ThemeToggleButton } from '../components/theme-toggle-button';
 
 // ----------------------------------------------------------------------
 
@@ -58,7 +58,7 @@ export function AuthCenteredLayout({ sx, children, header }: AuthCenteredLayoutP
             rightArea: (
               <Box display="flex" alignItems="center" gap={{ xs: 1, sm: 1.5 }}>
                 {/* -- Settings button -- */}
-                <SettingsButton />
+                <ThemeToggleButton />
               </Box>
             ),
           }}

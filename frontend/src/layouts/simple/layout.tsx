@@ -8,7 +8,7 @@ import { Logo } from 'src/components/logo';
 import { Main, CompactContent } from './main';
 import { LayoutSection } from '../core/layout-section';
 import { HeaderSection } from '../core/header-section';
-import { SettingsButton } from '../components/settings-button';
+import { ThemeToggleButton } from '../components/theme-toggle-button';
 
 // ----------------------------------------------------------------------
 
@@ -46,7 +46,7 @@ export function SimpleLayout({ sx, children, header, content }: SimpleLayoutProp
             rightArea: (
               <Box display="flex" alignItems="center" gap={{ xs: 1, sm: 1.5 }}>
                 {/* -- Settings button -- */}
-                <SettingsButton />
+                <ThemeToggleButton />
               </Box>
             ),
           }}

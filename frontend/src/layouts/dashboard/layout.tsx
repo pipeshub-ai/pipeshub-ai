@@ -33,8 +33,8 @@ import { HeaderSection } from '../core/header-section';
 import { StyledDivider, useNavColorVars } from './styles';
 import { AccountDrawer } from '../components/account-drawer';
 import { getDashboardNavData } from '../config-nav-dashboard';
-import { SettingsButton } from '../components/settings-button';
-
+import {ThemeToggleButton } from '../components/theme-toggle-button';
+   
 // ----------------------------------------------------------------------
 
 export type DashboardLayoutProps = {
@@ -226,7 +226,7 @@ export function DashboardLayout({ sx, children, header, data }: DashboardLayoutP
                   />
                 </IconButton>
                 {/* task center remaining  */}
-                <SettingsButton />
+                <ThemeToggleButton />
                 {/* Pass the dynamic account menu items instead of static _account */}
                 <AccountDrawer data={accountMenuItems} />
               </Box>

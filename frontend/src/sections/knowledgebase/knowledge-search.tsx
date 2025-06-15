@@ -605,10 +605,10 @@ const KnowledgeSearch = ({
                   your organization&apos;s knowledge base.
                 </Typography>
 
-                <Box sx={{ display: 'flex', gap: 2 }}>
+                {/* <Box sx={{ display: 'flex', gap: 2 }}>
                   <ActionButton icon={starIcon} label="Popular topics" />
                   <ActionButton icon={historyIcon} label="Recent searches" />
-                </Box>
+                </Box> */}
               </Box>
             )}
 

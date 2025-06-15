@@ -11,7 +11,7 @@ export const defaultSettings: SettingsState = {
   direction: 'ltr',
   contrast: 'default',
   navLayout: 'horizontal',
-  primaryColor: 'cyan',
+  primaryColor: 'blue', 
   navColor: 'integrate',
   compactLayout: true,
   fontFamily: defaultFont,
