@@ -14,7 +14,7 @@ import { useAuthContext } from 'src/auth/hooks';
 import { AuthProvider } from 'src/auth/context/jwt';
 
 import FullNameDialog from '../components/full-name-dialog';
-import ConfigurationStepper from '../configuration-stepper/configuration-stepper';
+import OnBoardingStepper from '../configuration-stepper/components/stepper';
 
 // ----------------------------------------------------------------------
 
@@ -198,7 +198,7 @@ function PageContent() {
   return (
     <>
       {/* Only render ConfigurationStepper if user is admin */}
-      {isAdmin && <ConfigurationStepper open={configDialog} onClose={handleClose} />}
+      {isAdmin && <OnBoardingStepper open={configDialog} onClose={handleClose} />}
 
       {/* Full Name Dialog - shown to all users */}
       <FullNameDialog
