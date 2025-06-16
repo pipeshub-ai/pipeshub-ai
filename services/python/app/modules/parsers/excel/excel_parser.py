@@ -562,7 +562,6 @@ class ExcelParser:
             # Get table summary
             table_summary = await self.get_table_summary(table)
 
-            # Process rows in batches of 20
             processed_rows = []
             batch_size = 10
 

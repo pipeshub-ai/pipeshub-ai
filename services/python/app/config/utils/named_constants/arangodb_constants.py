@@ -123,6 +123,25 @@ class CollectionNames(Enum):
 
     BLOCKS = "blocks"
 
+    # Entity Node Collections
+    ENTITY_ORGANIZATIONS = "entityOrganizations"
+    ENTITY_LOCATIONS = "entityLocations"
+    ENTITY_PRODUCTS = "entityProducts"
+    ENTITY_EVENTS = "entityEvents"
+    ENTITY_DATES = "entityDates"
+    ENTITY_DURATIONS = "entityDurations"
+    ENTITY_MONETARY = "entityMonetary"
+    ENTITY_PERCENTAGES = "entityPercentages"
+    ENTITY_CONTACT_INFO = "entityContactInfo"
+    ENTITY_DOCUMENT_REFS = "entityDocumentRefs"
+    ENTITY_PROJECTS = "entityProjects"
+    ENTITY_TECHNOLOGIES = "entityTechnologies"
+    ENTITY_LEGAL_TERMS = "entityLegalTerms"
+    ENTITY_JOB_TITLES = "entityJobTitles"
+    ENTITY_SYSTEM_IDS = "entitySystemIds"
+
+    # Single Entity Edge Collection
+    HAS_ENTITY = "hasEntity"
 
 class QdrantCollectionNames(Enum):
     RECORDS = "records"

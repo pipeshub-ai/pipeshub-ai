@@ -70,3 +70,182 @@ Instructions must be strictly followed, failure to do so will result in terminat
 
 Return the JSON object only, no additional text or explanation.
 """
+
+
+entity_prompt = """
+Analyze the following text and extract named entities with the specific types, confidence scores, and normalized values where applicable.
+
+IMPORTANT: Return ONLY a valid JSON object, no other text or explanation.
+
+Entity types to identify and normalize:
+1. Organizations:
+   - Types: company, department, team, subsidiary
+   - Return standardized company names
+
+2. Locations:
+   - Types: city, country, office, region
+   - Return standardized location names
+
+3. Dates and Times:
+   - Normalize to ISO format (YYYY-MM-DD)
+   - Handle ranges (start_date, end_date)
+   - Convert relative dates ("next week", "in 2 days")
+
+4. Durations:
+   - Normalize to standard units
+   - Include unit (seconds, minutes, hours, days)
+   - Convert text durations ("a few hours", "couple of days")
+
+5. Monetary Values:
+   - Normalize to standard format
+   - Include currency code
+   - Convert text amounts ("half a million", "5k")
+
+6. Percentages:
+   - Normalize to numeric values (e.g., "50 percent" -> 50)
+
+7. Contact Info:
+   - Extract email addresses, phone numbers, URLs
+
+8. Document References:
+   - Include ID type, filename, or other references
+
+9. Projects:
+   - Extract project names, code names
+
+10. Technologies and Frameworks:
+   - Languages, frameworks, tools, APIs
+
+11. Legal Terms:
+   - Policies, regulations, compliance references
+
+12. Job Titles:
+   - Roles, positions, and titles
+
+13. System Identifiers:
+   - IP addresses, ticket numbers, versions
+
+Required JSON Format:
+{{
+    "organizations": [
+        {{
+            "text": "exact mention",
+            "type": "company",
+            "confidence": 0.95,
+            "normalized_value": "standardized name"
+        }}
+    ],
+    "locations": [
+        {{
+            "text": "exact mention",
+            "type": "city",
+            "confidence": 0.9,
+            "normalized_value": "standardized location"
+        }}
+    ],
+    "dates": [
+        {{
+            "text": "next Friday",
+            "type": "date",
+            "confidence": 0.9,
+            "normalized_value": "2024-05-24",
+            "is_range": false,
+            "end_date": null
+        }},
+        {{
+            "text": "May 1-15, 2024",
+            "type": "date",
+            "confidence": 0.9,
+            "normalized_value": "2024-05-01",
+            "is_range": true,
+            "end_date": "2024-05-15"
+        }}
+    ],
+    "durations": [
+        {{
+            "text": "two weeks",
+            "type": "duration",
+            "confidence": 0.9,
+            "unit": "days",
+            "value": 14.0,
+            "normalized_value": "14 days"
+        }}
+    ],
+    "monetary_values": [
+        {{
+            "text": "5k USD",
+            "type": "currency",
+            "confidence": 0.95,
+            "currency": "USD",
+            "amount": 5000.00,
+            "normalized_value": "5000 USD"
+        }}
+    ],
+    "percentages": [
+        {{
+            "text": "50 percent",
+            "type": "percentage",
+            "confidence": 0.85,
+            "normalized_value": 50
+        }}
+    ],
+    "contact_info": [
+        {{
+            "text": "johndoe@example.com",
+            "type": "email",
+            "confidence": 0.95,
+            "normalized_value": "johndoe@example.com"
+        }}
+    ],
+    "document_references": [
+        {{
+            "text": "invoice #1234",
+            "type": "ID",
+            "confidence": 0.9,
+            "normalized_value": "invoice-1234"
+        }}
+    ],
+    "projects": [
+        {{
+            "text": "Project Titan",
+            "type": "project",
+            "confidence": 0.95,
+            "normalized_value": "Project Titan"
+        }}
+    ],
+    "technologies": [
+        {{
+            "text": "Python",
+            "type": "language",
+            "confidence": 0.9,
+            "normalized_value": "Python"
+        }}
+    ],
+    "legal_terms": [
+        {{
+            "text": "GDPR compliance",
+            "type": "policy",
+            "confidence": 0.9,
+            "normalized_value": "GDPR"
+        }}
+    ],
+    "job_titles": [
+        {{
+            "text": "Software Engineer",
+            "type": "role",
+            "confidence": 0.95,
+            "normalized_value": "Software Engineer"
+        }}
+    ],
+    "system_identifiers": [
+        {{
+            "text": "IP 192.168.0.1",
+            "type": "IP address",
+            "confidence": 0.95,
+            "normalized_value": "192.168.0.1"
+        }}
+    ]
+}}
+
+Text: {content}
+"""

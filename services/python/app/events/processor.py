@@ -139,6 +139,8 @@ class Processor:
     async def _process_document_blocks(self, block_sections, text_blocks, record_id, org_id, virtual_record_id):
         """Process document blocks and extract metadata"""
         processed_blocks = []
+        block_documents = []
+        block_id_map = {}  # Map section index to block ID
         BLOCK_TYPE_MAP = {
             0: "text",
             1: "image",
@@ -147,8 +149,11 @@ class Processor:
             4: "header",
         }
 
-        for section in block_sections:
-            block_id = str(uuid4())  # Generate unique block ID
+        self.logger.info("Text blocks: %s", text_blocks)
+        # First loop - create and batch upsert blocks
+        for idx, section in enumerate(block_sections):
+            block_id = str(uuid4())
+            block_id_map[idx] = block_id  # Store mapping of section index to block ID
 
             # Combine text from blocks in the section
             block_numbers = list(range(section["start_block"], section["end_block"] + 1))
@@ -171,6 +176,7 @@ class Processor:
                     if "context" in block and "page_number" in block["context"]:
                         page_numbers.add(block["context"]["page_number"])
 
+            self.logger.info(f"Section texts for record id {record_id}: {section_texts}")
             section_text = "\n".join(section_texts)
             self.logger.info(f"Section text for record id {record_id}: {section_text}")
 
@@ -184,6 +190,8 @@ class Processor:
                 boxes_by_page = {}
                 for i, box in enumerate(bounding_boxes):
                     block_num = block_numbers[i]
+                    self.logger.info(f"Block num: {block_num}")
+                    self.logger.info(f"Text block: {idx}: {text_blocks[block_num]}")
                     page_num = text_blocks[block_num]["context"]["page_number"]
                     boxes_by_page.setdefault(page_num, []).append(box)
 
@@ -229,27 +237,51 @@ class Processor:
                 "nextPageBoundingBoxes": next_page_bounding_boxes if next_page_bounding_boxes else None,
                 "pageNum": sorted(list(page_numbers)) if page_numbers else None
             }
-            await self.arango_service.batch_upsert_nodes(
-                [block_doc],
-                CollectionNames.BLOCKS.value,
-            )
+            block_documents.append(block_doc)
 
-            record = await self.arango_service.get_document(
-                record_id, CollectionNames.RECORDS.value
-            )
-            doc = dict(record)
+        # Batch upsert all blocks
+        await self.arango_service.batch_upsert_nodes(
+            block_documents,
+            CollectionNames.BLOCKS.value,
+        )
+
+        # Get record metadata once for all blocks
+        record = await self.arango_service.get_document(
+            record_id, CollectionNames.RECORDS.value
+        )
+        doc = dict(record)
+
+        # Second loop - process metadata using the mapped block IDs
+        for idx, section in enumerate(block_sections):
+            block_id = block_id_map[idx]  # Get the corresponding block ID
+            block_doc = next(doc for doc in block_documents if doc["_key"] == block_id)
+
+            # Combine text from blocks in the section
+            block_numbers = list(range(section["start_block"], section["end_block"] + 1))
+            section_texts = []
+            for block_num in block_numbers:
+                if block_num in text_blocks:
+                    block = text_blocks[block_num]
+                    section_texts.append(block["text"])
+
+            section_text = "\n".join(section_texts)
 
             # Extract and save metadata for the block
             try:
                 metadata = await self.domain_extractor.extract_metadata(
                     section_text, org_id
                 )
+                entities = await self.domain_extractor.extract_entities(
+                    section_text, org_id
+                )
+
                 block_metadata = await self.domain_extractor.save_metadata_to_db(
                     org_id,
                     block_id,
                     metadata,
                     virtual_record_id,
-                    CollectionNames.BLOCKS.value
+                    entities = entities,
+                    collection_name=CollectionNames.BLOCKS.value
                 )
                 block_doc.update({
                     "text": section_text,
@@ -278,9 +310,13 @@ class Processor:
             list: List of processed blocks with metadata and storage info
         """
         processed_blocks = []
+        block_documents = []
+        block_id_map = {}  # Map block index to block ID
 
-        for block in blocks:
+        # First loop - create and batch upsert blocks
+        for idx, block in enumerate(blocks):
             block_id = str(uuid4())
+            block_id_map[idx] = block_id
 
             # Create block document
             block_doc = {
@@ -292,23 +328,30 @@ class Processor:
                 "createdAtTimestamp": get_epoch_timestamp_in_ms()
             }
 
-            # Save block to database
-            await self.arango_service.batch_upsert_nodes(
-                [block_doc],
-                CollectionNames.BLOCKS.value,
-            )
-
             # Add sheet-specific metadata if available
             if "sheetName" in block["metadata"]:
                 block_doc["sheetName"] = block["metadata"]["sheetName"]
             if "sheetNum" in block["metadata"]:
                 block_doc["sheetNum"] = block["metadata"]["sheetNum"]
 
-            # Get record metadata
-            record = await self.arango_service.get_document(
-                record_id, CollectionNames.RECORDS.value
-            )
-            doc = dict(record)
+            block_documents.append(block_doc)
+
+        # Batch upsert all blocks
+        await self.arango_service.batch_upsert_nodes(
+            block_documents,
+            CollectionNames.BLOCKS.value,
+        )
+
+        # Get record metadata once for all blocks
+        record = await self.arango_service.get_document(
+            record_id, CollectionNames.RECORDS.value
+        )
+        doc = dict(record)
+
+        # Second loop - process metadata using the mapped block IDs
+        for idx, block in enumerate(blocks):
+            block_id = block_id_map[idx]
+            block_doc = next(doc for doc in block_documents if doc["_key"] == block_id)
 
             # Extract and save metadata for the block
             try:
@@ -320,7 +363,7 @@ class Processor:
                     block_id,
                     metadata,
                     virtual_record_id,
-                    CollectionNames.BLOCKS.value
+                    collection_name=CollectionNames.BLOCKS.value
                 )
                 block_doc.update({
                     "text": block["text"],
@@ -422,7 +465,7 @@ class Processor:
             for idx, item in enumerate(ordered_content, 1):
                 if item["text"].strip():
                     text_blocks[idx] = {
-                        "text": item["text"].strip(),
+                        "text": item["text"],
                         "context": item["context"]
                     }
 
@@ -642,7 +685,7 @@ class Processor:
             for idx, item in enumerate(ordered_content, 1):
                 if item["text"].strip():
                     text_blocks[idx] = {
-                        "text": item["text"].strip(),
+                        "text": item["text"],
                         "context": item["context"]
                     }
 
@@ -962,7 +1005,7 @@ class Processor:
             for idx, item in enumerate(ordered_content, 1):
                 if item["text"].strip():
                     text_blocks[idx] = {
-                        "text": item["text"].strip(),
+                        "text": item["text"],
                         "context": item["context"]
                     }
 
@@ -1191,13 +1234,14 @@ class Processor:
                 for idx, s in enumerate(sentences, 1):
                     if s.get("content") and s["content"].strip():
                         text_blocks[idx] = {
-                            "text": s["content"].strip(),
+                            "text": s["content"],
                             "context": {
                                 "block_type": s.get("block_type", 0),
                                 "page_number": s.get("page_number", 0),
                                 "bounding_box": s["bounding_box"]
                             }
                         }
+                        self.logger.info(f"Text block: {idx}: {text_blocks[idx]}")
 
             # Extract text content
             text_content = "\n".join(
@@ -1391,7 +1435,7 @@ class Processor:
             for idx, item in enumerate(ordered_content, 1):
                 if item["text"].strip():
                     text_blocks[idx] = {
-                        "text": item["text"].strip(),
+                        "text": item["text"],
                         "context": item["context"]
                     }
 
@@ -2045,7 +2089,7 @@ class Processor:
             for idx, item in enumerate(ordered_content, 1):
                 if item["text"].strip():
                     text_blocks[idx] = {
-                        "text": item["text"].strip(),
+                        "text": item["text"],
                         "context": item["context"]
                     }
 
@@ -2256,7 +2300,7 @@ class Processor:
             for idx, item in enumerate(ordered_content, 1):
                 if item.get("text", "").strip():
                     text_blocks[idx] = {
-                        "text": item["text"].strip(),
+                        "text": item["text"],
                         "context": {
                             "label": item.get("label", "text"),
                             "language": item.get("language") if item.get("label") == "code" else None
@@ -2448,14 +2492,14 @@ class Processor:
                 raise ValueError("Unable to decode text file with any supported encoding")
 
             # Split content into blocks and prepare for LLM
-            blocks = [block.strip() for block in text_content.split("\n\n") if block.strip()]
+            blocks = [block for block in text_content.split("\n\n") if block.strip()]
 
             # Prepare text blocks for LLM analysis
             text_blocks = {}
             for idx, block in enumerate(blocks, 1):
                 if block.strip():
                     text_blocks[idx] = {
-                        "text": block.strip(),
+                        "text": block,
                         "context": {
                             "label": "text",
                             "block_type": "paragraph"
@@ -2715,7 +2759,7 @@ class Processor:
             for idx, item in enumerate(ordered_items, 1):
                 if item["text"].strip():
                     text_blocks[idx] = {
-                        "text": item["text"].strip(),
+                        "text": item["text"],
                         "context": {
                             "label": item["context"].get("label", "text"),
                             "pageNum": item["context"].get("pageNum"),

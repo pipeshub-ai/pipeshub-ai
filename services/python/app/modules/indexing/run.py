@@ -891,7 +891,6 @@ class IndexingPipeline:
             MetadataProcessingError: If there's an error processing the metadata
         """
         try:
-            self.logger.debug(f"🔍 Meta: {meta}")
             block_type = meta.get("blockType", "text")
             virtual_record_id = meta.get("virtualRecordId", "")
             record_name = meta.get("recordName", "")
