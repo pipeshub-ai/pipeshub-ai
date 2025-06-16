@@ -1,17 +1,16 @@
 import json
 import uuid
-from typing import List, Literal
+from datetime import datetime
+from typing import List, Literal, Optional, Union
 
 import aiohttp
 import jwt
-import numpy as np
 from langchain.output_parsers import PydanticOutputParser
 from langchain.prompts import PromptTemplate
 from langchain.schema import AIMessage, HumanMessage
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from sklearn.decomposition import LatentDirichletAllocation
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -29,7 +28,8 @@ from app.config.utils.named_constants.arangodb_constants import (
     DepartmentNames,
 )
 from app.config.utils.named_constants.http_status_code_constants import HttpStatusCode
-from app.modules.extraction.prompt_template import prompt
+from app.events.block_prompts import block_extraction_prompt
+from app.modules.extraction.prompt_template import entity_prompt, prompt
 from app.utils.llm import get_llm
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -63,6 +63,43 @@ class DocumentClassification(BaseModel):
     )
     summary: str = Field(description="Summary of the document")
 
+class EntityMention(BaseModel):
+    text: str = Field(description="The exact text mention found")
+    type: str = Field(description="Specific type/subtype of the entity")
+    confidence: float = Field(description="Confidence score", ge=0, le=1)
+    normalized_value: Optional[Union[str, int, float]] = Field(
+        description="Normalized/standardized value of the entity", default=None
+    )
+
+class DateEntity(EntityMention):
+    normalized_value: datetime = Field(description="ISO formatted datetime")
+    is_range: bool = Field(description="Whether this is a date range", default=False)
+    end_date: Optional[datetime] = Field(description="End date if this is a range", default=None)
+
+class DurationEntity(EntityMention):
+    unit: str = Field(description="Time unit (seconds, minutes, hours, days, etc.)")
+    value: float = Field(description="Normalized duration value")
+
+class MonetaryEntity(EntityMention):
+    currency: str = Field(description="Currency code (USD, EUR, etc.)")
+    amount: float = Field(description="Normalized amount")
+
+class EntityExtraction(BaseModel):
+    organizations: List[EntityMention] = Field(default_factory=list, description="Companies, departments, teams")
+    locations: List[EntityMention] = Field(default_factory=list, description="Cities, countries, office locations")
+    products: List[EntityMention] = Field(default_factory=list, description="Internal tools, services, APIs")
+    events: List[EntityMention] = Field(default_factory=list, description="Meetings, conferences, deadlines")
+    dates: List[DateEntity] = Field(default_factory=list, description="Date mentions with normalized values")
+    durations: List[DurationEntity] = Field(default_factory=list, description="Time durations with normalized values")
+    monetary_values: List[MonetaryEntity] = Field(default_factory=list, description="Currency amounts")
+    percentages: List[EntityMention] = Field(default_factory=list, description="Percentage values")
+    contact_info: List[EntityMention] = Field(default_factory=list, description="Emails, phones, URLs")
+    document_refs: List[EntityMention] = Field(default_factory=list, description="IDs, filenames")
+    projects: List[EntityMention] = Field(default_factory=list, description="Project names and code names")
+    technologies: List[EntityMention] = Field(default_factory=list, description="Tech stack, frameworks")
+    legal_terms: List[EntityMention] = Field(default_factory=list, description="Policy references, compliance terms")
+    job_titles: List[EntityMention] = Field(default_factory=list, description="Roles and positions")
+    system_ids: List[EntityMention] = Field(default_factory=list, description="IPs, ticket numbers")
 
 class DomainExtractor:
     def __init__(self, logger, base_arango_service, config_service) -> None:
@@ -71,6 +108,8 @@ class DomainExtractor:
         self.config_service = config_service
         self.logger.info("🚀 self.arango_service: %s", self.arango_service)
         self.logger.info("🚀 self.arango_service.db: %s", self.arango_service.db)
+
+        self.llm = None
 
         self.parser = PydanticOutputParser(pydantic_object=DocumentClassification)
 
@@ -100,86 +139,43 @@ class DomainExtractor:
     )
     async def _call_llm(self, messages) -> dict | None:
         """Wrapper for LLM calls with retry logic"""
+        if not self.llm:
+            self.llm = await get_llm(self.logger, self.config_service)
         return await self.llm.ainvoke(messages)
 
-    async def find_similar_topics(self, new_topic: str) -> str:
-        """
-        Find if a similar topic already exists in the topics store using TF-IDF similarity.
-        Returns the existing topic if a match is found, otherwise returns the new topic.
-        """
-        # First check exact matches
-        if new_topic in self.topics_store:
-            return new_topic
+    async def get_block_sections(self, text_blocks):
+        """Get block sections using LLM analysis"""
+        # Prepare input for LLM
+        blocks_text = "\n".join(
+            f"Block {idx}: {block['text']}"
+            for idx, block in text_blocks.items()
+        )
 
-        # If no topics exist yet, return the new topic
-        if not self.topics_store:
-            return new_topic
+        messages = [
+            {"role": "system", "content": block_extraction_prompt},
+            {"role": "user", "content": blocks_text}
+        ]
+
+        # Get LLM response
+        response = await self._call_llm(messages)
+
+        self.logger.debug(f"🎯 LLM response: {response}")
+
+        # Clean and parse the response
+        response_text = response.content.strip()
+        if response_text.startswith("```json"):
+            response_text = response_text.replace("```json", "", 1)
+        if response_text.endswith("```"):
+            response_text = response_text.rsplit("```", 1)[0]
+        response_text = response_text.strip()
 
         try:
-            # Convert topics to TF-IDF vectors
-            all_topics = list(self.topics_store) + [new_topic]
-            tfidf_matrix = self.vectorizer.fit_transform(all_topics)
-
-            # Calculate cosine similarity between new topic and existing topics
-            # Get the last row (new topic)
-            new_topic_vector = tfidf_matrix[-1:]
-            # Get all but the last row
-            existing_topics_matrix = tfidf_matrix[:-1]
-
-            similarities = cosine_similarity(new_topic_vector, existing_topics_matrix)[
-                0
-            ]
-
-            # Find the most similar topic
-            max_similarity_idx = np.argmax(similarities)
-            max_similarity = similarities[max_similarity_idx]
-
-            if max_similarity >= self.similarity_threshold:
-                return list(self.topics_store)[max_similarity_idx]
-
-            # If TF-IDF similarity is low, try LDA as backup
-            if max_similarity < self.similarity_threshold:
-                try:
-                    # Fit LDA on all topics
-                    dtm = self.vectorizer.fit_transform(all_topics)
-                    topic_distributions = self.lda.fit_transform(dtm)
-
-                    # Compare topic distributions
-                    new_topic_dist = topic_distributions[-1]
-                    existing_topics_dist = topic_distributions[:-1]
-
-                    # Calculate Jensen-Shannon divergence or cosine similarity
-                    lda_similarities = cosine_similarity(
-                        [new_topic_dist], existing_topics_dist
-                    )[0]
-                    max_lda_sim_idx = np.argmax(lda_similarities)
-                    max_lda_similarity = lda_similarities[max_lda_sim_idx]
-
-                    if max_lda_similarity >= self.similarity_threshold:
-                        return list(self.topics_store)[max_lda_sim_idx]
-
-                except Exception as e:
-                    self.logger.error(f"❌ Error in LDA similarity check: {str(e)}")
-
-        except Exception as e:
-            self.logger.error(f"❌ Error in topic similarity check: {str(e)}")
-
-        return new_topic
-
-    async def process_new_topics(self, new_topics: List[str]) -> List[str]:
-        """
-        Process new topics against existing topics store.
-        Returns list of topics, using existing ones where matches are found.
-        """
-        processed_topics = []
-        for topic in new_topics:
-            matched_topic = await self.find_similar_topics(topic)
-            processed_topics.append(matched_topic)
-            # Only add to topics_store if it's a new topic
-            if matched_topic == topic:  # This means no match was found
-                self.topics_store.add(topic)
-
-        return list(set(processed_topics))
+            parsed_response = json.loads(response_text)
+            return parsed_response.get("sections", [])
+        except json.JSONDecodeError as e:
+            self.logger.error(f"❌ Failed to parse LLM response: {str(e)}")
+            self.logger.error(f"Response content: {response_text}")
+            return []
 
     async def extract_metadata(
         self, content: str, org_id: str
@@ -189,10 +185,9 @@ class DomainExtractor:
         Includes reflection logic to attempt recovery from parsing failures.
         """
         self.logger.info("🎯 Extracting domain metadata")
-        self.llm = await get_llm(self.logger, self.config_service)
 
         try:
-            self.logger.info(f"🎯 Extracting departments for org_id: {org_id}")
+            self.logger.info(f"🎯 Extracting metadata for org_id: {org_id}")
             departments = await self.arango_service.get_departments(org_id)
             if not departments:
                 departments = [dept.value for dept in DepartmentNames]
@@ -228,15 +223,11 @@ class DomainExtractor:
             try:
                 # Parse the response using the Pydantic parser
                 parsed_response = self.parser.parse(response_text)
-
-                # Process topics through similarity check
-                # canonical_topics = await self.process_new_topics(parsed_response.topics)
-                # parsed_response.topics = canonical_topics
-
                 return parsed_response
 
             except Exception as parse_error:
                 self.logger.error(f"❌ Failed to parse response: {str(parse_error)}")
+                self.logger.error(f"Content: {content}")
                 self.logger.error(f"Response content: {response_text}")
 
                 # Reflection: attempt to fix the validation issue by providing feedback to the LLM
@@ -278,12 +269,6 @@ class DomainExtractor:
                     # Try parsing again with the reflection response
                     parsed_reflection = self.parser.parse(reflection_text)
 
-                    # Process topics through similarity check
-                    canonical_topics = await self.process_new_topics(
-                        parsed_reflection.topics
-                    )
-                    parsed_reflection.topics = canonical_topics
-
                     self.logger.info(
                         "✅ Reflection successful - validation passed on second attempt"
                     )
@@ -301,20 +286,220 @@ class DomainExtractor:
             self.logger.error(f"❌ Error during metadata extraction: {str(e)}")
             raise
 
+    async def extract_entities(self, content: str, org_id: str) -> EntityExtraction:
+        """Extract named entities from document content using LLM."""
+
+        try:
+            self.logger.info(f"Entity extraction content: {content}")
+            messages = [HumanMessage(content=entity_prompt.format(content=content))]
+            response = await self._call_llm(messages)
+
+            self.logger.info(f"Entity extraction response: {response}")
+
+            # Clean and parse response
+            response_text = response.content.strip()
+
+            # Remove any markdown code block syntax if present
+            if response_text.startswith("```json"):
+                response_text = response_text.replace("```json", "", 1)
+            if response_text.startswith("```"):
+                response_text = response_text.replace("```", "", 1)
+            if response_text.endswith("```"):
+                response_text = response_text.rsplit("```", 1)[0]
+
+            response_text = response_text.strip()
+
+            try:
+                parsed_response = json.loads(response_text)
+            except json.JSONDecodeError as e:
+                self.logger.error(f"❌ Invalid JSON response from LLM: {str(e)}")
+                self.logger.debug(f"Response text: {response_text}")
+                return EntityExtraction()
+
+            try:
+                return EntityExtraction(**parsed_response)
+            except ValidationError as e:
+                self.logger.error(f"❌ Invalid entity structure: {str(e)}")
+
+                # Reflection: attempt to fix the validation issue
+                try:
+                    self.logger.info("🔄 Attempting reflection to fix validation issues")
+                    reflection_prompt = f"""
+                    The previous response failed validation with the following error:
+                    {str(e)}
+
+                    The response was:
+                    {response_text}
+
+                    Please correct your response to match the expected schema.
+                    Ensure all fields are properly formatted and all required fields are present.
+                    Respond only with valid JSON that matches the EntityExtraction schema.
+                    """
+
+                    reflection_messages = [
+                        HumanMessage(content=entity_prompt.format(content=content)),
+                        AIMessage(content=response_text),
+                        HumanMessage(content=reflection_prompt),
+                    ]
+
+                    reflection_response = await self._call_llm(reflection_messages)
+                    reflection_text = reflection_response.content.strip()
+
+                    # Clean the reflection response
+                    if reflection_text.startswith("```json"):
+                        reflection_text = reflection_text.replace("```json", "", 1)
+                    if reflection_text.endswith("```"):
+                        reflection_text = reflection_text.rsplit("```", 1)[0]
+                    reflection_text = reflection_text.strip()
+
+                    self.logger.info(f"🎯 Reflection response: {reflection_text}")
+
+                    # Try parsing again with the reflection response
+                    parsed_reflection = json.loads(reflection_text)
+                    validated_reflection = EntityExtraction(**parsed_reflection)
+
+                    self.logger.info("✅ Reflection successful - validation passed on second attempt")
+                    return validated_reflection
+
+                except (json.JSONDecodeError, ValidationError) as reflection_error:
+                    self.logger.error(f"❌ Reflection attempt failed: {str(reflection_error)}")
+                    return EntityExtraction()
+
+        except Exception as e:
+            self.logger.error(f"❌ Error extracting entities: {str(e)}")
+            return EntityExtraction()
+
+    async def _save_entity(
+        self,
+        entity: EntityMention,
+        collection_name: str,
+        source_id: str,
+        source_collection: str,
+    ) -> None:
+        """Save a single entity and create relationship to source document/block."""
+        try:
+            # Check if entity exists using normalized value or text+type
+            query = f"""
+            FOR e IN {collection_name}
+            FILTER e.text == @text AND e.type == @type
+            RETURN e
+            """
+            cursor = self.arango_service.db.aql.execute(
+                query,
+                bind_vars={"text": entity.text, "type": entity.type}
+            )
+
+            try:
+                existing_entity = cursor.next()
+                entity_key = existing_entity["_key"]
+
+                # Update confidence if new confidence is higher
+                if entity.confidence > existing_entity.get("confidence", 0):
+                    self.arango_service.db.collection(collection_name).update(
+                        {"_key": entity_key, "confidence": entity.confidence}
+                    )
+            except StopIteration:
+                # Create new entity if it doesn't exist
+                entity_key = str(uuid.uuid4())
+
+                # Convert entity to dict using Pydantic's json-compatible method
+                entity_doc = {
+                    "_key": entity_key,
+                    **entity.model_dump(mode='json'),  # This handles datetime serialization
+                    "createdAtTimestamp": get_epoch_timestamp_in_ms()
+                }
+
+                self.arango_service.db.collection(collection_name).insert(entity_doc)
+
+            # Create relationship if it doesn't exist using single HAS_ENTITY edge
+            edge_query = f"""
+            FOR e IN {CollectionNames.HAS_ENTITY.value}
+            FILTER e._from == @from AND e._to == @to
+            RETURN e
+            """
+            cursor = self.arango_service.db.aql.execute(
+                edge_query,
+                bind_vars={
+                    "from": f"{source_collection}/{source_id}",
+                    "to": f"{collection_name}/{entity_key}"
+                }
+            )
+
+            if not cursor.count():
+                edge = {
+                    "_from": f"{source_collection}/{source_id}",
+                    "_to": f"{collection_name}/{entity_key}",
+                    "confidence": entity.confidence,
+                    "entity_type": collection_name,  # Add entity type to edge for easier querying
+                    "createdAtTimestamp": get_epoch_timestamp_in_ms()
+                }
+                self.arango_service.db.collection(CollectionNames.HAS_ENTITY.value).insert(edge)
+
+        except Exception as e:
+            self.logger.error(f"❌ Error saving entity {entity.text}: {str(e)}")
+
+    async def _save_entities(
+        self,
+        entities: EntityExtraction,
+        source_id: str,
+        source_collection: str
+    ) -> None:
+        """Save all entities and their relationships."""
+        entity_mappings = [
+            (entities.organizations, CollectionNames.ENTITY_ORGANIZATIONS.value),
+            (entities.locations, CollectionNames.ENTITY_LOCATIONS.value),
+            (entities.products, CollectionNames.ENTITY_PRODUCTS.value),
+            (entities.events, CollectionNames.ENTITY_EVENTS.value),
+            (entities.dates, CollectionNames.ENTITY_DATES.value),
+            (entities.durations, CollectionNames.ENTITY_DURATIONS.value),
+            (entities.monetary_values, CollectionNames.ENTITY_MONETARY.value),
+            (entities.percentages, CollectionNames.ENTITY_PERCENTAGES.value),
+            (entities.contact_info, CollectionNames.ENTITY_CONTACT_INFO.value),
+            (entities.document_refs, CollectionNames.ENTITY_DOCUMENT_REFS.value),
+            (entities.projects, CollectionNames.ENTITY_PROJECTS.value),
+            (entities.technologies, CollectionNames.ENTITY_TECHNOLOGIES.value),
+            (entities.legal_terms, CollectionNames.ENTITY_LEGAL_TERMS.value),
+            (entities.job_titles, CollectionNames.ENTITY_JOB_TITLES.value),
+            (entities.system_ids, CollectionNames.ENTITY_SYSTEM_IDS.value),
+        ]
+
+        for entity_list, collection in entity_mappings:
+            for entity in entity_list:
+                await self._save_entity(
+                    entity,
+                    collection,
+                    source_id,
+                    source_collection
+                )
+
+
     async def save_metadata_to_db(
-        self, org_id: str, record_id: str, metadata: DocumentClassification, virtual_record_id: str
+        self,
+        org_id: str,
+        document_id: str,
+        metadata: DocumentClassification,
+        virtual_record_id: str,
+        collection_name: str = CollectionNames.RECORDS.value,
+        block_content: list = None,
+        entities: EntityExtraction = None
     ) -> dict | None:
         """
-        Extract metadata from a document in ArangoDB and create department relationships
+        Extract metadata and create relationships for a document or block in ArangoDB
+
+        Args:
+            org_id: Organization ID
+            document_id: ID of the document/block
+            metadata: Extracted metadata
+            virtual_record_id: Virtual record ID
+            collection_name: Source collection name (records/blocks)
+            block_content: Content of the blocks of the given document
         """
-        self.logger.info("🚀 Saving metadata to ArangoDB")
+        self.logger.info(f"🚀 Saving metadata to ArangoDB for {collection_name}/{document_id}")
 
         try:
             # Retrieve the document content from ArangoDB
-            record = await self.arango_service.get_document(
-                record_id, CollectionNames.RECORDS.value
-            )
-            doc = dict(record)
+            doc = await self.arango_service.get_document(document_id, collection_name)
+
             # Create relationships with departments
             for department in metadata.departments:
                 try:
@@ -323,19 +508,15 @@ class DomainExtractor:
                         dept_query, bind_vars={"department": department}
                     )
                     dept_doc = cursor.next()
-                    self.logger.info(f"🚀 Department: {dept_doc}")
 
                     if dept_doc:
                         edge = {
-                            "_from": f"{CollectionNames.RECORDS.value}/{record_id}",
+                            "_from": f"{collection_name}/{document_id}",
                             "_to": f"{CollectionNames.DEPARTMENTS.value}/{dept_doc['_key']}",
                             "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                         }
                         await self.arango_service.batch_create_edges(
                             [edge], CollectionNames.BELONGS_TO_DEPARTMENT.value
-                        )
-                        self.logger.info(
-                            f"🔗 Created relationship between document {record_id} and department {department}"
                         )
 
                 except StopIteration:
@@ -377,8 +558,8 @@ class DomainExtractor:
             cursor = self.arango_service.db.aql.execute(
                 edge_query,
                 bind_vars={
-                    "from": f"records/{record_id}",
-                    "to": f"categories/{category_key}",
+                    "from": f"{collection_name}/{document_id}",
+                    "to": f"{CollectionNames.CATEGORIES.value}/{category_key}",
                 },
             )
             if not cursor.count():
@@ -386,7 +567,7 @@ class DomainExtractor:
                     CollectionNames.BELONGS_TO_CATEGORY.value
                 ).insert(
                     {
-                        "_from": f"{CollectionNames.RECORDS.value}/{record_id}",
+                        "_from": f"{collection_name}/{document_id}",
                         "_to": f"{CollectionNames.CATEGORIES.value}/{category_key}",
                         "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                     }
@@ -394,10 +575,10 @@ class DomainExtractor:
 
             # Handle subcategories with similar pattern
             def handle_subcategory(name, level, parent_key, parent_collection) -> str:
-                collection_name = getattr(
+                subcategory_collection_name = getattr(
                     CollectionNames, f"SUBCATEGORIES{level}"
                 ).value
-                query = f"FOR s IN {collection_name} FILTER s.name == @name RETURN s"
+                query = f"FOR s IN {subcategory_collection_name} FILTER s.name == @name RETURN s"
                 cursor = self.arango_service.db.aql.execute(
                     query, bind_vars={"name": name}
                 )
@@ -408,7 +589,7 @@ class DomainExtractor:
                     key = doc["_key"]
                 except (StopIteration, KeyError, TypeError):
                     key = str(uuid.uuid4())
-                    self.arango_service.db.collection(collection_name).insert(
+                    self.arango_service.db.collection(subcategory_collection_name).insert(
                         {
                             "_key": key,
                             "name": name,
@@ -424,8 +605,8 @@ class DomainExtractor:
                 cursor = self.arango_service.db.aql.execute(
                     edge_query,
                     bind_vars={
-                        "from": f"{CollectionNames.RECORDS.value}/{record_id}",
-                        "to": f"{collection_name}/{key}",
+                        "from": f"{collection_name}/{document_id}",
+                        "to": f"{subcategory_collection_name}/{key}",
                     },
                 )
                 if not cursor.count():
@@ -433,8 +614,8 @@ class DomainExtractor:
                         CollectionNames.BELONGS_TO_CATEGORY.value
                     ).insert(
                         {
-                            "_from": f"{CollectionNames.RECORDS.value}/{record_id}",
-                            "_to": f"{collection_name}/{key}",
+                            "_from": f"{collection_name}/{document_id}",
+                            "_to": f"{subcategory_collection_name}/{key}",
                             "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                         }
                     )
@@ -449,7 +630,7 @@ class DomainExtractor:
                     cursor = self.arango_service.db.aql.execute(
                         edge_query,
                         bind_vars={
-                            "from": f"{collection_name}/{key}",
+                            "from": f"{subcategory_collection_name}/{key}",
                             "to": f"{parent_collection}/{parent_key}",
                         },
                     )
@@ -458,7 +639,7 @@ class DomainExtractor:
                             CollectionNames.INTER_CATEGORY_RELATIONS.value
                         ).insert(
                             {
-                                "_from": f"{collection_name}/{key}",
+                                "_from": f"{subcategory_collection_name}/{key}",
                                 "_to": f"{parent_collection}/{parent_key}",
                                 "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                             }
@@ -507,8 +688,8 @@ class DomainExtractor:
                 cursor = self.arango_service.db.aql.execute(
                     edge_query,
                     bind_vars={
-                        "from": f"records/{record_id}",
-                        "to": f"languages/{lang_key}",
+                        "from": f"{collection_name}/{document_id}",
+                        "to": f"{CollectionNames.LANGUAGES.value}/{lang_key}",
                     },
                 )
                 if not cursor.count():
@@ -516,7 +697,7 @@ class DomainExtractor:
                         CollectionNames.BELONGS_TO_LANGUAGE.value
                     ).insert(
                         {
-                            "_from": f"{CollectionNames.RECORDS.value}/{record_id}",
+                            "_from": f"{collection_name}/{document_id}",
                             "_to": f"{CollectionNames.LANGUAGES.value}/{lang_key}",
                             "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                         }
@@ -553,8 +734,8 @@ class DomainExtractor:
                 cursor = self.arango_service.db.aql.execute(
                     edge_query,
                     bind_vars={
-                        "from": f"records/{record_id}",
-                        "to": f"topics/{topic_key}",
+                        "from": f"{collection_name}/{document_id}",
+                        "to": f"{CollectionNames.TOPICS.value}/{topic_key}",
                     },
                 )
                 if not cursor.count():
@@ -562,38 +743,46 @@ class DomainExtractor:
                         CollectionNames.BELONGS_TO_TOPIC.value
                     ).insert(
                         {
-                            "_from": f"{CollectionNames.RECORDS.value}/{record_id}",
+                            "_from": f"{collection_name}/{document_id}",
                             "_to": f"{CollectionNames.TOPICS.value}/{topic_key}",
                             "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                         }
                     )
 
+            # Save entities if they exist
+            if entities is not None:
+                await self._save_entities(
+                    entities,
+                    document_id,
+                    collection_name
+                )
+
             # Handle summary document
-            if metadata.summary:
-                document_id = await self.save_summary_to_storage(org_id, record_id,virtual_record_id, metadata.summary)
-                if document_id is None:
-                    self.logger.error("❌ Failed to save summary to storage")
+            if collection_name == CollectionNames.RECORDS.value:
+                if metadata.summary:
+                    storage_document_id = await self.save_summary_to_storage(org_id, document_id,virtual_record_id, metadata.summary, block_content)
+                    if storage_document_id is None:
+                        self.logger.error("❌ Failed to save summary to storage")
 
+                self.logger.info(
+                    f"🚀 Metadata saved successfully for document: {document_id}"
+                )
 
-            self.logger.info(
-                f"🚀 Metadata saved successfully for document: {document_id}"
-            )
+                doc.update(
+                    {
+                        "summaryDocumentId": storage_document_id,
+                        "extractionStatus": "COMPLETED",
+                        "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
+                    }
+                )
+                docs = [doc]
 
-            doc.update(
-                {
-                    "summaryDocumentId": document_id,
-                    "extractionStatus": "COMPLETED",
-                    "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
-                }
-            )
-            docs = [doc]
-
-            self.logger.info(
-                f"🎯 Upserting domain metadata for document: {document_id}"
-            )
-            await self.arango_service.batch_upsert_nodes(
-                docs, CollectionNames.RECORDS.value
-            )
+                self.logger.info(
+                    f"🎯 Upserting domain metadata for document: {document_id}"
+                )
+                await self.arango_service.batch_upsert_nodes(
+                    docs, collection_name
+                )
 
             doc.update(
                 {
@@ -607,7 +796,6 @@ class DomainExtractor:
                     "summary": metadata.summary,
                 }
             )
-
             return doc
 
         except Exception as e:
@@ -714,14 +902,39 @@ class DomainExtractor:
             raise aiohttp.ClientError(f"Unexpected error: {str(e)}")
 
 
-    async def save_summary_to_storage(self, org_id: str, record_id: str, virtual_record_id: str, summary_doc: dict) -> str | None:
+    async def save_summary_to_storage(
+        self,
+        org_id: str,
+        record_id: str,
+        virtual_record_id: str,
+        summary_doc: dict,
+        block_data: list = None
+    ) -> str | None:
         """
-        Save summary document to storage using FormData upload
+        Save summary document with block data to storage
+
+        Args:
+            org_id: Organization ID
+            record_id: Record ID
+            virtual_record_id: Virtual record ID
+            summary_doc: Main document summary
+            block_data: List of block information containing:
+                       - block_num: Block number
+                       - block_text: Block content
+                       - block_id: Unique block identifier
+                       - block_summary: Summary of block content
         Returns:
             str | None: document_id if successful, None if failed
         """
         try:
             self.logger.info("🚀 Starting summary storage process for record: %s", record_id)
+
+            # Prepare the complete summary document
+            upload_data = {
+                "virtualRecordId": virtual_record_id,
+                "summary": summary_doc,
+                "block_data": block_data if block_data else []
+            }
 
             # Generate JWT token
             try:
@@ -737,9 +950,7 @@ class DomainExtractor:
                     raise ValueError("Missing scoped JWT secret")
 
                 jwt_token = jwt.encode(payload, scoped_jwt_secret, algorithm="HS256")
-                headers = {
-                    "Authorization": f"Bearer {jwt_token}"
-                }
+                headers = {"Authorization": f"Bearer {jwt_token}"}
             except Exception as e:
                 self.logger.error("❌ Failed to generate JWT token: %s", str(e))
                 return None
@@ -757,8 +968,10 @@ class DomainExtractor:
                     config_node_constants.STORAGE.value
                 )
                 storage_type = storage.get("storageType")
-                if not storage_type:
-                    raise ValueError("Missing storage type configuration")
+
+                if not nodejs_endpoint or not storage_type:
+                    raise ValueError("Missing endpoint or storage configuration")
+
                 self.logger.info("🚀 Storage type: %s", storage_type)
             except Exception as e:
                 self.logger.error("❌ Failed to get endpoint configuration: %s", str(e))
@@ -767,28 +980,26 @@ class DomainExtractor:
             if storage_type == "local":
                 try:
                     async with aiohttp.ClientSession() as session:
-                        # Convert summary_doc to JSON string and then to bytes
-                        upload_data = {
-                            "summary": summary_doc,
-                            "virtualRecordId": virtual_record_id
-                        }
+                        # Convert data to JSON bytes
                         json_data = json.dumps(upload_data).encode('utf-8')
 
                         # Create form data
                         form_data = aiohttp.FormData()
-                        form_data.add_field('file',
-                                        json_data,
-                                        filename=f'summary_{record_id}.json',
-                                        content_type='application/json')
+                        form_data.add_field(
+                            'file',
+                            json_data,
+                            filename=f'summary_{record_id}.json',
+                            content_type='application/json'
+                        )
                         form_data.add_field('documentName', f'summary_{record_id}')
                         form_data.add_field('documentPath', 'summaries')
                         form_data.add_field('isVersionedFile', 'true')
                         form_data.add_field('extension', 'json')
                         form_data.add_field('recordId', record_id)
 
-                        # Make upload request
+                        # Upload request
                         upload_url = f"{nodejs_endpoint}{Routes.STORAGE_UPLOAD.value}"
-                        self.logger.info("📤 Uploading summary to storage for record: %s", record_id)
+                        self.logger.info("📤 Uploading document data to storage for record: %s", record_id)
 
                         async with session.post(upload_url,
                                             data=form_data,
@@ -811,69 +1022,145 @@ class DomainExtractor:
                                 self.logger.error("❌ No document ID in upload response")
                                 return None
 
-                            self.logger.info("✅ Successfully uploaded summary for document: %s", document_id)
+                            self.logger.info("✅ Successfully uploaded data for document: %s", document_id)
                             return document_id
 
-                except aiohttp.ClientError as e:
-                    self.logger.error("❌ Network error during upload process: %s", str(e))
-                    return None
                 except Exception as e:
-                    self.logger.error("❌ Unexpected error during upload process: %s", str(e))
-                    self.logger.exception("Detailed error trace:")
+                    self.logger.error("❌ Error during local upload: %s", str(e))
                     return None
 
             else:
+                # Cloud storage flow
                 placeholder_data = {
-                    "documentName": f"summary_{record_id}",
-                    "documentPath": "summaries",
+                    "documentName": f"document_data_{record_id}",
+                    "documentPath": "document_data",
                     "extension": "json"
                 }
 
                 try:
                     async with aiohttp.ClientSession() as session:
-                        # Step 1: Create placeholder
-                        self.logger.info("📝 Creating placeholder for record: %s", record_id)
+                        # Create placeholder
                         placeholder_url = f"{nodejs_endpoint}{Routes.STORAGE_PLACEHOLDER.value}"
-                        document = await self._create_placeholder(session, placeholder_url, placeholder_data, headers)
+                        document = await self._create_placeholder(
+                            session,
+                            placeholder_url,
+                            placeholder_data,
+                            headers
+                        )
 
                         document_id = document.get("_id")
                         if not document_id:
                             self.logger.error("❌ No document ID in placeholder response")
                             return None
 
-                        self.logger.info("📄 Created placeholder with ID: %s", document_id)
-
-                        # Step 2: Get signed URL
-                        self.logger.info("🔑 Getting signed URL for document: %s", document_id)
-                        upload_data = {
-                            "summary": summary_doc,
-                            "virtualRecordId": virtual_record_id
-                        }
-
+                        # Get signed URL
                         upload_url = f"{nodejs_endpoint}{Routes.STORAGE_DIRECT_UPLOAD.value.format(documentId=document_id)}"
-                        upload_result = await self._get_signed_url(session, upload_url, upload_data, headers)
+                        upload_result = await self._get_signed_url(
+                            session,
+                            upload_url,
+                            upload_data,
+                            headers
+                        )
 
                         signed_url = upload_result.get('signedUrl')
                         if not signed_url:
-                            self.logger.error("❌ No signed URL in response for document: %s", document_id)
+                            self.logger.error("❌ No signed URL in response")
                             return None
 
-                        # Step 3: Upload to signed URL
-                        self.logger.info("📤 Uploading summary to storage for document: %s", document_id)
+                        # Upload to signed URL
                         await self._upload_to_signed_url(session, signed_url, upload_data)
 
-                        self.logger.info("✅ Successfully completed summary storage process for document: %s", document_id)
+                        self.logger.info("✅ Successfully uploaded data for document: %s", document_id)
                         return document_id
 
-                except aiohttp.ClientError as e:
-                    self.logger.error("❌ Network error during storage process: %s", str(e))
-                    return None
                 except Exception as e:
-                    self.logger.error("❌ Unexpected error during storage process: %s", str(e))
-                    self.logger.exception("Detailed error trace:")
+                    self.logger.error("❌ Error during cloud upload: %s", str(e))
                     return None
 
         except Exception as e:
-            self.logger.error("❌ Critical error in saving summary to storage: %s", str(e))
-            self.logger.exception("Detailed error trace:")
+            self.logger.error("❌ Critical error in saving summary: %s", str(e))
             return None
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        before_sleep=lambda retry_state: retry_state.args[0].logger.warning(
+            f"Retrying delete request after error. Attempt {retry_state.attempt_number}"
+        ),
+    )
+    async def delete_summary_from_storage(self, org_id: str, record_id: str) -> bool:
+        """Delete summary document from storage
+
+        Args:
+            record_id (str): Record ID to delete
+
+        Returns:
+            bool: True if successful, None if failed
+        """
+        try:
+            self.logger.info("🚀 Deleting summary from storage for record: %s", record_id)
+
+            document_id = await self.arango_service.get_summary_document_id(record_id)
+            if not document_id:
+                self.logger.warning("⚠️ No document ID found for record: %s", record_id)
+                return True
+
+            # Get endpoint configuration
+            endpoints = await self.config_service.get_config(
+                config_node_constants.ENDPOINTS.value
+            )
+            nodejs_endpoint = endpoints.get("cm", {}).get("endpoint", DefaultEndpoints.NODEJS_ENDPOINT.value)
+
+            if not nodejs_endpoint:
+                self.logger.error("❌ Missing CM endpoint configuration")
+                return False
+
+            # Generate JWT token
+            try:
+                payload = {
+                    "orgId": org_id,
+                    "scopes": [TokenScopes.STORAGE_TOKEN.value],
+                }
+                secret_keys = await self.config_service.get_config(
+                    config_node_constants.SECRET_KEYS.value
+                )
+                scoped_jwt_secret = secret_keys.get("scopedJwtSecret")
+                if not scoped_jwt_secret:
+                    raise ValueError("Missing scoped JWT secret")
+
+                jwt_token = jwt.encode(payload, scoped_jwt_secret, algorithm="HS256")
+                headers = {
+                    "Authorization": f"Bearer {jwt_token}",
+                    "Content-Type": "application/json"
+                }
+            except Exception as e:
+                self.logger.error("❌ Failed to generate JWT token: %s", str(e))
+                return False
+
+            # Make DELETE request
+            async with aiohttp.ClientSession() as session:
+                url = f"{nodejs_endpoint}{Routes.STORAGE_DELETE.value.format(documentId=document_id)}"
+
+                async with session.delete(url, headers=headers) as response:
+                    if response.status == 404:
+                        self.logger.warning("⚠️ Document not found: %s", document_id)
+                        return True
+
+                    if response.status not in (200, 204):
+                        error_text = await response.text()
+                        self.logger.error(
+                            "❌ Failed to delete document. Status: %d, Response: %s",
+                            response.status,
+                            error_text[:200]
+                        )
+                        return False
+
+                    self.logger.info("✅ Successfully deleted document: %s", document_id)
+                    return True
+
+        except aiohttp.ClientError as e:
+            self.logger.error("❌ Network error deleting document: %s", str(e))
+            return False
+        except Exception as e:
+            self.logger.error("❌ Critical error in deleting summary: %s", str(e))
+            return False

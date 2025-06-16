@@ -54,6 +54,21 @@ NODE_COLLECTIONS = [
     (CollectionNames.SUBCATEGORIES3.value, None),
     (CollectionNames.BLOCKS.value, None),
     (CollectionNames.KNOWLEDGE_BASE.value, kb_schema),
+    (CollectionNames.ENTITY_ORGANIZATIONS.value, None),
+    (CollectionNames.ENTITY_LOCATIONS.value, None),
+    (CollectionNames.ENTITY_PRODUCTS.value, None),
+    (CollectionNames.ENTITY_EVENTS.value, None),
+    (CollectionNames.ENTITY_DATES.value, None),
+    (CollectionNames.ENTITY_DURATIONS.value, None),
+    (CollectionNames.ENTITY_MONETARY.value, None),
+    (CollectionNames.ENTITY_PERCENTAGES.value, None),
+    (CollectionNames.ENTITY_CONTACT_INFO.value, None),
+    (CollectionNames.ENTITY_DOCUMENT_REFS.value, None),
+    (CollectionNames.ENTITY_PROJECTS.value, None),
+    (CollectionNames.ENTITY_TECHNOLOGIES.value, None),
+    (CollectionNames.ENTITY_LEGAL_TERMS.value, None),
+    (CollectionNames.ENTITY_JOB_TITLES.value, None),
+    (CollectionNames.ENTITY_SYSTEM_IDS.value, None),
 ]
 
 EDGE_COLLECTIONS = [
@@ -72,6 +87,7 @@ EDGE_COLLECTIONS = [
     (CollectionNames.INTER_CATEGORY_RELATIONS.value, basic_edge_schema),
     (CollectionNames.BELONGS_TO_KNOWLEDGE_BASE.value, belongs_to_schema),
     (CollectionNames.PERMISSIONS_TO_KNOWLEDGE_BASE.value, permissions_schema),
+    (CollectionNames.HAS_ENTITY.value, None),
 ]
 
 class BaseArangoService:

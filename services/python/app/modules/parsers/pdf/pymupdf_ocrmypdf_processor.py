@@ -245,8 +245,8 @@ class PyMuPDFOCRStrategy(OCRStrategy):
 
         # Log each line being processed
         for line_data in lines_data:
-            content = line_data["content"].strip()
-            if not content:
+            content = line_data["content"]
+            if not content.strip():
                 continue
 
             full_text += content + " "
@@ -260,7 +260,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
 
         # Log each sentence being formed
         for sent in doc.sents:
-            sent_text = sent.text.strip()
+            sent_text = sent.text
             sent_start, sent_end = sent.start_char, sent.end_char
 
             sentence_bboxes = []
@@ -329,7 +329,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
 
             if line_text.strip():
                 line_data = {
-                    "content": line_text.strip(),
+                    "content": line_text,
                     "bounding_box": self._normalize_bbox(
                         line["bbox"], page_width, page_height
                     ),
@@ -338,9 +338,9 @@ class PyMuPDFOCRStrategy(OCRStrategy):
 
                 # Process spans
                 for span in spans:
-                    span_text = span.get("text", "").strip()
+                    span_text = span.get("text", "")
                     if (
-                        span_text or is_multi_span
+                        span_text.strip() or is_multi_span
                     ):  # Include empty spans for multi-span lines
                         block_text.append(span.get("text", ""))
                         span_data = {
@@ -356,8 +356,8 @@ class PyMuPDFOCRStrategy(OCRStrategy):
 
                         # Process individual characters if available
                         for char in span.get("chars", []):
-                            word_text = char.get("c", "").strip()
-                            if word_text:
+                            word_text = char.get("c", "")
+                            if word_text.strip():
                                 word = {
                                     "content": word_text,
                                     "bounding_box": self._normalize_bbox(
@@ -386,18 +386,19 @@ class PyMuPDFOCRStrategy(OCRStrategy):
         sentences = self._merge_lines_to_sentences(block_lines)
         processed_sentences = []
         for sentence in sentences:
-            sentence_data = {
-                "content": sentence["sentence"],
-                "bounding_box": sentence["bounding_box"],
-                "block_number": block.get("number"),
-                "block_type": block.get("type"),
-                "metadata": block_metadata,
+            if sentence["sentence"].strip():
+                sentence_data = {
+                    "content": sentence["sentence"],
+                    "bounding_box": sentence["bounding_box"],
+                    "block_number": block.get("number"),
+                    "block_type": block.get("type"),
+                    "metadata": block_metadata,
             }
             processed_sentences.append(sentence_data)
 
         # Create paragraph from block
         paragraph = {
-            "content": " ".join(block_text).strip(),
+            "content": " ".join(block_text),
             "bounding_box": self._normalize_bbox(
                 block["bbox"], page_width, page_height
             ),
@@ -500,6 +501,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
             self.logger.debug("📝 Extracting text blocks and paragraphs")
             text_dict = page.get_text("dict")
             blocks = text_dict.get("blocks", [])
+            self.logger.debug(f"Blocks: {blocks}")
 
             # Process and merge blocks
             merged_blocks = []
@@ -528,28 +530,16 @@ class PyMuPDFOCRStrategy(OCRStrategy):
                         block, page_width, page_height
                     )
 
-                    # Add to page-level collections
                     page_dict["lines"].extend(processed_block["lines"])
                     page_dict["words"].extend(processed_block["words"])
 
-                    # Add to document-level collections
                     if processed_block["paragraph"]:
                         processed_block["paragraph"]["page_number"] = page_idx + 1
                         result["paragraphs"].append(processed_block["paragraph"])
-                        self.logger.debug(
-                            "📚 Added paragraph to document collection (Page %s, Block %s)",
-                            page_idx + 1,
-                            processed_block["paragraph"]["block_number"],
-                        )
 
                     for sentence in processed_block["sentences"]:
                         sentence["page_number"] = page_idx + 1
                         result["sentences"].append(sentence)
-                        self.logger.debug(
-                            "📑 Added sentence to document collection (Page %s, Block %s)",
-                            page_idx + 1,
-                            sentence["block_number"],
-                        )
 
             self.logger.debug(f"✅ Completed processing page {page_idx + 1}")
             self.logger.debug("📊 Page statistics:")
@@ -613,7 +603,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
             if text.strip():
                 words.append(
                     {
-                        "content": text.strip(),
+                        "content": text,
                         "confidence": None,
                         "bounding_box": self._normalize_bbox(
                             (x0, y0, x1, y1), page_width, page_height
@@ -623,13 +613,14 @@ class PyMuPDFOCRStrategy(OCRStrategy):
 
         # Extract lines
         text_dict = page.get_text("dict")
+        self.logger.info(f"Text dict: {text_dict}")
         for block in text_dict.get("blocks", []):
             for line in block.get("lines", []):
                 text = " ".join(span.get("text", "") for span in line.get("spans", []))
                 if text.strip() and line.get("bbox"):
                     lines.append(
                         {
-                            "content": text.strip(),
+                            "content": text,
                             "bounding_box": self._normalize_bbox(
                                 line["bbox"], page_width, page_height
                             ),

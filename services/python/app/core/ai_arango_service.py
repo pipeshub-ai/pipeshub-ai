@@ -581,3 +581,206 @@ class ArangoService:
 
         cursor = self.db.aql.execute(query, bind_vars=bind_vars)
         return list(cursor)
+
+
+    async def delete_blocks_by_virtual_record_id(self, virtual_record_id: str) -> bool:
+        """
+        Delete all blocks that have the given virtualRecordId and their associated edges.
+        Uses a transaction to ensure atomicity of all operations.
+        """
+        try:
+            self.logger.info("🗑️ Deleting blocks with virtualRecordId: %s", virtual_record_id)
+
+            # Define collections that will be accessed
+            edge_collections = [
+                CollectionNames.BELONGS_TO_DEPARTMENT.value,
+                CollectionNames.BELONGS_TO_CATEGORY.value,
+                CollectionNames.BELONGS_TO_LANGUAGE.value,
+                CollectionNames.BELONGS_TO_TOPIC.value,
+                CollectionNames.HAS_ENTITY.value
+            ]
+
+            # Entity Node Collections
+            entity_collections = [
+                CollectionNames.ENTITY_ORGANIZATIONS.value,
+                CollectionNames.ENTITY_LOCATIONS.value,
+                CollectionNames.ENTITY_PRODUCTS.value,
+                CollectionNames.ENTITY_EVENTS.value,
+                CollectionNames.ENTITY_DATES.value,
+                CollectionNames.ENTITY_DURATIONS.value,
+                CollectionNames.ENTITY_MONETARY.value,
+                CollectionNames.ENTITY_PERCENTAGES.value,
+                CollectionNames.ENTITY_CONTACT_INFO.value,
+                CollectionNames.ENTITY_DOCUMENT_REFS.value,
+                CollectionNames.ENTITY_PROJECTS.value,
+                CollectionNames.ENTITY_TECHNOLOGIES.value,
+                CollectionNames.ENTITY_LEGAL_TERMS.value,
+                CollectionNames.ENTITY_JOB_TITLES.value,
+                CollectionNames.ENTITY_SYSTEM_IDS.value
+            ]
+
+            # Start transaction with write access to necessary collections
+            transaction = self.db.begin_transaction(
+                read=[CollectionNames.BLOCKS.value] + edge_collections + entity_collections,
+                write=[CollectionNames.BLOCKS.value] + edge_collections + entity_collections
+            )
+
+            try:
+                query = f"""
+                // Get all block keys first
+                LET block_keys = (
+                    FOR block IN {CollectionNames.BLOCKS.value}
+                        FILTER block.virtualRecordId == @virtual_record_id
+                        RETURN block._key
+                )
+
+
+                // Find and delete all entities connected to these blocks
+                LET entity_deletions = (
+                    FOR block_key IN block_keys
+                        FOR edge IN hasEntity
+                            FILTER edge._from == CONCAT("blocks/", block_key)
+                            LET entity_id = edge._to
+                            LET entity = DOCUMENT(entity_id)
+                            LET coll = PARSE_IDENTIFIER(entity_id).collection
+
+                            RETURN (
+                                coll == "entityOrganizations"    ? (REMOVE entity IN entityOrganizations  OPTIONS {{"ignoreErrors": true}}   RETURN 1)[0] :
+                                coll == "entityLocations"        ? (REMOVE entity IN entityLocations        OPTIONS {{"ignoreErrors": true}}   RETURN 1)[0] :
+                                coll == "entityProducts"         ? (REMOVE entity IN entityProducts         OPTIONS {{"ignoreErrors": true}}   RETURN 1)[0] :
+                                coll == "entityEvents"           ? (REMOVE entity IN entityEvents           OPTIONS {{"ignoreErrors": true}}   RETURN 1)[0] :
+                                coll == "entityDates"            ? (REMOVE entity IN entityDates            OPTIONS {{"ignoreErrors": true}}   RETURN 1)[0] :
+                                coll == "entityDurations"        ? (REMOVE entity IN entityDurations        OPTIONS {{"ignoreErrors": true}}   RETURN 1)[0] :
+                                coll == "entityMonetary"         ? (REMOVE entity IN entityMonetary         OPTIONS {{"ignoreErrors": true}}   RETURN 1)[0] :
+                                coll == "entityPercentages"      ? (REMOVE entity IN entityPercentages      OPTIONS {{"ignoreErrors": true}}   RETURN 1)[0] :
+                                coll == "entityContactInfo"      ? (REMOVE entity IN entityContactInfo      OPTIONS {{"ignoreErrors": true}}   RETURN 1)[0] :
+                                coll == "entityDocumentRefs"     ? (REMOVE entity IN entityDocumentRefs     OPTIONS {{"ignoreErrors": true}}   RETURN 1)[0] :
+                                coll == "entityProjects"         ? (REMOVE entity IN entityProjects         OPTIONS {{"ignoreErrors": true}}   RETURN 1)[0] :
+                                coll == "entityTechnologies"     ? (REMOVE entity IN entityTechnologies     OPTIONS {{"ignoreErrors": true}}   RETURN 1)[0] :
+                                coll == "entityLegalTerms"       ? (REMOVE entity IN entityLegalTerms       OPTIONS {{"ignoreErrors": true}}   RETURN 1)[0] :
+                                coll == "entityJobTitles"        ? (REMOVE entity IN entityJobTitles        OPTIONS {{"ignoreErrors": true}}   RETURN 1)[0] :
+                                coll == "entitySystemIds"        ? (REMOVE entity IN entitySystemIds        OPTIONS {{"ignoreErrors": true}}   RETURN 1)[0] :
+                                null
+                            )
+                )
+
+                // Delete edges from each collection
+                LET dept_edges = (
+                    FOR block_key IN block_keys
+                        FOR edge IN {CollectionNames.BELONGS_TO_DEPARTMENT.value}
+                            FILTER edge._from == CONCAT("{CollectionNames.BLOCKS.value}/", block_key)
+                            REMOVE edge IN {CollectionNames.BELONGS_TO_DEPARTMENT.value}
+                )
+
+                LET cat_edges = (
+                    FOR block_key IN block_keys
+                        FOR edge IN {CollectionNames.BELONGS_TO_CATEGORY.value}
+                            FILTER edge._from == CONCAT("{CollectionNames.BLOCKS.value}/", block_key)
+                            REMOVE edge IN {CollectionNames.BELONGS_TO_CATEGORY.value}
+                )
+
+                LET lang_edges = (
+                    FOR block_key IN block_keys
+                        FOR edge IN {CollectionNames.BELONGS_TO_LANGUAGE.value}
+                            FILTER edge._from == CONCAT("{CollectionNames.BLOCKS.value}/", block_key)
+                            REMOVE edge IN {CollectionNames.BELONGS_TO_LANGUAGE.value}
+                )
+
+                LET topic_edges = (
+                    FOR block_key IN block_keys
+                        FOR edge IN {CollectionNames.BELONGS_TO_TOPIC.value}
+                            FILTER edge._from == CONCAT("{CollectionNames.BLOCKS.value}/", block_key)
+                            REMOVE edge IN {CollectionNames.BELONGS_TO_TOPIC.value}
+                )
+
+                LET entity_edges = (
+                    FOR block_key IN block_keys
+                        FOR edge IN {CollectionNames.HAS_ENTITY.value}
+                            FILTER edge._from == CONCAT("{CollectionNames.BLOCKS.value}/", block_key)
+                            REMOVE edge IN {CollectionNames.HAS_ENTITY.value}
+                )
+
+                // Delete the blocks themselves
+                LET deleted_blocks = (
+                    FOR block_key IN block_keys
+                        REMOVE block_key IN {CollectionNames.BLOCKS.value}
+                        RETURN OLD
+                )
+
+                RETURN {{
+                    "deletedBlocks": LENGTH(deleted_blocks),
+                    "deletedEntities": LENGTH(entity_deletions)
+                }}
+                """
+                self.logger.info(f"🚀 Executing query: {query}")
+                cursor = transaction.aql.execute(
+                    query,
+                    bind_vars={
+                        "virtual_record_id": virtual_record_id
+                    }
+                )
+                self.logger.info("🚀 Query executed successfully")
+                result = next(cursor)
+                self.logger.info(f"🚀 Result: {result}")
+
+                transaction.commit_transaction()
+
+                self.logger.info(
+                    "✅ Successfully deleted %d blocks and %d entities with virtualRecordId %s",
+                    result["deletedBlocks"],
+                    result["deletedEntities"],
+                    virtual_record_id
+                )
+                return True
+
+            except Exception as e:
+                transaction.abort_transaction()
+                raise e
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to delete blocks with virtualRecordId %s: %s",
+                virtual_record_id,
+                str(e)
+            )
+            return False
+
+    async def get_summary_document_id(self, record_id: str) -> str | None:
+        """Get summary document ID from record ID
+
+        Args:
+            record_id (str): Record ID (key) of the document
+
+        Returns:
+            str | None: Summary document ID if found, None otherwise
+        """
+        try:
+            self.logger.debug("🔍 Getting summary document ID for record: %s", record_id)
+
+            # Query to get summaryDocumentId from records collection
+            query = f"""
+            FOR doc IN {CollectionNames.RECORDS.value}
+            FILTER doc._key == @record_id
+            RETURN doc.summaryDocumentId
+            """
+
+            cursor = self.db.aql.execute(
+                query,
+                bind_vars={"record_id": record_id}
+            )
+
+            try:
+                summary_doc_id = cursor.next()
+                if not summary_doc_id:
+                    self.logger.warning("⚠️ No summary document ID found for record: %s", record_id)
+                    return None
+
+                return summary_doc_id
+
+            except StopIteration:
+                self.logger.warning("⚠️ Record not found: %s", record_id)
+                return None
+
+        except Exception as e:
+            self.logger.error("❌ Error getting summary document ID: %s", str(e))
+            return None

@@ -344,7 +344,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Stop sync kafka consumer if it exists
     if hasattr(app.container, "sync_kafka_consumer"):
         sync_consumer = app.container.sync_kafka_consumer()
-        if sync_consumer:
+        if sync_consumer is not None:
             sync_consumer.stop()
             logger.info("Sync Kafka consumer stopped")
 
