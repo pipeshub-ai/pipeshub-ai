@@ -46,7 +46,7 @@ def setup_query_transformation(llm) -> Tuple[Runnable, Runnable]:
     return rewrite_chain, expansion_chain
 
 def setup_followup_query_transformation(llm) -> Runnable:
-    """Setup query rewriting and expansion with async support"""
+    """Setup query rewriting for follow-up questions based on conversation history."""
 
     # Query rewriting prompt
     query_rewrite_prompt = ChatPromptTemplate.from_template(

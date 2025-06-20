@@ -88,9 +88,17 @@ async def askAI(
 
         if len(query_info.previousConversations) > 0:
             followup_query_transformation = setup_followup_query_transformation(llm)
+
+            # Format conversation history for the prompt
+            formatted_history = "\n".join(
+                f"{'User' if conv.get('role') == 'user_query' else 'Assistant'}: {conv.get('content')}"
+                for conv in query_info.previousConversations
+            )
+            logger.debug(f"formatted_history {formatted_history}")
+
             followup_query = await followup_query_transformation.ainvoke({
                 "query": query_info.query,
-                "previous_conversations": query_info.previousConversations
+                "previous_conversations": formatted_history
             })
             query_info.query = followup_query
 
