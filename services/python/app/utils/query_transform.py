@@ -1,9 +1,11 @@
+from typing import Tuple
+
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnablePassthrough
+from langchain_core.runnables import Runnable, RunnablePassthrough
 
 
-def setup_query_transformation(llm):
+def setup_query_transformation(llm) -> Tuple[Runnable, Runnable]:
     """Setup query rewriting and expansion with async support"""
 
     # Query rewriting prompt
@@ -42,3 +44,30 @@ def setup_query_transformation(llm):
     )
 
     return rewrite_chain, expansion_chain
+
+def setup_followup_query_transformation(llm) -> Runnable:
+    """Setup query rewriting and expansion with async support"""
+
+    # Query rewriting prompt
+    query_rewrite_prompt = ChatPromptTemplate.from_template(
+        """You are an expert at reformulating search queries to make them more effective.
+        Given the original query below, rewrite it to make it more specific and detailed as per the previous conversations and the follow up question
+        so that it can be used to search for relevant documents:
+
+        Previous Conversations: {previous_conversations}
+        Follow up question: {query}
+
+        Return only the rewritten query, no other text or formatting.
+        Rewritten Query:"""
+    )
+
+    # Create async-compatible chains
+    rewrite_chain = (
+        {"query": RunnablePassthrough(), "previous_conversations": RunnablePassthrough()}
+        | query_rewrite_prompt
+        | llm
+        | StrOutputParser()
+    )
+
+
+    return rewrite_chain

@@ -19,7 +19,10 @@ from app.modules.retrieval.retrieval_service import RetrievalService
 from app.setups.query_setup import AppContainer
 from app.utils.citations import process_citations
 from app.utils.query_decompose import QueryDecompositionService
-from app.utils.query_transform import setup_query_transformation
+from app.utils.query_transform import (
+    setup_followup_query_transformation,
+    setup_query_transformation,
+)
 
 router = APIRouter()
 
@@ -68,7 +71,7 @@ async def askAI(
     retrieval_service: RetrievalService = Depends(get_retrieval_service),
     arango_service: ArangoService = Depends(get_arango_service),
     reranker_service: RerankerService = Depends(get_reranker_service),
-):
+) -> JSONResponse:
     """Perform semantic search across documents"""
     try:
         container = request.app.container
@@ -82,6 +85,16 @@ async def askAI(
                     status_code=500,
                     detail="Failed to initialize LLM service. LLM configuration is missing.",
                 )
+
+        if len(query_info.previousConversations) > 0:
+            followup_query_transformation = setup_followup_query_transformation(llm)
+            followup_query = await followup_query_transformation.ainvoke({
+                "query": query_info.query,
+                "previous_conversations": query_info.previousConversations
+            })
+            query_info.query = followup_query
+
+        logger.debug(f"query_info.query {query_info.query}")
 
         logger.debug(f"useDecomposition {query_info.useDecomposition}")
         if query_info.useDecomposition:
@@ -100,7 +113,7 @@ async def askAI(
         else:
             all_queries = [{"query": query_info.query}]
 
-        async def process_decomposed_query(query: str, org_id: str, user_id: str):
+        async def process_decomposed_query(query: str, org_id: str, user_id: str) -> Dict[str, Any]:
             rewrite_chain, expansion_chain = setup_query_transformation(llm)
 
             # Run query transformations in parallel
