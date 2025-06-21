@@ -62,15 +62,15 @@ Beyond search, our platform allows enterprises to create custom apps and AI agen
 - Google Drive
 - Gmail
 - Google Calendar
-- Onedrive(Release coming this month)
-- Sharepoint Online(Release coming this month)
-- Outlook(Release coming this month)
-- Outlook Calendar(Release coming this month)
-- Slack(Release coming this month)
-- Notion(Release coming this month)
-- Jira(Release coming this month)
-- Confluence(Release coming this month)
-- MS Teams(Release coming this month)
+- Onedrive(Release coming next month)
+- Sharepoint Online(Release coming next month)
+- Outlook(Release coming next month)
+- Outlook Calendar(Release coming next month)
+- Slack(Release coming next month)
+- Notion(Release coming next month)
+- Jira(Release coming next month)
+- Confluence(Release coming next month)
+- MS Teams(Release coming next month)
 
 ## File Formats Supported
 
