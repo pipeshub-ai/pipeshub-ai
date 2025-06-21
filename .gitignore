@@ -169,9 +169,9 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
-services/python/logs
-services/python/data
-services/python/default_config*.json
+backend/python/logs
+backend/python/data
+backend/python/default_config*.json
 *.DS_Store
 test.txt
 image_*.png 

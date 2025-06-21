@@ -114,7 +114,7 @@ docker run -d --name kafka --restart always --link zookeeper:zookeeper -p 9092:9
 
 ### Starting Node.js Backend Service
 ```bash
-cd services/nodejs/apps
+cd backend/nodejs/apps
 cp ../../env.template .env  # Create .env file from template
 npm install
 npm run dev
@@ -122,7 +122,7 @@ npm run dev
 
 ### Starting Python Backend Services
 ```bash
-cd services/python
+cd backend/python
 cp ../env.template .env
 # Create and activate virtual environment
 python3.10 -m venv venv
