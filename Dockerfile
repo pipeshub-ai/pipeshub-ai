@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y \
     rm -rf /var/lib/apt/lists/*
 
 # Set up Python environment
-COPY ./services/python/pyproject.toml /app/python/
+COPY ./backend/python/pyproject.toml /app/python/
 WORKDIR /app/python
 RUN pip3 install -e .
 
@@ -37,12 +37,12 @@ RUN python -c "from sentence_transformers import CrossEncoder; \
 WORKDIR /app
 
 # Copy Python app files
-COPY services/python/app/ /app/python/app/
+COPY backend/python/app/ /app/python/app/
 
 # Set up Node.js backend
 WORKDIR /app/backend
-COPY services/nodejs/apps/package*.json ./
-COPY services/nodejs/apps/tsconfig.json ./
+COPY backend/nodejs/apps/package*.json ./
+COPY backend/nodejs/apps/tsconfig.json ./
 
 # Set up architecture detection and conditional handling
 RUN set -e; \
@@ -63,7 +63,7 @@ RUN set -e; \
     fi
 
 # Copy backend source files
-COPY services/nodejs/apps/src ./src
+COPY backend/nodejs/apps/src ./src
 RUN npm run build
 
 # Set up frontend

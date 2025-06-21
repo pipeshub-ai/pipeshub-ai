@@ -118,10 +118,10 @@
     "../../libs/enums",
     "../../libs/errors",
     "../../libs/middlewares",
-    "../../libs/services/encryption.service.ts",
-    "../../libs/services/logger.service.ts",
-    "../../libs/services/mongo.service.ts",
-    "../../libs/services/redis.service.ts"
+    "../../libs/backend/encryption.service.ts",
+    "../../libs/backend/logger.service.ts",
+    "../../libs/backend/mongo.service.ts",
+    "../../libs/backend/redis.service.ts"
   ],
   "exclude": ["node_modules"]
 }

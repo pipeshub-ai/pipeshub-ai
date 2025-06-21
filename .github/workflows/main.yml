@@ -17,21 +17,21 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: services/nodejs/apps/package-lock.json
+          cache-dependency-path: backend/nodejs/apps/package-lock.json
 
       - name: Install backend dependencies
         run: |
-          cd services/nodejs/apps
+          cd backend/nodejs/apps
           npm install
 
       - name: Build backend
         run: |
-          cd services/nodejs/apps
+          cd backend/nodejs/apps
           npm run build
 
       # - name: Run backend tests
       #   run: |
-      #     cd services/nodejs/apps
+      #     cd backend/nodejs/apps
       #     npm test
 
   validate-frontend:
@@ -74,17 +74,17 @@ jobs:
         with:
           python-version: '3.10'
           cache: 'pip'
-          cache-dependency-path: services/python/pyproject.toml
+          cache-dependency-path: backend/python/pyproject.toml
 
       - name: Install Python dependencies
         run: |
-          cd services/python
+          cd backend/python
           pip install .[dev]
           pip install ruff pytest
 
       - name: Run Python linting
         run: |
-          cd services/python
+          cd backend/python
           ruff check .
   
   ruff-lint-pr:
