@@ -87,26 +87,26 @@ jobs:
           cd backend/python
           ruff check .
   
-  # ruff-lint-pr:
-  #   runs-on: ubuntu-latest
+  ruff-lint-pr:
+    runs-on: ubuntu-latest
 
-  #   steps:
-  #     - name: Checkout code
-  #       uses: actions/checkout@v4
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-  #     - name: Set up Python
-  #       uses: actions/setup-python@v4
-  #       with:
-  #         python-version: '3.10'
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
 
-  #     - name: Install ruff
-  #       run: |
-  #         python -m pip install --upgrade pip
-  #         pip install ruff
+      - name: Install ruff
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff
 
-  #     - name: Run ruff on changed Python files
-  #       run: |
-  #         git fetch origin main
-  #         if [ $(git diff --name-only origin/main ${{ github.sha }} | grep '\.py$' | wc -l) -gt 0 ]; then
-  #           git diff --name-only origin/main ${{ github.sha }} | grep '\.py$' | xargs ruff check --select ANN201,ANN202,ANN204,ANN205,ANN206,N804,F841,PLR2004,ANN401,SIM118,I001
-  #         fi
+      - name: Run ruff on changed Python files
+        run: |
+          git fetch origin main
+          if [ $(git diff --name-only origin/main ${{ github.sha }} | grep '\.py$' | wc -l) -gt 0 ]; then
+            git diff --name-only origin/main ${{ github.sha }} | grep '\.py$' | xargs ruff check --select ANN201,ANN202,ANN204,ANN205,ANN206,N804,F841,PLR2004,ANN401,SIM118,I001
+          fi
