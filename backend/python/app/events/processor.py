@@ -25,7 +25,7 @@ class Processor:
         indexing_pipeline,
         arango_service,
         parsers,
-    ):
+    ) -> None:
         self.logger = logger
         self.logger.info("🚀 Initializing Processor")
         self.domain_extractor = domain_extractor
@@ -34,7 +34,7 @@ class Processor:
         self.parsers = parsers
         self.config_service = config_service
 
-    async def process_google_slides(self, record_id, record_version, orgId, content, virtual_record_id):
+    async def process_google_slides(self, record_id, record_version, orgId, content, virtual_record_id) -> None:
         """Process Google Slides presentation and extract structured content
 
         Args:
@@ -218,7 +218,7 @@ class Processor:
             )
             raise
 
-    async def process_google_docs(self, record_id, record_version, orgId, content, virtual_record_id):
+    async def process_google_docs(self, record_id, record_version, orgId, content, virtual_record_id) -> None:
         """Process Google Docs document and extract structured content
 
         Args:
@@ -426,7 +426,7 @@ class Processor:
             self.logger.error(f"❌ Error processing Google Docs document: {str(e)}")
             raise
 
-    async def process_google_sheets(self, record_id, record_version, orgId, content, virtual_record_id):
+    async def process_google_sheets(self, record_id, record_version, orgId, content, virtual_record_id) -> None:
         self.logger.info("🚀 Processing Google Sheets")
         try:
             # Initialize Google Docs parser
@@ -510,7 +510,7 @@ class Processor:
 
     async def process_gmail_message(
         self, recordName, recordId, version, source, orgId, html_content, virtual_record_id
-    ):
+    ) -> None:
         self.logger.info("🚀 Processing Gmail Message")
 
         try:
@@ -684,7 +684,7 @@ class Processor:
 
     async def process_pdf_document(
         self, recordName, recordId, version, source, orgId, pdf_binary, virtual_record_id
-    ):
+    ) -> None:
         """Process PDF document with automatic OCR selection based on environment settings"""
         self.logger.info(
             f"🚀 Starting PDF document processing for record: {recordName}"
@@ -855,7 +855,7 @@ class Processor:
 
     async def process_doc_document(
         self, recordName, recordId, version, source, orgId, doc_binary, virtual_record_id
-    ):
+    ) -> None:
         self.logger.info(
             f"🚀 Starting DOC document processing for record: {recordName}"
         )
@@ -870,7 +870,7 @@ class Processor:
 
     async def process_docx_document(
         self, recordName, recordId, version, source, orgId, docx_binary, virtual_record_id
-    ):
+    ) -> None:
         """Process DOCX document and extract structured content
 
         Args:
@@ -1026,7 +1026,7 @@ class Processor:
 
     async def process_excel_document(
         self, recordName, recordId, version, source, orgId, excel_binary, virtual_record_id
-    ):
+    ) -> None:
         """Process Excel document and extract structured content"""
         self.logger.info(
             f"🚀 Starting Excel document processing for record: {recordName}"
@@ -1163,7 +1163,7 @@ class Processor:
 
     async def process_xls_document(
         self, recordName, recordId, version, source, orgId, xls_binary, virtual_record_id
-    ):
+    ) -> None:
         """Process XLS document and extract structured content"""
         self.logger.info(
             f"🚀 Starting XLS document processing for record: {recordName}"
@@ -1187,7 +1187,7 @@ class Processor:
 
     async def process_csv_document(
         self, recordName, recordId, version, source, orgId, csv_binary, virtual_record_id
-    ):
+    ) -> None:
         """Process CSV document and extract structured content
 
         Args:
@@ -1338,7 +1338,7 @@ class Processor:
             self.logger.error(f"❌ Error processing CSV document: {str(e)}")
             raise
 
-    def _process_content_in_order(self, doc_dict):
+    def _process_content_in_order(self, doc_dict) -> list:
         """
         Process document content in proper reading order by following references.
 
@@ -1351,7 +1351,7 @@ class Processor:
         ordered_items = []
         processed_refs = set()
 
-        def process_item(ref, level=0, parent_context=None):
+        def process_item(ref, level=0, parent_context=None) -> None:
             """Recursively process items following references"""
             if isinstance(ref, dict):
                 ref_path = ref.get("$ref", "")
@@ -1422,7 +1422,7 @@ class Processor:
 
     async def process_html_document(
         self, recordName, recordId, version, source, orgId, html_content, virtual_record_id
-    ):
+    ) -> None:
         """Process HTML document and extract structured content"""
         self.logger.info(
             f"🚀 Starting HTML document processing for record: {recordName}"
@@ -1578,7 +1578,7 @@ class Processor:
 
     async def process_mdx_document(
         self, recordName: str, recordId: str, version: str, source: str, orgId: str, mdx_content: str, virtual_record_id
-    ):
+    ) -> None:
         """Process MDX document by converting it to MD and then processing it as markdown
 
         Args:
@@ -1609,7 +1609,7 @@ class Processor:
 
     async def process_md_document(
         self, recordName, recordId, version, source, orgId, md_binary, virtual_record_id
-    ):
+    ) -> None:
         self.logger.info(
             f"🚀 Starting Markdown document processing for record: {recordName}"
         )
@@ -1784,7 +1784,7 @@ class Processor:
 
     async def process_txt_document(
         self, recordName, recordId, version, source, orgId, txt_binary, virtual_record_id
-    ):
+    ) -> None:
         """Process TXT document and extract structured content"""
         self.logger.info(
             f"🚀 Starting TXT document processing for record: {recordName}"
@@ -1914,7 +1914,7 @@ class Processor:
 
     async def process_pptx_document(
         self, recordName, recordId, version, source, orgId, pptx_binary, virtual_record_id
-    ):
+    ) -> None:
         """Process PPTX document and extract structured content
 
         Args:
@@ -1948,7 +1948,7 @@ class Processor:
             ordered_items = []
             processed_refs = set()
 
-            def process_item(ref, level=0, parent_context=None):
+            def process_item(ref, level=0, parent_context=None) -> None:
                 if isinstance(ref, dict):
                     ref_path = ref.get("$ref", "")
                 else:
@@ -2164,7 +2164,7 @@ class Processor:
 
     async def process_ppt_document(
         self, recordName, recordId, version, source, orgId, ppt_binary, virtual_record_id
-    ):
+    ) -> None:
         """Process PPT document and extract structured content
 
         Args:

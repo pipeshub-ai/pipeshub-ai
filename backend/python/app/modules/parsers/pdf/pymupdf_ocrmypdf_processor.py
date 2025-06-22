@@ -304,7 +304,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
         """
 
         block_lines = []
-        block_text = ""        
+        block_text = ""
         block_spans = []
         block_words = []
 
@@ -561,7 +561,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
                             sentence["block_number"],
                         )
                 block_number += 1
-            
+
             self.logger.debug(f"✅ Completed processing page {page_idx + 1}")
             self.logger.debug("📊 Page statistics:")
             self.logger.debug(f"- Lines: {len(page_dict['lines'])}")
