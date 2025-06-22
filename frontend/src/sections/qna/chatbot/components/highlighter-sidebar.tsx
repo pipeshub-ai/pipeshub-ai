@@ -365,7 +365,8 @@ const CitationSidebar = ({
 
               <CitationContent>
                 {' '}
-                {citation.metadata?.blockText &&
+                {citation.metadata?.extension === 'pdf' &&
+                citation.metadata?.blockText &&
                 typeof citation.metadata?.blockText === 'string' &&
                 citation.metadata?.blockText.length > 0
                   ? citation.metadata?.blockText
