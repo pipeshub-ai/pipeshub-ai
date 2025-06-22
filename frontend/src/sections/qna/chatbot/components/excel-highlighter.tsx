@@ -490,7 +490,7 @@ const ExcelViewer = ({
   const isDate = (value: any): value is Date =>
     value instanceof Date ||
     (typeof value === 'object' && Object.prototype.toString.call(value) === '[object Date]');
- 
+
   const processRichText = useCallback(
     (cell: CellData): React.ReactNode => {
       if (!cell) return '';
@@ -1317,7 +1317,14 @@ const ExcelViewer = ({
                       Citation {citation.chunkIndex ? citation.chunkIndex : index + 1}
                     </Typography>
 
-                    <CitationContent>{citation.content}</CitationContent>
+                    <CitationContent>
+                      {' '}
+                      {citation.metadata?.blockText &&
+                      typeof citation.metadata?.blockText === 'string' &&
+                      citation.metadata?.blockText.length > 0
+                        ? citation.metadata?.blockText
+                        : citation.content}{' '}
+                    </CitationContent>
 
                     <Box sx={{ mt: 1.5, display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
                       {citation.metadata.sheetName && (

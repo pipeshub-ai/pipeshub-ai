@@ -658,486 +658,516 @@ const ChatMessage = ({
       </Box>
 
       {/* Message Content */}
-     <Box sx={{ position: 'relative' }}>
-  <Paper
-    elevation={0}
-    sx={{
-      width: '100%',
-      maxWidth: '80%',
-      p: 2,
-      ml: message.type === 'user' ? 'auto' : 0,
-      bgcolor: (themeVal) => {
-        if (message.type === 'user') {
-          return themeVal.palette.mode === 'dark' ? '#3a3d42' : '#e3f2fd';
-        }
-        return themeVal.palette.mode === 'dark' ? '#2a2d32' : '#f8f9fa';
-      },
-      color: 'text.primary',
-      borderRadius: '8px',
-      border: '1px solid',
-      borderColor: (themeVal) => {
-        if (message.type === 'user') {
-          return themeVal.palette.mode === 'dark' 
-            ? alpha(themeVal.palette.primary.main, 0.3)
-            : alpha(themeVal.palette.primary.main, 0.2);
-        }
-        return themeVal.palette.mode === 'dark' ? '#404448' : '#e1e5e9';
-      },
-      position: 'relative',
-      transition: 'all 0.2s ease-in-out',
-      opacity: isRegenerating ? 0.5 : 1,
-      filter: isRegenerating ? 'blur(0.5px)' : 'none',
-      fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
-      '&:hover': {
-        borderColor: (themeVal) => {
-          if (message.type === 'user') {
-            return themeVal.palette.mode === 'dark'
-              ? alpha(themeVal.palette.primary.main, 0.4)
-              : alpha(themeVal.palette.primary.main, 0.3);
-          }
-          return themeVal.palette.mode === 'dark' ? '#484b52' : '#dee2e6';
-        },
-        boxShadow: (themeVal) => themeVal.palette.mode === 'dark'
-          ? '0 2px 8px rgba(0, 0, 0, 0.3)'
-          : '0 2px 8px rgba(0, 0, 0, 0.05)',
-      },
-    }}
-  >
-    {/* Message Content with Citation Hover */}
-    {message.type === 'bot' ? (
-      <MessageContent
-        content={message.content}
-        citations={message.citations || []}
-        onRecordClick={handleOpenRecordDetails}
-        aggregatedCitations={aggregatedCitations}
-        onViewPdf={handleViewPdf}
-      />
-    ) : (
-      <Box
-        sx={{
-          fontSize: '14px',
-          lineHeight: 1.6,
-          letterSpacing: '0.2px',
-          wordBreak: 'break-word',
-          fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
-          color: (themeVal) => themeVal.palette.mode === 'dark' ? '#e8eaed' : '#212529',
-          '& p': { mt: 0, mb: 1.5 },
-          '& h1': { 
-            fontSize: '1.3rem', 
-            fontWeight: 600, 
-            my: 1.5,
-            color: (themeVal) => themeVal.palette.mode === 'dark' ? '#e8eaed' : '#212529',
-          },
-          '& h2': { 
-            fontSize: '1.15rem', 
-            fontWeight: 600, 
-            my: 1.5,
-            color: (themeVal) => themeVal.palette.mode === 'dark' ? '#e8eaed' : '#212529',
-          },
-          '& h3': { 
-            fontSize: '1.05rem', 
-            fontWeight: 600, 
-            my: 1.5,
-            color: (themeVal) => themeVal.palette.mode === 'dark' ? '#e8eaed' : '#212529',
-          },
-          '& h4': { 
-            fontSize: '1rem', 
-            fontWeight: 600, 
-            my: 1.5,
-            color: (themeVal) => themeVal.palette.mode === 'dark' ? '#e8eaed' : '#212529',
-          },
-          '& h5, & h6': { 
-            fontSize: '0.9rem', 
-            fontWeight: 600, 
-            my: 1.5,
-            color: (themeVal) => themeVal.palette.mode === 'dark' ? '#e8eaed' : '#212529',
-          },
-          '& ul, & ol': { pl: 2.5, mb: 1.5, mt: 0 },
-          '& li': { mb: 0.75 },
-          '& blockquote': {
-            pl: 1.5,
-            ml: 0,
-            borderLeft: (themeVal) => `4px solid ${themeVal.palette.primary.main}`,
-            color: (themeVal) => themeVal.palette.mode === 'dark' ? '#b8bcc8' : 'text.secondary',
-            fontStyle: 'italic',
-            my: 1.5,
-            backgroundColor: (themeVal) => themeVal.palette.mode === 'dark' 
-              ? 'rgba(74, 158, 255, 0.05)'
-              : 'rgba(0, 102, 204, 0.02)',
-            py: 1,
-            borderRadius: '0 4px 4px 0',
-          },
-          '& code': {
-            backgroundColor: (themeVal) => themeVal.palette.mode === 'dark' 
-              ? '#404448' 
-              : 'rgba(0, 0, 0, 0.04)',
-            color: (themeVal) => themeVal.palette.mode === 'dark' ? '#e8eaed' : '#212529',
-            padding: '0.2em 0.4em',
-            borderRadius: '4px',
-            fontFamily: '"Consolas", "Monaco", "Courier New", monospace',
-            fontSize: '0.85em',
-            border: (themeVal) => themeVal.palette.mode === 'dark' 
-              ? '1px solid #484b52' 
-              : '1px solid rgba(0, 0, 0, 0.08)',
-          },
-          '& pre': {
-            backgroundColor: (themeVal) => themeVal.palette.mode === 'dark' 
-              ? '#1e2125' 
-              : 'rgba(0, 0, 0, 0.02)',
-            border: (themeVal) => themeVal.palette.mode === 'dark' 
-              ? '1px solid #404448' 
-              : '1px solid rgba(0, 0, 0, 0.08)',
-            padding: 2,
-            borderRadius: '6px',
-            overflow: 'auto',
-            my: 1.5,
-            '& code': {
-              backgroundColor: 'transparent',
-              border: 'none',
-              padding: 0,
-              borderRadius: 0,
-              fontFamily: '"Consolas", "Monaco", "Courier New", monospace',
-              fontSize: '0.85em',
-            },
-          },
-          '& a': {
-            color: (themeVal) => themeVal.palette.mode === 'dark' 
-              ? themeVal.palette.primary.light 
-              : themeVal.palette.primary.main,
-            textDecoration: 'none',
-            borderBottom: '1px dotted',
-            borderColor: (themeVal) => themeVal.palette.mode === 'dark' 
-              ? themeVal.palette.primary.light 
-              : themeVal.palette.primary.light,
-            transition: 'all 0.2s ease',
-            '&:hover': {
-              color: (themeVal) => themeVal.palette.mode === 'dark' 
-                ? themeVal.palette.primary.main 
-                : themeVal.palette.primary.dark,
-              borderColor: (themeVal) => themeVal.palette.primary.main,
-            },
-          },
-          '& img': {
-            maxWidth: '100%',
-            borderRadius: '6px',
-            border: (themeVal) => themeVal.palette.mode === 'dark' 
-              ? '1px solid #404448' 
-              : '1px solid #e1e5e9',
-          },
-          '& table': {
-            borderCollapse: 'collapse',
+      <Box sx={{ position: 'relative' }}>
+        <Paper
+          elevation={0}
+          sx={{
             width: '100%',
-            mb: 1.5,
-            border: (themeVal) => themeVal.palette.mode === 'dark' 
-              ? '1px solid #404448' 
-              : '1px solid #e1e5e9',
-            borderRadius: '4px',
-            overflow: 'hidden',
-          },
-          '& th, & td': {
-            border: (themeVal) => themeVal.palette.mode === 'dark' 
-              ? '1px solid #404448' 
-              : '1px solid #e1e5e9',
-            padding: '8px 12px',
-            textAlign: 'left',
-            fontSize: '12px',
-          },
-          '& th': {
-            backgroundColor: (themeVal) => themeVal.palette.mode === 'dark' 
-              ? '#3a3d42' 
-              : '#e9ecef',
-            fontWeight: 600,
-            color: (themeVal) => themeVal.palette.mode === 'dark' ? '#e8eaed' : '#495057',
-          },
-          '& td': {
-            backgroundColor: (themeVal) => themeVal.palette.mode === 'dark' 
-              ? '#2a2d32' 
-              : '#ffffff',
-          },
-        }}
-      >
-        <ReactMarkdown
-        // If you've added remark-gfm:
-        // remarkPlugins={[remarkGfm]}
-        >
-          {message.content}
-        </ReactMarkdown>
-      </Box>
-    )}
-    
-    {/* Citations Section */}
-    {message.citations && message.citations?.length > 0 && (
-      <Box sx={{ mt: 2 }}>
-        <Tooltip title={isExpanded ? 'Hide Citations' : 'Show Citations'}>
-          <Button
-            variant="text"
-            size="small"
-            onClick={() => onToggleCitations(index)}
-            startIcon={
-              <Icon icon={isExpanded ? downIcon : rightIcon} width={14} height={14} />
-            }
-            sx={{
-              color: (themeVal) => themeVal.palette.mode === 'dark' 
-                ? themeVal.palette.primary.light 
-                : themeVal.palette.primary.main,
-              textTransform: 'none',
-              fontWeight: 500,
-              fontSize: '11px',
-              fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
-              py: 0.5,
-              px: 1.5,
-              borderRadius: '4px',
-              border: '1px solid',
-              borderColor: (themeVal) => themeVal.palette.mode === 'dark'
-                ? alpha(themeVal.palette.primary.main, 0.2)
-                : alpha(themeVal.palette.primary.main, 0.15),
-              backgroundColor: (themeVal) => themeVal.palette.mode === 'dark'
-                ? alpha(themeVal.palette.primary.main, 0.08)
-                : alpha(themeVal.palette.primary.main, 0.04),
-              '&:hover': {
-                backgroundColor: (themeVal) => themeVal.palette.mode === 'dark'
-                  ? alpha(themeVal.palette.primary.main, 0.12)
-                  : alpha(themeVal.palette.primary.main, 0.06),
-                borderColor: (themeVal) => themeVal.palette.mode === 'dark'
-                  ? alpha(themeVal.palette.primary.main, 0.3)
-                  : alpha(themeVal.palette.primary.main, 0.2),
-              },
-            }}
-          >
-            {message.citations.length} {message.citations.length === 1 ? 'Source' : 'Sources'}
-          </Button>
-        </Tooltip>
-
-        <Collapse in={isExpanded}>
-          <Box sx={{ mt: 2 }}>
-            {message.citations.map((citation, cidx) => (
-              <Paper
-                key={cidx}
-                elevation={0}
-                sx={{
-                  p: 2,
-                  mb: 2,
-                  bgcolor: (themeVal) => themeVal.palette.mode === 'dark' ? '#2a2d32' : '#f8f9fa',
-                  borderRadius: '6px',
-                  border: '1px solid',
-                  borderColor: (themeVal) => themeVal.palette.mode === 'dark' ? '#404448' : '#e1e5e9',
-                  fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
-                }}
-              >
-                <Box
-                  sx={{
-                    pl: 2,
-                    borderLeft: (themeVal) => `3px solid ${themeVal.palette.primary.main}`,
-                    borderRadius: '2px',
-                  }}
-                >
-                  <Typography
-                    sx={{
-                      fontSize: '13px',
-                      lineHeight: 1.6,
-                      color: (themeVal) => themeVal.palette.mode === 'dark' ? '#e8eaed' : '#495057',
-                      fontStyle: 'normal',
-                      fontWeight: 400,
-                      mb: 2,
-                      fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
-                    }}
-                  >
-                    {citation.content}
-                  </Typography>
-
-                  {citation.metadata?.recordId && (
-                    <Box
-                      sx={{
-                        display: 'flex',
-                        justifyContent: 'flex-end',
-                        gap: 1.5,
-                        pt: 1,
-                      }}
-                    >
-                      {isDocViewable(citation.metadata.extension) && (
-                        <Button
-                          size="small"
-                          variant="text"
-                          startIcon={<Icon icon={eyeIcon} width={14} height={14} />}
-                          onClick={() => handleViewCitations(citation.metadata?.recordId)}
-                          sx={{
-                            textTransform: 'none',
-                            fontSize: '11px',
-                            fontWeight: 500,
-                            fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
-                            color: (themeVal) => themeVal.palette.mode === 'dark'
-                              ? themeVal.palette.primary.light
-                              : themeVal.palette.primary.main,
-                            py: 0.75,
-                            px: 2,
-                            minWidth: 0,
-                            borderRadius: '4px',
-                            border: '1px solid',
-                            borderColor: (themeVal) => themeVal.palette.mode === 'dark'
-                              ? alpha(themeVal.palette.primary.main, 0.3)
-                              : alpha(themeVal.palette.primary.main, 0.2),
-                            backgroundColor: (themeVal) => themeVal.palette.mode === 'dark'
-                              ? alpha(themeVal.palette.primary.main, 0.1)
-                              : alpha(themeVal.palette.primary.main, 0.05),
-                            '&:hover': {
-                              backgroundColor: (themeVal) => themeVal.palette.mode === 'dark'
-                                ? alpha(themeVal.palette.primary.main, 0.15)
-                                : alpha(themeVal.palette.primary.main, 0.08),
-                              borderColor: (themeVal) => themeVal.palette.mode === 'dark'
-                                ? alpha(themeVal.palette.primary.main, 0.4)
-                                : alpha(themeVal.palette.primary.main, 0.3),
-                            },
-                          }}
-                        >
-                          View Citations
-                        </Button>
-                      )}
-
-                      <Button
-                        size="small"
-                        variant="text"
-                        startIcon={<Icon icon={fileDocIcon} width={14} height={14} />}
-                        onClick={() => {
-                          if (citation.metadata?.recordId) {
-                            const record: Record = {
-                              ...citation.metadata,
-                              citations: [],
-                            };
-                            handleOpenRecordDetails(record);
-                          }
-                        }}
-                        sx={{
-                          textTransform: 'none',
-                          fontSize: '11px',
-                          fontWeight: 500,
-                          fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
-                          color: (themeVal) => themeVal.palette.mode === 'dark'
-                            ? themeVal.palette.text.secondary
-                            : themeVal.palette.text.secondary,
-                          py: 0.75,
-                          px: 2,
-                          minWidth: 0,
-                          borderRadius: '4px',
-                          border: '1px solid',
-                          borderColor: (themeVal) => themeVal.palette.mode === 'dark'
-                            ? alpha(themeVal.palette.divider, 0.3)
-                            : alpha(themeVal.palette.divider, 0.5),
-                          backgroundColor: (themeVal) => themeVal.palette.mode === 'dark'
-                            ? alpha(themeVal.palette.background.paper, 0.5)
-                            : alpha(themeVal.palette.action.hover, 0.3),
-                          '&:hover': {
-                            backgroundColor: (themeVal) => themeVal.palette.mode === 'dark'
-                              ? alpha(themeVal.palette.background.paper, 0.7)
-                              : alpha(themeVal.palette.action.hover, 0.5),
-                            borderColor: (themeVal) => themeVal.palette.mode === 'dark'
-                              ? alpha(themeVal.palette.divider, 0.5)
-                              : alpha(themeVal.palette.divider, 0.7),
-                          },
-                        }}
-                      >
-                        Details
-                      </Button>
-                    </Box>
-                  )}
-                </Box>
-              </Paper>
-            ))}
-          </Box>
-        </Collapse>
-
-        {isExpanded && (
-          <Tooltip title="Hide Citations">
-            <Button
-              variant="text"
-              size="small"
-              onClick={() => onToggleCitations(index)}
-              startIcon={
-                <Icon icon={upIcon} width={14} height={14} />
+            maxWidth: '80%',
+            p: 2,
+            ml: message.type === 'user' ? 'auto' : 0,
+            bgcolor: (themeVal) => {
+              if (message.type === 'user') {
+                return themeVal.palette.mode === 'dark' ? '#3a3d42' : '#e3f2fd';
               }
+              return themeVal.palette.mode === 'dark' ? '#2a2d32' : '#f8f9fa';
+            },
+            color: 'text.primary',
+            borderRadius: '8px',
+            border: '1px solid',
+            borderColor: (themeVal) => {
+              if (message.type === 'user') {
+                return themeVal.palette.mode === 'dark'
+                  ? alpha(themeVal.palette.primary.main, 0.3)
+                  : alpha(themeVal.palette.primary.main, 0.2);
+              }
+              return themeVal.palette.mode === 'dark' ? '#404448' : '#e1e5e9';
+            },
+            position: 'relative',
+            transition: 'all 0.2s ease-in-out',
+            opacity: isRegenerating ? 0.5 : 1,
+            filter: isRegenerating ? 'blur(0.5px)' : 'none',
+            fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
+            '&:hover': {
+              borderColor: (themeVal) => {
+                if (message.type === 'user') {
+                  return themeVal.palette.mode === 'dark'
+                    ? alpha(themeVal.palette.primary.main, 0.4)
+                    : alpha(themeVal.palette.primary.main, 0.3);
+                }
+                return themeVal.palette.mode === 'dark' ? '#484b52' : '#dee2e6';
+              },
+              boxShadow: (themeVal) =>
+                themeVal.palette.mode === 'dark'
+                  ? '0 2px 8px rgba(0, 0, 0, 0.3)'
+                  : '0 2px 8px rgba(0, 0, 0, 0.05)',
+            },
+          }}
+        >
+          {/* Message Content with Citation Hover */}
+          {message.type === 'bot' ? (
+            <MessageContent
+              content={message.content}
+              citations={message.citations || []}
+              onRecordClick={handleOpenRecordDetails}
+              aggregatedCitations={aggregatedCitations}
+              onViewPdf={handleViewPdf}
+            />
+          ) : (
+            <Box
               sx={{
-                color: (themeVal) => themeVal.palette.mode === 'dark' 
-                  ? themeVal.palette.primary.light 
-                  : themeVal.palette.primary.main,
-                textTransform: 'none',
-                fontWeight: 500,
-                fontSize: '11px',
+                fontSize: '14px',
+                lineHeight: 1.6,
+                letterSpacing: '0.2px',
+                wordBreak: 'break-word',
                 fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
-                py: 0.5,
-                px: 1.5,
-                borderRadius: '4px',
-                border: '1px solid',
-                borderColor: (themeVal) => themeVal.palette.mode === 'dark'
-                  ? alpha(themeVal.palette.primary.main, 0.2)
-                  : alpha(theme.palette.primary.main, 0.15),
-                backgroundColor: (themeVal) => themeVal.palette.mode === 'dark'
-                  ? alpha(themeVal.palette.primary.main, 0.08)
-                  : alpha(themeVal.palette.primary.main, 0.04),
-                '&:hover': {
-                  backgroundColor: (themeVal) => themeVal.palette.mode === 'dark'
-                    ? alpha(themeVal.palette.primary.main, 0.12)
-                    : alpha(themeVal.palette.primary.main, 0.06),
-                  borderColor: (themeVal) => themeVal.palette.mode === 'dark'
-                    ? alpha(themeVal.palette.primary.main, 0.3)
-                    : alpha(themeVal.palette.primary.main, 0.2),
+                color: (themeVal) => (themeVal.palette.mode === 'dark' ? '#e8eaed' : '#212529'),
+                '& p': { mt: 0, mb: 1.5 },
+                '& h1': {
+                  fontSize: '1.3rem',
+                  fontWeight: 600,
+                  my: 1.5,
+                  color: (themeVal) => (themeVal.palette.mode === 'dark' ? '#e8eaed' : '#212529'),
+                },
+                '& h2': {
+                  fontSize: '1.15rem',
+                  fontWeight: 600,
+                  my: 1.5,
+                  color: (themeVal) => (themeVal.palette.mode === 'dark' ? '#e8eaed' : '#212529'),
+                },
+                '& h3': {
+                  fontSize: '1.05rem',
+                  fontWeight: 600,
+                  my: 1.5,
+                  color: (themeVal) => (themeVal.palette.mode === 'dark' ? '#e8eaed' : '#212529'),
+                },
+                '& h4': {
+                  fontSize: '1rem',
+                  fontWeight: 600,
+                  my: 1.5,
+                  color: (themeVal) => (themeVal.palette.mode === 'dark' ? '#e8eaed' : '#212529'),
+                },
+                '& h5, & h6': {
+                  fontSize: '0.9rem',
+                  fontWeight: 600,
+                  my: 1.5,
+                  color: (themeVal) => (themeVal.palette.mode === 'dark' ? '#e8eaed' : '#212529'),
+                },
+                '& ul, & ol': { pl: 2.5, mb: 1.5, mt: 0 },
+                '& li': { mb: 0.75 },
+                '& blockquote': {
+                  pl: 1.5,
+                  ml: 0,
+                  borderLeft: (themeVal) => `4px solid ${themeVal.palette.primary.main}`,
+                  color: (themeVal) =>
+                    themeVal.palette.mode === 'dark' ? '#b8bcc8' : 'text.secondary',
+                  fontStyle: 'italic',
+                  my: 1.5,
+                  backgroundColor: (themeVal) =>
+                    themeVal.palette.mode === 'dark'
+                      ? 'rgba(74, 158, 255, 0.05)'
+                      : 'rgba(0, 102, 204, 0.02)',
+                  py: 1,
+                  borderRadius: '0 4px 4px 0',
+                },
+                '& code': {
+                  backgroundColor: (themeVal) =>
+                    themeVal.palette.mode === 'dark' ? '#404448' : 'rgba(0, 0, 0, 0.04)',
+                  color: (themeVal) => (themeVal.palette.mode === 'dark' ? '#e8eaed' : '#212529'),
+                  padding: '0.2em 0.4em',
+                  borderRadius: '4px',
+                  fontFamily: '"Consolas", "Monaco", "Courier New", monospace',
+                  fontSize: '0.85em',
+                  border: (themeVal) =>
+                    themeVal.palette.mode === 'dark'
+                      ? '1px solid #484b52'
+                      : '1px solid rgba(0, 0, 0, 0.08)',
+                },
+                '& pre': {
+                  backgroundColor: (themeVal) =>
+                    themeVal.palette.mode === 'dark' ? '#1e2125' : 'rgba(0, 0, 0, 0.02)',
+                  border: (themeVal) =>
+                    themeVal.palette.mode === 'dark'
+                      ? '1px solid #404448'
+                      : '1px solid rgba(0, 0, 0, 0.08)',
+                  padding: 2,
+                  borderRadius: '6px',
+                  overflow: 'auto',
+                  my: 1.5,
+                  '& code': {
+                    backgroundColor: 'transparent',
+                    border: 'none',
+                    padding: 0,
+                    borderRadius: 0,
+                    fontFamily: '"Consolas", "Monaco", "Courier New", monospace',
+                    fontSize: '0.85em',
+                  },
+                },
+                '& a': {
+                  color: (themeVal) =>
+                    themeVal.palette.mode === 'dark'
+                      ? themeVal.palette.primary.light
+                      : themeVal.palette.primary.main,
+                  textDecoration: 'none',
+                  borderBottom: '1px dotted',
+                  borderColor: (themeVal) =>
+                    themeVal.palette.mode === 'dark'
+                      ? themeVal.palette.primary.light
+                      : themeVal.palette.primary.light,
+                  transition: 'all 0.2s ease',
+                  '&:hover': {
+                    color: (themeVal) =>
+                      themeVal.palette.mode === 'dark'
+                        ? themeVal.palette.primary.main
+                        : themeVal.palette.primary.dark,
+                    borderColor: (themeVal) => themeVal.palette.primary.main,
+                  },
+                },
+                '& img': {
+                  maxWidth: '100%',
+                  borderRadius: '6px',
+                  border: (themeVal) =>
+                    themeVal.palette.mode === 'dark' ? '1px solid #404448' : '1px solid #e1e5e9',
+                },
+                '& table': {
+                  borderCollapse: 'collapse',
+                  width: '100%',
+                  mb: 1.5,
+                  border: (themeVal) =>
+                    themeVal.palette.mode === 'dark' ? '1px solid #404448' : '1px solid #e1e5e9',
+                  borderRadius: '4px',
+                  overflow: 'hidden',
+                },
+                '& th, & td': {
+                  border: (themeVal) =>
+                    themeVal.palette.mode === 'dark' ? '1px solid #404448' : '1px solid #e1e5e9',
+                  padding: '8px 12px',
+                  textAlign: 'left',
+                  fontSize: '12px',
+                },
+                '& th': {
+                  backgroundColor: (themeVal) =>
+                    themeVal.palette.mode === 'dark' ? '#3a3d42' : '#e9ecef',
+                  fontWeight: 600,
+                  color: (themeVal) => (themeVal.palette.mode === 'dark' ? '#e8eaed' : '#495057'),
+                },
+                '& td': {
+                  backgroundColor: (themeVal) =>
+                    themeVal.palette.mode === 'dark' ? '#2a2d32' : '#ffffff',
                 },
               }}
             >
-              Hide citations
-            </Button>
-          </Tooltip>
-        )}
-      </Box>
-    )}
-    
-    {/* Message Controls */}
-    {message.type === 'bot' && (
-      <>
-        <Divider 
-          sx={{ 
-            my: 1,
-            borderColor: (themeVal) => themeVal.palette.mode === 'dark' ? '#404448' : '#e1e5e9',
-          }} 
-        />
-        <Stack direction="row" spacing={1} alignItems="center">
-          {showRegenerate && (
-            <>
-              <Tooltip title="Regenerate response">
-                <IconButton
-                  onClick={() => onRegenerate(message.id)}
+              <ReactMarkdown
+              // If you've added remark-gfm:
+              // remarkPlugins={[remarkGfm]}
+              >
+                {message.content}
+              </ReactMarkdown>
+            </Box>
+          )}
+
+          {/* Citations Section */}
+          {message.citations && message.citations?.length > 0 && (
+            <Box sx={{ mt: 2 }}>
+              <Tooltip title={isExpanded ? 'Hide Citations' : 'Show Citations'}>
+                <Button
+                  variant="text"
                   size="small"
-                  disabled={isRegenerating}
+                  onClick={() => onToggleCitations(index)}
+                  startIcon={
+                    <Icon icon={isExpanded ? downIcon : rightIcon} width={14} height={14} />
+                  }
                   sx={{
-                    color: (themeVal) => themeVal.palette.mode === 'dark' ? '#b8bcc8' : 'text.secondary',
-                    '&:hover': {
-                      color: (themeVal) => themeVal.palette.mode === 'dark' 
-                        ? themeVal.palette.primary.light 
+                    color: (themeVal) =>
+                      themeVal.palette.mode === 'dark'
+                        ? themeVal.palette.primary.light
                         : themeVal.palette.primary.main,
-                      backgroundColor: (themeVal) => theme.palette.mode === 'dark'
-                        ? alpha(themeVal.palette.primary.main, 0.1)
-                        : alpha(themeVal.palette.primary.main, 0.05),
+                    textTransform: 'none',
+                    fontWeight: 500,
+                    fontSize: '11px',
+                    fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
+                    py: 0.5,
+                    px: 1.5,
+                    borderRadius: '4px',
+                    border: '1px solid',
+                    borderColor: (themeVal) =>
+                      themeVal.palette.mode === 'dark'
+                        ? alpha(themeVal.palette.primary.main, 0.2)
+                        : alpha(themeVal.palette.primary.main, 0.15),
+                    backgroundColor: (themeVal) =>
+                      themeVal.palette.mode === 'dark'
+                        ? alpha(themeVal.palette.primary.main, 0.08)
+                        : alpha(themeVal.palette.primary.main, 0.04),
+                    '&:hover': {
+                      backgroundColor: (themeVal) =>
+                        themeVal.palette.mode === 'dark'
+                          ? alpha(themeVal.palette.primary.main, 0.12)
+                          : alpha(themeVal.palette.primary.main, 0.06),
+                      borderColor: (themeVal) =>
+                        themeVal.palette.mode === 'dark'
+                          ? alpha(themeVal.palette.primary.main, 0.3)
+                          : alpha(themeVal.palette.primary.main, 0.2),
                     },
                   }}
                 >
-                  <Icon
-                    icon={isRegenerating ? loadingIcon : refreshIcon}
-                    width={16}
-                    height={16}
-                    className={isRegenerating ? 'spin' : ''}
-                  />
-                </IconButton>
+                  {message.citations.length} {message.citations.length === 1 ? 'Source' : 'Sources'}
+                </Button>
               </Tooltip>
-              <MessageFeedback
-                messageId={message.id}
-                conversationId={conversationId}
-                onFeedbackSubmit={onFeedbackSubmit}
+
+              <Collapse in={isExpanded}>
+                <Box sx={{ mt: 2 }}>
+                  {message.citations.map((citation, cidx) => (
+                    <Paper
+                      key={cidx}
+                      elevation={0}
+                      sx={{
+                        p: 2,
+                        mb: 2,
+                        bgcolor: (themeVal) =>
+                          themeVal.palette.mode === 'dark' ? '#2a2d32' : '#f8f9fa',
+                        borderRadius: '6px',
+                        border: '1px solid',
+                        borderColor: (themeVal) =>
+                          themeVal.palette.mode === 'dark' ? '#404448' : '#e1e5e9',
+                        fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
+                      }}
+                    >
+                      <Box
+                        sx={{
+                          pl: 2,
+                          borderLeft: (themeVal) => `3px solid ${themeVal.palette.primary.main}`,
+                          borderRadius: '2px',
+                        }}
+                      >
+                        <Typography
+                          sx={{
+                            fontSize: '13px',
+                            lineHeight: 1.6,
+                            color: (themeVal) =>
+                              themeVal.palette.mode === 'dark' ? '#e8eaed' : '#495057',
+                            fontStyle: 'normal',
+                            fontWeight: 400,
+                            mb: 2,
+                            fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
+                          }}
+                        >
+                          {citation.metadata?.blockText && citation.metadata?.extension === 'pdf' &&
+                          typeof citation.metadata?.blockText === 'string' &&
+                          citation.metadata?.blockText.length > 0
+                            ? citation.metadata?.blockText
+                            : citation.content}
+                        </Typography>
+
+                        {citation.metadata?.recordId && (
+                          <Box
+                            sx={{
+                              display: 'flex',
+                              justifyContent: 'flex-end',
+                              gap: 1.5,
+                              pt: 1,
+                            }}
+                          >
+                            {isDocViewable(citation.metadata.extension) && (
+                              <Button
+                                size="small"
+                                variant="text"
+                                startIcon={<Icon icon={eyeIcon} width={14} height={14} />}
+                                onClick={() => handleViewCitations(citation.metadata?.recordId)}
+                                sx={{
+                                  textTransform: 'none',
+                                  fontSize: '11px',
+                                  fontWeight: 500,
+                                  fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
+                                  color: (themeVal) =>
+                                    themeVal.palette.mode === 'dark'
+                                      ? themeVal.palette.primary.light
+                                      : themeVal.palette.primary.main,
+                                  py: 0.75,
+                                  px: 2,
+                                  minWidth: 0,
+                                  borderRadius: '4px',
+                                  border: '1px solid',
+                                  borderColor: (themeVal) =>
+                                    themeVal.palette.mode === 'dark'
+                                      ? alpha(themeVal.palette.primary.main, 0.3)
+                                      : alpha(themeVal.palette.primary.main, 0.2),
+                                  backgroundColor: (themeVal) =>
+                                    themeVal.palette.mode === 'dark'
+                                      ? alpha(themeVal.palette.primary.main, 0.1)
+                                      : alpha(themeVal.palette.primary.main, 0.05),
+                                  '&:hover': {
+                                    backgroundColor: (themeVal) =>
+                                      themeVal.palette.mode === 'dark'
+                                        ? alpha(themeVal.palette.primary.main, 0.15)
+                                        : alpha(themeVal.palette.primary.main, 0.08),
+                                    borderColor: (themeVal) =>
+                                      themeVal.palette.mode === 'dark'
+                                        ? alpha(themeVal.palette.primary.main, 0.4)
+                                        : alpha(themeVal.palette.primary.main, 0.3),
+                                  },
+                                }}
+                              >
+                                View Citations
+                              </Button>
+                            )}
+
+                            <Button
+                              size="small"
+                              variant="text"
+                              startIcon={<Icon icon={fileDocIcon} width={14} height={14} />}
+                              onClick={() => {
+                                if (citation.metadata?.recordId) {
+                                  const record: Record = {
+                                    ...citation.metadata,
+                                    citations: [],
+                                  };
+                                  handleOpenRecordDetails(record);
+                                }
+                              }}
+                              sx={{
+                                textTransform: 'none',
+                                fontSize: '11px',
+                                fontWeight: 500,
+                                fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
+                                color: (themeVal) =>
+                                  themeVal.palette.mode === 'dark'
+                                    ? themeVal.palette.text.secondary
+                                    : themeVal.palette.text.secondary,
+                                py: 0.75,
+                                px: 2,
+                                minWidth: 0,
+                                borderRadius: '4px',
+                                border: '1px solid',
+                                borderColor: (themeVal) =>
+                                  themeVal.palette.mode === 'dark'
+                                    ? alpha(themeVal.palette.divider, 0.3)
+                                    : alpha(themeVal.palette.divider, 0.5),
+                                backgroundColor: (themeVal) =>
+                                  themeVal.palette.mode === 'dark'
+                                    ? alpha(themeVal.palette.background.paper, 0.5)
+                                    : alpha(themeVal.palette.action.hover, 0.3),
+                                '&:hover': {
+                                  backgroundColor: (themeVal) =>
+                                    themeVal.palette.mode === 'dark'
+                                      ? alpha(themeVal.palette.background.paper, 0.7)
+                                      : alpha(themeVal.palette.action.hover, 0.5),
+                                  borderColor: (themeVal) =>
+                                    themeVal.palette.mode === 'dark'
+                                      ? alpha(themeVal.palette.divider, 0.5)
+                                      : alpha(themeVal.palette.divider, 0.7),
+                                },
+                              }}
+                            >
+                              Details
+                            </Button>
+                          </Box>
+                        )}
+                      </Box>
+                    </Paper>
+                  ))}
+                </Box>
+              </Collapse>
+
+              {isExpanded && (
+                <Tooltip title="Hide Citations">
+                  <Button
+                    variant="text"
+                    size="small"
+                    onClick={() => onToggleCitations(index)}
+                    startIcon={<Icon icon={upIcon} width={14} height={14} />}
+                    sx={{
+                      color: (themeVal) =>
+                        themeVal.palette.mode === 'dark'
+                          ? themeVal.palette.primary.light
+                          : themeVal.palette.primary.main,
+                      textTransform: 'none',
+                      fontWeight: 500,
+                      fontSize: '11px',
+                      fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
+                      py: 0.5,
+                      px: 1.5,
+                      borderRadius: '4px',
+                      border: '1px solid',
+                      borderColor: (themeVal) =>
+                        themeVal.palette.mode === 'dark'
+                          ? alpha(themeVal.palette.primary.main, 0.2)
+                          : alpha(theme.palette.primary.main, 0.15),
+                      backgroundColor: (themeVal) =>
+                        themeVal.palette.mode === 'dark'
+                          ? alpha(themeVal.palette.primary.main, 0.08)
+                          : alpha(themeVal.palette.primary.main, 0.04),
+                      '&:hover': {
+                        backgroundColor: (themeVal) =>
+                          themeVal.palette.mode === 'dark'
+                            ? alpha(themeVal.palette.primary.main, 0.12)
+                            : alpha(themeVal.palette.primary.main, 0.06),
+                        borderColor: (themeVal) =>
+                          themeVal.palette.mode === 'dark'
+                            ? alpha(themeVal.palette.primary.main, 0.3)
+                            : alpha(themeVal.palette.primary.main, 0.2),
+                      },
+                    }}
+                  >
+                    Hide citations
+                  </Button>
+                </Tooltip>
+              )}
+            </Box>
+          )}
+
+          {/* Message Controls */}
+          {message.type === 'bot' && (
+            <>
+              <Divider
+                sx={{
+                  my: 1,
+                  borderColor: (themeVal) =>
+                    themeVal.palette.mode === 'dark' ? '#404448' : '#e1e5e9',
+                }}
               />
+              <Stack direction="row" spacing={1} alignItems="center">
+                {showRegenerate && (
+                  <>
+                    <Tooltip title="Regenerate response">
+                      <IconButton
+                        onClick={() => onRegenerate(message.id)}
+                        size="small"
+                        disabled={isRegenerating}
+                        sx={{
+                          color: (themeVal) =>
+                            themeVal.palette.mode === 'dark' ? '#b8bcc8' : 'text.secondary',
+                          '&:hover': {
+                            color: (themeVal) =>
+                              themeVal.palette.mode === 'dark'
+                                ? themeVal.palette.primary.light
+                                : themeVal.palette.primary.main,
+                            backgroundColor: (themeVal) =>
+                              theme.palette.mode === 'dark'
+                                ? alpha(themeVal.palette.primary.main, 0.1)
+                                : alpha(themeVal.palette.primary.main, 0.05),
+                          },
+                        }}
+                      >
+                        <Icon
+                          icon={isRegenerating ? loadingIcon : refreshIcon}
+                          width={16}
+                          height={16}
+                          className={isRegenerating ? 'spin' : ''}
+                        />
+                      </IconButton>
+                    </Tooltip>
+                    <MessageFeedback
+                      messageId={message.id}
+                      conversationId={conversationId}
+                      onFeedbackSubmit={onFeedbackSubmit}
+                    />
+                  </>
+                )}
+              </Stack>
             </>
           )}
-        </Stack>
-      </>
-    )}
-  </Paper>
-</Box>
+        </Paper>
+      </Box>
 
       {/* Record Details Dialog */}
       <Dialog

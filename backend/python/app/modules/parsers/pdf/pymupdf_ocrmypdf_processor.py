@@ -152,6 +152,14 @@ class PyMuPDFOCRStrategy(OCRStrategy):
                     "vol",
                     "pg",
                     "pp",
+                     "pvt",
+                    "llc",
+                    "llp",
+                    "lp",
+                    "ll",
+                    "ltd",
+                    "inc",
+                    "corp",
                 ]
                 and next_token.text == "."
             ):
@@ -249,7 +257,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
             if not content:
                 continue
 
-            full_text += content + " "
+            full_text += content + "\n "
             line_map.append(
                 (char_index, char_index + len(content), line_data["bounding_box"])
             )
@@ -278,7 +286,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
         return sentences
 
     def _process_block_text(
-        self, block: Dict[str, Any], page_width: float, page_height: float
+        self, block: Dict[str, Any], page_width: float, page_height: float, block_number: int
     ) -> Dict[str, Any]:
         """Process a text block to extract lines, sentences, and metadata
 
@@ -296,7 +304,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
         """
 
         block_lines = []
-        block_text = []
+        block_text = ""        
         block_spans = []
         block_words = []
 
@@ -342,7 +350,6 @@ class PyMuPDFOCRStrategy(OCRStrategy):
                     if (
                         span_text or is_multi_span
                     ):  # Include empty spans for multi-span lines
-                        block_text.append(span.get("text", ""))
                         span_data = {
                             "text": span.get("text", ""),
                             "bounding_box": self._normalize_bbox(
@@ -385,12 +392,14 @@ class PyMuPDFOCRStrategy(OCRStrategy):
         # Process sentences using the lines
         sentences = self._merge_lines_to_sentences(block_lines)
         processed_sentences = []
+        block_text = "\n ".join(sentence["sentence"] for sentence in sentences)
         for sentence in sentences:
             sentence_data = {
                 "content": sentence["sentence"],
                 "bounding_box": sentence["bounding_box"],
-                "block_number": block.get("number"),
+                "block_number": block_number,
                 "block_type": block.get("type"),
+                "block_text": block_text,
                 "metadata": block_metadata,
             }
             processed_sentences.append(sentence_data)
@@ -401,7 +410,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
             "bounding_box": self._normalize_bbox(
                 block["bbox"], page_width, page_height
             ),
-            "block_number": block.get("number"),
+            "block_number": block_number,
             "spans": block_spans,
             "words": block_words,
             "metadata": block_metadata,
@@ -480,6 +489,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
             "key_value_pairs": [],
         }
 
+        block_number = 0
         for page_idx in range(len(self.doc)):
             self.logger.debug(f"📄 Processing page {page_idx + 1}")
             page = self.doc[page_idx]
@@ -525,7 +535,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
             for block in merged_blocks:
                 if block.get("type") == 0:  # Text block
                     processed_block = self._process_block_text(
-                        block, page_width, page_height
+                        block, page_width, page_height, block_number
                     )
 
                     # Add to page-level collections
@@ -550,7 +560,8 @@ class PyMuPDFOCRStrategy(OCRStrategy):
                             page_idx + 1,
                             sentence["block_number"],
                         )
-
+                block_number += 1
+            
             self.logger.debug(f"✅ Completed processing page {page_idx + 1}")
             self.logger.debug("📊 Page statistics:")
             self.logger.debug(f"- Lines: {len(page_dict['lines'])}")

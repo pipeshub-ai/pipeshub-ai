@@ -740,7 +740,7 @@ class Processor:
             sentences = ocr_result.get("sentences", [])
             if paragraphs:
                 # Join all paragraph content with newlines
-                paragraphs_text = "\n".join(
+                paragraphs_text = "\n ".join(
                     p["content"].strip()
                     for p in paragraphs
                     if p.get("content") and p["content"].strip()
@@ -775,7 +775,7 @@ class Processor:
             self.logger.debug("📝 Processing paragraphs")
             paragraphs = ocr_result.get("paragraphs", [])
             for paragraph in paragraphs:
-                paragraph["blockText"] = json.dumps(paragraph["content"])
+                paragraph["blockText"] = paragraph["content"]
 
             # Create sentence data for indexing
             sentence_data = []
@@ -799,7 +799,7 @@ class Processor:
                         "metadata": {
                             **ocr_result.get("metadata"),
                             "recordId": recordId,
-                            "blockText": s["content"].strip(),
+                            "blockText": s["block_text"],
                             "blockType": BLOCK_TYPE_MAP.get(s.get("block_type", 0)),
                             "blockNum": [int(s.get("block_number", 0))],
                             "pageNum": [int(s.get("page_number", 0))],

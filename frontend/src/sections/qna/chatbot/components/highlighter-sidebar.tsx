@@ -29,7 +29,7 @@ interface CitationSidebarProps {
   scrollViewerTo: (highlight: HighlightType) => void;
   highlightedCitationId?: string | null;
   toggleFullScreen: () => void;
-  onClosePdf :() => void;
+  onClosePdf: () => void;
 }
 
 // Excel viewer inspired styling
@@ -283,7 +283,7 @@ const CitationSidebar = ({
             fontWeight: 600,
             fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
             // zIndex: 9999,
-            ml:1,
+            ml: 1,
             borderRadius: '6px',
             border: '1px solid',
             borderColor: (themeVal) =>
@@ -363,7 +363,14 @@ const CitationSidebar = ({
                 Citation {citation.chunkIndex ? citation.chunkIndex : index + 1}
               </CitationTitle>
 
-              <CitationContent>{citation.content}</CitationContent>
+              <CitationContent>
+                {' '}
+                {citation.metadata?.blockText &&
+                typeof citation.metadata?.blockText === 'string' &&
+                citation.metadata?.blockText.length > 0
+                  ? citation.metadata?.blockText
+                  : citation.content}
+              </CitationContent>
 
               <Box sx={{ mt: 1.5, display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
                 {citation.metadata?.sheetName && (
@@ -380,21 +387,24 @@ const CitationSidebar = ({
                   </MetaLabel>
                 )}
 
-                {citation.metadata?.blockNum?.[0] && (
-                  <MetaLabel>
-                    <Icon
-                      icon={tableRowIcon}
-                      width={12}
-                      height={12}
-                      style={{
-                        color: isDarkMode ? '#b8bcc8' : '#495057',
-                      }}
-                    />
-                    {citation.metadata.extension === 'csv'
-                      ? `Row ${citation.metadata.blockNum[0] + 1}`
-                      : `Row ${citation.metadata.blockNum[0]}`}
-                  </MetaLabel>
-                )}
+                {(citation.metadata.extension === 'csv' ||
+                  citation.metadata.extension === 'xlsx' ||
+                  citation.metadata.extension === 'xls') &&
+                  citation.metadata?.blockNum?.[0] && (
+                    <MetaLabel>
+                      <Icon
+                        icon={tableRowIcon}
+                        width={12}
+                        height={12}
+                        style={{
+                          color: isDarkMode ? '#b8bcc8' : '#495057',
+                        }}
+                      />
+                      {citation.metadata.extension === 'csv'
+                        ? `Row ${citation.metadata.blockNum[0] + 1}`
+                        : `Row ${citation.metadata.blockNum[0]}`}
+                    </MetaLabel>
+                  )}
 
                 {citation.highlight?.position && citation.highlight?.position.pageNumber > 0 && (
                   <PageIndicator>Page {citation.highlight.position.pageNumber}</PageIndicator>

@@ -19,6 +19,7 @@ export interface ICitationMetadata {
   recordType?: string;
   orgId: string;
   blockType?: string;
+  blockText?: string;
   mimeType: string;
   recordId: string;
   chunkIndex: number;
@@ -72,6 +73,7 @@ const citationMetadataSchema = new Schema<ICitationMetadata>({
   recordType: { type: String },
   orgId: { type: String, required: true },
   blockType: { type: String },
+  blockText: { type: String },
   mimeType: { type: String, required: true },
   recordId: { type: String, required: true },
   recordVersion: { type: Number, default: 0 },
