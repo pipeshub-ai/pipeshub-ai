@@ -2,6 +2,7 @@
 from logging import Logger
 from typing import Any, Dict, List, Optional
 
+from langchain_core.chat_models import BaseChatModel
 from typing_extensions import TypedDict
 
 from app.modules.reranker.reranker import RerankerService
@@ -19,7 +20,7 @@ class Document(TypedDict):
 
 class ChatState(TypedDict):
     logger: Logger
-    llm: Any
+    llm: BaseChatModel
 
     retrieval_service: RetrievalService
     arango_service: ArangoService
@@ -45,7 +46,7 @@ class ChatState(TypedDict):
     user_id: str
     send_user_info: bool
 
-def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], llm: Any,
+def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], llm: BaseChatModel,
                         logger: Logger, retrieval_service: RetrievalService, arango_service: ArangoService,
                         reranker_service: RerankerService) -> ChatState:
     """Build the initial state from the chat query and user info"""

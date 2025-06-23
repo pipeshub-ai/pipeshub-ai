@@ -1,6 +1,7 @@
 
-from typing import Any
+from logging import Logger
 
+from langchain_core.chat_models import BaseChatModel
 from langgraph.graph import END, StateGraph
 
 from app.modules.agents.qna.chat_state import ChatState
@@ -20,11 +21,11 @@ from app.modules.retrieval.retrieval_service import RetrievalService
 
 
 def create_qna_graph(
-    llm: Any,
+    llm: BaseChatModel,
     retrieval_service: RetrievalService,
     arango_service: ArangoService,
     reranker_service: RerankerService,
-    logger: Any
+    logger: Logger
 ) -> StateGraph:
     """Create the LangGraph for QnA processing"""
 
