@@ -1,7 +1,12 @@
 
+from logging import Logger
 from typing import Any, Dict, List, Optional
 
 from typing_extensions import TypedDict
+
+from app.modules.reranker.reranker import RerankerService
+from app.modules.retrieval.retrieval_arango import ArangoService
+from app.modules.retrieval.retrieval_service import RetrievalService
 
 
 class ChatMessage(TypedDict):
@@ -13,8 +18,15 @@ class Document(TypedDict):
     metadata: Dict[str, Any]
 
 class ChatState(TypedDict):
+    logger: Logger
+    llm: Any
+
+    retrieval_service: RetrievalService
+    arango_service: ArangoService
+    reranker_service: RerankerService
+
     query: str
-    limit: int
+    limit: int # Number of chunks to retrieve from the vector database
     messages: List[ChatMessage]
     previous_conversations: List[Dict[str, str]]
     should_decompose: bool  # Renamed from decompose_query to avoid conflict
@@ -33,7 +45,9 @@ class ChatState(TypedDict):
     user_id: str
     send_user_info: bool
 
-def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any]) -> ChatState:
+def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], llm: Any,
+                        logger: Logger, retrieval_service: RetrievalService, arango_service: ArangoService,
+                        reranker_service: RerankerService) -> ChatState:
     """Build the initial state from the chat query and user info"""
     return {
         "query": chat_query.get("query", ""),
@@ -54,5 +68,10 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any]) -
         "error": None,
         "org_id": user_info.get("orgId", ""),
         "user_id": user_info.get("userId", ""),
-        "send_user_info": user_info.get("sendUserInfo", True)
+        "send_user_info": user_info.get("sendUserInfo", True),
+        "llm": llm,
+        "logger": logger,
+        "retrieval_service": retrieval_service,
+        "arango_service": arango_service,
+        "reranker_service": reranker_service
     }

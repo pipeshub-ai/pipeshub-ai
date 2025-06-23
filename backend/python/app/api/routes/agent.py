@@ -5,8 +5,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 # Import placeholder for services that would need to be adapted
-from app.modules.agents.research.chat_state import build_initial_state
-from app.modules.agents.research.graph import create_qna_graph
+from app.modules.agents.qna.chat_state import build_initial_state
+from app.modules.agents.qna.graph import create_qna_graph
 
 router = APIRouter()
 
@@ -20,7 +20,7 @@ class ChatQuery(BaseModel):
     filters: Optional[Dict[str, Any]] = None
     retrieval_mode: Optional[str] = "HYBRID"
 
-async def get_services(request: Request):
+async def get_services(request: Request) -> Dict[str, Any]:
     """Get all required services from the container"""
     container = request.app.container
 
@@ -51,12 +51,16 @@ async def get_services(request: Request):
     }
 
 @router.post("/agent-chat")
-async def askAI(request: Request, query_info: ChatQuery):
+async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
     """Process chat query using LangGraph agent"""
     try:
         # Get all services
         services = await get_services(request)
         logger = services["logger"]
+        arango_service = services["arango_service"]
+        reranker_service = services["reranker_service"]
+        retrieval_service = services["retrieval_service"]
+        llm = services["llm"]
 
         # Extract user info from request
         user_info = {
@@ -67,15 +71,23 @@ async def askAI(request: Request, query_info: ChatQuery):
 
         # Create the LangGraph agent
         qna_graph = create_qna_graph(
-            llm=services["llm"],
-            retrieval_service=services["retrieval_service"],
-            arango_service=services["arango_service"],
-            reranker_service=services["reranker_service"],
+            llm=llm,
+            retrieval_service=retrieval_service,
+            arango_service=arango_service,
+            reranker_service=reranker_service,
             logger=logger
         )
 
         # Build initial state
-        initial_state = build_initial_state(query_info.model_dump(), user_info)
+        initial_state = build_initial_state(
+            query_info.model_dump(),
+            user_info,
+            llm,
+            logger,
+            retrieval_service,
+            arango_service,
+            reranker_service
+        )
 
         # Execute the graph with async
         logger.info(f"Starting LangGraph execution for query: {query_info.query}")

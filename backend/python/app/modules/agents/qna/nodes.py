@@ -1,16 +1,12 @@
 # Create node functions properly designed for LangGraph
 import asyncio
-from typing import Any
 
 from app.config.utils.named_constants.arangodb_constants import (
     AccountType,
     CollectionNames,
 )
-from app.modules.agents.research.chat_state import ChatState
+from app.modules.agents.qna.chat_state import ChatState
 from app.modules.qna.prompt_templates import qna_prompt
-from app.modules.reranker.reranker import RerankerService
-from app.modules.retrieval.retrieval_arango import ArangoService
-from app.modules.retrieval.retrieval_service import RetrievalService
 from app.utils.citations import process_citations
 from app.utils.query_transform import setup_query_transformation
 
@@ -18,11 +14,12 @@ from app.utils.query_transform import setup_query_transformation
 # 1. Decomposition Node (FIXED - made async compatible)
 async def decompose_query_node(
     state: ChatState,
-    llm: Any,
-    logger: Any
 ) -> ChatState:
     """Node to decompose the query into sub-queries"""
     try:
+        logger = state["logger"]
+        llm = state["llm"]
+
         if not state["should_decompose"]:
             state["decomposed_queries"] = [{"query": state["query"]}]
             return state
@@ -31,7 +28,7 @@ async def decompose_query_node(
         from app.utils.query_decompose import QueryDecompositionService
 
         # Call the async function directly
-        decomposition_service = QueryDecompositionService(llm, logger=logger)
+        decomposition_service = QueryDecompositionService(llm=llm, logger=logger)
         decomposition_result = await decomposition_service.decompose_query(state["query"])
 
         decomposed_queries = decomposition_result.get("queries", [])
@@ -50,13 +47,14 @@ async def decompose_query_node(
 
 # 2. Query Transformation Node (FIXED - made async compatible)
 async def transform_query_node(
-    state: ChatState,
-    llm: Any,
-    logger: Any
+    state: ChatState
 ) -> ChatState:
     """Node to transform and expand the queries"""
     try:
-        rewrite_chain, expansion_chain = setup_query_transformation(llm)
+        logger = state["logger"]
+        llm = state["llm"]
+
+        rewrite_chain, expansion_chain = setup_query_transformation(llm=llm)
 
         transformed_queries = []
         expanded_queries_set = set()
@@ -98,12 +96,13 @@ async def transform_query_node(
 # 3. Document Retrieval Node (FIXED - made async compatible)
 async def retrieve_documents_node(
     state: ChatState,
-    retrieval_service: RetrievalService,
-    arango_service: ArangoService,
-    logger: Any
 ) -> ChatState:
     """Node to retrieve documents based on queries"""
     try:
+        logger = state["logger"]
+        retrieval_service = state["retrieval_service"]
+        arango_service = state["arango_service"]
+
         if state.get("error"):
             return state
 
@@ -142,11 +141,12 @@ async def retrieve_documents_node(
 # 4. User Data Node (FIXED - made async compatible)
 async def get_user_info_node(
     state: ChatState,
-    arango_service: ArangoService,
-    logger: Any
 ) -> ChatState:
     """Node to fetch user and organization information"""
     try:
+        logger = state["logger"]
+        arango_service = state["arango_service"]
+
         if state.get("error") or not state["send_user_info"]:
             return state
 
@@ -166,11 +166,12 @@ async def get_user_info_node(
 # 5. Reranker Node (FIXED - made async compatible)
 async def rerank_results_node(
     state: ChatState,
-    reranker_service: RerankerService,
-    logger: Any
 ) -> ChatState:
     """Node to rerank the search results"""
     try:
+        logger = state["logger"]
+        reranker_service = state["reranker_service"]
+
         if state.get("error"):
             return state
 
@@ -206,10 +207,10 @@ async def rerank_results_node(
 # 6. Prompt Creation Node (no async needed)
 def prepare_prompt_node(
     state: ChatState,
-    logger: Any
 ) -> ChatState:
     """Node to prepare the prompt for the LLM"""
     try:
+        logger = state["logger"]
         if state.get("error"):
             return state
 
@@ -263,11 +264,12 @@ def prepare_prompt_node(
 # 7. Answer Generation Node (FIXED - made async compatible)
 async def generate_answer_node(
     state: ChatState,
-    llm: Any,
-    logger: Any
 ) -> ChatState:
     """Node to generate the answer from the LLM"""
     try:
+        logger = state["logger"]
+        llm = state["llm"]
+
         if state.get("error"):
             return state
 
