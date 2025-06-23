@@ -2,7 +2,7 @@
 from logging import Logger
 from typing import Any, Dict, List, Optional
 
-from langchain_core.chat_models import BaseChatModel
+from langchain.chat_models.base import BaseChatModel
 from typing_extensions import TypedDict
 
 from app.modules.reranker.reranker import RerankerService

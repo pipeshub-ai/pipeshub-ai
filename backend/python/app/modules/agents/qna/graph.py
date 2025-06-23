@@ -1,7 +1,7 @@
 
 from logging import Logger
 
-from langchain_core.chat_models import BaseChatModel
+from langchain.chat_models.base import BaseChatModel
 from langgraph.graph import END, StateGraph
 
 from app.modules.agents.qna.chat_state import ChatState
