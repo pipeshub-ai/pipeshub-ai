@@ -1,6 +1,6 @@
 import asyncio
 import json
-from typing import Any, Dict, List, Optional, AsyncGenerator
+from typing import Any, AsyncGenerator, Dict, List, Optional, Union
 
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -24,7 +24,6 @@ from app.utils.query_transform import (
     setup_followup_query_transformation,
     setup_query_transformation,
 )
-
 
 router = APIRouter()
 
@@ -65,7 +64,7 @@ async def get_reranker_service(request: Request) -> RerankerService:
     return reranker_service
 
 
-def create_sse_event(event_type: str, data: Any) -> str:
+def create_sse_event(event_type: str, data: Union[str, dict, list]) -> str:
     """Create Server-Sent Event format"""
     return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
@@ -86,10 +85,10 @@ async def askAIStream(
         try:
             container = request.app.container
             logger = container.logger()
-            
+
             # Send initial event
             yield create_sse_event("status", {"status": "started", "message": "Starting AI processing..."})
-            
+
             llm = retrieval_service.llm
             if llm is None:
                 llm = await retrieval_service.get_llm_instance()
@@ -102,34 +101,34 @@ async def askAIStream(
 
             if len(query_info.previousConversations) > 0:
                 yield create_sse_event("status", {"status": "processing", "message": "Processing conversation history..."})
-                
+
                 followup_query_transformation = setup_followup_query_transformation(llm)
                 formatted_history = "\n".join(
                     f"{'User' if conv.get('role') == 'user_query' else 'Assistant'}: {conv.get('content')}"
                     for conv in query_info.previousConversations
                 )
-                
+
                 followup_query = await followup_query_transformation.ainvoke({
                     "query": query_info.query,
                     "previous_conversations": formatted_history
                 })
                 query_info.query = followup_query
-                
+
                 yield create_sse_event("query_transformed", {"original_query": query_info.query, "transformed_query": followup_query})
 
             # Query decomposition
             if query_info.useDecomposition:
                 yield create_sse_event("status", {"status": "decomposing", "message": "Decomposing query..."})
-                
+
                 decomposition_service = QueryDecompositionService(llm, logger=logger)
                 decomposition_result = await decomposition_service.decompose_query(query_info.query)
                 decomposed_queries = decomposition_result["queries"]
-                
+
                 if not decomposed_queries:
                     all_queries = [{"query": query_info.query}]
                 else:
                     all_queries = decomposed_queries
-                    
+
                 yield create_sse_event("query_decomposed", {"queries": all_queries})
             else:
                 all_queries = [{"query": query_info.query}]
@@ -145,7 +144,7 @@ async def askAIStream(
                 expanded_queries_list = [q.strip() for q in expanded_queries.split("\n") if q.strip()]
                 queries = [rewritten_query.strip()] if rewritten_query.strip() else []
                 queries.extend([q for q in expanded_queries_list if q not in queries])
-                
+
                 # Remove duplicates
                 seen = set()
                 unique_queries = []
@@ -153,7 +152,7 @@ async def askAIStream(
                     if q.lower() not in seen:
                         seen.add(q.lower())
                         unique_queries.append(q)
-                
+
                 results = await retrieval_service.search_with_filters(
                     queries=unique_queries,
                     org_id=org_id,
@@ -162,7 +161,7 @@ async def askAIStream(
                     filter_groups=query_info.filters,
                     arango_service=arango_service,
                 )
-                
+
                 return results
 
             # Execute all query processing in parallel
@@ -172,26 +171,26 @@ async def askAIStream(
 
             # Process queries and yield status updates
             yield create_sse_event("status", {"status": "parallel_processing", "message": f"Processing {len(all_queries)} queries in parallel..."})
-            
+
             # Send individual query processing updates
             for i, query_dict in enumerate(all_queries):
                 query = query_dict.get("query")
                 yield create_sse_event("status", {"status": "transforming", "message": f"Transforming query {i+1}/{len(all_queries)}: {query[:50]}..."})
-            
+
             # Process all queries
             tasks = [
                 process_single_query(query_dict.get("query"), org_id, user_id)
                 for query_dict in all_queries
             ]
-            
+
             yield create_sse_event("status", {"status": "searching", "message": "Executing searches..."})
             all_results = await asyncio.gather(*tasks)
-            
+
             yield create_sse_event("search_complete", {"results_count": sum(len(r.get("searchResults", [])) for r in all_results)})
 
             # Flatten and deduplicate results
             yield create_sse_event("status", {"status": "deduplicating", "message": "Deduplicating search results..."})
-            
+
             flattened_results = []
             seen_ids = set()
             for result_set in all_results:
@@ -226,11 +225,11 @@ async def askAIStream(
             # Prepare user context
             if send_user_info:
                 yield create_sse_event("status", {"status": "preparing_context", "message": "Preparing user context..."})
-                
+
                 user_info = await arango_service.get_user_by_user_id(user_id)
                 org_info = await arango_service.get_document(org_id, CollectionNames.ORGS.value)
-                
-                if (org_info.get("accountType") == AccountType.ENTERPRISE.value or 
+
+                if (org_info.get("accountType") == AccountType.ENTERPRISE.value or
                     org_info.get("accountType") == AccountType.BUSINESS.value):
                     user_data = (
                         "I am the user of the organization. "
@@ -270,17 +269,17 @@ async def askAIStream(
                     messages.append({"role": "assistant", "content": conversation.get("content")})
 
             messages.append({"role": "user", "content": rendered_form})
-            
+
             yield create_sse_event("status", {"status": "generating", "message": "Generating AI response..."})
-            
+
             # Make async LLM call
             response = await llm.ainvoke(messages)
-            
+
             # Process citations and return final response
             final_response = process_citations(response, final_results)
-            
+
             yield create_sse_event("complete", final_response)
-            
+
         except Exception as e:
             logger.error(f"Error in streaming AI: {str(e)}", exc_info=True)
             yield create_sse_event("error", {"error": str(e)})
