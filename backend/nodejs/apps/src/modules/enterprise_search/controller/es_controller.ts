@@ -58,6 +58,90 @@ const rsAvailable = process.env.REPLICA_SET_AVAILABLE === 'true';
 const AI_SERVICE_UNAVAILABLE_MESSAGE =
   'AI Service is currently unavailable. Please check your network connection or try again later.';
 
+  export const streamChat =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response) => {
+    const requestId = req.context?.requestId;
+    
+    try {
+      // Set SSE headers
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+        'X-Accel-Buffering': 'no',
+      });
+
+      // Send initial connection event and flush
+      res.write(`event: connected\ndata: ${JSON.stringify({ message: 'SSE connection established' })}\n\n`);
+      (res as any).flush?.();
+
+      // Your existing AI payload preparation...
+      const aiPayload = {
+        query: req.body.query,
+      };
+
+      const aiCommandOptions: AICommandOptions = {
+        uri: `${appConfig.aiBackend}/api/v1/chat/stream`,
+        method: HttpMethod.POST,
+        headers: {
+          ...req.headers as Record<string, string>,
+          'Content-Type': 'application/json',
+        },
+        body: aiPayload,
+      };
+
+      const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
+      const stream = await aiServiceCommand.executeStream();
+      
+      if (!stream) {
+        throw new Error('Failed to get stream from AI service');
+      }
+
+      // Handle client disconnect
+      req.on('close', () => {
+        logger.debug('Client disconnected', { requestId });
+        stream.destroy();
+      });
+
+      // Forward SSE events preserving format
+      stream.on('data', (chunk: Buffer) => {
+        res.write(chunk.toString());
+        (res as any).flush?.();
+      });
+
+      stream.on('end', () => {
+        logger.debug('Stream ended successfully', { requestId });
+        res.end();
+      });
+
+      stream.on('error', (error: Error) => {
+        logger.error('Stream error', { requestId, error: error.message });
+        const errorEvent = `event: error\ndata: ${JSON.stringify({ 
+          error: 'Stream error occurred',
+          details: error.message 
+        })}\n\n`;
+        res.write(errorEvent);
+        res.end();
+      });
+
+    } catch (error: any) {
+      logger.error('Error in streamChat', { requestId, error: error.message });
+      
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'text/event-stream' });
+      }
+      
+      const errorEvent = `event: error\ndata: ${JSON.stringify({ 
+        error: 'Internal server error',
+        details: error.message 
+      })}\n\n`;
+      res.write(errorEvent);
+      res.end();
+    }
+  };
+
 export const createConversation =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
@@ -1743,7 +1827,7 @@ export const archiveConversation = async (
       updatedConversation = await performArchiveConversation(session);
       await session.commitTransaction();
     } else {
-      await performArchiveConversation();
+      updatedConversation = await performArchiveConversation();
     }
 
     // Prepare response
@@ -1771,8 +1855,6 @@ export const archiveConversation = async (
       requestId,
       message: 'Error archiving conversation',
       error: error.message,
-      stack: error.stack,
-      duration: Date.now() - startTime,
     });
     next(error);
   }

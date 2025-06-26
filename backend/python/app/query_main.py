@@ -7,6 +7,7 @@ import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 
 from app.api.middlewares.auth import authMiddleware
 from app.api.routes.agent import router as agent_router
@@ -200,6 +201,29 @@ async def health_check() -> JSONResponse:
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """
+    Custom handler to log Pydantic validation errors.
+    This will log the detailed error and the body of the failed request.
+    """
+    # Log the full error details from the exception
+    print(f"Pydantic validation error for {request.method} {request.url}: {exc.errors()}")
+    
+    try:
+        # Try to log the request body
+        body = await request.json()
+        print(f"Failing request body: {body}")
+    except Exception:
+        print("Could not parse request body as JSON.")
+
+    # You can customize the response, but for now, we'll just re-raise
+    # or return the default FastAPI response structure.
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors()},
+    )
 
 
 # Include routes from routes.py

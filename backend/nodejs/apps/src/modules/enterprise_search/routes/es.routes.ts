@@ -24,6 +24,7 @@ import {
   unshareSearch,
   updateFeedback,
   updateTitle,
+  streamChat,
 } from '../controller/es_controller';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import {
@@ -65,6 +66,24 @@ export function createConversationalRouter(container: Container): Router {
   );
 
   /**
+   * @route POST /api/v1/conversations/stream
+   * @desc Stream chat events from AI backend
+   * @access Private
+   * @body {
+   *   query: string
+   *   previousConversations: array
+   *   filters: object
+   * }
+   */
+  router.post(
+    '/stream',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(enterpriseSearchCreateSchema),
+    streamChat(appConfig),
+  );
+
+  /**
    * @route POST /api/v1/conversations/:conversationId/messages
    * @desc Add a new message to existing conversation
    * @access Private
@@ -79,6 +98,23 @@ export function createConversationalRouter(container: Container): Router {
     metricsMiddleware(container),
     ValidationMiddleware.validate(addMessageParamsSchema),
     addMessage(appConfig),
+  );
+
+  /**
+   * @route POST /api/v1/conversations/:conversationId/messages/stream
+   * @desc Stream message events from AI backend
+   * @access Private
+   * @param {string} conversationId - Conversation ID
+   * @body {
+   *   query: string
+   * }
+   */
+  router.post(
+    '/:conversationId/messages/stream',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(addMessageParamsSchema),
+    streamChat(appConfig),
   );
 
   /**
