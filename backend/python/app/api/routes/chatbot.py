@@ -196,6 +196,10 @@ async def askAIStream(
             for result_set in all_results:
                 status_code = result_set.get("status_code", 500)
                 if status_code in [202, 500, 503]:
+                    logger.warn(f"AI service returned an error status code: {status_code}", {
+                        "status": result_set.get("status", "error"),
+                        "message": result_set.get("message", "No results found")
+                    })
                     yield create_sse_event("error", {
                         "status": result_set.get("status", "error"),
                         "message": result_set.get("message", "No results found")

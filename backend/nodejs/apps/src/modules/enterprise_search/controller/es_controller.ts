@@ -119,7 +119,7 @@ const AI_SERVICE_UNAVAILABLE_MESSAGE =
       stream.on('error', (error: Error) => {
         logger.error('Stream error', { requestId, error: error.message });
         const errorEvent = `event: error\ndata: ${JSON.stringify({ 
-          error: 'Stream error occurred',
+          error: error.message || 'Stream error occurred',
           details: error.message 
         })}\n\n`;
         res.write(errorEvent);
@@ -134,7 +134,7 @@ const AI_SERVICE_UNAVAILABLE_MESSAGE =
       }
       
       const errorEvent = `event: error\ndata: ${JSON.stringify({ 
-        error: 'Internal server error',
+        error: error.message || 'Internal server error',
         details: error.message 
       })}\n\n`;
       res.write(errorEvent);
