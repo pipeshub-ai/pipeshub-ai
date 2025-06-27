@@ -137,14 +137,10 @@ export const updateUniversalConfig = async (configType: string, config: any): Pr
     switch (configType) {
       case 'llm':
       case 'embedding': {
-        const response = await axios.get(`${API_BASE}/aiModelsConfig`);
-        const currentConfig = response.data;
-
         // Handle embedding default case
         if (configType === 'embedding' && config.providerType === 'default') {
           const updatedConfig = {
-            ...currentConfig,
-            embedding: [],
+            embedding: []
           };
           return await axios.post(`${API_BASE}/aiModelsConfig`, updatedConfig);
         }
@@ -154,7 +150,6 @@ export const updateUniversalConfig = async (configType: string, config: any): Pr
         const provider = providerType || modelType;
 
         const updatedConfig = {
-          ...currentConfig,
           [configType]: [
             {
               provider,
