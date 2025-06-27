@@ -1,6 +1,11 @@
-import { EmbeddingFormValues, LlmFormValues, SmtpFormValues, StorageFormValues, UrlFormValues } from 'src/components/dynamic-form';
+import {
+  EmbeddingFormValues,
+  LlmFormValues,
+  SmtpFormValues,
+  StorageFormValues,
+  UrlFormValues,
+} from 'src/components/dynamic-form';
 import axios from 'src/utils/axios';
-
 
 const API_BASE = '/api/v1/configurationManager';
 
@@ -288,6 +293,29 @@ export const updateUniversalConfig = async (configType: string, config: any): Pr
   }
 };
 
+export const updateOnboardingAiModelsConfig = async (
+  llmConfig?: any,
+  embeddingConfig?: any
+): Promise<any> => {
+  try {
+    // Build the configuration payload directly (no GET needed for onboarding)
+    const updatedConfig = {
+      ocr: [],
+      embedding: embeddingConfig || [],
+      slm: [],
+      llm: llmConfig || [],
+      reasoning: [],
+      multiModal: [],
+    };
+
+    // Send single API call with merged configuration
+    return await axios.post(`${API_BASE}/aiModelsConfig`, updatedConfig);
+  } catch (error) {
+    console.error('Error updating onboarding AI models configuration:', error);
+    throw error;
+  }
+};
+
 //  SERVICE FUNCTIONS
 
 export const getLlmConfig = () => getUniversalConfig('llm');
@@ -306,3 +334,8 @@ export const updateUrlConfig = (config: UrlFormValues) => updateUniversalConfig(
 
 export const getSmtpConfig = () => getUniversalConfig('smtp');
 export const updateSmtpConfig = (config: SmtpFormValues) => updateUniversalConfig('smtp', config);
+
+export const updateStepperAiModelsConfig = async (
+  llmConfig?: any,
+  embeddingConfig?: any
+): Promise<any> => updateOnboardingAiModelsConfig(llmConfig, embeddingConfig);

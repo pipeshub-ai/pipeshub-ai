@@ -17,7 +17,6 @@ export interface ProviderConfig {
   accountType?: 'individual' | 'business';
 }
 
-
 export const createUrlValidator = (optional: boolean = true) => {
   const baseValidator = z.string().refine(
     (val) => {
@@ -103,6 +102,13 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
 // EMBEDDING PROVIDERS
 export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
   {
+    id: 'default',
+    label: 'Default (System Provided)',
+    description:
+      'Using the default embedding model provided by the system. No additional configuration required.',
+    isSpecial: true,
+  },
+  {
     id: 'openAI',
     label: 'OpenAI API',
     description: 'Enter your OpenAI API credentials for embeddings.',
@@ -141,13 +147,7 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
     description: 'Use local Sentence Transformers models (no API key required).',
     modelPlaceholder: 'e.g., all-MiniLM-L6-v2',
     fields: ['model'],
-  },
-  {
-    id: 'default',
-    label: 'Default (System Provided)',
-    description: 'Using the default embedding model provided by the system. No additional configuration required.',
-    isSpecial: true,
-  },
+  }
 ] as const;
 
 // STORAGE PROVIDERS

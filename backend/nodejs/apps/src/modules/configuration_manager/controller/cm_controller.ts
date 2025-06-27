@@ -1435,7 +1435,8 @@ export const getAIModelsConfig =
         res.status(200).json(decryptedAIConfig).end();
         return;
       } else {
-        throw new BadRequestError('Ai models config not found');
+        res.status(204).end();
+        return;
       }
     } catch (error: any) {
       logger.error('Error getting ai models config', { error });
