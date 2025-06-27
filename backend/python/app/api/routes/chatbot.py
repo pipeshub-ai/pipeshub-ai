@@ -175,7 +175,7 @@ async def askAIStream(
             # Send individual query processing updates
             for i, query_dict in enumerate(all_queries):
                 query = query_dict.get("query")
-                yield create_sse_event("status", {"status": "transforming", "message": f"Transforming query {i+1}/{len(all_queries)}: {query[:50]}..."})
+                yield create_sse_event("tranfromed_query", {"status": "transforming", "query": query, "index": i+1})
 
             # Process all queries
             tasks = [
