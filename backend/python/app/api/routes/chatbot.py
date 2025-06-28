@@ -1,6 +1,5 @@
 import asyncio
 import json
-import re
 from typing import Any, AsyncGenerator, Dict, List, Optional, Union
 
 from dependency_injector.wiring import inject
@@ -19,7 +18,7 @@ from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_arango import ArangoService
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.setups.query_setup import AppContainer
-from app.utils.citations import process_citations
+from app.utils.citations import normalize_citations_and_chunks, process_citations
 from app.utils.query_decompose import QueryDecompositionService
 from app.utils.query_transform import (
     setup_followup_query_transformation,
@@ -67,9 +66,14 @@ def create_sse_event(event_type: str, data: Union[str, dict, list]) -> str:
     """Create Server-Sent Event format"""
     return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
+def extract_citations_from_text(text: str, final_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Extract and normalize citations from text and return structured citation data"""
+    # Use the new normalization function
+    _, citations = normalize_citations_and_chunks(text, final_results)
+    return citations
 
 async def stream_llm_response(llm, messages, final_results) -> AsyncGenerator[Dict[str, Any], None]:
-    """Stream LLM response and yield incremental JSON updates"""
+    """Stream LLM response and yield incremental JSON updates with normalized citations"""
     accumulated_content = ""
     target_words_per_chunk = 3  # Send 3 words at a time
 
@@ -93,11 +97,11 @@ async def stream_llm_response(llm, messages, final_results) -> AsyncGenerator[Di
             if "answer" in parsed_json:
                 answer_text = parsed_json["answer"]
 
-                # Extract citations from the answer text
-                citations = extract_citations_from_text(answer_text, final_results)
+                # Normalize citations and get corresponding chunks
+                normalized_answer, citations = normalize_citations_and_chunks(answer_text, final_results)
 
-                # Stream the original answer text in chunks (without modifying citations)
-                words = answer_text.split()
+                # Stream the normalized answer text in chunks
+                words = normalized_answer.split()
                 for i in range(0, len(words), target_words_per_chunk):
                     chunk_words = words[i:i + target_words_per_chunk]
                     chunk_text = " ".join(chunk_words)
@@ -107,24 +111,30 @@ async def stream_llm_response(llm, messages, final_results) -> AsyncGenerator[Di
                             "event": "answer_chunk",
                             "data": {
                                 "chunk": chunk_text,
-                                "accumulated": answer_text,
+                                "accumulated": normalized_answer,  # Send normalized version
                                 "citations": citations
                             }
                         }
 
-                # Send completion event with full response
+                # Send completion event with normalized response
                 yield {
                     "event": "complete",
                     "data": {
-                        "answer": answer_text,
+                        "answer": normalized_answer,
                         "citations": citations
                     }
                 }
                 return
 
         except json.JSONDecodeError:
-            # Not valid JSON, process with original citations logic
-            final_response = process_citations(accumulated_content, final_results)
+            # Not valid JSON, process with original citations logic but normalize
+            normalized_response, normalized_citations = normalize_citations_and_chunks(accumulated_content, final_results)
+
+            # Create response similar to process_citations format
+            final_response = {
+                "answer": normalized_response,
+                "citations": normalized_citations
+            }
 
             yield {
                 "event": "complete",
@@ -136,29 +146,6 @@ async def stream_llm_response(llm, messages, final_results) -> AsyncGenerator[Di
             "event": "error",
             "data": {"error": f"Error in LLM streaming: {str(e)}"}
         }
-
-
-def extract_citations_from_text(text: str, final_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Extract citations from text and return structured citation data"""
-    citations = []
-    citation_pattern = r'\[(\d+)\]'
-    matches = re.findall(citation_pattern, text)
-
-    for match in matches:
-        citation_num = int(match)
-        index = citation_num - 1
-
-        if 0 <= index < len(final_results):
-            doc = final_results[index]
-            citations.append({
-                "content": doc.get("metadata", {}).get("blockText", ""),
-                "chunkIndex": citation_num,
-                "metadata": doc.get("metadata", {}),
-                "citationType": "vectordb|document",
-            })
-
-    return citations
-
 
 @router.post("/chat/stream")
 @inject

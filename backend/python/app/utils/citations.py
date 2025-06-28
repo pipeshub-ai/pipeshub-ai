@@ -1,4 +1,5 @@
 import json
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
@@ -57,16 +58,58 @@ def fix_json_string(json_str) -> str:
     return result
 
 
+
+def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[str, Any]]) -> tuple[str, List[Dict[str, Any]]]:
+    """
+    Normalize citation numbers in answer text to be sequential (1,2,3...)
+    and create corresponding citation chunks with correct mapping
+    """
+    # Extract all citation numbers from the answer text
+    citation_pattern = r'\[(\d+)\]'
+    matches = re.findall(citation_pattern, answer_text)
+
+    if not matches:
+        return answer_text, []
+
+    # Get unique citation numbers in order of appearance
+    unique_citations = []
+    seen = set()
+    for match in matches:
+        citation_num = int(match)
+        if citation_num not in seen:
+            unique_citations.append(citation_num)
+            seen.add(citation_num)
+
+    # Create mapping from old citation numbers to new sequential numbers
+    citation_mapping = {}
+    new_citations = []
+
+    for i, old_citation_num in enumerate(unique_citations):
+        new_citation_num = i + 1
+        citation_mapping[old_citation_num] = new_citation_num
+
+        # Get the corresponding chunk from final_results
+        chunk_index = old_citation_num - 1  # Convert to 0-based index
+        if 0 <= chunk_index < len(final_results):
+            doc = final_results[chunk_index]
+            new_citations.append({
+                "content": doc.get("metadata", {}).get("blockText", ""),
+                "chunkIndex": new_citation_num,  # Use new sequential number
+                "metadata": doc.get("metadata", {}),
+                "citationType": "vectordb|document",
+            })
+
+    # Replace citation numbers in answer text
+    normalized_answer = answer_text
+    for old_num, new_num in citation_mapping.items():
+        normalized_answer = re.sub(f'\\[{old_num}\\]', f'[{new_num}]', normalized_answer)
+
+    return normalized_answer, new_citations
+
+
 def process_citations(llm_response, documents: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Process the LLM response and extract citations from relevant documents.
-
-    Args:
-        llm_response: Response object from LLM containing content with documentIndexes
-        documents: List of document dictionaries with content and metadata
-
-    Returns:
-        Dict containing processed response with citations
+    Process the LLM response and extract citations from relevant documents with normalization.
     """
     try:
         # Handle the case where llm_response might be an object with a content field
@@ -84,13 +127,10 @@ def process_citations(llm_response, documents: List[Dict[str, Any]]) -> Dict[str
                 cleaned_content = response_content.strip()
                 # Handle nested JSON (sometimes response is JSON within JSON)
                 if cleaned_content.startswith('"') and cleaned_content.endswith('"'):
-                    # Remove outer quotes and unescape inner quotes
                     cleaned_content = cleaned_content[1:-1].replace('\\"', '"')
 
                 # Handle escaped newlines and other special characters
-                cleaned_content = cleaned_content.replace("\\n", "\n").replace(
-                    "\\t", "\t"
-                )
+                cleaned_content = cleaned_content.replace("\\n", "\n").replace("\\t", "\t")
 
                 # Apply our fix for control characters in JSON string values
                 cleaned_content = fix_json_string(cleaned_content)
@@ -100,14 +140,11 @@ def process_citations(llm_response, documents: List[Dict[str, Any]]) -> Dict[str
             except json.JSONDecodeError as e:
                 # If regular parsing fails, try a more lenient approach
                 try:
-                    # Sometimes response might be malformed with extra characters
-                    # Find the first { and last } to extract potential JSON
                     start_idx = cleaned_content.find("{")
                     end_idx = cleaned_content.rfind("}")
 
                     if start_idx >= 0 and end_idx > start_idx:
                         potential_json = cleaned_content[start_idx : end_idx + 1]
-                        # Apply our fix again on the extracted JSON
                         potential_json = fix_json_string(potential_json)
                         response_data = json.loads(potential_json)
                     else:
@@ -123,128 +160,29 @@ def process_citations(llm_response, documents: List[Dict[str, Any]]) -> Dict[str
         else:
             response_data = response_content
 
-        # Extract document indexes (1-based indexing from template)
-        doc_indexes = []
-
-        # Handle different formats of chunkIndexes
-        chunk_indexes = None
-
-        # Function to recursively search for chunk indexes in nested dictionaries
-        def find_chunk_indexes(data, visited=None) -> List[int]:
-            if visited is None:
-                visited = set()
-
-            # Avoid circular references
-            data_id = id(data)
-            if data_id in visited:
-                return None
-            visited.add(data_id)
-
-            if isinstance(data, dict):
-                # Check for various possible key names
-                for key in [
-                    "chunkIndexes",
-                    "chunkindex",
-                    "chunk_indexes",
-                    "chunkIndexes",
-                ]:
-                    if key in data:
-                        return data[key]
-
-                # Search nested dictionaries
-                for value in data.values():
-                    result = find_chunk_indexes(value, visited)
-                    if result is not None:
-                        return result
-
-            # Handle nested array of objects
-            elif isinstance(data, list):
-                for item in data:
-                    result = find_chunk_indexes(item, visited)
-                    if result is not None:
-                        return result
-
-            return None
-
-        # Try to find chunk indexes in the response data
-        chunk_indexes = find_chunk_indexes(response_data)
-
-        # Fallback: If we still haven't found any indexes and have "answer" field,
-        # try parsing the answer text to find numeric references
-        if (
-            chunk_indexes is None
-            and isinstance(response_data, dict)
-            and "answer" in response_data
-        ):
-            answer_text = response_data["answer"]
-            # Look for citation patterns like [1] or [1, 2] in the answer
-            import re
-
-            citation_matches = re.findall(r"\[([0-9,\s]+)\]", answer_text)
-            if citation_matches:
-                # Use the first match as our chunk indexes
-                chunk_indexes = citation_matches[0]
-
-        if chunk_indexes is None:
-            return {
-                "error": "No chunk indexes found",
-                "raw_response": llm_response,
-            }
-
-        # Process each index
-        for chunk_index in chunk_indexes:
-            try:
-                # Strip any quotes or spaces
-                if isinstance(chunk_index, str):
-                    chunk_index = chunk_index.strip().strip("\"'")
-
-                # Convert to int and adjust for 0-based indexing
-                chunk_index_value = int(chunk_index) - 1
-                if 0 <= chunk_index_value < len(documents):
-                    doc_indexes.append(chunk_index_value)
-            except (ValueError, TypeError):
-                continue
-
-        # Get citations from referenced documents
-        citations = []
-        index = 1
-        for idx in doc_indexes:
-            try:
-                doc = documents[idx]
-                # Safely access content and metadata
-                content = doc.get("content", "")
-                metadata = doc.get("metadata", {})
-
-                citation = ChatDocCitation(
-                    content=content, metadata=metadata, chunkindex=index
-                )
-                citations.append(citation)
-                index += 1
-            except (IndexError, KeyError):
-                continue
-
         # Create a result object (either use existing or create new)
         if isinstance(response_data, dict):
             result = response_data.copy()
         else:
             result = {"answer": str(response_data)}
 
-        # Add citations to response
-        result["citations"] = [
-            {
-                "content": cit.content,
-                "chunkIndex": cit.chunkindex,
-                "metadata": cit.metadata,
-                "citationType": "vectordb|document",
+        # Normalize citations in the answer if it exists
+        if "answer" in result:
+            normalized_answer, citations = normalize_citations_and_chunks(result["answer"], documents)
+            result["answer"] = normalized_answer
+            result["citations"] = citations
+        else:
+            # Fallback for cases where answer is not in a structured format
+            normalized_answer, citations = normalize_citations_and_chunks(str(response_data), documents)
+            result = {
+                "answer": normalized_answer,
+                "citations": citations
             }
-            for cit in citations
-        ]
 
         return result
 
     except Exception as e:
         import traceback
-
         return {
             "error": f"Citation processing failed: {str(e)}",
             "traceback": traceback.format_exc(),
