@@ -22,7 +22,6 @@ from app.utils.citations import normalize_citations_and_chunks, process_citation
 from app.utils.query_decompose import QueryDecompositionService
 from app.utils.query_transform import (
     setup_followup_query_transformation,
-    setup_query_transformation,
 )
 
 router = APIRouter()
@@ -33,7 +32,6 @@ class ChatQuery(BaseModel):
     query: str
     limit: Optional[int] = 50
     previousConversations: List[Dict] = []
-    useDecomposition: bool = True
     filters: Optional[Dict[str, Any]] = None
     retrieval_mode: Optional[str] = "HYBRID"
 
@@ -190,44 +188,24 @@ async def askAIStream(
                 yield create_sse_event("query_transformed", {"original_query": query_info.query, "transformed_query": followup_query})
 
             # Query decomposition
-            if query_info.useDecomposition:
-                yield create_sse_event("status", {"status": "decomposing", "message": "Decomposing query..."})
+            yield create_sse_event("status", {"status": "decomposing", "message": "Decomposing query..."})
 
-                decomposition_service = QueryDecompositionService(llm, logger=logger)
-                decomposition_result = await decomposition_service.decompose_query(query_info.query)
-                decomposed_queries = decomposition_result["queries"]
+            decomposition_service = QueryDecompositionService(llm, logger=logger)
+            decomposition_result = await decomposition_service.decompose_query(query_info.query)
+            decomposed_queries = decomposition_result["queries"]
 
-                if not decomposed_queries:
-                    all_queries = [{"query": query_info.query}]
-                else:
-                    all_queries = decomposed_queries
-
-                yield create_sse_event("query_decomposed", {"queries": all_queries})
-            else:
+            if not decomposed_queries:
                 all_queries = [{"query": query_info.query}]
+            else:
+                all_queries = decomposed_queries
+
+            yield create_sse_event("query_decomposed", {"queries": all_queries})
 
             # Separate the processing logic from the generator
             async def process_single_query(query: str, org_id: str, user_id: str) -> Dict[str, Any]:
-                """Process a single query and return results (no yielding here)"""
-                rewrite_chain, expansion_chain = setup_query_transformation(llm)
-                rewritten_query, expanded_queries = await asyncio.gather(
-                    rewrite_chain.ainvoke(query), expansion_chain.ainvoke(query)
-                )
-
-                expanded_queries_list = [q.strip() for q in expanded_queries.split("\n") if q.strip()]
-                queries = [rewritten_query.strip()] if rewritten_query.strip() else []
-                queries.extend([q for q in expanded_queries_list if q not in queries])
-
-                # Remove duplicates
-                seen = set()
-                unique_queries = []
-                for q in queries:
-                    if q.lower() not in seen:
-                        seen.add(q.lower())
-                        unique_queries.append(q)
 
                 results = await retrieval_service.search_with_filters(
-                    queries=unique_queries,
+                    queries=[query],
                     org_id=org_id,
                     user_id=user_id,
                     limit=query_info.limit,
@@ -412,49 +390,22 @@ async def askAI(
 
         logger.debug(f"query_info.query {query_info.query}")
 
-        logger.debug(f"useDecomposition {query_info.useDecomposition}")
-        if query_info.useDecomposition:
-            decomposition_service = QueryDecompositionService(llm, logger=logger)
-            decomposition_result = await decomposition_service.decompose_query(
-                query_info.query
-            )
-            decomposed_queries = decomposition_result["queries"]
+        decomposition_service = QueryDecompositionService(llm, logger=logger)
+        decomposition_result = await decomposition_service.decompose_query(
+            query_info.query
+        )
+        decomposed_queries = decomposition_result["queries"]
 
-            logger.debug(f"decomposed_queries {decomposed_queries}")
-            if not decomposed_queries:
-                all_queries = [{"query": query_info.query}]
-            else:
-                all_queries = decomposed_queries
-
-        else:
+        logger.debug(f"decomposed_queries {decomposed_queries}")
+        if not decomposed_queries:
             all_queries = [{"query": query_info.query}]
+        else:
+            all_queries = decomposed_queries
 
         async def process_decomposed_query(query: str, org_id: str, user_id: str) -> Dict[str, Any]:
-            rewrite_chain, expansion_chain = setup_query_transformation(llm)
-
-            # Run query transformations in parallel
-            rewritten_query, expanded_queries = await asyncio.gather(
-                rewrite_chain.ainvoke(query), expansion_chain.ainvoke(query)
-            )
-
-            logger.debug(f"Rewritten query: {rewritten_query}")
-            logger.debug(f"Expanded queries: {expanded_queries}")
-
-            expanded_queries_list = [
-                q.strip() for q in expanded_queries.split("\n") if q.strip()
-            ]
-
-            queries = [rewritten_query.strip()] if rewritten_query.strip() else []
-            queries.extend([q for q in expanded_queries_list if q not in queries])
-            seen = set()
-            unique_queries = []
-            for q in queries:
-                if q.lower() not in seen:
-                    seen.add(q.lower())
-                    unique_queries.append(q)
 
             results = await retrieval_service.search_with_filters(
-                queries=unique_queries,
+                queries=[query],
                 org_id=org_id,
                 user_id=user_id,
                 limit=query_info.limit,
