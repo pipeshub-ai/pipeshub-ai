@@ -187,44 +187,19 @@ def process_citations(llm_response, documents: List[Dict[str, Any]]) -> Dict[str
                 # Use the first match as our chunk indexes
                 chunk_indexes = citation_matches[0]
 
-        # If we found chunk indexes, process them
-        if chunk_indexes is not None:
-            # Convert to list if it's not already
-            if not isinstance(chunk_indexes, list):
-                if isinstance(chunk_indexes, str):
-                    # Try to handle comma-separated strings or space-separated
-                    chunk_indexes = (
-                        chunk_indexes.replace("[", "")
-                        .replace("]", "")
-                        .replace('"', "")
-                        .replace("'", "")
-                    )
-                    # Split by comma or space
-                    if "," in chunk_indexes:
-                        chunk_indexes = [r.strip() for r in chunk_indexes.split(",")]
-                    else:
-                        chunk_indexes = [
-                            r.strip() for r in chunk_indexes.split() if r.strip()
-                        ]
-                else:
-                    chunk_indexes = [chunk_indexes]
+        # Process each index
+        for chunk_index in chunk_indexes:
+            try:
+                # Strip any quotes or spaces
+                if isinstance(chunk_index, str):
+                    chunk_index = chunk_index.strip().strip("\"'")
 
-            # Filter out empty values
-            chunk_indexes = [idx for idx in chunk_indexes if idx]
-            print(f"Chunk indexes 2: {chunk_indexes}")
-            # Process each index
-            for [idx, chunk_index] in chunk_indexes:
-                try:
-                    # Strip any quotes or spaces
-                    if isinstance(chunk_index, str):
-                        chunk_index = chunk_index.strip().strip("\"'")
-
-                    # Convert to int and adjust for 0-based indexing
-                    chunk_index_value = int(chunk_index) - 1
-                    if 0 <= chunk_index_value < len(documents):
-                        doc_indexes.append(chunk_index_value)
-                except (ValueError, TypeError):
-                    continue
+                # Convert to int and adjust for 0-based indexing
+                chunk_index_value = int(chunk_index) - 1
+                if 0 <= chunk_index_value < len(documents):
+                    doc_indexes.append(chunk_index_value)
+            except (ValueError, TypeError):
+                continue
 
         # Get citations from referenced documents
         citations = []

@@ -29,12 +29,13 @@ qna_prompt = """
   -Guidelines-
   When answering questions, follow these guidelines:
   1. Answer Comprehensiveness:
+  - Provide thoughtful, explanatory, and sufficiently detailed answers — not just short factual replies.
   - For user-specific questions, prioritize information from the User Information section
   - Consider the Persistent Conversation Context to ensure continuity
-  - Provide detailed answers using all relevant information from the source materials
+  - Provide detailed, explanatory answers using all relevant information from the source materials, ensuring the response is clear and self-contained.
   - Include every key point that addresses the question directly
   - Do not summarize or omit important details
-  - For each chunk block provide the citations only **highly relevant indexes** in below format. Assign a unique citation number starting from 1 for the first cited chunk, increasing by 1 for each additional chunk used.
+  - For each chunk block provide the citations only **relevant indexes** in below format.
       - **Do not list excessive citations for the same point. Include only the top 4-5 most relevant chunk citations per answer.**
       - Use these assigned citation numbers in the answer output.
       - **CRITICAL: IF THE ANSWER IS DERIVED FROM CHUNKS, YOU MUST INCLUDE CITATION NUMBERS IN THE ANSWER TEXT. NO EXCEPTIONS.**
@@ -70,24 +71,22 @@ qna_prompt = """
     "reason": "<Explain how the answer was derived using the chunks/user information and reasoning>",
     "confidence": "<Very High | High | Medium | Low>",
     "answerMatchType": "<Exact Match | Derived From Chunks | Derived From User Info>",
-    "chunkIndexes": [[<assignedCitationNumber>, <verbatimChunkIndex>], ...]
+    "chunkIndexes": [<verbatimChunkIndex>]
   }
 </output_format>
 
 <example>
   ✅ Example Mapping Output:
   For context:
-  Chunk Index 2 → assigned Citation Number 1
-  Chunk Index 5 → assigned Citation Number 2
-  Output Format:
-  <output>
+  Output JSON Format:
     {
-      "answer": "Security policies are regularly reviewed and updated. [1][2]",
+      "answer": "Security policies are regularly reviewed and updated. [2][5]",
       "reason": "Derived from chunk index 2 and 5, which explicitly mention internal security review timelines.",
       "confidence": "High",
       "answerMatchType": "Derived From Chunks",
-      "chunkIndexes": [[1, 2], [2, 5]]
+      "chunkIndexes": [2, 5]
     }
-  </output>
 </example>
+***Your entire response/output is going to consist of a single JSON, and you will NOT wrap it within JSON md markers***
+
 """

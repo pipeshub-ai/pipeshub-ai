@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 from typing import Any, AsyncGenerator, Dict, List, Optional, Union
 
 from dependency_injector.wiring import inject
@@ -39,9 +40,7 @@ class ChatQuery(BaseModel):
 
 
 async def get_retrieval_service(request: Request) -> RetrievalService:
-    # Retrieve the container from the app (set in your lifespan)
     container: AppContainer = request.app.container
-    # Await the async resource provider to get the actual service instance
     retrieval_service = await container.retrieval_service()
     return retrieval_service
 
@@ -69,6 +68,103 @@ def create_sse_event(event_type: str, data: Union[str, dict, list]) -> str:
     return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
 
+async def stream_llm_response(llm, messages, final_results) -> AsyncGenerator[Dict[str, Any], None]:
+    """Stream LLM response and yield incremental JSON updates"""
+    accumulated_content = ""
+    target_words_per_chunk = 3  # Send 3 words at a time
+
+    try:
+        # First, accumulate the complete response
+        if hasattr(llm, 'astream'):
+            async for chunk in llm.astream(messages):
+                if hasattr(chunk, 'content') and chunk.content:
+                    accumulated_content += chunk.content
+        else:
+            # Fallback to non-streaming response
+            response = await llm.ainvoke(messages)
+            accumulated_content = response
+
+        print(f"accumulated_content: {accumulated_content}")
+
+        # Now process the complete response
+        try:
+            # Try to parse as JSON
+            parsed_json = json.loads(accumulated_content)
+
+            # Extract the answer field
+            if "answer" in parsed_json:
+                answer_text = parsed_json["answer"]
+
+                # Extract citations from the answer text
+                citations = extract_citations_from_text(answer_text, final_results)
+
+                # Stream the original answer text in chunks (without modifying citations)
+                words = answer_text.split()
+                for i in range(0, len(words), target_words_per_chunk):
+                    chunk_words = words[i:i + target_words_per_chunk]
+                    chunk_text = " ".join(chunk_words)
+
+                    if chunk_text.strip():
+                        yield {
+                            "event": "answer_chunk",
+                            "data": {
+                                "chunk": chunk_text,
+                                "accumulated": answer_text,
+                                "citations": citations
+                            }
+                        }
+
+                # Send completion event with full response
+                yield {
+                    "event": "complete",
+                    "data": {
+                        "answer": answer_text,
+                        "citations": citations
+                    }
+                }
+                return
+
+        except json.JSONDecodeError:
+            # Not valid JSON, process with original citations logic
+            final_response = process_citations(accumulated_content, final_results)
+
+            print("--------------------------------")
+            print(f"final_response: {final_response}")
+
+            yield {
+                "event": "complete",
+                "data": final_response
+            }
+
+    except Exception as e:
+        yield {
+            "event": "error",
+            "data": {"error": f"Error in LLM streaming: {str(e)}"}
+        }
+
+
+def extract_citations_from_text(text: str, final_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Extract citations from text and return structured citation data"""
+    citations = []
+    citation_pattern = r'\[(\d+)\]'
+    matches = re.findall(citation_pattern, text)
+
+    for match in matches:
+        citation_num = int(match)
+        index = citation_num - 1
+
+        if 0 <= index < len(final_results):
+            doc = final_results[index]
+            citations.append({
+                "content": doc.get("metadata", {}).get("blockText", ""),
+                "chunkIndex": citation_num,
+                "metadata": doc.get("metadata", {}),
+                "citationType": "vectordb|document",
+            })
+
+    return citations
+
+
 @router.post("/chat/stream")
 @inject
 async def askAIStream(
@@ -81,6 +177,7 @@ async def askAIStream(
     query_info = ChatQuery(**(await request.json()))
 
     print(f"query_info: {query_info}")
+
     async def generate_stream() -> AsyncGenerator[str, None]:
         try:
             container = request.app.container
@@ -276,13 +373,11 @@ async def askAIStream(
 
             yield create_sse_event("status", {"status": "generating", "message": "Generating AI response..."})
 
-            # Make async LLM call
-            response = await llm.ainvoke(messages)
-
-            # Process citations and return final response
-            final_response = process_citations(response, final_results)
-
-            yield create_sse_event("complete", final_response)
+            # Stream LLM response with real-time answer updates
+            async for stream_event in stream_llm_response(llm, messages, final_results):
+                event_type = stream_event["event"]
+                event_data = stream_event["data"]
+                yield create_sse_event(event_type, event_data)
 
         except Exception as e:
             logger.error(f"Error in streaming AI: {str(e)}", exc_info=True)
@@ -298,6 +393,7 @@ async def askAIStream(
             "Access-Control-Allow-Headers": "Cache-Control"
         }
     )
+
 
 @router.post("/chat")
 @inject
@@ -390,10 +486,7 @@ async def askAI(
                 arango_service=arango_service,
             )
             logger.info("Results from the AI service received")
-            # Format conversation history
             logger.debug(f"formatted_results: {results}")
-            # Get raw search results
-            # search_results = results.get("searchResults", [])
 
             return results
 
@@ -409,7 +502,6 @@ async def askAI(
         all_results = await asyncio.gather(*tasks)
 
         # Flatten and deduplicate results based on document ID or other unique identifier
-        # This assumes each result has an 'id' field - adjust according to your data structure
         flattened_results = []
         seen_ids = set()
         for result_set in all_results:
@@ -437,7 +529,6 @@ async def askAI(
                 if result_id not in seen_ids:
                     seen_ids.add(result_id)
                     flattened_results.append(result)
-
 
         # Re-rank the combined results with the original query for better relevance
         if len(flattened_results) > 1:
