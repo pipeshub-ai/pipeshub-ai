@@ -84,8 +84,6 @@ async def stream_llm_response(llm, messages, final_results) -> AsyncGenerator[Di
             response = await llm.ainvoke(messages)
             accumulated_content = response
 
-        print(f"accumulated_content: {accumulated_content}")
-
         # Now process the complete response
         try:
             # Try to parse as JSON
@@ -127,9 +125,6 @@ async def stream_llm_response(llm, messages, final_results) -> AsyncGenerator[Di
         except json.JSONDecodeError:
             # Not valid JSON, process with original citations logic
             final_response = process_citations(accumulated_content, final_results)
-
-            print("--------------------------------")
-            print(f"final_response: {final_response}")
 
             yield {
                 "event": "complete",

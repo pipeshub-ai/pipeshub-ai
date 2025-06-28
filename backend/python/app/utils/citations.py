@@ -149,7 +149,6 @@ def process_citations(llm_response, documents: List[Dict[str, Any]]) -> Dict[str
                     "chunkIndexes",
                 ]:
                     if key in data:
-                        print(f"Found {key} in data: {data[key]}")
                         return data[key]
 
                 # Search nested dictionaries
@@ -169,7 +168,6 @@ def process_citations(llm_response, documents: List[Dict[str, Any]]) -> Dict[str
 
         # Try to find chunk indexes in the response data
         chunk_indexes = find_chunk_indexes(response_data)
-        print(f"Chunk indexes: {chunk_indexes}")
 
         # Fallback: If we still haven't found any indexes and have "answer" field,
         # try parsing the answer text to find numeric references
@@ -187,6 +185,12 @@ def process_citations(llm_response, documents: List[Dict[str, Any]]) -> Dict[str
                 # Use the first match as our chunk indexes
                 chunk_indexes = citation_matches[0]
 
+        if chunk_indexes is None:
+            return {
+                "error": "No chunk indexes found",
+                "raw_response": llm_response,
+            }
+
         # Process each index
         for chunk_index in chunk_indexes:
             try:
@@ -203,7 +207,6 @@ def process_citations(llm_response, documents: List[Dict[str, Any]]) -> Dict[str
 
         # Get citations from referenced documents
         citations = []
-        print("doc_indexes", doc_indexes)
         index = 1
         for idx in doc_indexes:
             try:
