@@ -242,4 +242,4 @@ def run(host: str = "0.0.0.0", port: int = 8000, reload: bool = True) -> None:
 
 
 if __name__ == "__main__":
-    run()
+    run(reload=False)
