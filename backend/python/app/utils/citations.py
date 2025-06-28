@@ -100,9 +100,7 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
             })
 
     # Replace citation numbers in answer text
-    normalized_answer = answer_text
-    for old_num, new_num in citation_mapping.items():
-        normalized_answer = re.sub(f'\\[{old_num}\\]', f'[{new_num}]', normalized_answer)
+    normalized_answer = re.sub(citation_pattern, lambda m: f"[{citation_mapping[int(m.group(1))]}]", answer_text)
 
     return normalized_answer, new_citations
 
