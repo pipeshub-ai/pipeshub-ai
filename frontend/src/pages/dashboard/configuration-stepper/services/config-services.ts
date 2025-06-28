@@ -294,8 +294,8 @@ export const updateUniversalConfig = async (configType: string, config: any): Pr
 };
 
 export const updateOnboardingAiModelsConfig = async (
-  llmConfig?: any,
-  embeddingConfig?: any
+  llmConfig?: { provider: string; configuration: Record<string, any> }[] | null,
+  embeddingConfig?: { provider: string; configuration: Record<string, any> }[] | null
 ): Promise<any> => {
   try {
     // Build the configuration payload directly (no GET needed for onboarding)
@@ -336,6 +336,6 @@ export const getSmtpConfig = () => getUniversalConfig('smtp');
 export const updateSmtpConfig = (config: SmtpFormValues) => updateUniversalConfig('smtp', config);
 
 export const updateStepperAiModelsConfig = async (
-  llmConfig?: any,
-  embeddingConfig?: any
+  llmConfig?: { provider: string; configuration: Record<string, any> }[] | null,
+  embeddingConfig?: { provider: string; configuration: Record<string, any> }[] | null
 ): Promise<any> => updateOnboardingAiModelsConfig(llmConfig, embeddingConfig);

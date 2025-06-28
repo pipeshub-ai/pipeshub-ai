@@ -23,7 +23,7 @@ import {
 
 import axios from 'src/utils/axios';
 import { createScrollableContainerStyle } from 'src/sections/qna/chatbot/utils/styles/scrollbar';
-import { ConfigType } from 'src/components/dynamic-form';
+import { ConfigType, EmbeddingFormValues, LlmFormValues } from 'src/components/dynamic-form';
 import DynamicForm, { DynamicFormRef } from 'src/components/dynamic-form/components/dynamic-form';
 import {
   getLlmConfig,
@@ -222,9 +222,9 @@ const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, on
       case 'smtp':
         return { getConfig: getSmtpConfig, updateConfig: updateSmtpConfig };
       default:
-        return { 
-          getConfig: async () => null, 
-          updateConfig: async (config: any) => config 
+        return {
+          getConfig: async () => null,
+          updateConfig: async (config: any) => config,
         };
     }
   }, []);
@@ -257,19 +257,26 @@ const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, on
   );
 
   // NEW: Helper function to prepare AI model configuration
-  const prepareAiModelConfig = useCallback((stepData: any, configType: 'llm' | 'embedding') => {
-    if (!stepData) return null;
+  const prepareAiModelConfig = useCallback(
+    (stepData: LlmFormValues | EmbeddingFormValues | null, configType: 'llm' | 'embedding') => {
+      if (!stepData) return null;
 
-    const { providerType, modelType, _provider, ...cleanConfig } = stepData;
-    const provider = providerType || modelType;
+      const { providerType, modelType, _provider, ...cleanConfig } = stepData;
+      const provider = providerType || modelType;
+      if (!provider) {
+        console.warn(`Provider is undefined for ${configType} configuration`);
+        return null;
+      }
 
-    return [
-      {
-        provider,
-        configuration: cleanConfig,
-      },
-    ];
-  }, []);
+      return [
+        {
+          provider,
+          configuration: cleanConfig,
+        },
+      ];
+    },
+    []
+  );
 
   // Continue handler with proper isolation and validation
   const handleContinue = async () => {
@@ -549,6 +556,10 @@ const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, on
       let llmConfig = null;
       if (stepStates.llm.hasValidData && stepStates.llm.formData) {
         llmConfig = prepareAiModelConfig(stepStates.llm.formData, 'llm');
+        if (!llmConfig) {
+          setSubmissionError('Invalid LLM configuration - provider is required.');
+          return;
+        }
       }
 
       // Prepare embedding configuration (optional)
@@ -558,6 +569,10 @@ const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, on
           embeddingConfig = []; // Empty array for default
         } else {
           embeddingConfig = prepareAiModelConfig(stepStates.embedding.formData, 'embedding');
+          if (!embeddingConfig) {
+            setSubmissionError('Invalid embedding configuration - provider is required.');
+            return;
+          }
         }
       } else if (stepStates.embedding.skipped) {
         embeddingConfig = []; // Empty array for skipped (default)
@@ -599,7 +614,7 @@ const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, on
 
       // Save all configurations
       const savePromises = configurationsToSave.map((config) =>
-        config.saveFn().catch((error:any) => {
+        config.saveFn().catch((error: any) => {
           console.error(`Error saving ${config.type}:`, error);
           throw new Error(`Failed to save ${config.type} configuration`);
         })

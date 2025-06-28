@@ -1435,7 +1435,7 @@ export const getAIModelsConfig =
         res.status(200).json(decryptedAIConfig).end();
         return;
       } else {
-        res.status(204).end();
+        res.status(200).json({}).end();
         return;
       }
     } catch (error: any) {
