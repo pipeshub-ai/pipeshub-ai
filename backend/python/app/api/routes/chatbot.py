@@ -66,12 +66,6 @@ def create_sse_event(event_type: str, data: Union[str, dict, list]) -> str:
     """Create Server-Sent Event format"""
     return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
-def extract_citations_from_text(text: str, final_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Extract and normalize citations from text and return structured citation data"""
-    # Use the new normalization function
-    _, citations = normalize_citations_and_chunks(text, final_results)
-    return citations
-
 async def stream_llm_response(llm, messages, final_results) -> AsyncGenerator[Dict[str, Any], None]:
     """Stream LLM response and yield incremental JSON updates with normalized citations"""
     accumulated_content = ""
