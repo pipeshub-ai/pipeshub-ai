@@ -64,7 +64,7 @@ dependencies = [
     "google-auth-oauthlib==1.2.1",
     "msgraph-sdk==1.16.0",
     "celery==5.4.0",
-    "requests==2.32.3",
+    "requests==2.32.4",
     "langchain-community==0.3.18",
     "Jinja2==3.1.6",
     "cryptography==44.0.1",
