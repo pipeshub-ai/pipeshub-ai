@@ -31,7 +31,7 @@ dependencies = [
     "tenacity==8.5.0",
     "azure-ai-formrecognizer==3.3.3",
     "requests-mock==1.12.1",
-    "protobuf==3.20.3",
+    "protobuf==4.25.8",
     "aiohttp==3.11.2",
     "python-jose==3.4.0",
     "requests-toolbelt==1.0.0",
