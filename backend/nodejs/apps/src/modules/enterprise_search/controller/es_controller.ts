@@ -1,6 +1,8 @@
 import {
   buildAIFailureResponseMessage,
   buildMessageSortOptions,
+  markConversationFailed,
+  saveCompleteConversation,
 } from './../utils/utils';
 import { Response, NextFunction } from 'express';
 import mongoose, { ClientSession } from 'mongoose';
@@ -62,6 +64,13 @@ const AI_SERVICE_UNAVAILABLE_MESSAGE =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response) => {
     const requestId = req.context?.requestId;
+    const startTime = Date.now();
+    const userId = req.user?.userId;
+    const orgId = req.user?.orgId;
+
+    let session: ClientSession | null = null;
+    let savedConversation: any = null;
+    
     
     try {
       // Set SSE headers
@@ -77,9 +86,48 @@ const AI_SERVICE_UNAVAILABLE_MESSAGE =
       res.write(`event: connected\ndata: ${JSON.stringify({ message: 'SSE connection established' })}\n\n`);
       (res as any).flush?.();
 
-      // Your existing AI payload preparation...
+      // Create initial conversation record
+      const userQueryMessage = buildUserQueryMessage(req.body.query);
+      
+      const userConversationData: Partial<IConversation> = {
+        orgId,
+        userId,
+        initiator: userId,
+        title: req.body.query.slice(0, 100),
+        messages: [userQueryMessage] as IMessageDocument[],
+        lastActivityAt: Date.now(),
+        status: CONVERSATION_STATUS.INPROGRESS,
+      };
+
+
+      // Start transaction if replica set is available
+      if (rsAvailable) {
+        session = await mongoose.startSession();
+        await session.withTransaction(async () => {
+          const conversation = new Conversation(userConversationData);
+          savedConversation = await conversation.save({ session });
+        });
+      } else {
+        const conversation = new Conversation(userConversationData);
+        savedConversation = await conversation.save();
+      }
+
+      if (!savedConversation) {
+        throw new InternalServerError('Failed to create conversation');
+      }
+
+      logger.debug('Initial conversation created', {
+        requestId,
+        conversationId: savedConversation._id,
+        userId,
+      });
+
+      // Prepare AI payload
       const aiPayload = {
         query: req.body.query,
+        previousConversations: req.body.previousConversations || [],
+        recordIds: req.body.recordIds || [],
+        filters: req.body.filters || {},
       };
 
       const aiCommandOptions: AICommandOptions = {
@@ -99,25 +147,151 @@ const AI_SERVICE_UNAVAILABLE_MESSAGE =
         throw new Error('Failed to get stream from AI service');
       }
 
+      // Variables to collect complete response data
+      let completeData: any = null;
+      let buffer = '';
+
       // Handle client disconnect
       req.on('close', () => {
         logger.debug('Client disconnected', { requestId });
         stream.destroy();
       });
 
-      // Forward SSE events preserving format
+      // Process SSE events, capture complete event, and forward non-complete events
       stream.on('data', (chunk: Buffer) => {
-        res.write(chunk.toString());
-        (res as any).flush?.();
+        const chunkStr = chunk.toString();
+        buffer += chunkStr;
+        
+        // Look for complete events in the buffer
+        const events = buffer.split('\n\n');
+        buffer = events.pop() || ''; // Keep incomplete event in buffer
+        
+        let filteredChunk = '';
+        
+        for (const event of events) {
+          if (event.trim()) {
+            // Check if this is a complete event
+            const lines = event.split('\n');
+            const eventType = lines.find(line => line.startsWith('event:'))?.replace('event:', '').trim();
+            const dataLine = lines.find(line => line.startsWith('data:'))?.replace('data:', '').trim();
+            
+            if (eventType === 'complete' && dataLine) {
+              try {
+                completeData = JSON.parse(dataLine);
+                logger.debug('Captured complete event data from AI backend', {
+                  requestId,
+                  conversationId: savedConversation._id,
+                  answer: completeData.answer,
+                  citationsCount: completeData.citations?.length || 0,
+                });
+                // DO NOT forward the complete event from AI backend
+                // We'll send our own complete event after processing
+              } catch (parseError: any) {
+                logger.error('Failed to parse complete event data', {
+                  requestId,
+                  parseError: parseError.message,
+                  dataLine,
+                });
+                // Forward the event if we can't parse it
+                filteredChunk += event + '\n\n';
+              }
+            } else {
+              // Forward all non-complete events
+              filteredChunk += event + '\n\n';
+            }
+          }
+        }
+        
+        // Forward only non-complete events to client
+        if (filteredChunk) {
+          res.write(filteredChunk);
+          (res as any).flush?.();
+        }
       });
 
-      stream.on('end', () => {
+
+
+      stream.on('end', async () => {
         logger.debug('Stream ended successfully', { requestId });
+        try {
+          // Save the complete conversation data to database
+          if (completeData && savedConversation) {
+            const conversation = await saveCompleteConversation(
+              savedConversation,
+              completeData,
+              orgId,
+              session
+            );
+
+            // Send the final conversation data in the same format as createConversation
+            const responsePayload = {
+              conversation: conversation,
+              meta: {
+                requestId,
+                timestamp: new Date().toISOString(),
+                duration: Date.now() - startTime,
+              },
+            };
+
+            // Send final response event with the complete conversation data
+            res.write(`event: complete\ndata: ${JSON.stringify(responsePayload)}\n\n`);
+            
+
+            logger.debug('Conversation completed and saved, sent custom complete event', {
+              requestId,
+              conversationId: savedConversation._id,
+              duration: Date.now() - startTime,
+            });
+          } else {
+            // Mark as failed if no complete data received
+            await markConversationFailed(
+              savedConversation,
+              'No complete response received from AI service',
+              session
+            );
+
+            // Send error event
+            res.write(`event: error\ndata: ${JSON.stringify({ 
+              error: 'No complete response received from AI service' 
+            })}\n\n`);
+
+          }
+        } catch (dbError: any) {
+          logger.error('Failed to save complete conversation', {
+            requestId,
+            conversationId: savedConversation._id,
+            error: dbError.message,
+          });
+
+          // Send error event
+          res.write(`event: error\ndata: ${JSON.stringify({ 
+            error: 'Failed to save conversation',
+            details: dbError.message 
+          })}\n\n`);
+        }
+
         res.end();
       });
 
-      stream.on('error', (error: Error) => {
+      stream.on('error', async (error: Error) => {
         logger.error('Stream error', { requestId, error: error.message });
+        try {
+          // Mark conversation as failed
+          if (savedConversation) {
+            await markConversationFailed(
+              savedConversation,
+              `Stream error: ${error.message}`,
+              session
+            );
+          }
+        } catch (dbError: any) {
+          logger.error('Failed to mark conversation as failed', {
+            requestId,
+            conversationId: savedConversation?._id,
+            error: dbError.message,
+          });
+        }
+        
         const errorEvent = `event: error\ndata: ${JSON.stringify({ 
           error: error.message || 'Stream error occurred',
           details: error.message 
@@ -129,6 +303,22 @@ const AI_SERVICE_UNAVAILABLE_MESSAGE =
     } catch (error: any) {
       logger.error('Error in streamChat', { requestId, error: error.message });
       
+      try {
+        // Mark conversation as failed if it was created
+        if (savedConversation) {
+          await markConversationFailed(
+            savedConversation,
+            error.message || 'Internal server error',
+            session
+          );
+        }
+      } catch (dbError: any) {
+        logger.error('Failed to mark conversation as failed in catch block', {
+          requestId,
+          error: dbError.message,
+        });
+      }
+      
       if (!res.headersSent) {
         res.writeHead(500, { 'Content-Type': 'text/event-stream' });
       }
@@ -139,6 +329,10 @@ const AI_SERVICE_UNAVAILABLE_MESSAGE =
       })}\n\n`;
       res.write(errorEvent);
       res.end();
+    } finally {
+      if (session) {
+        session.endSession();
+      }
     }
   };
 

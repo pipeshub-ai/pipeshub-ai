@@ -3,13 +3,21 @@ import {
   IConversation,
   IConversationDocument,
   IMessage,
+  IMessageCitation,
   IMessageDocument,
 } from '../types/conversation.interfaces';
 import { IAIResponse } from '../types/conversation.interfaces';
-import mongoose from 'mongoose';
+import mongoose, { ClientSession } from 'mongoose';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { BadRequestError, InternalServerError } from '../../../libs/errors/http.errors';
-import { ICitation } from '../schema/citation.schema';
+import Citation, { ICitation } from '../schema/citation.schema';
+import { CONVERSATION_STATUS } from '../constants/constants';
+import { Logger } from '../../../libs/services/logger.service';
+
+const logger = new Logger({
+  service: 'enterprise-search',
+});
+
 
 export const buildUserQueryMessage = (query: string): IMessage => ({
   messageType: 'user_query',
@@ -486,3 +494,115 @@ export const buildConversationResponse = (
     },
   };
 };
+
+// Helper function to save complete conversation
+export const saveCompleteConversation = async (
+  conversation: any,
+  completeData: any,
+  orgId: string,
+  session?: ClientSession | null
+): Promise<any> => {
+  try {
+    // Save citations first
+    const citations = await Promise.all(
+      completeData.citations?.map(async (citation: any) => {
+        const newCitation = new Citation({
+          content: citation.content,
+          chunkIndex: citation.chunkIndex,
+          citationType: citation.citationType,
+          metadata: {
+            ...citation.metadata,
+            orgId,
+          },
+        });
+        return session ? newCitation.save({ session }) : newCitation.save();
+      }) || [],
+    );
+
+    // Create AI response message
+    const aiResponseMessage = buildAIResponseMessage(
+      { data: completeData, statusCode: 200 },
+      citations,
+    ) as IMessageDocument;
+
+    // Update conversation
+    conversation.messages.push(aiResponseMessage);
+    conversation.lastActivityAt = Date.now();
+    conversation.status = CONVERSATION_STATUS.COMPLETE;
+
+    // Save updated conversation
+    const updatedConversation = session
+      ? await conversation.save({ session })
+      : await conversation.save();
+
+    if (!updatedConversation) {
+      throw new InternalServerError('Failed to update conversation');
+    }
+
+    // Return the conversation in the same format as createConversation
+    const plainConversation: IConversation = updatedConversation.toObject();
+    return {
+      _id: updatedConversation._id,
+      ...plainConversation,
+      messages: plainConversation.messages.map((message: IMessage) => ({
+        ...message,
+        citations: message.citations?.map(
+          (citation: IMessageCitation) => ({
+            ...citation,
+            citationData: citations.find(
+              (c: ICitation) => c._id === citation.citationId,
+            ),
+          }),
+        ),
+      })),
+    };
+
+  } catch (error: any) {
+    logger.error('Error saving complete conversation', {
+      conversationId: conversation._id,
+      error: error.message,
+    });
+    throw error;
+  }
+}
+
+// Helper function to mark conversation as failed
+export const markConversationFailed = async (
+  conversation: any,
+  failReason: string,
+  session?: ClientSession | null
+): Promise<void> => {
+  try {
+    conversation.status = CONVERSATION_STATUS.FAILED;
+    conversation.failReason = failReason;
+    conversation.lastActivityAt = Date.now();
+
+    // Add failure message
+    const failedMessage = buildAIFailureResponseMessage() as IMessageDocument;
+    conversation.messages.push(failedMessage);
+
+    // Save failed conversation
+    const savedWithError = session
+      ? await conversation.save({ session })
+      : await conversation.save();
+
+    if (!savedWithError) {
+      logger.error('Failed to save conversation error state', {
+        conversationId: conversation._id,
+        failReason,
+      });
+    }
+
+    logger.debug('Conversation marked as failed', {
+      conversationId: conversation._id,
+      failReason,
+    });
+
+  } catch (error: any) {
+    logger.error('Error marking conversation as failed', {
+      conversationId: conversation._id,
+      error: error.message,
+    });
+    throw error;
+  }
+}
