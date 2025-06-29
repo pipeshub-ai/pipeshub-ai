@@ -68,7 +68,6 @@
     "@react-oauth/google": "^0.12.1",
     "@react-pdf/renderer": "^3.4.4",
     "@reduxjs/toolkit": "^2.3.0",
-    "@supabase/supabase-js": "^2.45.1",
     "@tiptap/core": "^2.6.5",
     "@tiptap/extension-code-block": "^2.6.5",
     "@tiptap/extension-code-block-lowlight": "^2.6.5",

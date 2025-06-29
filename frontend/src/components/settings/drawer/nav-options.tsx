@@ -214,11 +214,6 @@ export function ColorOption({ option, selected, sx, ...other }: OptionProps) {
   return (
     <BlockOption
       selected={selected}
-      icon={
-        <SvgColor
-          src={`${CONFIG.assetsDir}/assets/icons/settings/ic-sidebar-${option === 'integrate' ? 'outline' : 'filled'}.svg`}
-        />
-      }
       label={option}
       sx={{
         gap: 1.5,

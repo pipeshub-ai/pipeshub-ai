@@ -26,13 +26,6 @@ export function FontOptions({ value, options, onClickOption }: Props) {
               <BlockOption
                 selected={selected}
                 onClick={() => onClickOption(option)}
-                icon={
-                  <SvgColor
-                    width={28}
-                    src={`${CONFIG.assetsDir}/assets/icons/settings/ic-font.svg`}
-                    sx={{ color: 'currentColor' }}
-                  />
-                }
                 label={option.endsWith('Variable') ? option.replace(' Variable', '') : option}
                 sx={{
                   py: 2,

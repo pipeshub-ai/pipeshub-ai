@@ -46,7 +46,6 @@ export function Section({
             theme.vars.palette.background.defaultChannel,
             0.92
           )}`,
-          imgUrl: `${CONFIG.assetsDir}/assets/background/background-3-blur.webp`,
         }),
         maxWidth: 780,
         display: 'none',
