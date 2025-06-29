@@ -25,6 +25,7 @@ import {
   updateFeedback,
   updateTitle,
   streamChat,
+  addMessageStream,
 } from '../controller/es_controller';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import {
@@ -114,7 +115,7 @@ export function createConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     metricsMiddleware(container),
     ValidationMiddleware.validate(addMessageParamsSchema),
-    streamChat(appConfig),
+    addMessageStream(appConfig),
   );
 
   /**

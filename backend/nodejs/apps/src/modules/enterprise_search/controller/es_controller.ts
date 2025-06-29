@@ -60,7 +60,7 @@ const rsAvailable = process.env.REPLICA_SET_AVAILABLE === 'true';
 const AI_SERVICE_UNAVAILABLE_MESSAGE =
   'AI Service is currently unavailable. Please check your network connection or try again later.';
 
-  export const streamChat =
+export const streamChat =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response) => {
     const requestId = req.context?.requestId;
@@ -76,18 +76,20 @@ const AI_SERVICE_UNAVAILABLE_MESSAGE =
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
+        Connection: 'keep-alive',
         'Access-Control-Allow-Origin': '*',
         'X-Accel-Buffering': 'no',
       });
 
       // Send initial connection event and flush
-      res.write(`event: connected\ndata: ${JSON.stringify({ message: 'SSE connection established' })}\n\n`);
+      res.write(
+        `event: connected\ndata: ${JSON.stringify({ message: 'SSE connection established' })}\n\n`,
+      );
       (res as any).flush?.();
 
       // Create initial conversation record
       const userQueryMessage = buildUserQueryMessage(req.body.query);
-      
+
       const userConversationData: Partial<IConversation> = {
         orgId,
         userId,
@@ -97,7 +99,6 @@ const AI_SERVICE_UNAVAILABLE_MESSAGE =
         lastActivityAt: Date.now(),
         status: CONVERSATION_STATUS.INPROGRESS,
       };
-
 
       // Start transaction if replica set is available
       if (rsAvailable) {
@@ -133,7 +134,7 @@ const AI_SERVICE_UNAVAILABLE_MESSAGE =
         uri: `${appConfig.aiBackend}/api/v1/chat/stream`,
         method: HttpMethod.POST,
         headers: {
-          ...req.headers as Record<string, string>,
+          ...(req.headers as Record<string, string>),
           'Content-Type': 'application/json',
         },
         body: aiPayload,
@@ -141,7 +142,7 @@ const AI_SERVICE_UNAVAILABLE_MESSAGE =
 
       const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
       const stream = await aiServiceCommand.executeStream();
-      
+
       if (!stream) {
         throw new Error('Failed to get stream from AI service');
       }
@@ -160,22 +161,26 @@ const AI_SERVICE_UNAVAILABLE_MESSAGE =
       stream.on('data', (chunk: Buffer) => {
         const chunkStr = chunk.toString();
         buffer += chunkStr;
-        
+
         // Look for complete events in the buffer
         const events = buffer.split('\n\n');
         buffer = events.pop() || ''; // Keep incomplete event in buffer
-        
+
         let filteredChunk = '';
-        
+
         for (const event of events) {
           if (event.trim()) {
             // Check if this is a complete event
             const lines = event.split('\n');
-            const eventType = lines.find(line => line.startsWith('event:'))?.replace('event:', '').trim();
-            const dataLines = lines.filter(line => line.startsWith('data:')).map(line => line.replace(/^data: ?/, ''));
+            const eventType = lines
+              .find((line) => line.startsWith('event:'))
+              ?.replace('event:', '')
+              .trim();
+            const dataLines = lines
+              .filter((line) => line.startsWith('data:'))
+              .map((line) => line.replace(/^data: ?/, ''));
             const dataLine = dataLines.join('\n');
 
-            
             if (eventType === 'complete' && dataLine) {
               try {
                 completeData = JSON.parse(dataLine);
@@ -202,15 +207,13 @@ const AI_SERVICE_UNAVAILABLE_MESSAGE =
             }
           }
         }
-        
+
         // Forward only non-complete events to client
         if (filteredChunk) {
           res.write(filteredChunk);
           (res as any).flush?.();
         }
       });
-
-
 
       stream.on('end', async () => {
         logger.debug('Stream ended successfully', { requestId });
@@ -221,7 +224,7 @@ const AI_SERVICE_UNAVAILABLE_MESSAGE =
               savedConversation,
               completeData,
               orgId,
-              session
+              session,
             );
 
             // Send the final conversation data in the same format as createConversation
@@ -235,27 +238,32 @@ const AI_SERVICE_UNAVAILABLE_MESSAGE =
             };
 
             // Send final response event with the complete conversation data
-            res.write(`event: complete\ndata: ${JSON.stringify(responsePayload)}\n\n`);
-            
+            res.write(
+              `event: complete\ndata: ${JSON.stringify(responsePayload)}\n\n`,
+            );
 
-            logger.debug('Conversation completed and saved, sent custom complete event', {
-              requestId,
-              conversationId: savedConversation._id,
-              duration: Date.now() - startTime,
-            });
+            logger.debug(
+              'Conversation completed and saved, sent custom complete event',
+              {
+                requestId,
+                conversationId: savedConversation._id,
+                duration: Date.now() - startTime,
+              },
+            );
           } else {
             // Mark as failed if no complete data received
             await markConversationFailed(
               savedConversation as IConversationDocument,
               'No complete response received from AI service',
-              session
+              session,
             );
 
             // Send error event
-            res.write(`event: error\ndata: ${JSON.stringify({ 
-              error: 'No complete response received from AI service' 
-            })}\n\n`);
-
+            res.write(
+              `event: error\ndata: ${JSON.stringify({
+                error: 'No complete response received from AI service',
+              })}\n\n`,
+            );
           }
         } catch (dbError: any) {
           logger.error('Failed to save complete conversation', {
@@ -265,10 +273,12 @@ const AI_SERVICE_UNAVAILABLE_MESSAGE =
           });
 
           // Send error event
-          res.write(`event: error\ndata: ${JSON.stringify({ 
-            error: 'Failed to save conversation',
-            details: dbError.message 
-          })}\n\n`);
+          res.write(
+            `event: error\ndata: ${JSON.stringify({
+              error: 'Failed to save conversation',
+              details: dbError.message,
+            })}\n\n`,
+          );
         }
 
         res.end();
@@ -282,7 +292,7 @@ const AI_SERVICE_UNAVAILABLE_MESSAGE =
             await markConversationFailed(
               savedConversation as IConversationDocument,
               `Stream error: ${error.message}`,
-              session
+              session,
             );
           }
         } catch (dbError: any) {
@@ -292,25 +302,24 @@ const AI_SERVICE_UNAVAILABLE_MESSAGE =
             error: dbError.message,
           });
         }
-        
-        const errorEvent = `event: error\ndata: ${JSON.stringify({ 
+
+        const errorEvent = `event: error\ndata: ${JSON.stringify({
           error: error.message || 'Stream error occurred',
-          details: error.message 
+          details: error.message,
         })}\n\n`;
         res.write(errorEvent);
         res.end();
       });
-
     } catch (error: any) {
       logger.error('Error in streamChat', { requestId, error: error.message });
-      
+
       try {
         // Mark conversation as failed if it was created
         if (savedConversation) {
           await markConversationFailed(
             savedConversation as IConversationDocument,
             error.message || 'Internal server error',
-            session
+            session,
           );
         }
       } catch (dbError: any) {
@@ -319,14 +328,14 @@ const AI_SERVICE_UNAVAILABLE_MESSAGE =
           error: dbError.message,
         });
       }
-      
+
       if (!res.headersSent) {
         res.writeHead(500, { 'Content-Type': 'text/event-stream' });
       }
-      
-      const errorEvent = `event: error\ndata: ${JSON.stringify({ 
+
+      const errorEvent = `event: error\ndata: ${JSON.stringify({
         error: error.message || 'Internal server error',
-        details: error.message 
+        details: error.message,
       })}\n\n`;
       res.write(errorEvent);
       res.end();
@@ -832,6 +841,435 @@ export const addMessage =
     }
   };
 
+  export const addMessageStream =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response) => {
+    const requestId = req.context?.requestId;
+    const startTime = Date.now();
+    const userId = req.user?.userId;
+    const orgId = req.user?.orgId;
+    const { conversationId } = req.params;
+
+    let session: ClientSession | null = null;
+    let existingConversation: IConversationDocument | null = null;
+
+    // Helper function that contains the common conversation operations
+    async function performAddMessageStream(session?: ClientSession | null): Promise<void> {
+      // Get existing conversation
+      const conversation = await Conversation.findOne({
+        _id: conversationId,
+        orgId,
+        userId,
+        isDeleted: false,
+      });
+
+      if (!conversation) {
+        throw new NotFoundError('Conversation not found');
+      }
+
+      // Update status to processing when adding a new message
+      conversation.status = CONVERSATION_STATUS.INPROGRESS;
+      conversation.failReason = undefined; // Clear previous error if any
+
+      // First, add the user message to the existing conversation
+      conversation.messages.push(
+        buildUserQueryMessage(req.body.query) as IMessageDocument,
+      );
+      conversation.lastActivityAt = Date.now();
+
+      // Save the user message to the existing conversation first
+      const savedConversation = session
+        ? await conversation.save({ session })
+        : await conversation.save();
+
+      if (!savedConversation) {
+        throw new InternalServerError(
+          'Failed to update conversation with user message',
+        );
+      }
+
+      existingConversation = savedConversation;
+
+      logger.debug('User message added to conversation', {
+        requestId,
+        conversationId: existingConversation._id,
+        userId,
+      });
+    }
+
+    try {
+      // Set SSE headers
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+        'X-Accel-Buffering': 'no',
+      });
+
+      // Send initial connection event and flush
+      res.write(`event: connected\ndata: ${JSON.stringify({ message: 'SSE connection established' })}\n\n`);
+      (res as any).flush?.();
+
+      logger.debug('Adding message to conversation via stream', {
+        requestId,
+        conversationId,
+        userId,
+        query: req.body.query,
+        filters: req.body.filters,
+        timestamp: new Date().toISOString(),
+      });
+
+      // Get existing conversation and add user message
+      if (rsAvailable) {
+        session = await mongoose.startSession();
+        await session.withTransaction(() => performAddMessageStream(session));
+      } else {
+        await performAddMessageStream();
+      }
+
+      if (!existingConversation) {
+        throw new NotFoundError('Conversation not found');
+      }
+
+      // Format previous conversations for context (excluding the user message we just added)
+      const previousConversations = formatPreviousConversations(
+        (existingConversation as IConversationDocument).messages.slice(0, -1) as IMessage[],
+      );
+
+      // Prepare AI payload
+      const aiPayload = {
+        query: req.body.query,
+        previousConversations: previousConversations,
+        filters: req.body.filters || {},
+      };
+
+      const aiCommandOptions: AICommandOptions = {
+        uri: `${appConfig.aiBackend}/api/v1/chat/stream`,
+        method: HttpMethod.POST,
+        headers: {
+          ...req.headers as Record<string, string>,
+          'Content-Type': 'application/json',
+        },
+        body: aiPayload,
+      };
+
+      const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
+      const stream = await aiServiceCommand.executeStream();
+      
+      if (!stream) {
+        throw new Error('Failed to get stream from AI service');
+      }
+
+      // Variables to collect complete response data
+      let completeData: IAIResponse | null = null;
+      let buffer = '';
+
+      // Handle client disconnect
+      req.on('close', () => {
+        logger.debug('Client disconnected', { requestId });
+        stream.destroy();
+      });
+
+      // Process SSE events, capture complete event, and forward non-complete events
+      stream.on('data', (chunk: Buffer) => {
+        const chunkStr = chunk.toString();
+        buffer += chunkStr;
+        
+        // Look for complete events in the buffer
+        const events = buffer.split('\n\n');
+        buffer = events.pop() || ''; // Keep incomplete event in buffer
+        
+        let filteredChunk = '';
+        
+        for (const event of events) {
+          if (event.trim()) {
+            // Check if this is a complete event
+            const lines = event.split('\n');
+            const eventType = lines.find(line => line.startsWith('event:'))?.replace('event:', '').trim();
+            const dataLines = lines.filter(line => line.startsWith('data:')).map(line => line.replace(/^data: ?/, ''));
+            const dataLine = dataLines.join('\n');
+
+            if (eventType === 'complete' && dataLine) {
+              try {
+                completeData = JSON.parse(dataLine);
+                logger.debug('Captured complete event data from AI backend', {
+                  requestId,
+                  conversationId: existingConversation?._id,
+                  answer: completeData?.answer,
+                  citationsCount: completeData?.citations?.length || 0,
+                });
+                // DO NOT forward the complete event from AI backend
+                // We'll send our own complete event after processing
+              } catch (parseError: any) {
+                logger.error('Failed to parse complete event data', {
+                  requestId,
+                  parseError: parseError.message,
+                  dataLine,
+                });
+                // Forward the event if we can't parse it
+                filteredChunk += event + '\n\n';
+              }
+            } else {
+              // Forward all non-complete events
+              filteredChunk += event + '\n\n';
+            }
+          }
+        }
+        
+        // Forward only non-complete events to client
+        if (filteredChunk) {
+          res.write(filteredChunk);
+          (res as any).flush?.();
+        }
+      });
+
+      stream.on('end', async () => {
+        logger.debug('Stream ended successfully', { requestId });
+        try {
+          // Save the AI response to the existing conversation
+          if (completeData && existingConversation) {
+            try {
+              // Create and save citations
+              const savedCitations: ICitation[] = await Promise.all(
+                completeData.citations?.map(async (citation: ICitation) => {
+                  const newCitation = new Citation({
+                    content: citation.content,
+                    chunkIndex: citation.chunkIndex,
+                    citationType: citation.citationType,
+                    metadata: {
+                      ...citation.metadata,
+                      orgId,
+                    },
+                  });
+                  return newCitation.save();
+                }) || [],
+              );
+
+              // Build AI response message using existing utility
+              const aiResponseMessage = buildAIResponseMessage(
+                { statusCode: 200, data: completeData },
+                savedCitations,
+              ) as IMessageDocument;
+
+              // Add the AI message to the existing conversation
+              existingConversation.messages.push(aiResponseMessage);
+              existingConversation.lastActivityAt = Date.now();
+              existingConversation.status = CONVERSATION_STATUS.COMPLETE;
+
+              // Save the updated conversation with AI response
+              const updatedConversation = session
+                ? await existingConversation.save({ session })
+                : await existingConversation.save();
+
+              if (!updatedConversation) {
+                throw new InternalServerError(
+                  'Failed to update conversation with AI response',
+                );
+              }
+
+              // Return the updated conversation in the same format as addMessage
+              const plainConversation = updatedConversation.toObject();
+              const responseConversation = {
+                ...plainConversation,
+                messages: plainConversation.messages.map((message: IMessage) => ({
+                  ...message,
+                  citations:
+                    message.citations?.map((citation: IMessageCitation) => ({
+                      ...citation,
+                      citationData: savedCitations.find(
+                        (c) =>
+                          (c as mongoose.Document).id.toString() ===
+                          citation.citationId?.toString(),
+                      ),
+                    })) || [],
+                })),
+              };
+
+              // Send the final conversation data in the same format as addMessage
+              const responsePayload = {
+                conversation: responseConversation,
+                recordsUsed: savedCitations.length,
+                meta: {
+                  requestId,
+                  timestamp: new Date().toISOString(),
+                  duration: Date.now() - startTime,
+                  recordsUsed: savedCitations.length,
+                },
+              };
+
+              // Send final response event with the complete conversation data
+              res.write(`event: complete\ndata: ${JSON.stringify(responsePayload)}\n\n`);
+
+              logger.debug('Message added and conversation updated, sent custom complete event', {
+                requestId,
+                conversationId: existingConversation._id,
+                duration: Date.now() - startTime,
+              });
+
+            } catch (error: any) {
+              // Update conversation status for general errors
+              if (existingConversation) {
+                existingConversation.status = CONVERSATION_STATUS.FAILED;
+                existingConversation.failReason = error.message || 'Unknown error occurred';
+
+                // Add error message using existing utility
+                const failedMessage = buildAIFailureResponseMessage() as IMessageDocument;
+                existingConversation.messages.push(failedMessage);
+                existingConversation.lastActivityAt = Date.now();
+
+                const saveGeneralError = session
+                  ? await existingConversation.save({ session })
+                  : await existingConversation.save();
+
+                if (!saveGeneralError) {
+                  logger.error('Failed to save conversation general error status', {
+                    requestId,
+                    conversationId: existingConversation._id,
+                  });
+                }
+              }
+
+              if (error.cause && error.cause.code === 'ECONNREFUSED') {
+                throw new InternalServerError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
+              }
+              throw error;
+            }
+          } else {
+            // Mark as failed if no complete data received
+            if (existingConversation) {
+              existingConversation.status = CONVERSATION_STATUS.FAILED;
+              existingConversation.failReason = 'No complete response received from AI service';
+              existingConversation.lastActivityAt = Date.now();
+
+              const savedWithError = session
+                ? await existingConversation.save({ session })
+                : await existingConversation.save();
+
+              if (!savedWithError) {
+                logger.error('Failed to save conversation error state', {
+                  requestId,
+                  conversationId: existingConversation._id,
+                });
+              }
+            }
+
+            // Send error event
+            res.write(`event: error\ndata: ${JSON.stringify({ 
+              error: 'No complete response received from AI service' 
+            })}\n\n`);
+          }
+        } catch (dbError: any) {
+          logger.error('Failed to save AI response to conversation', {
+            requestId,
+            conversationId: existingConversation?._id,
+            error: dbError.message,
+          });
+
+          // Send error event
+          res.write(`event: error\ndata: ${JSON.stringify({ 
+            error: 'Failed to save AI response',
+            details: dbError.message 
+          })}\n\n`);
+        }
+
+        res.end();
+      });
+
+      stream.on('error', async (error: Error) => {
+        logger.error('Stream error', { requestId, error: error.message });
+        try {
+          // Mark conversation as failed and add error message
+          if (existingConversation) {
+            existingConversation.status = CONVERSATION_STATUS.FAILED;
+            existingConversation.failReason = `Stream error: ${error.message}`;
+
+            // Add error message using existing utility
+            const failedMessage = buildAIFailureResponseMessage() as IMessageDocument;
+            existingConversation.messages.push(failedMessage);
+            existingConversation.lastActivityAt = Date.now();
+
+            const saveGeneralError = session
+              ? await existingConversation.save({ session })
+              : await existingConversation.save();
+
+            if (!saveGeneralError) {
+              logger.error('Failed to save conversation general error status', {
+                requestId,
+                conversationId: existingConversation._id,
+              });
+            }
+          }
+        } catch (dbError: any) {
+          logger.error('Failed to mark conversation as failed', {
+            requestId,
+            conversationId: existingConversation?._id,
+            error: dbError.message,
+          });
+        }
+        
+        const errorEvent = `event: error\ndata: ${JSON.stringify({ 
+          error: error.message || 'Stream error occurred',
+          details: error.message 
+        })}\n\n`;
+        res.write(errorEvent);
+        res.end();
+      });
+
+    } catch (error: any) {
+      logger.error('Error in addMessageStream', { 
+        requestId, 
+        conversationId,
+        error: error.message 
+      });
+      
+      try {
+        // Mark conversation as failed if it exists
+        if (existingConversation) {
+          (existingConversation as IConversationDocument).status = CONVERSATION_STATUS.FAILED;
+          (existingConversation as IConversationDocument).failReason = error.message || 'Internal server error';
+
+          // Add error message using existing utility
+          const failedMessage = buildAIFailureResponseMessage() as IMessageDocument;
+          (existingConversation as IConversationDocument).messages.push(failedMessage);
+          (existingConversation as IConversationDocument).lastActivityAt = Date.now();
+
+          const saveGeneralError = session
+            ? await (existingConversation as IConversationDocument).save({ session })
+            : await (existingConversation as IConversationDocument).save();
+
+          if (!saveGeneralError) {
+            logger.error('Failed to save conversation general error status in catch block', {
+              requestId,
+              conversationId: (existingConversation as IConversationDocument)._id,
+            });
+          }
+        }
+      } catch (dbError: any) {
+        logger.error('Failed to mark conversation as failed in catch block', {
+          requestId,
+          conversationId,
+          error: dbError.message,
+        });
+      }
+      
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'text/event-stream' });
+      }
+      
+      const errorEvent = `event: error\ndata: ${JSON.stringify({ 
+        error: error.message || 'Internal server error',
+        details: error.message 
+      })}\n\n`;
+      res.write(errorEvent);
+      res.end();
+    } finally {
+      if (session) {
+        session.endSession();
+      }
+    }
+  };
+
 export const getAllConversations = async (
   req: AuthenticatedUserRequest,
   res: Response,
@@ -993,7 +1431,7 @@ export const getConversationById = async (
         createdAt: 1,
         isShared: 1,
         sharedWith: 1,
-        status: 1, 
+        status: 1,
         failReason: 1,
       })
       .populate({
