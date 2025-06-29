@@ -93,7 +93,7 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
         if 0 <= chunk_index < len(final_results):
             doc = final_results[chunk_index]
             new_citations.append({
-                "content": doc.get("metadata", {}).get("blockText", ""),
+                "content": doc.get("content", ""),
                 "chunkIndex": new_citation_num,  # Use new sequential number
                 "metadata": doc.get("metadata", {}),
                 "citationType": "vectordb|document",
