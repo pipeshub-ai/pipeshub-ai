@@ -69,9 +69,8 @@ const AI_SERVICE_UNAVAILABLE_MESSAGE =
     const orgId = req.user?.orgId;
 
     let session: ClientSession | null = null;
-    let savedConversation: any = null;
-    
-    
+    let savedConversation: IConversationDocument | null = null;
+
     try {
       // Set SSE headers
       res.writeHead(200, {
@@ -148,7 +147,7 @@ const AI_SERVICE_UNAVAILABLE_MESSAGE =
       }
 
       // Variables to collect complete response data
-      let completeData: any = null;
+      let completeData: IAIResponse | null = null;
       let buffer = '';
 
       // Handle client disconnect
@@ -173,16 +172,18 @@ const AI_SERVICE_UNAVAILABLE_MESSAGE =
             // Check if this is a complete event
             const lines = event.split('\n');
             const eventType = lines.find(line => line.startsWith('event:'))?.replace('event:', '').trim();
-            const dataLine = lines.find(line => line.startsWith('data:'))?.replace('data:', '').trim();
+            const dataLines = lines.filter(line => line.startsWith('data:')).map(line => line.replace(/^data: ?/, ''));
+            const dataLine = dataLines.join('\n');
+
             
             if (eventType === 'complete' && dataLine) {
               try {
                 completeData = JSON.parse(dataLine);
                 logger.debug('Captured complete event data from AI backend', {
                   requestId,
-                  conversationId: savedConversation._id,
-                  answer: completeData.answer,
-                  citationsCount: completeData.citations?.length || 0,
+                  conversationId: savedConversation?._id,
+                  answer: completeData?.answer,
+                  citationsCount: completeData?.citations?.length || 0,
                 });
                 // DO NOT forward the complete event from AI backend
                 // We'll send our own complete event after processing
@@ -245,7 +246,7 @@ const AI_SERVICE_UNAVAILABLE_MESSAGE =
           } else {
             // Mark as failed if no complete data received
             await markConversationFailed(
-              savedConversation,
+              savedConversation as IConversationDocument,
               'No complete response received from AI service',
               session
             );
@@ -259,7 +260,7 @@ const AI_SERVICE_UNAVAILABLE_MESSAGE =
         } catch (dbError: any) {
           logger.error('Failed to save complete conversation', {
             requestId,
-            conversationId: savedConversation._id,
+            conversationId: savedConversation?._id,
             error: dbError.message,
           });
 
@@ -279,7 +280,7 @@ const AI_SERVICE_UNAVAILABLE_MESSAGE =
           // Mark conversation as failed
           if (savedConversation) {
             await markConversationFailed(
-              savedConversation,
+              savedConversation as IConversationDocument,
               `Stream error: ${error.message}`,
               session
             );
@@ -307,7 +308,7 @@ const AI_SERVICE_UNAVAILABLE_MESSAGE =
         // Mark conversation as failed if it was created
         if (savedConversation) {
           await markConversationFailed(
-            savedConversation,
+            savedConversation as IConversationDocument,
             error.message || 'Internal server error',
             session
           );

@@ -497,8 +497,8 @@ export const buildConversationResponse = (
 
 // Helper function to save complete conversation
 export const saveCompleteConversation = async (
-  conversation: any,
-  completeData: any,
+  conversation: IConversationDocument,
+  completeData: IAIResponse,
   orgId: string,
   session?: ClientSession | null
 ): Promise<any> => {
@@ -541,17 +541,16 @@ export const saveCompleteConversation = async (
 
     // Return the conversation in the same format as createConversation
     const plainConversation: IConversation = updatedConversation.toObject();
+    const citationMap = new Map(citations.map((c: ICitation) => [c._id?.toString(), c]));
+
     return {
-      _id: updatedConversation._id,
       ...plainConversation,
       messages: plainConversation.messages.map((message: IMessage) => ({
         ...message,
         citations: message.citations?.map(
           (citation: IMessageCitation) => ({
             ...citation,
-            citationData: citations.find(
-              (c: ICitation) => c._id === citation.citationId,
-            ),
+            citationData: citation.citationId ? citationMap.get(citation.citationId.toString()) : undefined,
           }),
         ),
       })),
@@ -568,7 +567,7 @@ export const saveCompleteConversation = async (
 
 // Helper function to mark conversation as failed
 export const markConversationFailed = async (
-  conversation: any,
+  conversation: IConversationDocument,
   failReason: string,
   session?: ClientSession | null
 ): Promise<void> => {
