@@ -78,7 +78,7 @@ async def stream_llm_response(llm, messages, final_results) -> AsyncGenerator[Di
     # accumulating_answer: Found the key, now accumulating the value.
     # streaming_chunks: Answer value is complete, now streaming it out.
     state = "finding_key"
-    
+
     answer_key_pattern = re.compile(r'"answer"\s*:\s*"')
     clean_answer = ""
 
@@ -99,10 +99,10 @@ async def stream_llm_response(llm, messages, final_results) -> AsyncGenerator[Di
                         state = "accumulating_answer"
                         # Add any part of the answer already in the buffer
                         answer_buffer += full_response_buffer[match.end():]
-                
+
                 elif state == "accumulating_answer":
                     answer_buffer += token
-                    
+
                     # Check if the answer value is complete by finding its unescaped closing quote.
                     # This is a simplified parser; it assumes a simple string value.
                     is_escaped = False
@@ -116,23 +116,23 @@ async def stream_llm_response(llm, messages, final_results) -> AsyncGenerator[Di
                         elif char == '"':
                             end_of_answer_index = i
                             break
-                    
+
                     if end_of_answer_index != -1:
                         state = "streaming_chunks"
                         # We have the full, raw answer value.
                         clean_answer = answer_buffer[:end_of_answer_index]
-                        
+
                         # Normalize the complete answer and get citations.
                         normalized_answer, citations = normalize_citations_and_chunks(clean_answer, final_results)
-                        
+
                         # Stream the normalized answer out in 3-word chunks.
                         words = normalized_answer.split()
                         target_words_per_chunk = 3
                         for i in range(0, len(words), target_words_per_chunk):
                             chunk_words = words[i:i + target_words_per_chunk]
                             # Add a trailing space for smoother UI concatenation
-                            chunk_text = " ".join(chunk_words) + " " 
-                            
+                            chunk_text = " ".join(chunk_words) + " "
+
                             if chunk_text.strip():
                                 yield {
                                     "event": "answer_chunk",
@@ -142,7 +142,7 @@ async def stream_llm_response(llm, messages, final_results) -> AsyncGenerator[Di
                                         "citations": citations,
                                     }
                                 }
-                        
+
                 elif state == "streaming_chunks":
                     # The answer has been streamed. Just consume the rest of the LLM response.
                     pass
@@ -190,7 +190,7 @@ async def stream_llm_response(llm, messages, final_results) -> AsyncGenerator[Di
             final_answer_text = clean_answer if clean_answer else full_response_buffer
 
         normalized_answer, final_citations = normalize_citations_and_chunks(final_answer_text, final_results)
-        
+
         yield {
             "event": "complete",
             "data": {
