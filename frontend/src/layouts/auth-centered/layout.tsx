@@ -83,7 +83,6 @@ export function AuthCenteredLayout({ sx, children, header }: AuthCenteredLayoutP
           backgroundSize: 'cover',
           backgroundRepeat: 'no-repeat',
           backgroundPosition: 'center center',
-          backgroundImage: `url(${CONFIG.assetsDir}/assets/background/background-3-blur.webp)`,
           [stylesMode.dark]: { opacity: 0.08 },
         },
         ...sx,

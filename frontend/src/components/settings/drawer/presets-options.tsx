@@ -40,11 +40,7 @@ export function PresetsOptions({ value, options, onClickOption }: Props) {
                   }),
                 }}
               >
-                <SvgColor
-                  width={28}
-                  src={`${CONFIG.assetsDir}/assets/icons/settings/ic-siderbar-duotone.svg`}
-                  sx={{ color: 'currentColor' }}
-                />
+                <div style={{ width: '28px', height: '28px', backgroundColor: option.value }} />
               </ButtonBase>
             </Box>
           );
