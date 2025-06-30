@@ -292,6 +292,8 @@ record_group_schema = {
             "deletedAtSourceTimestamp": {"type": "number"},
             "sourceCreatedAtTimestamp": {"type": "number"},
             "sourceLastModifiedTimestamp": {"type": "number"},
+            "syncState": {"type": "string"},
+            "isArchived": {"type": "boolean", "default": False}
         },
         "required": [
             "groupName",
@@ -338,4 +340,102 @@ kb_schema = {
     },
     "level": "strict",
     "message": "Document does not match the department schema.",
+}
+
+slack_workspace_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "externalId": {"type": "string"},
+            "name": {"type": "string"},
+            "domain": {"type": "string"},
+            "emailDomain": {"type": "string"},
+            "url": {"type": "string"},
+            "syncState": {"type": "string"},
+            "isActive": {"type": "boolean", "default": True},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+            "lastSyncTimestamp": {"type": "number"},
+        },
+        "required": ["orgId", "externalId", "name", "domain"],
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the Slack workspace schema.",
+}
+
+slack_message_metadata_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "slackTs": {"type": "string"},  # Slack-specific timestamp
+            "threadTs": {"type": ["string", "null"]},  # Thread timestamp if applicable
+            "orgId": {"type": "string"},
+            "text": {"type": "string", "default": ""},
+            "channelId": {"type": "string"},
+            "userId": {"type": ["string","null"]},
+            "messageType": {
+                "type": "string",
+                "enum": ["root_message", "thread_message", "bot_message", "system_message"]
+            },
+            "replyCount": {"type": "number", "minimum": 0},
+            "replyUsersCount": {"type": "number", "minimum": 0},
+            "replyUsers":{"type": "array", "items": {"type": "string"}},
+            "mentionedUsers": {"type": "array", "items": {"type": "string"}},
+            "links": {"type": "array", "items": {"type": "string"}},
+            "hasFiles": {"type": "boolean", "default": False},
+            "fileCount": {"type": "number", "minimum": 0, "default": 0},
+            "botId": {"type": ["string", "null"]}  # Bot ID if applicable
+        },
+        "required": [
+            "orgId",
+            "slackTs",
+            "channelId",
+            "messageType"
+        ],
+        "additionalProperties": False
+    },
+    "level": "strict",
+    "message": "Document does not match the Slack message metadata schema."
+}
+
+slack_attachment_metadata_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "slackFileId": {"type": "string"},
+            "name": {"type": "string"},
+            "extension": {"type": ["string","null"]},
+            "mimeType": {"type": ["string","null"]},
+            "sizeInBytes": {"type": "number"},
+            "channelId": {"type": "string"},
+            "uploadedBy": {"type": "string"},
+            "sourceUrls": {
+                "type": "object",
+                "properties": {
+                    "privateUrl": {"type": ["string", "null"]},
+                    "downloadUrl": {"type": ["string", "null"]},
+                    "publicPermalink": {"type": ["string", "null"]}
+                }
+            },
+            "isPublic": {"type": "boolean"},
+            "isEditable": {"type": "boolean"},
+            "permalink": {"type": ["string", "null"]},
+            "richPreview": {"type": ["boolean","null"]}
+        },
+        "required": [
+            "orgId",
+            "slackFileId",
+            "name",
+            "mimeType",
+            "sizeInBytes",
+            "channelId",
+            "sourceUrls"
+        ],
+        "additionalProperties": False
+    },
+    "level": "strict",
+    "message": "Document does not match the Slack file metadata schema."
 }

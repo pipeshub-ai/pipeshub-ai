@@ -85,13 +85,18 @@ const ConnectorSettings = () => {
     setCheckingConfigs(true);
     try {
       // Check all configurations in parallel
-      const results = await Promise.allSettled([fetchConnectorConfig('googleWorkspace')]);
+      const results = await Promise.allSettled([
+        fetchConnectorConfig('googleWorkspace'),
+        fetchConnectorConfig('slack')
+      ]);
 
-      // Check if the configuration is valid
+      // Check if data is present for each configuration
       const googleConfigured = results[0].status === 'fulfilled' && results[0].value;
+      const slackConfigured = results[1].status === 'fulfilled' && results[1].value;
 
       const newConfigStatus = {
         googleWorkspace: googleConfigured,
+        slack: slackConfigured,
       };
 
       setConfiguredStatus(newConfigStatus);
