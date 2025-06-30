@@ -167,7 +167,7 @@ async def stream_llm_response(llm, messages, final_results) -> AsyncGenerator[Di
                         if chunk_text.strip():
                             yield {
                                 "event": "answer_chunk",
-                                "data": {"chunk": chunk_text, "citations": citations}
+                                "data": {"chunk": chunk_text, "accumulated": normalized_answer, "citations": citations}
                             }
             except json.JSONDecodeError:
                 # Handle cases where the non-streaming response is not JSON
