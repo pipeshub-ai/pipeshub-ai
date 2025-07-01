@@ -617,6 +617,7 @@ class DriveChangeHandler:
                 "isLatestVersion": True,
                 "isDirty": False,
                 "reason": None,
+                "webUrl": updated_file.get("webViewLink", None),
             }
             is_of_type_record = {
                 "_from": f"{CollectionNames.RECORDS.value}/{record['_key']}",

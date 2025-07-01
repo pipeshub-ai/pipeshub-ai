@@ -33,6 +33,7 @@ class Record(Node):
     summary_document_id: Optional[str] = None
     virtual_record_id: Optional[str] = None
     deleted_by_user_id: Optional[str] = None
+    web_url: Optional[str] = None
 
     @staticmethod
     def from_dict(data: Dict[str, Any]) -> 'Record':
@@ -64,7 +65,7 @@ class Record(Node):
         record.summary_document_id = data.get("summaryDocumentId", None)
         record.virtual_record_id = data.get("virtualRecordId", None)
         record.deleted_by_user_id = data.get("deletedByUserId", None)
-
+        record.web_url = data.get("webUrl", None)
         return record
 
     def __post_init__(self) -> None:
@@ -119,7 +120,8 @@ class Record(Node):
             "isDirty": self.is_dirty,
             "reason": self.reason,
             "lastSyncTimestamp": self.last_sync_timestamp,
-            "deletedByUserId": self.deleted_by_user_id
+            "deletedByUserId": self.deleted_by_user_id,
+            "webUrl": self.web_url
         }
 
     def validate(self) -> bool:

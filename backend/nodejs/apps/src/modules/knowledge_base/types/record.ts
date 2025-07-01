@@ -50,6 +50,7 @@ export interface IRecordDocument {
   reason?: string;
   virtualRecordId?: string;
   summaryDocumentId?:string;
+  webUrl?: string;
 }
 
 export interface IFileBuffer {
