@@ -128,6 +128,7 @@ class GmailChangeHandler:
                         "lastExtractionTimestamp": None,
                         "indexingStatus": "NOT_STARTED",
                         "extractionStatus": "NOT_STARTED",
+                        "webUrl": f"https://mail.google.com/mail?authuser={{user.email}}#all/{message_id}",
                         "isLatestVersion": True,
                         "isDirty": False,
                         "reason": None,
@@ -232,6 +233,7 @@ class GmailChangeHandler:
                                     "isLatestVersion": True,
                                     "isDirty": False,
                                     "reason": None,
+                                    "webUrl": f"https://mail.google.com/mail?authuser={{user.email}}#all/{message_id}",
                                 }
                                 is_of_type_record = {
                                     "_from": f"{CollectionNames.RECORDS.value}/{record['_key']}",

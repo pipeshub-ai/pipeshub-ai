@@ -1,4 +1,3 @@
-import asyncio
 import json
 import re
 from typing import Any, AsyncGenerator, Dict, List, Optional, Union
@@ -217,8 +216,6 @@ async def askAIStream(
     """Perform semantic search across documents with streaming events"""
     query_info = ChatQuery(**(await request.json()))
 
-    print(f"query_info: {query_info}")
-
     async def generate_stream() -> AsyncGenerator[str, None]:
         try:
             container = request.app.container
@@ -262,25 +259,11 @@ async def askAIStream(
             decomposed_queries = decomposition_result["queries"]
 
             if not decomposed_queries:
-                all_queries = [{"query": query_info.query}]
+                all_queries = [query_info.query]
             else:
-                all_queries = decomposed_queries
+                all_queries = [query.get("query") for query in decomposed_queries]
 
             yield create_sse_event("query_decomposed", {"queries": all_queries})
-
-            # Separate the processing logic from the generator
-            async def process_single_query(query: str, org_id: str, user_id: str) -> Dict[str, Any]:
-
-                results = await retrieval_service.search_with_filters(
-                    queries=[query],
-                    org_id=org_id,
-                    user_id=user_id,
-                    limit=query_info.limit,
-                    filter_groups=query_info.filters,
-                    arango_service=arango_service,
-                )
-
-                return results
 
             # Execute all query processing in parallel
             org_id = request.state.user.get('orgId')
@@ -291,45 +274,44 @@ async def askAIStream(
             yield create_sse_event("status", {"status": "parallel_processing", "message": f"Processing {len(all_queries)} queries in parallel..."})
 
             # Send individual query processing updates
-            for i, query_dict in enumerate(all_queries):
-                query = query_dict.get("query")
+            for i, query in enumerate(all_queries):
                 yield create_sse_event("transformed_query", {"status": "transforming", "query": query, "index": i+1})
 
-            # Process all queries
-            tasks = [
-                process_single_query(query_dict.get("query"), org_id, user_id)
-                for query_dict in all_queries
-            ]
-
             yield create_sse_event("status", {"status": "searching", "message": "Executing searches..."})
-            all_results = await asyncio.gather(*tasks)
+            result = await retrieval_service.search_with_filters(
+                    queries=all_queries,
+                    org_id=org_id,
+                    user_id=user_id,
+                    limit=query_info.limit,
+                    filter_groups=query_info.filters,
+                    arango_service=arango_service,
+                )
 
-            yield create_sse_event("search_complete", {"results_count": sum(len(r.get("searchResults", [])) for r in all_results)})
+            yield create_sse_event("search_complete", {"results_count": len(result.get("searchResults", []))})
 
             # Flatten and deduplicate results
             yield create_sse_event("status", {"status": "deduplicating", "message": "Deduplicating search results..."})
 
             flattened_results = []
             seen_ids = set()
-            for result_set in all_results:
-                status_code = result_set.get("status_code", 500)
-                if status_code in [202, 500, 503]:
-                    logger.warn(f"AI service returned an error status code: {status_code}", {
-                        "status": result_set.get("status", "error"),
-                        "message": result_set.get("message", "No results found")
-                    })
-                    yield create_sse_event("error", {
-                        "status": result_set.get("status", "error"),
-                        "message": result_set.get("message", "No results found")
-                    })
-                    return
+            result_set = result.get("searchResults", [])
+            status_code = result.get("status_code", 500)
+            if status_code in [202, 500, 503]:
+                logger.warn(f"AI service returned an error status code: {status_code}", {
+                    "status": result.get("status", "error"),
+                    "message": result.get("message", "No results found")
+                })
+                yield create_sse_event("error", {
+                    "status": result.get("status", "error"),
+                    "message": result.get("message", "No results found")
+                })
+                return
 
-                search_result_set = result_set.get("searchResults", [])
-                for result in search_result_set:
-                    result_id = result["metadata"].get("_id")
-                    if result_id not in seen_ids:
-                        seen_ids.add(result_id)
-                        flattened_results.append(result)
+            for result in result_set:
+                result_id = result["metadata"].get("_id")
+                if result_id not in seen_ids:
+                    seen_ids.add(result_id)
+                    flattened_results.append(result)
 
             yield create_sse_event("results_ready", {"total_results": len(flattened_results)})
 
@@ -465,64 +447,47 @@ async def askAI(
 
         logger.debug(f"decomposed_queries {decomposed_queries}")
         if not decomposed_queries:
-            all_queries = [{"query": query_info.query}]
+            all_queries = [query_info.query]
         else:
-            all_queries = decomposed_queries
+            all_queries = [query.get("query") for query in decomposed_queries]
 
-        async def process_decomposed_query(query: str, org_id: str, user_id: str) -> Dict[str, Any]:
-
-            results = await retrieval_service.search_with_filters(
-                queries=[query],
-                org_id=org_id,
-                user_id=user_id,
-                limit=query_info.limit,
-                filter_groups=query_info.filters,
-                arango_service=arango_service,
-            )
-            logger.info("Results from the AI service received")
-            logger.debug(f"formatted_results: {results}")
-
-            return results
 
         # Execute all query processing in parallel
         org_id = request.state.user.get('orgId')
         user_id = request.state.user.get('userId')
         send_user_info = request.query_params.get('sendUserInfo', True)
 
-        tasks = [
-            process_decomposed_query(query_dict.get("query"), org_id, user_id)
-            for query_dict in all_queries
-        ]
-        all_results = await asyncio.gather(*tasks)
+        result =await retrieval_service.search_with_filters(
+                queries=all_queries,
+                org_id=org_id,
+                user_id=user_id,
+                limit=query_info.limit,
+                filter_groups=query_info.filters,
+                arango_service=arango_service,
+            )
 
         # Flatten and deduplicate results based on document ID or other unique identifier
         flattened_results = []
         seen_ids = set()
-        for result_set in all_results:
-            status_code = result_set.get("status_code", 500)
+        search_results = result.get("searchResults", [])
+        status_code = result.get("status_code", 500)
 
-            if status_code in [202, 500, 503]:
-                return JSONResponse(
-                    status_code=status_code,
-                    content={
-                        "status": result_set.get("status", "error"),
-                        "message": result_set.get("message", "No results found"),
-                        "searchResults": [],
-                        "records": []
-                    }
-                )
+        if status_code in [202, 500, 503]:
+            return JSONResponse(
+                status_code=status_code,
+                content={
+                    "status": result.get("status", "error"),
+                    "message": result.get("message", "No results found"),
+                    "searchResults": [],
+                    "records": []
+                }
+            )
 
-            search_result_set = result_set.get("searchResults", [])
-            for result in search_result_set:
-                logger.debug("==================")
-                logger.debug("==================")
-                logger.debug(f"result: {result}")
-                logger.debug("==================")
-                logger.debug("==================")
-                result_id = result["metadata"].get("_id")
-                if result_id not in seen_ids:
-                    seen_ids.add(result_id)
-                    flattened_results.append(result)
+        for result in search_results:
+            result_id = result["metadata"].get("_id")
+            if result_id not in seen_ids:
+                seen_ids.add(result_id)
+                flattened_results.append(result)
 
         # Re-rank the combined results with the original query for better relevance
         if len(flattened_results) > 1:
@@ -534,7 +499,6 @@ async def askAI(
         else:
             final_results = flattened_results
 
-        logger.debug(f"final_results: {final_results}")
         # Prepare the template with the final results
         if send_user_info:
             user_info = await arango_service.get_user_by_user_id(user_id)
@@ -590,10 +554,8 @@ async def askAI(
 
         # Add current query with context
         messages.append({"role": "user", "content": rendered_form})
-        logger.debug(f"Messages to LLM {messages}")
         # Make async LLM call
         response = await llm.ainvoke(messages)
-        logger.debug(f"llm response: {response}")
         # Process citations and return response
         return process_citations(response, final_results)
 

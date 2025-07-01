@@ -62,6 +62,7 @@ async def process_drive_file(metadata: dict, org_id: str) -> Tuple[FileRecord, R
             )
             .with_indexing_status(status)
             .with_extraction_status(status)
+            .with_web_url(metadata.get("webViewLink", None))
             .build()
         )
 

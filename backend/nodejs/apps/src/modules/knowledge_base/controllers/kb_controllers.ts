@@ -147,6 +147,7 @@ export const createRecords =
           isArchived: false,
           indexingStatus: INDEXING_STATUS.NOT_STARTED,
           version: 1,
+          webUrl: webUrl,
         };
 
         const fileRecord = {

@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any, Dict, List, Optional, Union
 
 from langchain.chat_models.base import BaseChatModel
@@ -330,8 +331,8 @@ class RetrievalService:
             formatted_results.append(formatted_result)
         return formatted_results
 
-    async def _build_qdrant_filter(
-        self, org_id: str, accessible_records: List[str], arango_service: ArangoService
+    def _build_qdrant_filter(
+        self, org_id: str, accessible_virtual_record_ids: List[str]
     ) -> Filter:
         """
         Build Qdrant filter for accessible records with both org_id and record_id conditions.
@@ -343,14 +344,6 @@ class RetrievalService:
         Returns:
             Qdrant Filter object
         """
-        virtual_record_ids = []
-        for record_id in accessible_records:
-            record = await arango_service.get_document(
-                record_id, CollectionNames.RECORDS.value
-            )
-            if record.get("virtualRecordId"):
-                virtual_record_ids.append(record.get("virtualRecordId"))
-
         return Filter(
             must=[
                 FieldCondition(  # org_id condition
@@ -361,7 +354,7 @@ class RetrievalService:
                         FieldCondition(
                             key="metadata.virtualRecordId", match=MatchValue(value=virtual_record_id)
                         )
-                        for virtual_record_id in virtual_record_ids
+                        for virtual_record_id in accessible_virtual_record_ids
                     ]
                 ),
             ]
@@ -395,120 +388,40 @@ class RetrievalService:
                     )  # e.g., 'departments', 'categories', etc.
                     arango_filters[metadata_key] = values
 
-            accessible_records = await arango_service.get_accessible_records(
-                user_id=user_id, org_id=org_id, filters=arango_filters
-            )
+
+            init_tasks = [
+                self._get_accessible_records_task(user_id, org_id, filter_groups, arango_service),
+                self._get_vector_store_task(),
+                arango_service.get_user_by_user_id(user_id)  # Get user info in parallel
+            ]
+
+            accessible_records, vector_store, user = await asyncio.gather(*init_tasks)
+
 
             if not accessible_records:
-                self.logger.info(
-                    "No accessible records found for this user with provided filters."
-                )
-                return {
-                    "searchResults": [],
-                    "records": [],
-                    "status": Status.ACCESSIBLE_RECORDS_NOT_FOUND.value,
-                    "status_code": 200,
-                    "message": "No accessible records found for this user with provided filters.",
-                }
+                return self._create_empty_response("No accessible records found for this user with provided filters.")
 
-            # Extract record IDs from accessible records
-            accessible_record_ids = [
-                record["_key"] for record in accessible_records if record is not None
+            accessible_virtual_record_ids = [
+                record["virtualRecordId"] for record in accessible_records
+                if record is not None and record.get("virtualRecordId") is not None
             ]
             # Build Qdrant filter
-            qdrant_filter = await self._build_qdrant_filter(org_id, accessible_record_ids, arango_service)
+            qdrant_filter =  self._build_qdrant_filter(org_id, accessible_virtual_record_ids)
 
-            all_results = []
-            seen_chunks = set()
+            search_results = await self._execute_parallel_searches(queries, qdrant_filter, limit, vector_store)
 
-            if not self.vector_store:
-                # Check if collection exists and is not empty in Qdrant
-                try:
-                    collections = self.qdrant_client.get_collections()
-                    collection_info = (
-                        self.qdrant_client.get_collection(self.collection_name)
-                        if any(
-                            col.name == self.collection_name
-                            for col in collections.collections
-                        )
-                        else None
-                    )
-                except Exception as e:
-                    self.logger.warning(
-                        f"Collection {self.collection_name} not found in Qdrant: {str(e)}"
-                    )
-                    return {
-                        "searchResults": [],
-                        "records": [],
-                        "status": Status.VECTOR_DB_NOT_READY.value,
-                        "status_code": 200,
-                        "message": "Vector DB is empty. No records available for retrieval.",
-                    }
+            if not search_results:
+                return self._create_empty_response("No search results found")
 
-                if not collection_info or collection_info.points_count == 0:
-                    self.logger.info(
-                        f"Collection {self.collection_name} not found in Qdrant or is empty. Indexing may not be complete."
-                    )
-                    return {
-                        "searchResults": [],
-                        "records": [],
-                        "status": Status.VECTOR_DB_EMPTY.value,
-                        "status_code": 200,
-                        "message": "Vector DB is empty. No records available for retrieval.",
-                    }
 
-                dense_embeddings = await self.get_embedding_model_instance()
-                if not dense_embeddings:
-                    raise ValueError(
-                        "No dense embeddings found, please configure an embedding model or ensure indexing is complete"
-                    )
-
-                self.logger.info("Dense embeddings: %s", dense_embeddings)
-                self.vector_store = QdrantVectorStore(
-                    client=self.qdrant_client,
-                    collection_name=self.collection_name,
-                    vector_name="dense",
-                    sparse_vector_name="sparse",
-                    embedding=dense_embeddings,
-                    sparse_embedding=self.sparse_embeddings,
-                    retrieval_mode=RetrievalMode.HYBRID,
-                )
-
-            # Process each query
-            for query in queries:
-                # Perform similarity search
-                processed_query = await self._preprocess_query(query)
-                results = await self.vector_store.asimilarity_search_with_score(
-                    query=processed_query, k=limit, filter=qdrant_filter
-                )
-                # Add to results if content not already seen
-                for doc, score in results:
-                    if doc.page_content not in seen_chunks:
-                        all_results.append((doc, score))
-                        seen_chunks.add(doc.page_content)
-
-            search_results = self._format_results(all_results)
-
-            # Create mapping of virtualRecordId to first accessible record ID
-            virtual_to_record_map = {}
             virtual_record_ids = list(
                 set(result["metadata"]["virtualRecordId"] for result in search_results)
             )
+            virtual_to_record_map = self._create_virtual_to_record_mapping(accessible_records, virtual_record_ids)
+            unique_record_ids = set(virtual_to_record_map.values())
 
-            # Get all record IDs for these virtual record IDs
-            all_record_ids = []
-            for virtual_record_id in virtual_record_ids:
-                record_ids = await arango_service.get_records_by_virtual_record_id(
-                    virtual_record_id,
-                    accessible_record_ids=accessible_record_ids
-                )
-                if record_ids:  # Only add if we found accessible records
-                    virtual_to_record_map[virtual_record_id] = record_ids[0]  # Use first record ID
-                    all_record_ids.extend(record_ids)
-
-            # Convert to set to remove any duplicates
-            unique_record_ids = set(all_record_ids)
-            user = await arango_service.get_user_by_user_id(user_id)
+            if not unique_record_ids:
+                return self._create_empty_response("No accessible records found for this user with provided filters.")
 
             # Replace virtualRecordId with first accessible record ID in search results
             for result in search_results:
@@ -516,54 +429,38 @@ class RetrievalService:
                 if virtual_id in virtual_to_record_map:
                     record_id = virtual_to_record_map[virtual_id]
                     result["metadata"]["recordId"] = record_id
-                    record = await arango_service.get_document(
-                        record_id, CollectionNames.RECORDS.value
-                    )
-                    result["metadata"]["origin"] = record.get("origin")
-                    result["metadata"]["connector"] = record.get("connectorName")
-
-                    if record.get("recordType", "") == RecordTypes.FILE.value:
-                        files = await arango_service.get_document(
-                            record_id, CollectionNames.FILES.value
-                        )
-                        weburl = files.get("webUrl")
-                        if weburl and record.get("connectorName", "") == Connectors.GOOGLE_MAIL.value:
+                    record = next((r for r in accessible_records if r["_key"] == record_id), None)
+                    if record:
+                        result["metadata"]["origin"] = record.get("origin")
+                        result["metadata"]["connector"] = record.get("connectorName")
+                        weburl = record.get("webUrl")
+                        if weburl and weburl.startswith("https://mail.google.com/mail?authuser="):
                             weburl = weburl.replace("{user.email}", user["email"])
                         result["metadata"]["webUrl"] = weburl
 
-                    if record.get("recordType", "") == RecordTypes.MAIL.value:
-                        mail = await arango_service.get_document(
-                            record_id, CollectionNames.MAILS.value
-                        )
-                        weburl = mail.get("webUrl")
-                        if weburl:
-                            weburl = weburl.replace("{user.email}", user["email"])
-                        result["metadata"]["webUrl"] = weburl
+                        if not weburl and record.get("recordType", "") == RecordTypes.FILE.value:
+                            files = await arango_service.get_document(
+                                record_id, CollectionNames.FILES.value
+                            )
+                            weburl = files.get("webUrl")
+                            if weburl and record.get("connectorName", "") == Connectors.GOOGLE_MAIL.value:
+                                weburl = weburl.replace("{user.email}", user["email"])
+                            result["metadata"]["webUrl"] = weburl
+
+                        if not weburl and record.get("recordType", "") == RecordTypes.MAIL.value:
+                            mail = await arango_service.get_document(
+                                record_id, CollectionNames.MAILS.value
+                            )
+                            weburl = mail.get("webUrl")
+                            if weburl and weburl.startswith("https://mail.google.com/mail?authuser="):
+                                weburl = weburl.replace("{user.email}", user["email"])
+                            result["metadata"]["webUrl"] = weburl
 
             # Get full record documents from Arango
             records = []
             if unique_record_ids:
                 for record_id in unique_record_ids:
-                    record = await arango_service.get_document(
-                        record_id, CollectionNames.RECORDS.value
-                    )
-                    if record.get("recordType", "") == RecordTypes.FILE.value:
-                        files = await arango_service.get_document(
-                            record_id, CollectionNames.FILES.value
-                        )
-                        if record.get("connectorName", "") == Connectors.GOOGLE_MAIL.value:
-                            weburl = files.get("webUrl")
-                            weburl = weburl.replace("{user.email}", user["email"])
-                            files["webUrl"] = weburl
-                        record = {**record, **files}
-                    if record.get("recordType", "") == RecordTypes.MAIL.value:
-                        mail = await arango_service.get_document(
-                            record_id, CollectionNames.MAILS.value
-                        )
-                        weburl = mail.get("webUrl")
-                        weburl = weburl.replace("{user.email}", user["email"])
-                        mail["webUrl"] = weburl
-                        record = {**record, **mail}
+                    record = next((r for r in accessible_records if r["_key"] == record_id), None)
                     records.append(record)
 
             if search_results or records:
@@ -592,3 +489,123 @@ class RetrievalService:
                 "status_code": 500,
                 "message": f"An error occurred during search: {str(e)}",
             }
+
+
+    async def _get_accessible_records_task(self, user_id, org_id, filter_groups, arango_service) -> List[Dict[str, Any]]:
+        """Separate task for getting accessible records"""
+        filter_groups = filter_groups or {}
+        arango_filters = {}
+
+        if filter_groups:
+            for key, values in filter_groups.items():
+                metadata_key = key.lower()
+                arango_filters[metadata_key] = values
+
+        return await arango_service.get_accessible_records(
+            user_id=user_id, org_id=org_id, filters=arango_filters
+        )
+
+
+    async def _get_vector_store_task(self) -> QdrantVectorStore:
+        """Cached vector store retrieval"""
+        if not self.vector_store:
+            # Check collection exists
+            collections = self.qdrant_client.get_collections()
+            collection_info = (
+                self.qdrant_client.get_collection(self.collection_name)
+                if any(col.name == self.collection_name for col in collections.collections)
+                else None
+            )
+
+            if not collection_info or collection_info.points_count == 0:
+                raise ValueError("Vector DB is empty or collection not found")
+
+            # Get cached embedding model
+            dense_embeddings = await self.get_embedding_model_instance()
+            if not dense_embeddings:
+                raise ValueError("No dense embeddings found")
+
+            self.vector_store = QdrantVectorStore(
+                client=self.qdrant_client,
+                collection_name=self.collection_name,
+                vector_name="dense",
+                sparse_vector_name="sparse",
+                embedding=dense_embeddings,
+                sparse_embedding=self.sparse_embeddings,
+                retrieval_mode=RetrievalMode.HYBRID,
+            )
+
+        return self.vector_store
+
+
+    async def _execute_parallel_searches(self, queries, qdrant_filter, limit, vector_store) -> List[Dict[str, Any]]:
+        """Execute all searches in parallel"""
+        all_results = []
+        seen_chunks = set()
+
+        # Process all queries in parallel
+        search_tasks = [
+            vector_store.asimilarity_search_with_score(
+                query=await self._preprocess_query(query),
+                k=limit,
+                filter=qdrant_filter
+            )
+            for query in queries
+        ]
+
+        search_results = await asyncio.gather(*search_tasks)
+
+        # Deduplicate results
+        for results in search_results:
+            for doc, score in results:
+                if doc.page_content not in seen_chunks:
+                    all_results.append((doc, score))
+                    seen_chunks.add(doc.page_content)
+
+        return self._format_results(all_results)
+
+
+    def _create_empty_response(self, message: str) -> Dict[str, Any]:
+        """Helper to create empty response"""
+        return {
+            "searchResults": [],
+            "records": [],
+            "status": Status.ACCESSIBLE_RECORDS_NOT_FOUND.value,
+            "status_code": 200,
+            "message": message,
+        }
+
+
+    def _create_virtual_to_record_mapping(
+        self,
+        accessible_records: List[Dict[str, Any]],
+        virtual_record_ids: List[str]
+    ) -> Dict[str, str]:
+        """
+        Create virtual record ID to record ID mapping from already fetched accessible_records.
+        This eliminates the need for an additional database query.
+        Args:
+            accessible_records: List of accessible record documents (already fetched)
+            virtual_record_ids: List of virtual record IDs from search results
+        Returns:
+            Dict[str, str]: Mapping of virtual_record_id -> first accessible record_id
+        """
+        # Create a mapping from virtualRecordId to list of record IDs
+        virtual_to_records = {}
+        for record in accessible_records:
+            virtual_id = record.get("virtualRecordId")
+            record_id = record.get("_key")
+
+            if virtual_id and record_id:
+                if virtual_id not in virtual_to_records:
+                    virtual_to_records[virtual_id] = []
+                virtual_to_records[virtual_id].append(record_id)
+
+        # Create the final mapping using only the virtual record IDs from search results
+        # Use the first record ID for each virtual record ID
+        mapping = {}
+        for virtual_id in virtual_record_ids:
+            if virtual_id in virtual_to_records and virtual_to_records[virtual_id]:
+                mapping[virtual_id] = virtual_to_records[virtual_id][0]  # Use first record
+
+        return mapping

@@ -406,6 +406,7 @@ class BaseGmailSyncService(ABC):
                                 "isLatestVersion": True,
                                 "isDirty": False,
                                 "reason": None,
+                                "webUrl": f"https://mail.google.com/mail?authuser={{user.email}}#all/{message_id}",
                             }
 
                             # Create is_of_type edge
@@ -518,6 +519,7 @@ class BaseGmailSyncService(ABC):
                                 "isLatestVersion": True,
                                 "isDirty": False,
                                 "reason": None,
+                                "webUrl": f"https://mail.google.com/mail?authuser={{user.email}}#all/{message_id}",
                             }
 
                             # Create is_of_type edge
