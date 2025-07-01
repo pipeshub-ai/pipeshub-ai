@@ -42,6 +42,8 @@ import {
   getMetricsCollection,
   setMetricsCollectionPushInterval,
   setMetricsCollectionRemoteServer,
+  getSlackCredentials,
+  setSlackCredentials,
 } from '../controller/cm_controller';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
@@ -63,6 +65,7 @@ import {
   metricsCollectionPushIntervalSchema,
   metricsCollectionToggleSchema,
   metricsCollectionRemoteServerSchema,
+  slackCredentialsSchema,
 } from '../validator/validators';
 import { FileProcessorFactory } from '../../../libs/middlewares/file_processor/fp.factory';
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
@@ -588,6 +591,74 @@ export function createConfigurationManagerRouter(container: Container): Router {
         syncEventService,
         req.tokenPayload?.orgId,
       )(req, res, next);
+    },
+  );
+
+    router.get(
+    '/internal/connectors/slackCredentials',
+    authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
+    metricsMiddleware(container),
+    (req: AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
+      if (!req.tokenPayload) {
+        throw new NotFoundError('User not found');
+      }
+      return getSlackCredentials(keyValueStoreService, req.tokenPayload.orgId)(
+        req,
+        res,
+        next,
+      );
+    },
+  );
+
+  router.get(
+    '/connectors/slackCredentials',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+      if (!req.user) {
+        throw new NotFoundError('User not found');
+      }
+      return getSlackCredentials(keyValueStoreService, req.user.orgId)(
+        req,
+        res,
+        next,
+      );
+    },
+  );
+
+  router.post(
+    '/connectors/slackCredentials',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(slackCredentialsSchema),
+    (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+      if (!req.user) {
+        throw new NotFoundError('User not found');
+      }
+      return setSlackCredentials(keyValueStoreService, req.user.orgId,appConfig)(
+        req,
+        res,
+        next,
+      );
+    },
+  );
+
+  router.post(
+    '/internal/connectors/slackCredentials',
+    authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(slackCredentialsSchema),
+    (req: AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
+      if (!req.tokenPayload) {
+        throw new NotFoundError('User not found');
+      }
+      return setSlackCredentials(keyValueStoreService, req.tokenPayload.orgId,appConfig)(
+        req,
+        res,
+        next,
+      );
     },
   );
 

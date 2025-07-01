@@ -36,6 +36,12 @@ class SyncKafkaRouteConsumer:
                 "gmailUpdatesEnabledEvent": self.gmail_updates_enabled_event,
                 "gmailUpdatesDisabledEvent": self.gmail_updates_disabled_event,
                 "reindexFailed": self.reindex_failed,
+                "slack.init": self.slack_init,
+                "slack.start": self.slack_start_sync,
+                "slack.pause": self.slack_pause_sync,
+                "slack.resume": self.slack_resume_sync,
+                "slack.user": self.slack_sync_user,
+                "slack.reindexFailed": self.slack_reindex_failed,
             }
         }
         self.consume_task = None
@@ -480,6 +486,55 @@ class SyncKafkaRouteConsumer:
         except Exception as e:
             self.logger.error("Error reindexing failed records: %s", str(e))
             return False
+
+    async def slack_init(self, payload) -> Dict[str, str]:
+        org_id = payload.get("orgId")
+        if not org_id:
+            raise ValueError("orgId is required")
+        self.logger.info(f"Initializing Slack sync for org_id: {org_id}")
+        await self.sync_tasks.slack_sync_service.initialize(org_id)
+        return {"status": "accepted", "message": "Slack sync initialization queued"}
+
+    async def slack_start_sync(self, payload) -> Dict[str, str]:
+        org_id = payload.get("orgId")
+        if not org_id:
+            raise ValueError("orgId is required")
+        self.logger.info(f"Starting Slack sync for org_id: {org_id}")
+        # Ensure Slack sync service is initialized before starting
+        await self.sync_tasks.slack_sync_service.initialize(org_id)
+        await self.sync_tasks.slack_manual_sync_control("start", org_id)
+        return {"status": "accepted", "message": "Slack sync start request queued"}
+
+    async def slack_pause_sync(self, payload) -> Dict[str, str]:
+        org_id = payload.get("orgId")
+        if not org_id:
+            raise ValueError("orgId is required")
+        self.logger.info(f"Pausing Slack sync for org_id: {org_id}")
+        await self.sync_tasks.slack_manual_sync_control("pause", org_id)
+        return {"status": "accepted", "message": "Slack sync pause request queued"}
+
+    async def slack_resume_sync(self, payload) -> Dict[str, str]:
+        org_id = payload.get("orgId")
+        if not org_id:
+            raise ValueError("orgId is required")
+        self.logger.info(f"Resuming Slack sync for org_id: {org_id}")
+        await self.sync_tasks.slack_manual_sync_control("resume", org_id)
+        return {"status": "accepted", "message": "Slack sync resume request queued"}
+
+    async def slack_sync_user(self, payload) -> bool:
+        user_email = payload.get("email")
+        if not user_email:
+            raise ValueError("email is required")
+        self.logger.info(f"Syncing Slack user: {user_email}")
+        return await self.sync_tasks.slack_sync_service.sync_specific_user(user_email)
+
+    async def slack_reindex_failed(self, payload) -> bool:
+        org_id = payload.get("orgId")
+        if not org_id:
+            raise ValueError("orgId is required")
+        self.logger.info(f"Reindexing failed Slack records for org_id: {org_id}")
+        await self.sync_tasks.slack_sync_service.reindex_failed_records(org_id)
+        return True
 
     async def consume_messages(self) -> None:
         """Main consumption loop."""

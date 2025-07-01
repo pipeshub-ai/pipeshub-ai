@@ -17,7 +17,11 @@ from app.schema.arango.documents import (
     kb_schema,
     mail_record_schema,
     orgs_schema,
+    record_group_schema,
     record_schema,
+    slack_attachment_metadata_schema,
+    slack_message_metadata_schema,
+    slack_workspace_schema,
     user_schema,
 )
 from app.schema.arango.edges import (
@@ -54,6 +58,10 @@ NODE_COLLECTIONS = [
     (CollectionNames.SUBCATEGORIES3.value, None),
     (CollectionNames.BLOCKS.value, None),
     (CollectionNames.KNOWLEDGE_BASE.value, kb_schema),
+    (CollectionNames.RECORD_GROUPS.value, record_group_schema),
+    (CollectionNames.SLACK_ATTACHMENT_METADATA.value, slack_attachment_metadata_schema),
+    (CollectionNames.SLACK_MESSAGE_METADATA.value, slack_message_metadata_schema),
+    (CollectionNames.SLACK_WORKSPACES.value, slack_workspace_schema),
 ]
 
 EDGE_COLLECTIONS = [
@@ -72,6 +80,9 @@ EDGE_COLLECTIONS = [
     (CollectionNames.INTER_CATEGORY_RELATIONS.value, basic_edge_schema),
     (CollectionNames.BELONGS_TO_KNOWLEDGE_BASE.value, belongs_to_schema),
     (CollectionNames.PERMISSIONS_TO_KNOWLEDGE_BASE.value, permissions_schema),
+    (CollectionNames.SLACK_MESSAGE_TO_METADATA.value, is_of_type_schema),
+    (CollectionNames.SLACK_FILE_TO_ATTACHMENT_METADATA.value, is_of_type_schema),
+    (CollectionNames.BELONGS_TO_SLACK_CHANNEL.value, belongs_to_schema),
 ]
 
 class BaseArangoService:
@@ -172,6 +183,7 @@ class BaseArangoService:
 
                     # Define edge definitions
                     edge_definitions = [
+                        # Permissions edges
                         {
                             "edge_collection": CollectionNames.PERMISSIONS.value,
                             "from_vertex_collections": [CollectionNames.RECORDS.value],
@@ -181,14 +193,39 @@ class BaseArangoService:
                                 CollectionNames.ORGS.value,
                             ],
                         },
+                        # BelongsTo edges
                         {
                             "edge_collection": CollectionNames.BELONGS_TO.value,
-                            "from_vertex_collections": [CollectionNames.USERS.value],
+                            "from_vertex_collections": [CollectionNames.USERS.value,CollectionNames.SLACK_WORKSPACES.value],
                             "to_vertex_collections": [
                                 CollectionNames.GROUPS.value,
                                 CollectionNames.ORGS.value,
                             ],
                         },
+                        # Slack channel membership edges
+                        {
+                            "edge_collection": CollectionNames.BELONGS_TO_SLACK_CHANNEL.value,
+                            "from_vertex_collections": [CollectionNames.RECORDS.value,CollectionNames.USERS.value ],
+                            "to_vertex_collections": [CollectionNames.RECORD_GROUPS.value],
+                        },
+                        # Slack workspace membership edges
+                        {
+                            "edge_collection": CollectionNames.BELONGS_TO_SLACK_WORKSPACE.value,
+                            "from_vertex_collections": [CollectionNames.RECORD_GROUPS.value],
+                            "to_vertex_collections": [CollectionNames.SLACK_WORKSPACES.value],
+                        },
+                        # Slack metadata edges
+                        {
+                            "edge_collection": CollectionNames.SLACK_MESSAGE_TO_METADATA.value,
+                            "from_vertex_collections": [CollectionNames.RECORDS.value],
+                            "to_vertex_collections": [CollectionNames.SLACK_MESSAGE_METADATA.value],
+                        },
+                        {
+                            "edge_collection": CollectionNames.SLACK_FILE_TO_ATTACHMENT_METADATA.value,
+                            "from_vertex_collections": [CollectionNames.RECORDS.value],
+                            "to_vertex_collections": [CollectionNames.SLACK_ATTACHMENT_METADATA.value],
+                        },
+                        # Org-Department relation: orgs -> departments
                         {
                             "edge_collection": CollectionNames.ORG_DEPARTMENT_RELATION.value,
                             "from_vertex_collections": [CollectionNames.ORGS.value],

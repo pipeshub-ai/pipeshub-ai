@@ -3,7 +3,7 @@
 import json
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from arango import ArangoClient
 from arango.database import TransactionDatabase
@@ -12,6 +12,8 @@ from app.config.configuration_service import ConfigurationService
 from app.config.utils.named_constants.arangodb_constants import (
     CollectionNames,
     Connectors,
+    GroupType,
+    ProgressStatus,
 )
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -587,118 +589,92 @@ class ArangoService(BaseArangoService):
             self.logger.error("❌ Failed to get file permissions: %s", str(e))
             return []
 
-    async def store_permission(
+    async def store_permissions_batch(
         self,
-        file_key: str,
-        entity_key: str,
-        permission_data: Dict,
+        permissions_data: List[Dict[str, Any]],
         transaction: Optional[TransactionDatabase] = None,
     ) -> bool:
-        """Store or update permission relationship with change detection"""
+        """Store or update multiple permissions in batch"""
         try:
-            self.logger.info(
-                "🚀 Storing permission for file %s and entity %s", file_key, entity_key
-            )
-
-            if not entity_key:
-                self.logger.warning("⚠️ Cannot store permission - missing entity_key")
-                return False
-
-            # Use transaction if provided, otherwise use self.db
-            db = transaction if transaction else self.db
-            permissions_collection = db.collection(CollectionNames.PERMISSIONS.value)
+            self.logger.info("🚀 Storing permissions batch")
 
             timestamp = get_epoch_timestamp_in_ms()
+            edges = []
 
-            # Determine the correct collection for the _to field
-            entityType = permission_data.get("type", "user").lower()
-            if entityType == "domain":
-                to_collection = CollectionNames.ORGS.value
-            else:
-                to_collection = f"{entityType}s"
+            for perm in permissions_data:
+                file_key = perm.get('file_key')
+                entity_key = perm.get('entity_key')
+                permission = perm.get('permission')
 
-            existing_permissions = await self.get_file_permissions(file_key, transaction)
-            if existing_permissions:
-                existing_perm = next((p for p in existing_permissions if p.get("_to") == f"{to_collection}/{entity_key}"), None)
-                if existing_perm:
-                    edge_key = existing_perm.get("_key")
-                else:
-                    edge_key = str(uuid.uuid4())
-            else:
-                edge_key = str(uuid.uuid4())
+                if not entity_key or not file_key:
+                    self.logger.warning("⚠️ Cannot store permission - missing entity_key or file_key")
+                    continue
 
-            self.logger.info("Permission data is %s", permission_data)
-            # Create edge document with proper formatting
-            edge = {
-                "_key": edge_key,
-                "_from": f"{CollectionNames.RECORDS.value}/{file_key}",
-                "_to": f"{to_collection}/{entity_key}",
-                "type": permission_data.get("type").upper(),
-                "role": permission_data.get("role", "READER").upper(),
-                "externalPermissionId": permission_data.get("id"),
-                "createdAtTimestamp": timestamp,
-                "updatedAtTimestamp": timestamp,
-                "lastUpdatedTimestampAtSource": timestamp,
-            }
+                # Determine the correct collection for the _to field
+                entityType = permission.get("type", "user").lower()
+                to_collection = CollectionNames.ORGS.value if entityType == "domain" else f"{entityType}s"
 
-            # Log the edge document for debugging
-            self.logger.debug("Creating edge document: %s", edge)
+                edge = {
+                    "_from": f"{CollectionNames.RECORDS.value}/{file_key}",
+                    "_to": f"{to_collection}/{entity_key}",
+                    "type": permission.get("type").upper(),
+                    "role": permission.get("role", "READER").upper(),
+                    "externalPermissionId": permission.get("id"),
+                    "createdAtTimestamp": timestamp,
+                    "updatedAtTimestamp": timestamp,
+                    "lastUpdatedTimestampAtSource": timestamp,
+                }
+                edges.append(edge)
 
-            # Check if permission edge exists
-            try:
-                existing_edge = permissions_collection.get(edge_key)
-
-                if not existing_edge:
-                    # New permission
-                    permissions_collection.insert(edge)
-                    self.logger.info("✅ Created new permission edge: %s", edge_key)
-                elif self._permission_needs_update(existing_edge, permission_data):
-                    # Update existing permission
-                    self.logger.info("✅ Updating permission edge: %s", edge_key)
-                    await self.batch_upsert_nodes([edge], collection=CollectionNames.PERMISSIONS.value)
-                    self.logger.info("✅ Updated permission edge: %s", edge_key)
-                else:
-                    self.logger.info(
-                        "✅ No update needed for permission edge: %s", edge_key
-                    )
-
-                return True
-
-            except Exception as e:
-                self.logger.error(
-                    "❌ Failed to access permissions collection: %s", str(e)
-                )
-                if transaction:
-                    raise
-                return False
+            if edges:
+                return await self.batch_create_edges(edges, CollectionNames.PERMISSIONS.value, transaction)
+            return True
 
         except Exception as e:
-            self.logger.error("❌ Failed to store permission: %s", str(e))
+            self.logger.error("❌ Failed to store permissions batch: %s", str(e))
             if transaction:
                 raise
             return False
 
-    async def store_membership(
-        self, group_id: str, user_id: str, role: str = "member"
+    async def store_memberships_batch(
+        self,
+        memberships: List[Dict[str, Any]],
+        transaction: Optional[TransactionDatabase] = None
     ) -> bool:
-        """Store group membership"""
+        """Store multiple group memberships in batch"""
         try:
-            self.logger.info(
-                "🚀 Storing membership for group %s and user %s", group_id, user_id
-            )
-            edge = {
-                "_from": f"groups/{group_id}",
-                "_to": f"users/{user_id}",
-                "type": "membership",
-                "role": role,
-            }
-            self._collections[CollectionNames.BELONGS_TO.value].insert(
-                edge, overwrite=True
-            )
-            self.logger.info("✅ Membership stored successfully")
+            self.logger.info("🚀 Storing memberships batch")
+
+            timestamp = get_epoch_timestamp_in_ms()
+            edges = []
+
+            for membership in memberships:
+                group_id = membership.get('group_id')
+                user_id = membership.get('user_id')
+                role = membership.get('role', 'member')
+
+                if not group_id or not user_id:
+                    self.logger.warning("⚠️ Cannot store membership - missing group_id or user_id")
+                    continue
+
+                edge = {
+                    "_from": f"{CollectionNames.GROUPS.value}/{group_id}",
+                    "_to": f"{CollectionNames.USERS.value}/{user_id}",
+                    "type": "membership",
+                    "role": role,
+                    "createdAtTimestamp": timestamp,
+                    "updatedAtTimestamp": timestamp,
+                }
+                edges.append(edge)
+
+            if edges:
+                return await self.batch_create_edges(edges, CollectionNames.BELONGS_TO.value, transaction)
             return True
+
         except Exception as e:
-            self.logger.error("❌ Failed to store membership: %s", str(e))
+            self.logger.error("❌ Failed to store memberships batch: %s", str(e))
+            if transaction:
+                raise
             return False
 
     async def process_file_permissions(
@@ -794,12 +770,7 @@ class ArangoService(BaseArangoService):
                             entity_key = existing_perm.get("_to")
                             entity_key = entity_key.split("/")[1]
                             # Update existing permission
-                            await self.store_permission(
-                                file_key,
-                                entity_key,
-                                new_perm,
-                                transaction,
-                            )
+                            await self.store_permissions_batch([new_perm], transaction)
                         else:
                             # Get entity key from email for user/group
                             # Create new permission
@@ -834,9 +805,7 @@ class ArangoService(BaseArangoService):
                                     entity_key,
                                     new_perm,
                                 )
-                                await self.store_permission(
-                                    file_key, entity_key, new_perm, transaction
-                                )
+                                await self.store_permissions_batch([new_perm], transaction)
 
                 if perm_type == "anyone":
                     # For anyone type, add permission directly to anyone collection
@@ -851,9 +820,7 @@ class ArangoService(BaseArangoService):
                             "active": True,
                         }
                         # Store/update permission
-                        await self.batch_upsert_nodes(
-                            [permission_data], collection=CollectionNames.ANYONE.value
-                        )
+                        await self.store_permissions_batch([permission_data], transaction)
 
             self.logger.info(
                 "✅ Successfully processed all permissions for file %s", file_key
@@ -1639,4 +1606,415 @@ class ArangoService(BaseArangoService):
         except Exception as e:
             self.logger.error("❌ Error checking edge existence: %s", str(e))
             return False
+
+    async def get_workspace_sync_state(self, org_id: str) -> Optional[Dict[str, Any]]:
+        """Get sync state for a Slack workspace"""
+        try:
+            query = """
+            FOR workspace IN slackWorkspaces
+                FILTER workspace.orgId == @org_id
+                RETURN {
+                    workspace: workspace,
+                    syncState: workspace.syncState,
+                    lastSyncTimestamp: workspace.lastSyncTimestamp
+                }
+            """
+            cursor = self.db.aql.execute(
+                query,
+                bind_vars={"org_id": org_id}
+            )
+            return next(cursor, None)
+        except Exception as e:
+            self.logger.error("❌ Error getting workspace sync state: %s", str(e))
+            return None
+
+    async def create_workspace_sync_state(self, org_id: str, sync_state: str) -> bool:
+        """Create initial workspace sync state"""
+        try:
+            timestamp = get_epoch_timestamp_in_ms()
+            query = """
+            FOR workspace IN slackWorkspaces
+                FILTER workspace.orgId == @org_id
+                UPDATE workspace WITH {
+                    syncState: @sync_state,
+                    lastSyncTimestamp: @timestamp,
+                    updatedAtTimestamp: @timestamp
+                } IN slackWorkspaces
+                RETURN NEW
+            """
+            cursor = self.db.aql.execute(
+                query,
+                bind_vars={
+                    "org_id": org_id,
+                    "sync_state": sync_state,
+                    "timestamp": timestamp
+                }
+            )
+            result = next(cursor, None)
+            return bool(result)
+        except Exception as e:
+            self.logger.error("❌ Error creating workspace sync state: %s", str(e))
+            return False
+
+    async def update_workspace_sync_state(self, org_id: str, sync_state: str) -> bool:
+        """Update workspace sync state"""
+        try:
+            timestamp = get_epoch_timestamp_in_ms()
+            query = """
+            FOR workspace IN slackWorkspaces
+                FILTER workspace.orgId == @org_id
+                UPDATE workspace WITH {
+                    syncState: @sync_state,
+                    lastSyncTimestamp: @timestamp,
+                    updatedAtTimestamp: @timestamp
+                } IN slackWorkspaces
+                RETURN NEW
+            """
+            cursor = self.db.aql.execute(
+                query,
+                bind_vars={
+                    "org_id": org_id,
+                    "sync_state": sync_state,
+                    "timestamp": timestamp
+                }
+            )
+            result = next(cursor, None)
+            return bool(result)
+        except Exception as e:
+            self.logger.error("❌ Error updating workspace sync state: %s", str(e))
+            return False
+
+    async def get_last_sync_timestamp(self, org_id: str) -> Optional[int]:
+        """Get last sync timestamp for workspace"""
+        try:
+            query = """
+            FOR workspace IN slackWorkspaces
+                FILTER workspace.orgId == @org_id
+                RETURN workspace.lastSyncTimestamp
+            """
+            cursor = self.db.aql.execute(
+                query,
+                bind_vars={"org_id": org_id}
+            )
+            return next(cursor, None)
+        except Exception as e:
+            self.logger.error("❌ Error getting last sync timestamp: %s", str(e))
+            return None
+
+    async def store_slack_workspace(
+        self,
+        workspace_data: dict,
+        org_id: str,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> Optional[dict]:
+        """Generic upsert for Slack workspace using batch_upsert_nodes."""
+        try:
+            workspace_id = str(uuid.uuid4())
+            timestamp = get_epoch_timestamp_in_ms()
+            workspace_doc = {
+                "_key": workspace_id,
+                "orgId": org_id,
+                "externalId": workspace_data.get('id'),
+                "name": workspace_data.get('name'),
+                "domain": workspace_data.get('domain'),
+                "emailDomain": workspace_data.get('email_domain'),
+                "url": workspace_data.get('url'),
+                "isActive": True,
+                "syncState": ProgressStatus.NOT_STARTED.value,
+                "lastSyncTimestamp": None,
+                "createdAtTimestamp": timestamp,
+                "updatedAtTimestamp": timestamp,
+            }
+            await self.batch_upsert_nodes([workspace_doc], CollectionNames.SLACK_WORKSPACES.value, transaction)
+            self.logger.info("✅ SlackWorkspace stored successfully (generic)")
+            return workspace_doc
+        except Exception as e:
+            self.logger.error("❌ Error storing slack workspace (generic): %s", str(e))
+            if transaction:
+                raise
+            return None
+
+    async def get_workspace_by_org_id(self, org_id: str, transaction: Optional[TransactionDatabase] = None) -> Optional[Dict[str, Any]]:
+        """Get workspace document by org_id"""
+        try:
+            query = """
+            FOR workspace IN slackWorkspaces
+                FILTER workspace.orgId == @org_id
+                RETURN workspace
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"org_id": org_id})
+            return next(cursor, None)
+        except Exception as e:
+            self.logger.error("❌ Error getting workspace by org_id: %s", str(e))
+            return None
+
+    async def get_channel_by_slack_id(self, slack_channel_id: str, org_id: str, transaction: Optional[TransactionDatabase] = None) -> Optional[Dict]:
+        """Get Slack channel by slack id"""
+        try:
+            query = """
+            FOR recordGroup IN recordGroups
+            FILTER recordGroup.externalGroupId == @slack_channel_id AND recordGroup.orgId == @org_id
+            RETURN recordGroup
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(
+                query,
+                bind_vars={
+                    "slack_channel_id": slack_channel_id,
+                    "org_id": org_id
+                }
+            )
+
+            result = next(cursor, None)
+            if result:
+                self.logger.info("✅ Slack Channel retrieved successfully")
+            return result
+
+        except Exception as e:
+            self.logger.error("❌ Error retrieving slack channel: %s", str(e))
+            return None
+
+    async def get_workspace_channels(self, org_id: str) -> List[Dict]:
+        """Get all channels for a workspace"""
+        try:
+            query = """
+            FOR recordGroup IN recordGroups
+            FILTER recordGroup.orgId == @org_id AND recordGroup.groupType == @group_type AND recordGroup.connectorName == @connector_name
+            RETURN {
+                "channel": recordGroup
+            }
+            """
+            cursor = self.db.aql.execute(
+                query,
+                bind_vars={
+                    "org_id": org_id,
+                    "group_type": GroupType.SLACK_CHANNEL.value,
+                    "connector_name": Connectors.SLACK.value
+                }
+            )
+            return list(cursor)
+
+        except Exception as e:
+            self.logger.error("❌ Error getting workspace channels: %s", str(e))
+            return []
+
+    async def get_message_by_slack_ts(self, slack_ts: str, org_id: str, transaction=None) -> Optional[Dict[str, Any]]:
+        """Get all slack message by timestamp"""
+        try:
+
+            query = """
+            FOR metadata IN slackMessageMetdata
+                FILTER metadata.slackTs == @slack_ts AND metadata.orgId == @org_id
+                LET message = DOCUMENT(CONCAT('records/', metadata._key))
+                RETURN {
+                    message: message,
+                    metadata: metadata
+                }
+            """
+            cursor = self.db.aql.execute(
+                query,
+                bind_vars={
+                    "slack_ts": slack_ts,
+                    "org_id": org_id
+                }
+            )
+            return next(cursor, None)
+        except Exception as e:
+            self.logger.error("❌ Error getting workspace channels: %s", str(e))
+            return []
+
+    async def update_channel_sync_state(
+        self,
+        channel_key: str,
+        sync_state: str,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> bool:
+        """Update channel sync state"""
+        try:
+            query = """
+            UPDATE @channel_key WITH {
+                syncState: @sync_state,
+                updatedAtTimestamp: @timestamp
+            } IN recordGroups
+            RETURN NEW
+            """
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(
+                query,
+                bind_vars={
+                    "channel_key": channel_key,
+                    "sync_state": sync_state,
+                    "timestamp": get_epoch_timestamp_in_ms()
+                }
+            )
+
+            result = next(cursor, None)
+            return bool(result)
+
+        except Exception as e:
+            self.logger.error("❌ Error updating channel sync state: %s", str(e))
+            if transaction:
+                raise
+            return False
+
+    async def update_workspace(self, workspace_key: str, update_fields: dict, transaction=None) -> bool:
+        """Update fields for an existing workspace by _key"""
+        try:
+            query = """
+            UPDATE @workspace_key WITH @update_fields IN slackWorkspaces RETURN NEW
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"workspace_key": workspace_key, "update_fields": update_fields})
+            result = next(cursor, None)
+            return bool(result)
+        except Exception as e:
+            self.logger.error(f"❌ Error updating workspace {workspace_key}: {str(e)}")
+            return False
+
+    async def update_user(self, user_key: str, update_fields: dict, transaction=None) -> bool:
+        """Update fields for an existing user by _key"""
+        try:
+            query = """
+            UPDATE @user_key WITH @update_fields IN users RETURN NEW
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"user_key": user_key, "update_fields": update_fields})
+            result = next(cursor, None)
+            return bool(result)
+        except Exception as e:
+            self.logger.error(f"❌ Error updating user {user_key}: {str(e)}")
+            return False
+
+    async def update_channel(self, channel_key: str, update_fields: dict, transaction=None) -> bool:
+        """Update fields for an existing channel by _key"""
+        try:
+            query = """
+            UPDATE @channel_key WITH @update_fields IN recordGroups RETURN NEW
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"channel_key": channel_key, "update_fields": update_fields})
+            result = next(cursor, None)
+            return bool(result)
+        except Exception as e:
+            self.logger.error(f"❌ Error updating channel {channel_key}: {str(e)}")
+            return False
+
+    async def get_channel_members(
+        self,
+        channel_key: str,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> List[Dict[str, Any]]:
+        """Get all members of a channel using permissions collection"""
+        try:
+            self.logger.info("🚀 Getting members for channel %s", channel_key)
+
+            query = """
+            FOR perm IN permissions
+                FILTER perm._to == @channel_id AND perm.type == 'USER'
+                LET user = DOCUMENT(perm._from)
+                RETURN {
+                    user: user,
+                    role: perm.role,
+                    lastUpdated: perm.lastUpdatedTimestampAtSource
+                }
+            """
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(
+                query,
+                bind_vars={
+                    "channel_id": f"{CollectionNames.RECORD_GROUPS.value}/{channel_key}"
+                }
+            )
+
+            return list(cursor)
+
+        except Exception as e:
+            self.logger.error("❌ Failed to get channel members: %s", str(e))
+            return []
+
+    async def get_channel_records(
+        self,
+        channel_key: str,
+        record_type: Optional[str] = None,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> List[Dict[str, Any]]:
+        """Get all records (messages/files) in a channel"""
+        try:
+            self.logger.info("🚀 Getting records for channel %s", channel_key)
+
+            filter_conditions = ["edge._to == @channel_id"]
+            if record_type:
+                filter_conditions.append("record.recordType == @record_type")
+
+            query = f"""
+            FOR edge IN belongsToSlackChannel
+                FILTER {' AND '.join(filter_conditions)}
+                LET record = DOCUMENT(edge._from)
+                RETURN {{
+                    record: record,
+                    metadata: DOCUMENT(CONCAT(
+                        CASE record.recordType
+                            WHEN 'MESSAGE' THEN '{CollectionNames.SLACK_MESSAGE_METADATA.value}'
+                            WHEN 'FILE' THEN '{CollectionNames.SLACK_ATTACHMENT_METADATA.value}'
+                            ELSE NULL
+                        END,
+                        '/',
+                        record._key
+                    ))
+                }}
+            """
+
+            bind_vars = {
+                "channel_id": f"{CollectionNames.RECORD_GROUPS.value}/{channel_key}"
+            }
+            if record_type:
+                bind_vars["record_type"] = record_type
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars=bind_vars)
+
+            return list(cursor)
+
+        except Exception as e:
+            self.logger.error("❌ Failed to get channel records: %s", str(e))
+            return []
+
+    async def get_user_by_slack_id(self, slack_user_id: str, org_id: str, transaction=None) -> Optional[Dict[str, Any]]:
+        query = """
+        FOR user IN users
+        FILTER user.userId == @slack_user_id AND user.orgId == @org_id
+        RETURN user
+        """
+        db = transaction if transaction else self.db
+        cursor = db.aql.execute(
+            query,
+            bind_vars={
+                "slack_user_id": slack_user_id,
+                "org_id": org_id
+            }
+        )
+        return next(cursor, None)
+
+    async def get_workspace_by_team_id(self, team_id: str, transaction=None) -> Optional[Dict[str, Any]]:
+        """Get workspace document by Slack team ID"""
+        try:
+            query = """
+            FOR workspace IN slackWorkspaces
+                FILTER workspace.externalId == @team_id
+                RETURN workspace
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"team_id": team_id})
+            result = next(cursor, None)
+            if result:
+                self.logger.info("✅ Found workspace for team ID: %s", team_id)
+            return result
+        except Exception as e:
+            self.logger.error("❌ Error getting workspace by team ID: %s", str(e))
+            return None
+
+
 

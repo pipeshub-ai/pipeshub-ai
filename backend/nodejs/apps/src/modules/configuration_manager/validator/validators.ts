@@ -270,6 +270,14 @@ export const googleWorkspaceConfigSchema = z.object({
   }),
 });
 
+export const slackCredentialsSchema = z.object({
+  body: z.object({
+    botToken: z.string().min(1, 'Bot token is required'),
+    signingSecret: z.string().min(1, 'Signing secret is required'),
+    enableRealTimeUpdates: z.union([z.boolean(), z.string()]).optional(),
+  }),
+});
+
 export const aiModelsConfigSchema = z.object({
   body: z
     .object({

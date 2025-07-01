@@ -1789,3 +1789,88 @@ export const setMetricsCollectionRemoteServer =
       next(error);
     }
   };
+
+export const getSlackCredentials =
+  (keyValueStoreService: KeyValueStoreService, orgId: string) =>
+  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const encryptedSlackCredentials = await keyValueStoreService.get<string>(
+        `${configPaths.connectors.slack.credentials}/${orgId}`,
+      );
+      if (encryptedSlackCredentials) {
+        const slackCredentials = JSON.parse(
+          EncryptionService.getInstance(
+            configManagerConfig.algorithm,
+            configManagerConfig.secretKey,
+          ).decrypt(encryptedSlackCredentials),
+        );
+        res.status(200).json(slackCredentials).end();
+      } else {
+        res.status(200).json({}).end();
+      }
+    } catch (error: any) {
+      logger.error('Error getting Slack credentials', { error });
+      next(error);
+    }
+  };
+
+export const setSlackCredentials =
+  (
+    keyValueStoreService: KeyValueStoreService,
+    orgId: string,
+    appConfig: AppConfig,
+  ) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { botToken, signingSecret, realTimeUpdatesEnabled } = req.body;
+      logger.debug("Headers ", req.headers);
+      const healthCheckPayload = {
+        bot_token: botToken,
+        signing_secret: signingSecret,
+        strict_mode: true,
+      };
+
+      const aiCommandOptions: AICommandOptions = {
+        uri: `${appConfig.connectorBackend}/api/v1/slack-health-check`,
+        method: HttpMethod.POST,
+        headers: req.headers as Record<string, string>,
+        body: healthCheckPayload,
+      };
+
+      logger.debug('Performing comprehensive Slack health check...');
+
+      const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
+      const healthResponse = (await aiServiceCommand.execute()) as any;
+
+      if (!healthResponse?.data || healthResponse.statusCode !== 200) {
+        throw new Error(
+          healthResponse?.data?.error || 'Health check service unavailable',
+        );
+      }
+
+      const configManagerConfig = loadConfigurationManagerConfig();
+
+      const encryptedSlackCredentials = EncryptionService.getInstance(
+        configManagerConfig.algorithm,
+        configManagerConfig.secretKey,
+      ).encrypt(
+        JSON.stringify({ botToken, signingSecret, realTimeUpdatesEnabled }),
+      );
+
+      await keyValueStoreService.set<string>(
+        `${configPaths.connectors.slack.credentials}/${orgId}`,
+        encryptedSlackCredentials,
+      );
+
+      res
+        .status(200)
+        .json({
+          msg: 'Slack Credentials saved successfully',
+        })
+        .end();
+    } catch (error: any) {
+      logger.error('Error saving slack credentials', { error });
+      next(error);
+    }
+  };
