@@ -989,7 +989,6 @@ export const addMessage =
             const eventType = lines.find(line => line.startsWith('event:'))?.replace('event:', '').trim();
             const dataLines = lines.filter(line => line.startsWith('data:')).map(line => line.replace(/^data: ?/, ''));
             const dataLine = dataLines.join('\n');
-
             if (eventType === 'complete' && dataLine) {
               try {
                 completeData = JSON.parse(dataLine);
@@ -1008,6 +1007,19 @@ export const addMessage =
                   dataLine,
                 });
                 // Forward the event if we can't parse it
+                filteredChunk += event + '\n\n';
+              }
+            } else if (eventType === 'error' && dataLine) {
+              try {
+                const errorData = JSON.parse(dataLine);
+                markConversationFailed(existingConversation as IConversationDocument, errorData.error, session);
+                filteredChunk += event + '\n\n';
+              } catch (parseError: any) {
+                logger.error('Failed to parse error event data', {
+                  requestId,
+                  parseError: parseError.message,
+                  dataLine,
+                });
                 filteredChunk += event + '\n\n';
               }
             } else {
@@ -1179,26 +1191,8 @@ export const addMessage =
       stream.on('error', async (error: Error) => {
         logger.error('Stream error', { requestId, error: error.message });
         try {
-          // Mark conversation as failed and add error message
           if (existingConversation) {
-            existingConversation.status = CONVERSATION_STATUS.FAILED;
-            existingConversation.failReason = `Stream error: ${error.message}`;
-
-            // Add error message using existing utility
-            const failedMessage = buildAIFailureResponseMessage() as IMessageDocument;
-            existingConversation.messages.push(failedMessage);
-            existingConversation.lastActivityAt = Date.now();
-
-            const saveGeneralError = session
-              ? await existingConversation.save({ session })
-              : await existingConversation.save();
-
-            if (!saveGeneralError) {
-              logger.error('Failed to save conversation general error status', {
-                requestId,
-                conversationId: existingConversation._id,
-              });
-            }
+            markConversationFailed(existingConversation as IConversationDocument, error.message, session);
           }
         } catch (dbError: any) {
           logger.error('Failed to mark conversation as failed', {
