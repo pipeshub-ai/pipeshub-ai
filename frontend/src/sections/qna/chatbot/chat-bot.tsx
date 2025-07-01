@@ -1,3 +1,4 @@
+// Updated ChatInterface component with better error handling and status management
 import type {
   Message,
   Citation,
@@ -47,6 +48,93 @@ import WelcomeMessage from './components/welcome-message';
 
 const DRAWER_WIDTH = 300;
 
+// IMPROVED: Enhanced status message mapping with better error handling
+const getEngagingStatusMessage = (originalStatus: string, data?: any): string => {
+  // Connection and initialization states
+  if (originalStatus.includes('Connected') || originalStatus === 'connected') {
+    return 'Connected successfully';
+  }
+
+  if (originalStatus.includes('Starting AI processing')) {
+    return 'Initializing AI processing';
+  }
+
+  if (originalStatus.includes('LLM service initialized')) {
+    return 'AI service ready';
+  }
+
+  if (originalStatus.includes('Processing conversation history')) {
+    return 'Loading conversation context';
+  }
+
+  // Query analysis phase
+  if (originalStatus.includes('Decomposing query')) {
+    return 'Analyzing your request';
+  }
+
+  if (originalStatus.includes('transforming')) {
+    return 'Optimizing search parameters';
+  }
+
+  // Search execution phase
+  if (originalStatus.includes('Processing') && originalStatus.includes('queries in parallel')) {
+    const queryCount = data?.queries?.length || extractNumber(originalStatus);
+    return queryCount ? `Executing ${queryCount} parallel searches` : 'Running parallel searches';
+  }
+
+  if (originalStatus.includes('Executing searches')) {
+    return 'Searching knowledge sources';
+  }
+
+  // Results processing phase
+  if (originalStatus.includes('Deduplicating search results')) {
+    return 'Consolidating search results';
+  }
+
+  if (originalStatus.includes('Reranking results')) {
+    return 'Prioritizing relevant information';
+  }
+
+  if (originalStatus.includes('Found') && originalStatus.includes('sources')) {
+    const count = extractNumber(originalStatus);
+    return count ? `Retrieved ${count} relevant sources` : 'Sources retrieved successfully';
+  }
+
+  // Response generation phase
+  if (originalStatus.includes('Preparing user context')) {
+    return 'Preparing personalized response';
+  }
+
+  if (
+    originalStatus.includes('Generating AI response') ||
+    originalStatus.includes('Generating response')
+  ) {
+    return 'Generating response';
+  }
+
+  // Generic fallbacks with professional tone
+  if (originalStatus.toLowerCase().includes('search')) {
+    return 'Searching information';
+  }
+
+  if (originalStatus.toLowerCase().includes('processing')) {
+    return 'Processing request';
+  }
+
+  if (originalStatus.toLowerCase().includes('analyzing')) {
+    return 'Analyzing data';
+  }
+
+  // Default state
+  return 'Processing';
+};
+
+// Helper function to extract numbers from status messages
+const extractNumber = (text: string): string => {
+  const match = text.match(/\d+/);
+  return match ? match[0] : '';
+};
+
 const StyledCloseButton = styled(Button)(({ theme }) => ({
   position: 'fixed',
   top: 72,
@@ -87,8 +175,13 @@ const StyledOpenButton = styled(IconButton)(({ theme }) => ({
   },
 }));
 
+// Streaming controller interface
+interface StreamingController {
+  abort: () => void;
+}
+
 const ChatInterface = () => {
-  // const [searchQuery, setSearchQuery] = useState<string>('');
+  // Existing state variables
   const [messages, setMessages] = useState<FormattedMessage[]>([]);
   const [inputValue, setInputValue] = useState<string>('');
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -96,7 +189,6 @@ const ChatInterface = () => {
   const [expandedCitations, setExpandedCitations] = useState<ExpandedCitationsState>({});
   const [isDrawerOpen, setDrawerOpen] = useState<boolean>(true);
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
-  // eslint-disable-next-line
   const [selectedChat, setSelectedChat] = useState<Conversation | null>(null);
   const [shouldRefreshSidebar, setShouldRefreshSidebar] = useState<boolean>(false);
   const navigate = useNavigate();
@@ -104,7 +196,6 @@ const ChatInterface = () => {
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [aggregatedCitations, setAggregatedCitations] = useState<CustomCitation[] | null>([]);
   const [openPdfView, setOpenPdfView] = useState<boolean>(false);
-  // const [showQuestionDetails, setShowQuestionDetails] = useState<boolean>(false);
   const [isExcel, setIsExcel] = useState<boolean>(false);
   const [isViewerReady, setIsViewerReady] = useState<boolean>(false);
   const [transitioning, setTransitioning] = useState<boolean>(false);
@@ -116,17 +207,30 @@ const ChatInterface = () => {
   const [isTextFile, setIsTextFile] = useState<boolean>(false);
   const [loadingConversations, setLoadingConversations] = useState<{ [key: string]: boolean }>({});
   const theme = useTheme();
-  const isCurrentConversationLoading = useCallback(
-    () =>
-      currentConversationId
-        ? loadingConversations[currentConversationId]
-        : loadingConversations.new,
-    [currentConversationId, loadingConversations]
-  );
 
+  // New streaming-specific state
+  const [streamingController, setStreamingController] = useState<StreamingController | null>(null);
+  const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
+  const [isGeneratingResponse, setIsGeneratingResponse] = useState<boolean>(false);
+
+  // IMPROVED: Enhanced refs for smoother streaming with debouncing
+  const streamingContentRef = useRef<string>('');
+  const streamingUpdateTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastUpdateTimeRef = useRef<number>(0);
+  const pendingContentRef = useRef<string>('');
+  const accumulatedContentRef = useRef<string>('');
+  const updateDebounceRef = useRef<NodeJS.Timeout | null>(null);
+
+  // IMPROVED: Better conversation status management with error handling
   const [conversationStatus, setConversationStatus] = useState<{
     [key: string]: string | undefined;
   }>({});
+
+  // FIX: Add error state tracking to prevent duplicate error messages
+  const [conversationErrors, setConversationErrors] = useState<{
+    [key: string]: boolean;
+  }>({});
+
   const [pendingResponseConversationId, setPendingResponseConversationId] = useState<string | null>(
     null
   );
@@ -142,10 +246,19 @@ const ChatInterface = () => {
   });
   const currentConversationIdRef = useRef<string | null>(null);
 
+  const isCurrentConversationLoading = useCallback(
+    () =>
+      currentConversationId
+        ? loadingConversations[currentConversationId]
+        : loadingConversations.new,
+    [currentConversationId, loadingConversations]
+  );
+
   const isCurrentConversationThinking = useCallback(() => {
     const conversationKey = currentConversationId || 'new';
     return conversationStatus[conversationKey] === 'Inprogress';
   }, [currentConversationId, conversationStatus]);
+
   const [highlightedCitation, setHighlightedCitation] = useState<CustomCitation | null>(null);
 
   const [snackbar, setSnackbar] = useState({
@@ -153,9 +266,12 @@ const ChatInterface = () => {
     message: '',
     severity: 'success' as 'success' | 'error' | 'warning' | 'info',
   });
+
   const handleCloseSnackbar = (): void => {
     setSnackbar({ open: false, message: '', severity: 'success' });
   };
+
+  // FIX: Updated formatMessage to handle conversation status properly
   const formatMessage = useCallback((apiMessage: Message): FormattedMessage | null => {
     if (!apiMessage) return null;
 
@@ -201,6 +317,7 @@ const ChatInterface = () => {
       };
     }
 
+    // FIX: Handle error messages properly - don't create duplicate error messages
     if (apiMessage.messageType === 'error') {
       return {
         ...baseMessage,
@@ -224,13 +341,674 @@ const ChatInterface = () => {
 
     return null;
   }, []);
+
+  // IMPROVED: Much smoother streaming update with proper debouncing
+  const smoothUpdateStreamingMessage = useCallback(
+    (content: string, messageId: string, immediate = false) => {
+      // Store the latest content
+      accumulatedContentRef.current = content;
+
+      // Clear any existing debounce
+      if (updateDebounceRef.current) {
+        clearTimeout(updateDebounceRef.current);
+      }
+
+      const updateContent = () => {
+        const contentToUpdate = accumulatedContentRef.current;
+
+        if (contentToUpdate !== streamingContentRef.current) {
+          streamingContentRef.current = contentToUpdate;
+
+          setMessages((prevMessages) =>
+            prevMessages.map((msg) => {
+              if (msg.id === messageId && msg.content !== contentToUpdate) {
+                return {
+                  ...msg,
+                  content: contentToUpdate,
+                  updatedAt: new Date(),
+                  // Preserve citations during streaming
+                  citations: msg.citations || [],
+                };
+              }
+              return msg;
+            })
+          );
+        }
+      };
+
+      if (immediate) {
+        updateContent();
+      } else {
+        // Use requestAnimationFrame for smooth 60fps updates
+        updateDebounceRef.current = setTimeout(() => {
+          requestAnimationFrame(updateContent);
+        }, 16); // ~60fps
+      }
+    },
+    []
+  );
+
+  // IMPROVED: Clean up function for streaming
+  const cleanupStreaming = useCallback(() => {
+    if (streamingUpdateTimeoutRef.current) {
+      clearTimeout(streamingUpdateTimeoutRef.current);
+      streamingUpdateTimeoutRef.current = null;
+    }
+
+    if (updateDebounceRef.current) {
+      clearTimeout(updateDebounceRef.current);
+      updateDebounceRef.current = null;
+    }
+
+    // Reset all streaming state
+    streamingContentRef.current = '';
+    pendingContentRef.current = '';
+    accumulatedContentRef.current = '';
+    lastUpdateTimeRef.current = 0;
+    setIsGeneratingResponse(false);
+    setStreamingMessageId(null);
+  }, []);
+
+  // New streaming utility functions
+  const parseSSELine = (line: string): { event?: string; data?: any } | null => {
+    if (line.startsWith('event: ')) {
+      return { event: line.substring(7).trim() };
+    }
+    if (line.startsWith('data: ')) {
+      try {
+        const data = JSON.parse(line.substring(6).trim());
+        return { data };
+      } catch (e) {
+        console.warn('Failed to parse SSE data:', line);
+        return null;
+      }
+    }
+    return null;
+  };
+
+  const createStreamingController = (
+    reader: ReadableStreamDefaultReader<Uint8Array>
+  ): StreamingController => {
+    let aborted = false;
+
+    return {
+      abort: () => {
+        aborted = true;
+        reader.cancel().catch(console.error);
+      },
+    };
+  };
+
+
+  // Complete updated functions for ChatInterface component
+
+  // FIXED: Updated handleStreamingResponse with no hardcoded error messages
+  const handleStreamingResponse = async (
+    url: string,
+    body: any,
+    isNewConversation: boolean
+  ): Promise<void> => {
+    const requestId = `${Date.now()}-${Math.random()}`;
+    const conversationKey = currentConversationId || 'new';
+
+    setActiveRequestTracker({
+      current: requestId,
+      type: isNewConversation ? 'create' : 'continue',
+    });
+
+    setLoadingConversations((prev) => ({
+      ...prev,
+      [conversationKey]: true,
+    }));
+
+    // Reset error state when starting new request
+    setConversationErrors((prev) => ({
+      ...prev,
+      [conversationKey]: false,
+    }));
+
+    setIsGeneratingResponse(false);
+
+    const streamingBotMessageId = `streaming-${Date.now()}`;
+    setStreamingMessageId(streamingBotMessageId);
+
+    try {
+      const token = localStorage.getItem('jwt_access_token');
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(body),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error('Failed to get response reader');
+      }
+
+      const controller = createStreamingController(reader);
+      setStreamingController(controller);
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let currentEvent = '';
+      let finalConversation: Conversation | null = null;
+      let hasCreatedMessage = false;
+      let hasReceivedError = false;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmedLine = line.trim();
+          if (trimmedLine === '') continue;
+
+          const parsed = parseSSELine(trimmedLine);
+          if (!parsed) continue;
+
+          if (parsed.event) {
+            currentEvent = parsed.event;
+          } else if (parsed.data && currentEvent) {
+            const errorReceived = await handleStreamingEvent(currentEvent, parsed.data, {
+              streamingBotMessageId,
+              isNewConversation,
+              hasCreatedMessage,
+              onConversationComplete: (conversation: Conversation) => {
+                finalConversation = conversation;
+              },
+              onMessageCreated: () => (hasCreatedMessage = true),
+              onErrorReceived: () => (hasReceivedError = true),
+            });
+
+            if (errorReceived) {
+              hasReceivedError = true;
+            }
+          }
+        }
+      }
+
+      // Handle completion based on whether we received an error or not
+      if (finalConversation && !hasReceivedError) {
+        await handleStreamingComplete(finalConversation, isNewConversation, streamingBotMessageId);
+      } else if (hasReceivedError) {
+        // For error cases, just clean up - don't add additional error messages
+        cleanupStreaming();
+      }
+    } catch (error) {
+      console.error('Streaming connection error:', error);
+
+      // REMOVED: All hardcoded error message creation
+      // The streaming error events will handle showing appropriate error messages
+      // Only log the error for debugging purposes
+    } finally {
+      cleanupStreaming();
+      setStreamingController(null);
+      setStreamingMessageId(null);
+      setIsGeneratingResponse(false);
+      setLoadingConversations((prev) => ({
+        ...prev,
+        [conversationKey]: false,
+      }));
+
+      if (activeRequestTracker?.current === requestId) {
+        setActiveRequestTracker({
+          current: null,
+          type: null,
+        });
+      }
+    }
+  };
+
+  // FIXED: Updated handleStreamingEvent to accumulate error messages like answer_chunk
+  const handleStreamingEvent = async (
+    event: string,
+    data: any,
+    context: {
+      streamingBotMessageId: string;
+      isNewConversation: boolean;
+      hasCreatedMessage: boolean;
+      onConversationComplete: (conversation: Conversation) => void;
+      onMessageCreated: () => void;
+      onErrorReceived: () => void;
+    }
+  ): Promise<boolean> => {
+    const conversationKey = currentConversationId || 'new';
+
+    switch (event) {
+      case 'connected':
+        requestAnimationFrame(() => {
+          setConversationStatus((prev) => ({
+            ...prev,
+            [conversationKey]: '🔗 Connected successfully',
+          }));
+        });
+        return false;
+
+      case 'status':
+        {
+          const statusMessage = getEngagingStatusMessage(
+            data.message || data.status || 'Processing...',
+            data
+          );
+          requestAnimationFrame(() => {
+            setConversationStatus((prev) => ({
+              ...prev,
+              [conversationKey]: statusMessage,
+            }));
+          });
+        }
+        return false;
+
+      case 'query_decomposed':
+        requestAnimationFrame(() => {
+          setConversationStatus((prev) => ({
+            ...prev,
+            [conversationKey]: '🔍 Analyzing your request',
+          }));
+        });
+        return false;
+
+      case 'search_complete':
+        requestAnimationFrame(() => {
+          setConversationStatus((prev) => ({
+            ...prev,
+            [conversationKey]: `📚 Found ${data.results_count} relevant sources`,
+          }));
+        });
+        return false;
+
+      case 'results_ready':
+        requestAnimationFrame(() => {
+          setConversationStatus((prev) => ({
+            ...prev,
+            [conversationKey]: `📊 Processing ${data.total_results} sources`,
+          }));
+        });
+        return false;
+
+      case 'answer_chunk':
+        if (data.accumulated) {
+          setIsGeneratingResponse(true);
+
+          if (!context.hasCreatedMessage) {
+            const streamingBotMessage: FormattedMessage = {
+              type: 'bot',
+              content: data.accumulated,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+              id: context.streamingBotMessageId,
+              contentFormat: 'MARKDOWN',
+              followUpQuestions: [],
+              citations: data.citations || [],
+              confidence: '',
+              messageType: 'bot_response',
+              timestamp: new Date(),
+            };
+
+            setMessages((prev) => [...prev, streamingBotMessage]);
+            streamingContentRef.current = data.accumulated;
+            accumulatedContentRef.current = data.accumulated;
+            context.onMessageCreated();
+          } else {
+            smoothUpdateStreamingMessage(data.accumulated, context.streamingBotMessageId, false);
+
+            setMessages((prev) =>
+              prev.map((msg) => {
+                if (msg.id === context.streamingBotMessageId) {
+                  return {
+                    ...msg,
+                    citations: data.citations || msg.citations || [],
+                    updatedAt: new Date(),
+                  };
+                }
+                return msg;
+              })
+            );
+          }
+
+          requestAnimationFrame(() => {
+            setConversationStatus((prev) => ({
+              ...prev,
+              [conversationKey]: undefined,
+            }));
+          });
+        }
+        return false;
+
+      case 'complete':
+        requestAnimationFrame(() => {
+          setConversationStatus((prev) => ({
+            ...prev,
+            [conversationKey]: undefined,
+          }));
+        });
+
+        if (data.conversation) {
+          context.onConversationComplete(data.conversation);
+        }
+
+        setIsGeneratingResponse(false);
+        return false;
+
+      case 'error':
+        // FIXED: Accumulate error messages like answer_chunk instead of creating new messages
+        requestAnimationFrame(() => {
+          setConversationStatus((prev) => ({
+            ...prev,
+            [conversationKey]: undefined,
+          }));
+
+          // Mark that we've received an error for this conversation
+          setConversationErrors((prev) => ({
+            ...prev,
+            [conversationKey]: true,
+          }));
+        });
+
+        // Extract error message from different possible formats
+        const currentErrorMessage = data.message || data.error || 'An unexpected error occurred';
+
+        // FIXED: Accumulate errors instead of creating new messages each time
+        if (!context.hasCreatedMessage) {
+          // First error - create the error message
+          const errorMessage: FormattedMessage = {
+            type: 'bot',
+            content: currentErrorMessage,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            id: context.streamingBotMessageId,
+            contentFormat: 'MARKDOWN',
+            followUpQuestions: [],
+            citations: [],
+            confidence: '',
+            messageType: 'error',
+            timestamp: new Date(),
+          };
+
+          setMessages((prev) => [...prev, errorMessage]);
+          streamingContentRef.current = currentErrorMessage;
+          accumulatedContentRef.current = currentErrorMessage;
+          context.onMessageCreated();
+        } else {
+          // Subsequent errors - append to existing error message
+          const currentContent = accumulatedContentRef.current || '';
+          const accumulatedErrorContent = currentContent + '\n\n' + currentErrorMessage;
+
+          // Update the accumulated content
+          accumulatedContentRef.current = accumulatedErrorContent;
+          streamingContentRef.current = accumulatedErrorContent;
+
+          // Update the message with accumulated errors
+          setMessages((prev) =>
+            prev.map((msg) => {
+              if (msg.id === context.streamingBotMessageId) {
+                return {
+                  ...msg,
+                  content: accumulatedErrorContent,
+                  updatedAt: new Date(),
+                };
+              }
+              return msg;
+            })
+          );
+        }
+
+        context.onErrorReceived();
+        return true;
+
+      default:
+        console.log('Unknown event:', event, data);
+        return false;
+    }
+  };
+
+  // IMPROVED: Updated handleStreamingComplete with better final message handling
+  const handleStreamingComplete = async (
+    conversation: Conversation,
+    isNewConversation: boolean,
+    streamingBotMessageId: string
+  ): Promise<void> => {
+    cleanupStreaming();
+
+    const conversationKey = conversation._id;
+    requestAnimationFrame(() => {
+      setConversationStatus((prev) => ({
+        ...prev,
+        [conversationKey]: undefined,
+        new: undefined,
+      }));
+    });
+
+    if (isNewConversation) {
+      setSelectedChat(conversation);
+      setCurrentConversationId(conversation._id);
+      currentConversationIdRef.current = conversation._id;
+      setShouldRefreshSidebar(true);
+    }
+
+    const finalBotMessage = conversation.messages
+      .filter((msg: any) => msg.messageType === 'bot_response')
+      .pop();
+
+    if (finalBotMessage) {
+      const formattedFinalMessage = formatMessage(finalBotMessage);
+      if (formattedFinalMessage) {
+        requestAnimationFrame(() => {
+          setMessages((prev) =>
+            prev.map((msg) => {
+              if (msg.id === streamingBotMessageId) {
+                return {
+                  ...formattedFinalMessage,
+                  id: finalBotMessage._id,
+                };
+              }
+              return msg;
+            })
+          );
+
+          setExpandedCitations((prevStates) => {
+            const newStates = { ...prevStates };
+            setMessages((prevMessages) => {
+              const updatedIndex = prevMessages.findIndex((msg) => msg.id === finalBotMessage._id);
+              if (
+                updatedIndex !== -1 &&
+                formattedFinalMessage.citations &&
+                formattedFinalMessage.citations.length > 0
+              ) {
+                newStates[updatedIndex] = false;
+              }
+              return prevMessages;
+            });
+            return newStates;
+          });
+        });
+      }
+    }
+
+    setIsGeneratingResponse(false);
+  };
+
+  // FIX: Updated handleChatSelect to better handle conversation status
+  const handleChatSelect = useCallback(
+    async (chat: Conversation) => {
+      if (!chat?._id) return;
+
+      // Stop any ongoing streaming
+      if (streamingController) {
+        streamingController.abort();
+        cleanupStreaming();
+      }
+
+      try {
+        setShowWelcome(false);
+        setCurrentConversationId(chat._id);
+        currentConversationIdRef.current = chat._id;
+        navigate(`/${chat._id}`);
+        setIsLoadingConversation(true);
+
+        setActiveRequestTracker({ current: null, type: null });
+        setLoadingConversations({});
+        setConversationStatus({});
+        setConversationErrors({}); // FIX: Reset error state
+        setPendingResponseConversationId(null);
+        setIsGeneratingResponse(false);
+
+        setTimeout(() => {
+          setMessages([]);
+          setExpandedCitations({});
+          setOpenPdfView(false);
+        }, 0);
+
+        const response = await axios.get(`/api/v1/conversations/${chat._id}`);
+        const { conversation } = response.data;
+
+        if (!conversation || !Array.isArray(conversation.messages)) {
+          throw new Error('Invalid conversation data');
+        }
+
+        if (currentConversationIdRef.current === chat._id) {
+          // FIX: Handle conversation status properly based on actual status
+          if (conversation.status) {
+            if (conversation.status === 'Inprogress') {
+              setConversationStatus((prev) => ({
+                ...prev,
+                [chat._id]: 'Processing your request...',
+              }));
+            } else if (conversation.status === 'Failed') {
+              // FIX: Don't show processing indicator for failed conversations
+              setConversationStatus((prev) => ({
+                ...prev,
+                [chat._id]: undefined,
+              }));
+              setConversationErrors((prev) => ({
+                ...prev,
+                [chat._id]: true,
+              }));
+            } else {
+              // For completed conversations, clear status
+              setConversationStatus((prev) => ({
+                ...prev,
+                [chat._id]: undefined,
+              }));
+            }
+          }
+
+          setSelectedChat(conversation);
+
+          const formattedMessages = conversation.messages
+            .map(formatMessage)
+            .filter(Boolean) as FormattedMessage[];
+
+          const citationStates: ExpandedCitationsState = {};
+          formattedMessages.forEach((msg, idx) => {
+            if (msg.type === 'bot' && msg.citations && msg.citations.length > 0) {
+              citationStates[idx] = false;
+            }
+          });
+
+          setMessages(formattedMessages);
+          setExpandedCitations(citationStates);
+        }
+      } catch (error) {
+        console.error('Error loading conversation:', error);
+        setSelectedChat(null);
+        setCurrentConversationId(null);
+        currentConversationIdRef.current = null;
+        setMessages([]);
+        setExpandedCitations({});
+      } finally {
+        setIsLoadingConversation(false);
+      }
+    },
+    [formatMessage, navigate, streamingController, cleanupStreaming]
+  );
+
+  // Rest of your existing functions remain exactly the same...
+  const handleSendMessage = useCallback(
+    async (messageOverride?: string): Promise<void> => {
+      let trimmedInput = '';
+
+      if (typeof messageOverride === 'string') {
+        trimmedInput = messageOverride.trim();
+      } else {
+        trimmedInput = inputValue.trim();
+      }
+
+      if (!trimmedInput) return;
+
+      // Stop any ongoing streaming
+      if (streamingController) {
+        streamingController.abort();
+        cleanupStreaming();
+      }
+
+      const wasCreatingNewConversation = currentConversationId === null;
+
+      const tempUserMessage: FormattedMessage = {
+        type: 'user',
+        content: trimmedInput,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        id: `temp-${Date.now()}`,
+        contentFormat: 'MARKDOWN',
+        followUpQuestions: [],
+        citations: [],
+        feedback: [],
+        messageType: 'user_query',
+        timestamp: new Date(),
+      };
+
+      // Clear input and add user message
+      if (typeof messageOverride === 'string' && showWelcome) {
+        setShowWelcome(false);
+      }
+
+      setInputValue('');
+      setMessages((prev) => [...prev, tempUserMessage]);
+
+      // Determine streaming URL and body based on your API format
+      let streamingUrl: string;
+      let requestBody: any;
+
+      if (wasCreatingNewConversation) {
+        streamingUrl = `${CONFIG.backendUrl}/api/v1/conversations/stream`;
+        requestBody = { query: trimmedInput };
+      } else {
+        streamingUrl = `${CONFIG.backendUrl}/api/v1/conversations/${currentConversationId}/messages/stream`;
+        requestBody = { query: trimmedInput };
+      }
+
+      await handleStreamingResponse(streamingUrl, requestBody, wasCreatingNewConversation);
+    },
+    [
+      inputValue,
+      currentConversationId,
+      showWelcome,
+      streamingController,
+      handleStreamingResponse,
+      cleanupStreaming,
+    ]
+  );
+
+  // Keep ALL existing utility functions exactly as they are
   const resetViewerStates = () => {
     setTransitioning(true);
     setIsViewerReady(false);
     setPdfUrl(null);
     setFileBuffer(null);
     setHighlightedCitation(null);
-    // Delay clearing other states to ensure clean unmount
     setTimeout(() => {
       setOpenPdfView(false);
       setIsExcel(false);
@@ -247,19 +1025,14 @@ const ChatInterface = () => {
     }
   };
 
+  // Keep all existing onViewPdf, onClosePdf, toggleCitations functions exactly the same
   const onViewPdf = async (
     url: string,
     citation: CustomCitation,
     citations: CustomCitation[],
-    isExcelFile: boolean = false,
+    isExcelFile = false,
     bufferData?: ArrayBuffer
   ): Promise<void> => {
-    // setAggregatedCitations(citations);
-    // setPdfUrl(url);
-    // setOpenPdfView(true);
-    // console.log(aggregatedCitations);
-    // setShowQuestionDetails(true);
-    // // setDrawerOpen(false);
     const citationMeta = citation.metadata;
     setTransitioning(true);
     setIsViewerReady(false);
@@ -269,12 +1042,14 @@ const ChatInterface = () => {
     setFileBuffer(null);
     setPdfUrl(null);
     setHighlightedCitation(citation || null);
+
     try {
       const recordId = citationMeta?.recordId;
       const response = await axios.get(`/api/v1/knowledgebase/record/${recordId}`);
       const { record } = response.data;
       const { externalRecordId } = record;
       const fileName = record.recordName;
+
       if (record.origin === ORIGIN.UPLOAD) {
         try {
           const downloadResponse = await axios.get(
@@ -282,7 +1057,6 @@ const ChatInterface = () => {
             { responseType: 'blob' }
           );
 
-          // Read the blob response as text to check if it's JSON with signedUrl
           const reader = new FileReader();
           const textPromise = new Promise<string>((resolve) => {
             reader.onload = () => {
@@ -303,13 +1077,11 @@ const ChatInterface = () => {
           }
 
           try {
-            // Try to parse as JSON to check for signedUrl property
             const jsonData = JSON.parse(text);
             if (jsonData && jsonData.signedUrl) {
               setPdfUrl(jsonData.signedUrl);
             }
           } catch (e) {
-            // Case 2: Local storage - Return buffer
             const bufferReader = new FileReader();
             const arrayBufferPromise = new Promise<ArrayBuffer>((resolve) => {
               bufferReader.onload = () => {
@@ -320,27 +1092,20 @@ const ChatInterface = () => {
 
             const buffer = await arrayBufferPromise;
             setFileBuffer(buffer);
-            // if (['pptx', 'ppt'].includes(citationMeta?.extension)) {
-
-            // }
           }
         } catch (error) {
           console.error('Error downloading document:', error);
           setSnackbar({
             open: true,
-            // Provide a clear message about what's happening
             message: 'Failed to load preview. Redirecting to the original document shortly...',
-            severity: 'info', // Use 'info' or 'warning' for redirection notice
+            severity: 'info',
           });
           let webUrl = record.fileRecord?.webUrl || record.mailRecord?.webUrl;
 
-          // Keep the URL fix logic (though less likely needed for non-UPLOAD here, better safe)
           if (record.origin === 'UPLOAD' && webUrl && !webUrl.startsWith('http')) {
             const baseUrl = `${window.location.protocol}//${window.location.host}`;
             webUrl = baseUrl + webUrl;
           }
-
-          console.log(`Attempting to redirect to webUrl: ${webUrl}`);
 
           setTimeout(() => {
             onClosePdf();
@@ -350,7 +1115,6 @@ const ChatInterface = () => {
             if (webUrl) {
               try {
                 window.open(webUrl, '_blank', 'noopener,noreferrer');
-                console.log('Opened document in new tab');
               } catch (openError) {
                 console.error('Error opening new tab:', openError);
                 setSnackbar({
@@ -402,7 +1166,7 @@ const ChatInterface = () => {
             );
           }
           if (!connectorResponse) return;
-          // Extract filename from content-disposition header
+
           let filename = record.recordName || `document-${recordId}`;
           const contentDisposition = connectorResponse.headers['content-disposition'];
           if (contentDisposition) {
@@ -412,11 +1176,9 @@ const ChatInterface = () => {
             }
           }
 
-          // Convert blob directly to ArrayBuffer
           const bufferReader = new FileReader();
           const arrayBufferPromise = new Promise<ArrayBuffer>((resolve, reject) => {
             bufferReader.onload = () => {
-              // Create a copy of the buffer to prevent detachment issues
               const originalBuffer = bufferReader.result as ArrayBuffer;
               const bufferCopy = originalBuffer.slice(0);
               resolve(bufferCopy);
@@ -433,19 +1195,15 @@ const ChatInterface = () => {
           console.error('Error downloading document:', err);
           setSnackbar({
             open: true,
-            // Provide a clear message about what's happening
             message: 'Failed to load preview. Redirecting to the original document shortly...',
-            severity: 'info', // Use 'info' or 'warning' for redirection notice
+            severity: 'info',
           });
           let webUrl = record.fileRecord?.webUrl || record.mailRecord?.webUrl;
 
-          // Keep the URL fix logic (though less likely needed for non-UPLOAD here, better safe)
           if (record.origin === 'UPLOAD' && webUrl && !webUrl.startsWith('http')) {
             const baseUrl = `${window.location.protocol}//${window.location.host}`;
             webUrl = baseUrl + webUrl;
           }
-
-          console.log(`Attempting to redirect to webUrl: ${webUrl}`);
 
           setTimeout(() => {
             onClosePdf();
@@ -455,7 +1213,6 @@ const ChatInterface = () => {
             if (webUrl) {
               try {
                 window.open(webUrl, '_blank', 'noopener,noreferrer');
-                console.log('Opened document in new tab');
               } catch (openError) {
                 console.error('Error opening new tab:', openError);
                 setSnackbar({
@@ -479,16 +1236,12 @@ const ChatInterface = () => {
       }
     } catch (err) {
       console.error('Failed to fetch document:', err);
-      // setSnackbar({
-      //   open: true,
-      //   message: err.message.includes('fetch failed') ? 'Failed to fetch document' : err.message,
-      //   severity: 'error',
-      // });
       setTimeout(() => {
         onClosePdf();
       }, 500);
       return;
     }
+
     setTransitioning(true);
     setDrawerOpen(false);
     setOpenPdfView(true);
@@ -500,7 +1253,6 @@ const ChatInterface = () => {
     setIsExcel(isExcelOrCSV);
     setIsPdf(['pptx', 'ppt', 'pdf'].includes(citationMeta?.extension));
 
-    // Allow component to mount
     setTimeout(() => {
       setIsViewerReady(true);
       setTransitioning(false);
@@ -508,20 +1260,11 @@ const ChatInterface = () => {
   };
 
   const onClosePdf = (): void => {
-    // setOpenPdfView(false);
-    // setIsExcel(false);
-    // setShowQuestionDetails(false);
-
-    // setTimeout(() => {
-    //   setPdfUrl(null);
-    //   setAggregatedCitations([]);
-    // }, 50); // Match this with your transition duration
     resetViewerStates();
     setFileBuffer(null);
     setHighlightedCitation(null);
   };
 
-  // Also update the toggleCitations function to handle citation state more explicitly
   const toggleCitations = useCallback((index: number): void => {
     setExpandedCitations((prev) => {
       const newState = { ...prev };
@@ -533,214 +1276,37 @@ const ChatInterface = () => {
   const MemoizedChatMessagesArea = React.memo(ChatMessagesArea);
   const MemoizedWelcomeMessage = React.memo(WelcomeMessage);
 
-  // Handle new chat creation
   const handleNewChat = useCallback((): void => {
-    // First apply the critical state changes that would affect routing
+    // Stop any ongoing streaming
+    if (streamingController) {
+      streamingController.abort();
+      cleanupStreaming();
+    }
+
     setPendingResponseConversationId(null);
     setActiveRequestTracker({ current: null, type: null });
     currentConversationIdRef.current = null;
     setCurrentConversationId(null);
     navigate('/');
 
-    // Then use setTimeout to delay non-critical UI updates
-    // This helps prevent multiple rapid state changes causing flickering
     setTimeout(() => {
       setMessages([]);
       setInputValue('');
       setExpandedCitations({});
       setShouldRefreshSidebar(true);
       setConversationStatus({});
+      setConversationErrors({}); // FIX: Reset error state
       setShowWelcome(true);
       setLoadingConversations({});
       setIsLoadingConversation(false);
       setSelectedChat(null);
       setFileBuffer(null);
       setOpenPdfView(false);
+      setIsGeneratingResponse(false);
     }, 0);
-  }, [navigate]);
+  }, [navigate, streamingController, cleanupStreaming]);
 
-  const handleSendMessage = useCallback(
-    async (messageOverride?: string): Promise<void> => {
-      let trimmedInput = '';
-
-      if (typeof messageOverride === 'string') {
-        // Message is coming from WelcomeMessage or a direct call
-        trimmedInput = messageOverride.trim();
-      } else {
-        // Message is coming from the regular ChatInput
-        trimmedInput = inputValue.trim();
-      }
-      if (!trimmedInput) return;
-      const conversationKey = currentConversationId || 'new';
-      const requestConversationId = currentConversationId;
-      const wasCreatingNewConversation = currentConversationId === null;
-
-      // Track this request as active
-      const requestId = `${Date.now()}-${Math.random()}`;
-      setActiveRequestTracker({
-        current: requestId,
-        type: currentConversationId ? 'continue' : 'create',
-      });
-
-      setLoadingConversations((prev) => ({
-        ...prev,
-        [conversationKey]: true,
-      }));
-
-      const tempUserMessage = {
-        type: 'user',
-        content: trimmedInput,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        id: `temp-${Date.now()}`,
-        contentFormat: 'MARKDOWN',
-        followUpQuestions: [],
-        citations: [],
-        feedback: [],
-        messageType: 'user_query',
-        timestamp: new Date(),
-      };
-      // Clear input based on source
-      if (typeof messageOverride === 'string' && showWelcome) {
-        // This was the first message from WelcomeScreen
-        setShowWelcome(false);
-        // The WelcomeMessage's internal TextInput clears itself.
-      }
-      try {
-        setInputValue('');
-        setMessages((prev) => [...prev, tempUserMessage]);
-        const messageToSend = trimmedInput;
-
-        let response;
-        let conversation: any;
-
-        if (!currentConversationId) {
-          // Create new conversation
-          response = await axios.post<{ conversation: Conversation }>(
-            '/api/v1/conversations/create',
-            {
-              query: messageToSend,
-            }
-          );
-
-          if (!response?.data?.conversation) {
-            throw new Error('Invalid response format');
-          }
-
-          conversation = response.data.conversation;
-          const convId = conversation._id;
-
-          // FIXED: Remove the confusing duplicate checks and set state immediately
-          if (wasCreatingNewConversation) {
-            setSelectedChat(conversation);
-            setCurrentConversationId(convId);
-            currentConversationIdRef.current = convId;
-            setShouldRefreshSidebar(true);
-            // navigate(`/${convId}`);
-
-            if (conversation.status) {
-              setConversationStatus((prev) => ({
-                ...prev,
-                [convId]: conversation.status,
-              }));
-            }
-
-            // If conversation is already complete, update messages immediately
-            if (conversation.status === 'Complete') {
-              const allMessages = conversation.messages
-                .map(formatMessage)
-                .filter(Boolean) as FormattedMessage[];
-
-              setMessages(allMessages);
-            }
-          }
-        } else {
-          // Continue existing conversation
-          response = await axios.post<{ conversation: Conversation }>(
-            `/api/v1/conversations/${currentConversationId}/messages`,
-            { query: messageToSend }
-          );
-
-          if (!response?.data?.conversation?.messages) {
-            throw new Error('Invalid response format');
-          }
-
-          conversation = response.data.conversation;
-          const responseConversationId = conversation._id;
-
-          // FIXED: Simplified condition - just check if we're still on the same conversation
-          if (
-            currentConversationIdRef.current === responseConversationId &&
-            currentConversationId === responseConversationId
-          ) {
-            if (conversation.status) {
-              setConversationStatus((prev) => ({
-                ...prev,
-                [responseConversationId]: conversation.status,
-              }));
-            }
-
-            // If conversation is complete, update messages immediately
-            if (conversation.status === 'Complete') {
-              const allMessages = conversation.messages
-                .map(formatMessage)
-                .filter(Boolean) as FormattedMessage[];
-
-              setMessages(allMessages);
-            }
-          }
-        }
-      } catch (error) {
-        console.error('Error:', error);
-
-        // Only show error if this request is still active
-        if (
-          (requestConversationId === currentConversationId &&
-            requestConversationId === currentConversationIdRef.current) ||
-          (wasCreatingNewConversation && !currentConversationId)
-        ) {
-          const errorMessage: FormattedMessage = {
-            type: 'bot',
-            content: 'Sorry, I encountered an error processing your request.',
-            createdAt: new Date(),
-            updatedAt: new Date(),
-            id: `error-${Date.now()}`,
-            contentFormat: 'MARKDOWN',
-            followUpQuestions: [],
-            citations: [],
-            confidence: '',
-            messageType: 'bot_response',
-            timestamp: new Date(),
-          };
-
-          setMessages((prev) => [...prev, errorMessage]);
-          if (wasCreatingNewConversation && !currentConversationId) {
-            // User was trying to create a new conversation and it failed
-            // No need to navigate away, just stay in the "new conversation" state
-            setCurrentConversationId(null);
-            currentConversationIdRef.current = null;
-          }
-        }
-      } finally {
-        // Clear loading states
-        setLoadingConversations((prev) => ({
-          ...prev,
-          [conversationKey]: false,
-        }));
-
-        // Clear active request tracker if this was the active request
-        if (activeRequestTracker?.current === requestId) {
-          setActiveRequestTracker({
-            current: null,
-            type: null,
-          });
-        }
-      }
-    },
-    [inputValue, currentConversationId, formatMessage, activeRequestTracker, showWelcome]
-  );
-
-  // Update handleRegenerateMessage
+  // Keep existing handleRegenerateMessage (using non-streaming API)
   const handleRegenerateMessage = useCallback(
     async (messageId: string): Promise<void> => {
       if (!currentConversationId || !messageId) return;
@@ -756,48 +1322,39 @@ const ChatInterface = () => {
           throw new Error('Invalid response format');
         }
 
-        // Format all messages from response
         const allMessages = response.data.conversation.messages
           .map(formatMessage)
           .filter(Boolean) as FormattedMessage[];
 
-        // Find the regenerated message - it should be the last bot message
         const regeneratedMessage = allMessages.filter((msg) => msg.type === 'bot').pop();
 
         if (!regeneratedMessage) {
           throw new Error('No regenerated message found in response');
         }
 
-        // Update messages by replacing only the regenerated message while keeping all others
         setMessages((prevMessages) =>
           prevMessages.map((msg) => {
-            // Only replace the message that was regenerated
             if (msg.id === messageId) {
               return {
                 ...regeneratedMessage,
-                // Keep any existing metadata/state that shouldn't be changed
-                createdAt: msg.createdAt, // Preserve original timestamp to maintain order
+                createdAt: msg.createdAt,
               };
             }
             return msg;
           })
         );
 
-        // Update citation states
         setExpandedCitations((prevStates) => {
           const newStates = { ...prevStates };
           const messageIndex = messages.findIndex((msg) => msg.id === messageId);
           if (messageIndex !== -1) {
-            // Safely check citations array existence and length
             const hasCitations =
               regeneratedMessage.citations && regeneratedMessage.citations.length > 0;
-            // Preserve existing citation state or initialize to false
             newStates[messageIndex] = hasCitations ? prevStates[messageIndex] || false : false;
           }
           return newStates;
         });
       } catch (error) {
-        // Show error in place of regenerated message while preserving others
         setMessages((prevMessages) =>
           prevMessages.map((msg) =>
             msg.id === messageId
@@ -816,86 +1373,10 @@ const ChatInterface = () => {
     [currentConversationId, formatMessage, messages]
   );
 
-  const handleChatSelect = useCallback(
-    async (chat: Conversation) => {
-      if (!chat?._id) return;
-
-      try {
-        // Critical state changes first
-        setShowWelcome(false);
-        setCurrentConversationId(chat._id);
-        currentConversationIdRef.current = chat._id;
-        navigate(`/${chat._id}`);
-        setIsLoadingConversation(true);
-
-        // Clear other states
-        setActiveRequestTracker({ current: null, type: null });
-        setLoadingConversations({});
-        setConversationStatus({});
-        setPendingResponseConversationId(null);
-
-        // Reset UI state with slight delay
-        setTimeout(() => {
-          setMessages([]);
-          setExpandedCitations({});
-          setOpenPdfView(false);
-        }, 0);
-
-        // Get conversation details
-        const response = await axios.get(`/api/v1/conversations/${chat._id}`);
-        const { conversation } = response.data;
-
-        if (!conversation || !Array.isArray(conversation.messages)) {
-          throw new Error('Invalid conversation data');
-        }
-
-        // Only proceed if we're still viewing this conversation
-        if (currentConversationIdRef.current === chat._id) {
-          if (conversation.status) {
-            setConversationStatus((prev) => ({
-              ...prev,
-              [chat._id]: conversation.status,
-            }));
-          }
-
-          // Set complete conversation data
-          setSelectedChat(conversation);
-
-          // Format messages and preserve full data structure
-          const formattedMessages = conversation.messages
-            .map(formatMessage)
-            .filter(Boolean) as FormattedMessage[];
-
-          // Initialize citation states for all bot messages with citations
-          const citationStates: ExpandedCitationsState = {};
-          formattedMessages.forEach((msg, idx) => {
-            if (msg.type === 'bot' && msg.citations && msg.citations.length > 0) {
-              citationStates[idx] = false;
-            }
-          });
-
-          setMessages(formattedMessages);
-          setExpandedCitations(citationStates);
-        }
-      } catch (error) {
-        console.error('Error loading conversation:', error);
-        setSelectedChat(null);
-        setCurrentConversationId(null);
-        currentConversationIdRef.current = null;
-        setMessages([]);
-        setExpandedCitations({});
-      } finally {
-        setIsLoadingConversation(false);
-      }
-    },
-    [formatMessage, navigate]
-  );
-
   const handleSidebarRefreshComplete = useCallback(() => {
     setShouldRefreshSidebar(false);
   }, []);
 
-  // Handle feedback submission
   const handleFeedbackSubmit = useCallback(
     async (messageId: string, feedback: any) => {
       if (!currentConversationId || !messageId) return;
@@ -933,81 +1414,30 @@ const ChatInterface = () => {
     []
   );
 
-  // const nputChange = (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-  //   // Make sure you are using event.target.value directly
-  //   // without any reversal logic.
-  //   console.log(event);
-  //   setInputValue(event.target.value);
-  // };
-
   useEffect(() => {
     if (conversationId && conversationId !== currentConversationId) {
       handleChatSelect({ _id: conversationId } as Conversation);
     }
   }, [conversationId, handleChatSelect, currentConversationId]);
 
-  // Add this useEffect to check conversation status periodically
-  useEffect(() => {
-    let intervalId: NodeJS.Timeout | null = null;
-
-    const checkConversationStatus = async () => {
-      const inProgressConversations = Object.entries(conversationStatus)
-        .filter(([_, status]) => status === 'Inprogress')
-        .map(([id]) => id);
-
-      if (inProgressConversations.length > 0) {
-        const promises = inProgressConversations.map(async (convId) => {
-          try {
-            // Capture the current conversation ID at the start of this request
-            const currentId = currentConversationIdRef.current;
-
-            const response = await axios.get(`/api/v1/conversations/${convId}`);
-            const { conversation } = response.data;
-
-            if (conversation?.status) {
-              setConversationStatus((prev) => ({
-                ...prev,
-                [convId]: conversation.status,
-              }));
-
-              // Handle when conversation becomes complete
-              if (conversation.status === 'Complete') {
-                // Triple check: the conversation ID must match what we captured initially,
-                // what's currently in the ref, and the state
-                if (
-                  convId === currentId &&
-                  convId === currentConversationIdRef.current &&
-                  convId === currentConversationId
-                ) {
-                  const formattedMessages = conversation.messages
-                    .map(formatMessage)
-                    .filter(Boolean) as FormattedMessage[];
-
-                  setMessages(formattedMessages);
-                }
-              }
-            }
-          } catch (error) {
-            console.error(`Failed to check status for conversation ${convId}:`, error);
-          }
-        });
-
-        // Wait for all checks to complete
-        await Promise.all(promises);
+  // IMPROVED: Updated cleanup in useEffect with better cleanup
+  useEffect(
+    () => () => {
+      if (streamingController) {
+        streamingController.abort();
       }
-    };
+      cleanupStreaming();
+    },
+    [streamingController, cleanupStreaming]
+  );
 
-    // Check every 3 seconds if there are any 'Inprogress' conversations
-    if (Object.values(conversationStatus).includes('Inprogress')) {
-      intervalId = setInterval(checkConversationStatus, 3000);
-    }
-
-    return () => {
-      if (intervalId) {
-        clearInterval(intervalId);
-      }
-    };
-  }, [conversationStatus, currentConversationId, formatMessage]);
+  // IMPROVED: Clean up when component unmounts or conversation changes
+  useEffect(
+    () => () => {
+      cleanupStreaming();
+    },
+    [currentConversationId, cleanupStreaming]
+  );
 
   return (
     <Box
@@ -1074,28 +1504,23 @@ const ChatInterface = () => {
         >
           {showWelcome ? (
             <MemoizedWelcomeMessage
-              key="welcome-screen" // Key helps React manage this component better
+              key="welcome-screen"
               onSubmit={(message: string) => handleSendMessage(message)}
-              isLoading={isLoading}
+              isLoading={Boolean(streamingMessageId)}
             />
           ) : (
             <>
               <MemoizedChatMessagesArea
-                key={`chat-area-${currentConversationId || 'new'}`} // Key based on conversation ID
+                key={`chat-area-${currentConversationId || 'new'}`}
                 messages={messages}
-                isLoading={isCurrentConversationLoading() || isCurrentConversationThinking()}
-                expandedCitations={expandedCitations}
-                onToggleCitations={toggleCitations}
+                isLoading={isCurrentConversationLoading() || Boolean(streamingMessageId)}
                 onRegenerateMessage={handleRegenerateMessage}
                 onFeedbackSubmit={handleFeedbackSubmit}
                 conversationId={currentConversationId}
                 isLoadingConversation={isLoadingConversation}
                 onViewPdf={onViewPdf}
-                // Add these new props:
-                // inputValue={inputValue}
-                // onInputChange={handleInputChange}
-                // onSubmit={handleSendMessage}
-                // showWelcome={showWelcome}
+                currentStatus={conversationStatus[currentConversationId || 'new']}
+                hasConversationError={conversationErrors[currentConversationId || 'new']}
               />
 
               <Box
@@ -1114,19 +1539,13 @@ const ChatInterface = () => {
                   borderRadius: 2,
                 }}
               >
-                <ChatInput
-                  // value={inputValue}
-                  // onChange={handleInputChange}
-                  onSubmit={handleSendMessage}
-                  isLoading={isCurrentConversationLoading()}
-                />
+                <ChatInput onSubmit={handleSendMessage} isLoading={Boolean(streamingMessageId)} />
               </Box>
             </>
           )}
         </Box>
 
-        {/* PDF Viewer */}
-        {/* PDF Viewer */}
+        {/* PDF Viewer remains the same */}
         {openPdfView && (
           <Box
             sx={{
@@ -1158,11 +1577,9 @@ const ChatInterface = () => {
               </Box>
             )}
 
-            {/* Render viewer with citations */}
             {isViewerReady &&
               (pdfUrl || fileBuffer) &&
               aggregatedCitations &&
-              // !transitioning &&
               (isExcel ? (
                 <ExcelViewer
                   key="excel-viewer"
@@ -1223,13 +1640,6 @@ const ChatInterface = () => {
                   onClosePdf={onClosePdf}
                 />
               ))}
-            {/* <StyledCloseButton
-              onClick={onClosePdf}
-              startIcon={<Icon icon={closeIcon} />}
-              size="small"
-            >
-              Close
-            </StyledCloseButton> */}
           </Box>
         )}
       </Box>

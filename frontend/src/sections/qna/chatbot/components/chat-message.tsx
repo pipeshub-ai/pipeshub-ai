@@ -13,7 +13,7 @@ import robotIcon from '@iconify-icons/mdi/robot-outline';
 import rightIcon from '@iconify-icons/mdi/chevron-right';
 import accountIcon from '@iconify-icons/mdi/account-outline';
 import fileDocIcon from '@iconify-icons/mdi/file-document-outline';
-import React, { useRef, useMemo, useState, useCallback } from 'react';
+import React, { useRef, useMemo, useState, useCallback, Fragment } from 'react';
 
 import {
   Box,
@@ -91,38 +91,42 @@ const MessageContent: React.FC<MessageContentProps> = ({
   aggregatedCitations,
   onViewPdf,
 }) => {
-  // We track the hovered citation by a unique identifier: "lineIndex-partIndex"
   const [hoveredCitationId, setHoveredCitationId] = useState<string | null>(null);
   const [hoveredRecordCitations, setHoveredRecordCitations] = useState<CustomCitation[]>([]);
   const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-
-  // Create a map of refs for each citation number
-  const citationRefs = useRef<{ [key: string]: HTMLElement | null }>({});
-
-  // Current citation data
   const [hoveredCitation, setHoveredCitation] = useState<CustomCitation | null>(null);
 
-  // Create a mapping from citation number to the actual citation object
+  const [popperAnchor, setPopperAnchor] = useState<null | {
+    getBoundingClientRect: () => DOMRect;
+  }>(null);
+
   const citationNumberMap = useMemo(() => {
     const result: { [key: number]: CustomCitation } = {};
-
     citations.forEach((citation) => {
       if (citation && citation.chunkIndex && !result[citation.chunkIndex]) {
         result[citation.chunkIndex] = citation;
       }
     });
-
     return result;
   }, [citations]);
 
-  // Split content by newlines first
-  const lines = useMemo(() => content.split('\n'), [content]);
+  const handleMouseEnter = useCallback(
+    (event: React.MouseEvent, citationRef: string, citationId: string) => {
+      if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
 
-  const handleCitationInteraction = useCallback(
-    (citationRef: string, citationId: string) => {
-      if (hoverTimeoutRef.current) {
-        clearTimeout(hoverTimeoutRef.current);
-      }
+      setPopperAnchor({
+        getBoundingClientRect: () => ({
+          width: 0,
+          height: 0,
+          top: event.clientY,
+          right: event.clientX,
+          bottom: event.clientY,
+          left: event.clientX,
+          x: event.clientX,
+          y: event.clientY,
+          toJSON: () => '',
+        }),
+      });
 
       const citationNumber = parseInt(citationRef.replace(/[[\]]/g, ''), 10);
       const citation = citationNumberMap[citationNumber];
@@ -139,364 +143,252 @@ const MessageContent: React.FC<MessageContentProps> = ({
     [citationNumberMap, aggregatedCitations]
   );
 
-  const handleMouseEnter = useCallback(
-    (citationRef: string, citationId: string) => {
-      handleCitationInteraction(citationRef, citationId);
-    },
-    [handleCitationInteraction]
-  );
-
-  const handleMouseLeave = useCallback(() => {
-    hoverTimeoutRef.current = setTimeout(() => {
-      setHoveredCitationId(null);
-      setHoveredRecordCitations([]);
-      setHoveredCitation(null);
-    }, 300); // Increased from 100ms to 300ms for smoother hover
-  }, []);
-
-  const handleHoverCardMouseEnter = useCallback(() => {
-    if (hoverTimeoutRef.current) {
-      clearTimeout(hoverTimeoutRef.current);
-    }
-  }, []);
-
   const handleCloseHoverCard = useCallback(() => {
     setHoveredCitationId(null);
     setHoveredRecordCitations([]);
     setHoveredCitation(null);
+    setPopperAnchor(null);
+  }, []);
+
+  const handleMouseLeave = useCallback(() => {
+    hoverTimeoutRef.current = setTimeout(() => {
+      handleCloseHoverCard();
+    }, 300);
+  }, [handleCloseHoverCard]);
+
+  const handleHoverCardMouseEnter = useCallback(() => {
+    if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
   }, []);
 
   const handleClick = useCallback(
-    (citationRef: string, citationId: string, event: React.MouseEvent) => {
-      // Prevent any parent click handlers from firing
+    (event: React.MouseEvent, citationRef: string) => {
       event.stopPropagation();
-      console.log('citation clicked');
 
-      // Get the citation number and citation object
       const citationNumber = parseInt(citationRef.replace(/[[\]]/g, ''), 10);
       const citation = citationNumberMap[citationNumber];
 
-      if (citation) {
-        let recordCitationsForDoc: CustomCitation[] = [];
-
-        if (citation.metadata?.recordId) {
+      if (citation?.metadata?.recordId) {
+        try {
           const recordCitations = aggregatedCitations[citation.metadata.recordId] || [];
-          recordCitationsForDoc = recordCitations;
-          setHoveredRecordCitations(recordCitations);
+          const isExcelOrCSV = ['csv', 'xlsx', 'xls'].includes(citation.metadata?.extension);
+          onViewPdf('', citation, recordCitations, isExcelOrCSV);
+        } catch (err) {
+          console.error('Failed to fetch document:', err);
         }
-        setHoveredCitation(citation);
-        setHoveredCitationId(citationId);
-
-        // Open the document if it's a PDF, Excel, or CSV
-        if (citation.metadata?.recordId) {
-          try {
-            const isExcelOrCSV = ['csv', 'xlsx', 'xls'].includes(citation.metadata?.extension);
-            onViewPdf('', citation, recordCitationsForDoc, isExcelOrCSV);
-          } catch (err) {
-            console.error('Failed to fetch document:', err);
-          }
-        }
-        console.log(recordCitationsForDoc);
       }
-
-      // Toggle the hover card
-      if (hoveredCitationId === citationId) {
-        handleCloseHoverCard();
-      }
+      handleCloseHoverCard();
     },
-    [hoveredCitationId, citationNumberMap, aggregatedCitations, onViewPdf, handleCloseHoverCard]
+    [citationNumberMap, aggregatedCitations, onViewPdf, handleCloseHoverCard]
   );
 
-  // Render line with markdown and citations
-  const renderLineWithMarkdown = (line: string, lineIndex: number) => {
-    // Split the line by citation pattern
-    const parts = line.split(/(\[\d+\])/);
+  const renderContentPart = (part: string, index: number) => {
+    const citationMatch = part.match(/\[(\d+)\]/);
+    if (citationMatch) {
+      const citationNumber = parseInt(citationMatch[1], 10);
+      const citation = citationNumberMap[citationNumber];
+      const citationId = `citation-${citationNumber}-${index}`;
 
-    return (
-      <Box
-        key={lineIndex}
-        sx={{
-          mb: lineIndex < lines.length - 1 ? 2 : 0,
-          opacity: 1,
-          animation: lineIndex > 0 ? 'fadeIn 0.3s ease-in-out' : 'none',
-          '@keyframes fadeIn': {
-            from: { opacity: 0.7 },
-            to: { opacity: 1 },
-          },
-        }}
-      >
-        {parts.map((part, partIndex) => {
-          // Check if this part is a citation
-          const citationMatch = part.match(/\[(\d+)\]/);
-          if (citationMatch) {
-            const citationNumber = parseInt(citationMatch[1], 10);
-            const citation = citationNumberMap[citationNumber];
-            const citationId = `${lineIndex}-${partIndex}`;
-            if (!citation) return null;
-            return (
-              <Box
-                component="span"
-                onMouseEnter={() => handleMouseEnter(part, citationId)}
-                onClick={(e) => handleClick(part, citationId, e)}
-                onMouseLeave={handleMouseLeave}
-                sx={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  ml: 0.5,
-                  mr: 0.25,
-                  cursor: 'pointer',
-                  position: 'relative',
-                  '&:hover': {
-                    '& .citation-number': {
-                      transform: 'scale(1.15) translateY(-1px)',
-                      bgcolor: 'primary.main',
-                      color: 'white',
-                      boxShadow: '0 3px 8px rgba(25, 118, 210, 0.3)',
-                    },
-                  },
-                  // Add invisible hit area for smoother hover
-                  '&::after': {
-                    content: '""',
-                    position: 'absolute',
-                    top: -8,
-                    right: -8,
-                    bottom: -8,
-                    left: -8,
-                    zIndex: -1,
-                  },
-                }}
-              >
-                <Box
-                  component="span"
-                  className={`citation-number citation-number-${citationId}`}
-                  ref={(el: any) => {
-                    citationRefs.current[citationId] = el;
-                  }}
-                  sx={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    width: '18px',
-                    height: '18px',
-                    borderRadius: '50%',
-                    bgcolor: 'rgba(25, 118, 210, 0.08)',
-                    color: 'primary.main',
-                    fontSize: '0.65rem',
-                    fontWeight: 600,
-                    transition: 'all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)',
-                    textDecoration: 'none',
-                    boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
-                    border: '1px solid',
-                    borderColor: 'rgba(25, 118, 210, 0.12)',
-                  }}
-                >
-                  {citationNumber}
-                </Box>
-              </Box>
-            );
-          }
+      if (!citation) return <Fragment key={index}>{part}</Fragment>;
 
-          // For regular text parts, render with markdown
-          return (
-            <Box
-              component="span"
-              key={`${lineIndex}-${partIndex}`}
-              sx={{
-                display: 'inline',
-                '& img': {
-                  maxWidth: '100%',
-                  height: 'auto',
-                  borderRadius: '8px',
-                  my: 2,
-                  boxShadow: '0 2px 12px rgba(0,0,0,0.06)',
-                },
-                '& ul, & ol': {
-                  pl: 2.5,
-                  mb: 2,
-                  mt: 1,
-                },
-                '& li': {
-                  mb: 0.75,
-                },
-                // To prevent ReactMarkdown from creating unwanted paragraph elements
-                '& > div > p': {
-                  display: 'inline',
-                  margin: 0,
-                },
-              }}
-            >
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                components={{
-                  // Override paragraph to render as inline span for text segments
-                  p: ({ node, ...props }) => <span {...props} />,
-                }}
-              >
-                {part}
-              </ReactMarkdown>
-            </Box>
-          );
-        })}
-      </Box>
-    );
+      return (
+        <Box
+          key={citationId}
+          component="span"
+          onMouseEnter={(e) => handleMouseEnter(e, part, citationId)}
+          onClick={(e) => handleClick(e, part)}
+          onMouseLeave={handleMouseLeave}
+          sx={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            ml: 0.5,
+            mr: 0.25,
+            cursor: 'pointer',
+            position: 'relative',
+            '&:hover': {
+              '& .citation-number': {
+                transform: 'scale(1.15) translateY(-1px)',
+                bgcolor: 'primary.main',
+                color: 'white',
+                boxShadow: '0 3px 8px rgba(25, 118, 210, 0.3)',
+              },
+            },
+            '&::after': {
+              content: '""',
+              position: 'absolute',
+              top: -8,
+              right: -8,
+              bottom: -8,
+              left: -8,
+              zIndex: -1,
+            },
+          }}
+        >
+          <Box
+            component="span"
+            className={`citation-number citation-number-${citationId}`}
+            sx={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: '18px',
+              height: '18px',
+              borderRadius: '50%',
+              bgcolor: 'rgba(25, 118, 210, 0.08)',
+              color: 'primary.main',
+              fontSize: '0.65rem',
+              fontWeight: 600,
+              transition: 'all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)',
+              textDecoration: 'none',
+              boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
+              border: '1px solid',
+              borderColor: 'rgba(25, 118, 210, 0.12)',
+            }}
+          >
+            {citationNumber}
+          </Box>
+        </Box>
+      );
+    }
+    return <Fragment key={index}>{part}</Fragment>;
   };
 
   return (
     <Box sx={{ position: 'relative' }}>
-      <Typography
-        component="div"
-        sx={{
-          fontSize: '0.90rem',
-          lineHeight: 1.5,
-          letterSpacing: '0.01em',
-          wordBreak: 'break-word',
-          color: 'text.primary',
-          fontWeight: 400,
-          '& code': {
-            backgroundColor: 'rgba(0, 0, 0, 0.04)',
-            padding: '0.2em 0.4em',
-            borderRadius: '4px',
-            fontFamily: 'monospace',
-            fontSize: '0.9em',
-          },
-          '& pre': {
-            backgroundColor: 'rgba(0, 0, 0, 0.04)',
-            padding: 1.5,
-            borderRadius: '4px',
-            fontFamily: 'monospace',
-            fontSize: '0.85em',
-            overflow: 'auto',
-            my: 1.5,
-            '& code': {
-              backgroundColor: 'transparent',
-              padding: 0,
-            },
-          },
-          '& strong': {
-            fontWeight: 600,
-            color: 'text.primary',
-          },
-          '& a': {
-            color: 'primary.main',
-            textDecoration: 'none',
-            borderBottom: '1px dotted',
-            borderColor: 'primary.light',
-            transition: 'all 0.2s ease',
-            '&:hover': {
-              color: 'primary.dark',
-              borderColor: 'primary.main',
-            },
-          },
-          '& h1': {
-            fontSize: '1.4rem',
-            fontWeight: 600,
-            marginTop: 2,
-            marginBottom: 1.5,
-          },
-          '& h2': {
-            fontSize: '1.2rem',
-            fontWeight: 600,
-            marginTop: 2,
-            marginBottom: 1.5,
-          },
-          '& h3': {
-            fontSize: '1.1rem',
-            fontWeight: 600,
-            marginTop: 2,
-            marginBottom: 1,
-          },
-          '& h4, & h5, & h6': {
-            fontSize: '1rem',
-            fontWeight: 600,
-            marginTop: 1.5,
-            marginBottom: 1,
-          },
-          '& ul, & ol': {
-            paddingLeft: 2.5,
-            marginBottom: 1.5,
-            marginTop: 0.5,
-          },
-          '& li': {
-            marginBottom: 0.75,
-          },
-          '& blockquote': {
-            borderLeft: '4px solid',
-            borderColor: 'divider',
-            paddingLeft: 2,
-            margin: '1em 0',
-            color: 'text.secondary',
-            fontStyle: 'italic',
-          },
-          '& table': {
-            borderCollapse: 'collapse',
-            width: '100%',
-            marginBottom: 2,
-          },
-          '& th, & td': {
-            border: '1px solid',
-            borderColor: 'divider',
-            padding: '8px 12px',
-            textAlign: 'left',
-          },
-          '& th': {
-            backgroundColor: 'rgba(0, 0, 0, 0.02)',
-            fontWeight: 600,
-          },
-        }}
-      >
-        {lines.map((line, lineIndex) => renderLineWithMarkdown(line, lineIndex))}
-      </Typography>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          p: ({ children }) => {
+            const processedChildren = React.Children.toArray(children).flatMap((child) => {
+              if (typeof child === 'string') {
+                return child.split(/(\[\d+\])/g).map(renderContentPart);
+              }
+              return child;
+            });
 
-      {/* Popper for Citation Hover Card */}
-      {hoveredCitationId && hoveredCitation && (
-        <Popper
-          open={Boolean(hoveredCitationId)}
-          anchorEl={citationRefs.current[hoveredCitationId]}
-          placement="bottom-start"
-          modifiers={[
-            {
-              name: 'offset',
-              options: {
-                offset: [0, 8], // x, y offset
-              },
-            },
-            {
-              name: 'flip',
-              enabled: true,
-              options: {
-                altBoundary: true,
-                rootBoundary: 'viewport',
-                padding: 8,
-              },
-            },
-            {
-              name: 'preventOverflow',
-              enabled: true,
-              options: {
-                altAxis: true,
-                altBoundary: true,
-                boundary: 'viewport',
-                padding: 16,
-              },
-            },
-          ]}
-          sx={{
-            zIndex: 9999,
-            maxWidth: '95vw',
-            width: '380px',
-            // Important to prevent layout shifts
-            position: 'fixed',
-            pointerEvents: 'none', // This ensures the popper doesn't affect layout
-          }}
-        >
-          <ClickAwayListener onClickAway={handleCloseHoverCard}>
-            <Box
-              onMouseEnter={handleHoverCardMouseEnter}
-              onMouseLeave={handleMouseLeave}
-              sx={{
-                pointerEvents: 'auto', // Re-enable pointer events for the card itself
-              }}
-            >
+            return (
+              <Typography
+                component="p"
+                sx={{
+                  mb: 2,
+                  '&:last-child': { mb: 0 },
+                  fontSize: '0.90rem',
+                  lineHeight: 1.6,
+                  letterSpacing: '0.01em',
+                  wordBreak: 'break-word',
+                  color: 'text.primary',
+                  fontWeight: 400,
+                }}
+              >
+                {processedChildren}
+              </Typography>
+            );
+          },
+          h1: ({ children }) => (
+            <Typography variant="h1" sx={{ fontSize: '1.4rem', my: 2 }}>
+              {children}
+            </Typography>
+          ),
+          h2: ({ children }) => (
+            <Typography variant="h2" sx={{ fontSize: '1.2rem', my: 2 }}>
+              {children}
+            </Typography>
+          ),
+          h3: ({ children }) => (
+            <Typography variant="h3" sx={{ fontSize: '1.1rem', my: 1.5 }}>
+              {children}
+            </Typography>
+          ),
+          ul: ({ children }) => (
+            <Box component="ul" sx={{ pl: 2.5, mb: 1.5 }}>
+              {children}
+            </Box>
+          ),
+          ol: ({ children }) => (
+            <Box component="ol" sx={{ pl: 2.5, mb: 1.5 }}>
+              {children}
+            </Box>
+          ),
+          li: ({ children }) => {
+            const processedChildren = React.Children.toArray(children).flatMap((child) => {
+              if (typeof child === 'string') {
+                return child.split(/(\[\d+\])/g).map(renderContentPart);
+              }
+              if (React.isValidElement(child) && child.props.children) {
+                const grandChildren = React.Children.toArray(child.props.children).flatMap(
+                  (grandChild) =>
+                    typeof grandChild === 'string'
+                      ? grandChild.split(/(\[\d+\])/g).map(renderContentPart)
+                      : grandChild
+                );
+                return React.cloneElement(child, { ...child.props }, grandChildren);
+              }
+              return child;
+            });
+            return (
+              <Typography component="li" sx={{ mb: 0.75 }}>
+                {processedChildren}
+              </Typography>
+            );
+          },
+          code: ({ children, className }) => {
+            const match = /language-(\w+)/.exec(className || '');
+            return !match ? (
+              <Box
+                component="code"
+                sx={{
+                  bgcolor: 'rgba(0, 0, 0, 0.04)',
+                  px: '0.4em',
+                  py: '0.2em',
+                  borderRadius: '4px',
+                  fontFamily: 'monospace',
+                  fontSize: '0.9em',
+                }}
+              >
+                {children}
+              </Box>
+            ) : (
+              <Box
+                sx={{
+                  bgcolor: 'rgba(0, 0, 0, 0.04)',
+                  p: 1.5,
+                  borderRadius: '4px',
+                  fontFamily: 'monospace',
+                  fontSize: '0.85em',
+                  overflow: 'auto',
+                  my: 1.5,
+                }}
+              >
+                <pre style={{ margin: 0 }}>
+                  <code>{children}</code>
+                </pre>
+              </Box>
+            );
+          },
+          a: ({ href, children }) => (
+            <a href={href} target="_blank" rel="noopener noreferrer">
+              {children}
+            </a>
+          ),
+        }}
+        className="markdown-body"
+      >
+        {content}
+      </ReactMarkdown>
+
+      <Popper
+        open={Boolean(popperAnchor && hoveredCitationId)}
+        anchorEl={popperAnchor}
+        placement="bottom-start"
+        modifiers={[
+          { name: 'offset', options: { offset: [0, 12] } },
+          { name: 'flip', enabled: true, options: { altBoundary: true, rootBoundary: 'viewport', padding: 8 } },
+          { name: 'preventOverflow', enabled: true, options: { altAxis: true, altBoundary: true, boundary: 'viewport', padding: 16 } },
+        ]}
+        sx={{ zIndex: 9999, maxWidth: '95vw', width: '380px' }}
+      >
+        <ClickAwayListener onClickAway={handleCloseHoverCard}>
+          <Box onMouseEnter={handleHoverCardMouseEnter} onMouseLeave={handleMouseLeave} sx={{ pointerEvents: 'auto' }}>
+            {hoveredCitation && (
               <CitationHoverCard
                 citation={hoveredCitation}
                 isVisible={Boolean(hoveredCitationId)}
@@ -508,18 +400,17 @@ const MessageContent: React.FC<MessageContentProps> = ({
                 aggregatedCitations={hoveredRecordCitations}
                 onViewPdf={onViewPdf}
               />
-            </Box>
-          </ClickAwayListener>
-        </Popper>
-      )}
+            )}
+          </Box>
+        </ClickAwayListener>
+      </Popper>
     </Box>
   );
 };
 
 const ChatMessage = ({
   message,
-  isExpanded,
-  onToggleCitations,
+  // isExpanded and onToggleCitations are no longer passed as props
   index,
   onRegenerate,
   onFeedbackSubmit,
@@ -528,9 +419,18 @@ const ChatMessage = ({
   showRegenerate,
   onViewPdf,
 }: ChatMessageProps) => {
+  // FIX: Manage expansion state locally within the component
+  const [isExpanded, setIsExpanded] = useState(false);
+  
   const [selectedRecord, setSelectedRecord] = useState<Record | null>(null);
   const [isRecordDialogOpen, setRecordDialogOpen] = useState<boolean>(false);
   const theme = useTheme();
+
+  // FIX: Create a local handler to toggle the local state
+  const handleToggleCitations = () => {
+    setIsExpanded((prev) => !prev);
+  };
+
   const aggregatedCitations = useMemo(() => {
     if (!message.citations) return {};
 
@@ -573,7 +473,6 @@ const ChatMessage = ({
     new Promise<void>((resolve) => {
       const recordCitations = aggregatedCitations[recordId] || [];
       if (recordCitations.length > 0) {
-        const citationMeta = recordCitations[0].metadata;
         const citation = recordCitations[0];
         onViewPdf('', citation, recordCitations, false);
         resolve();
@@ -722,147 +621,9 @@ const ChatMessage = ({
                 wordBreak: 'break-word',
                 fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
                 color: (themeVal) => (themeVal.palette.mode === 'dark' ? '#e8eaed' : '#212529'),
-                '& p': { mt: 0, mb: 1.5 },
-                '& h1': {
-                  fontSize: '1.3rem',
-                  fontWeight: 600,
-                  my: 1.5,
-                  color: (themeVal) => (themeVal.palette.mode === 'dark' ? '#e8eaed' : '#212529'),
-                },
-                '& h2': {
-                  fontSize: '1.15rem',
-                  fontWeight: 600,
-                  my: 1.5,
-                  color: (themeVal) => (themeVal.palette.mode === 'dark' ? '#e8eaed' : '#212529'),
-                },
-                '& h3': {
-                  fontSize: '1.05rem',
-                  fontWeight: 600,
-                  my: 1.5,
-                  color: (themeVal) => (themeVal.palette.mode === 'dark' ? '#e8eaed' : '#212529'),
-                },
-                '& h4': {
-                  fontSize: '1rem',
-                  fontWeight: 600,
-                  my: 1.5,
-                  color: (themeVal) => (themeVal.palette.mode === 'dark' ? '#e8eaed' : '#212529'),
-                },
-                '& h5, & h6': {
-                  fontSize: '0.9rem',
-                  fontWeight: 600,
-                  my: 1.5,
-                  color: (themeVal) => (themeVal.palette.mode === 'dark' ? '#e8eaed' : '#212529'),
-                },
-                '& ul, & ol': { pl: 2.5, mb: 1.5, mt: 0 },
-                '& li': { mb: 0.75 },
-                '& blockquote': {
-                  pl: 1.5,
-                  ml: 0,
-                  borderLeft: (themeVal) => `4px solid ${themeVal.palette.primary.main}`,
-                  color: (themeVal) =>
-                    themeVal.palette.mode === 'dark' ? '#b8bcc8' : 'text.secondary',
-                  fontStyle: 'italic',
-                  my: 1.5,
-                  backgroundColor: (themeVal) =>
-                    themeVal.palette.mode === 'dark'
-                      ? 'rgba(74, 158, 255, 0.05)'
-                      : 'rgba(0, 102, 204, 0.02)',
-                  py: 1,
-                  borderRadius: '0 4px 4px 0',
-                },
-                '& code': {
-                  backgroundColor: (themeVal) =>
-                    themeVal.palette.mode === 'dark' ? '#404448' : 'rgba(0, 0, 0, 0.04)',
-                  color: (themeVal) => (themeVal.palette.mode === 'dark' ? '#e8eaed' : '#212529'),
-                  padding: '0.2em 0.4em',
-                  borderRadius: '4px',
-                  fontFamily: '"Consolas", "Monaco", "Courier New", monospace',
-                  fontSize: '0.85em',
-                  border: (themeVal) =>
-                    themeVal.palette.mode === 'dark'
-                      ? '1px solid #484b52'
-                      : '1px solid rgba(0, 0, 0, 0.08)',
-                },
-                '& pre': {
-                  backgroundColor: (themeVal) =>
-                    themeVal.palette.mode === 'dark' ? '#1e2125' : 'rgba(0, 0, 0, 0.02)',
-                  border: (themeVal) =>
-                    themeVal.palette.mode === 'dark'
-                      ? '1px solid #404448'
-                      : '1px solid rgba(0, 0, 0, 0.08)',
-                  padding: 2,
-                  borderRadius: '6px',
-                  overflow: 'auto',
-                  my: 1.5,
-                  '& code': {
-                    backgroundColor: 'transparent',
-                    border: 'none',
-                    padding: 0,
-                    borderRadius: 0,
-                    fontFamily: '"Consolas", "Monaco", "Courier New", monospace',
-                    fontSize: '0.85em',
-                  },
-                },
-                '& a': {
-                  color: (themeVal) =>
-                    themeVal.palette.mode === 'dark'
-                      ? themeVal.palette.primary.light
-                      : themeVal.palette.primary.main,
-                  textDecoration: 'none',
-                  borderBottom: '1px dotted',
-                  borderColor: (themeVal) =>
-                    themeVal.palette.mode === 'dark'
-                      ? themeVal.palette.primary.light
-                      : themeVal.palette.primary.light,
-                  transition: 'all 0.2s ease',
-                  '&:hover': {
-                    color: (themeVal) =>
-                      themeVal.palette.mode === 'dark'
-                        ? themeVal.palette.primary.main
-                        : themeVal.palette.primary.dark,
-                    borderColor: (themeVal) => themeVal.palette.primary.main,
-                  },
-                },
-                '& img': {
-                  maxWidth: '100%',
-                  borderRadius: '6px',
-                  border: (themeVal) =>
-                    themeVal.palette.mode === 'dark' ? '1px solid #404448' : '1px solid #e1e5e9',
-                },
-                '& table': {
-                  borderCollapse: 'collapse',
-                  width: '100%',
-                  mb: 1.5,
-                  border: (themeVal) =>
-                    themeVal.palette.mode === 'dark' ? '1px solid #404448' : '1px solid #e1e5e9',
-                  borderRadius: '4px',
-                  overflow: 'hidden',
-                },
-                '& th, & td': {
-                  border: (themeVal) =>
-                    themeVal.palette.mode === 'dark' ? '1px solid #404448' : '1px solid #e1e5e9',
-                  padding: '8px 12px',
-                  textAlign: 'left',
-                  fontSize: '12px',
-                },
-                '& th': {
-                  backgroundColor: (themeVal) =>
-                    themeVal.palette.mode === 'dark' ? '#3a3d42' : '#e9ecef',
-                  fontWeight: 600,
-                  color: (themeVal) => (themeVal.palette.mode === 'dark' ? '#e8eaed' : '#495057'),
-                },
-                '& td': {
-                  backgroundColor: (themeVal) =>
-                    themeVal.palette.mode === 'dark' ? '#2a2d32' : '#ffffff',
-                },
               }}
             >
-              <ReactMarkdown
-              // If you've added remark-gfm:
-              // remarkPlugins={[remarkGfm]}
-              >
-                {message.content}
-              </ReactMarkdown>
+              <ReactMarkdown>{message.content}</ReactMarkdown>
             </Box>
           )}
 
@@ -873,7 +634,7 @@ const ChatMessage = ({
                 <Button
                   variant="text"
                   size="small"
-                  onClick={() => onToggleCitations(index)}
+                  onClick={handleToggleCitations} // Use the local handler
                   startIcon={
                     <Icon icon={isExpanded ? downIcon : rightIcon} width={14} height={14} />
                   }
@@ -951,7 +712,8 @@ const ChatMessage = ({
                             fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
                           }}
                         >
-                          {citation.metadata?.blockText && citation.metadata?.extension === 'pdf' &&
+                          {citation.metadata?.blockText &&
+                          citation.metadata?.extension === 'pdf' &&
                           typeof citation.metadata?.blockText === 'string' &&
                           citation.metadata?.blockText.length > 0
                             ? citation.metadata?.blockText
@@ -973,90 +735,21 @@ const ChatMessage = ({
                                 variant="text"
                                 startIcon={<Icon icon={eyeIcon} width={14} height={14} />}
                                 onClick={() => handleViewCitations(citation.metadata?.recordId)}
-                                sx={{
-                                  textTransform: 'none',
-                                  fontSize: '11px',
-                                  fontWeight: 500,
-                                  fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
-                                  color: (themeVal) =>
-                                    themeVal.palette.mode === 'dark'
-                                      ? themeVal.palette.primary.light
-                                      : themeVal.palette.primary.main,
-                                  py: 0.75,
-                                  px: 2,
-                                  minWidth: 0,
-                                  borderRadius: '4px',
-                                  border: '1px solid',
-                                  borderColor: (themeVal) =>
-                                    themeVal.palette.mode === 'dark'
-                                      ? alpha(themeVal.palette.primary.main, 0.3)
-                                      : alpha(themeVal.palette.primary.main, 0.2),
-                                  backgroundColor: (themeVal) =>
-                                    themeVal.palette.mode === 'dark'
-                                      ? alpha(themeVal.palette.primary.main, 0.1)
-                                      : alpha(themeVal.palette.primary.main, 0.05),
-                                  '&:hover': {
-                                    backgroundColor: (themeVal) =>
-                                      themeVal.palette.mode === 'dark'
-                                        ? alpha(themeVal.palette.primary.main, 0.15)
-                                        : alpha(themeVal.palette.primary.main, 0.08),
-                                    borderColor: (themeVal) =>
-                                      themeVal.palette.mode === 'dark'
-                                        ? alpha(themeVal.palette.primary.main, 0.4)
-                                        : alpha(themeVal.palette.primary.main, 0.3),
-                                  },
-                                }}
+                                sx={{ textTransform: 'none', fontSize: '11px', fontWeight: 500 }}
                               >
                                 View Citations
                               </Button>
                             )}
-
                             <Button
                               size="small"
                               variant="text"
                               startIcon={<Icon icon={fileDocIcon} width={14} height={14} />}
                               onClick={() => {
                                 if (citation.metadata?.recordId) {
-                                  const record: Record = {
-                                    ...citation.metadata,
-                                    citations: [],
-                                  };
-                                  handleOpenRecordDetails(record);
+                                  handleOpenRecordDetails({ ...citation.metadata, citations: [] });
                                 }
                               }}
-                              sx={{
-                                textTransform: 'none',
-                                fontSize: '11px',
-                                fontWeight: 500,
-                                fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
-                                color: (themeVal) =>
-                                  themeVal.palette.mode === 'dark'
-                                    ? themeVal.palette.text.secondary
-                                    : themeVal.palette.text.secondary,
-                                py: 0.75,
-                                px: 2,
-                                minWidth: 0,
-                                borderRadius: '4px',
-                                border: '1px solid',
-                                borderColor: (themeVal) =>
-                                  themeVal.palette.mode === 'dark'
-                                    ? alpha(themeVal.palette.divider, 0.3)
-                                    : alpha(themeVal.palette.divider, 0.5),
-                                backgroundColor: (themeVal) =>
-                                  themeVal.palette.mode === 'dark'
-                                    ? alpha(themeVal.palette.background.paper, 0.5)
-                                    : alpha(themeVal.palette.action.hover, 0.3),
-                                '&:hover': {
-                                  backgroundColor: (themeVal) =>
-                                    themeVal.palette.mode === 'dark'
-                                      ? alpha(themeVal.palette.background.paper, 0.7)
-                                      : alpha(themeVal.palette.action.hover, 0.5),
-                                  borderColor: (themeVal) =>
-                                    themeVal.palette.mode === 'dark'
-                                      ? alpha(themeVal.palette.divider, 0.5)
-                                      : alpha(themeVal.palette.divider, 0.7),
-                                },
-                              }}
+                              sx={{ textTransform: 'none', fontSize: '11px', fontWeight: 500 }}
                             >
                               Details
                             </Button>
@@ -1073,7 +766,7 @@ const ChatMessage = ({
                   <Button
                     variant="text"
                     size="small"
-                    onClick={() => onToggleCitations(index)}
+                    onClick={handleToggleCitations} // Use the local handler
                     startIcon={<Icon icon={upIcon} width={14} height={14} />}
                     sx={{
                       color: (themeVal) =>
@@ -1083,29 +776,6 @@ const ChatMessage = ({
                       textTransform: 'none',
                       fontWeight: 500,
                       fontSize: '11px',
-                      fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
-                      py: 0.5,
-                      px: 1.5,
-                      borderRadius: '4px',
-                      border: '1px solid',
-                      borderColor: (themeVal) =>
-                        themeVal.palette.mode === 'dark'
-                          ? alpha(themeVal.palette.primary.main, 0.2)
-                          : alpha(theme.palette.primary.main, 0.15),
-                      backgroundColor: (themeVal) =>
-                        themeVal.palette.mode === 'dark'
-                          ? alpha(themeVal.palette.primary.main, 0.08)
-                          : alpha(themeVal.palette.primary.main, 0.04),
-                      '&:hover': {
-                        backgroundColor: (themeVal) =>
-                          themeVal.palette.mode === 'dark'
-                            ? alpha(themeVal.palette.primary.main, 0.12)
-                            : alpha(themeVal.palette.primary.main, 0.06),
-                        borderColor: (themeVal) =>
-                          themeVal.palette.mode === 'dark'
-                            ? alpha(themeVal.palette.primary.main, 0.3)
-                            : alpha(themeVal.palette.primary.main, 0.2),
-                      },
                     }}
                   >
                     Hide citations
@@ -1118,13 +788,7 @@ const ChatMessage = ({
           {/* Message Controls */}
           {message.type === 'bot' && (
             <>
-              <Divider
-                sx={{
-                  my: 1,
-                  borderColor: (themeVal) =>
-                    themeVal.palette.mode === 'dark' ? '#404448' : '#e1e5e9',
-                }}
-              />
+              <Divider sx={{ my: 1, borderColor: (t) => t.palette.divider }} />
               <Stack direction="row" spacing={1} alignItems="center">
                 {showRegenerate && (
                   <>
@@ -1133,20 +797,6 @@ const ChatMessage = ({
                         onClick={() => onRegenerate(message.id)}
                         size="small"
                         disabled={isRegenerating}
-                        sx={{
-                          color: (themeVal) =>
-                            themeVal.palette.mode === 'dark' ? '#b8bcc8' : 'text.secondary',
-                          '&:hover': {
-                            color: (themeVal) =>
-                              themeVal.palette.mode === 'dark'
-                                ? themeVal.palette.primary.light
-                                : themeVal.palette.primary.main,
-                            backgroundColor: (themeVal) =>
-                              theme.palette.mode === 'dark'
-                                ? alpha(themeVal.palette.primary.main, 0.1)
-                                : alpha(themeVal.palette.primary.main, 0.05),
-                          },
-                        }}
                       >
                         <Icon
                           icon={isRegenerating ? loadingIcon : refreshIcon}
@@ -1175,38 +825,10 @@ const ChatMessage = ({
         onClose={handleCloseRecordDetails}
         maxWidth="md"
         fullWidth
-        BackdropProps={{
-          sx: {
-            backdropFilter: 'blur(1px)',
-            backgroundColor: alpha(theme.palette.common.black, 0.3),
-          },
-        }}
-        PaperProps={{
-          elevation: 1,
-          sx: {
-            borderRadius: '12px',
-            boxShadow: '0 4px 20px rgba(0, 0, 0, 0.04)',
-          },
-        }}
+        PaperProps={{ sx: { borderRadius: '12px' } }}
       >
-        <DialogTitle
-          sx={{
-            fontSize: '1rem',
-            fontWeight: 500,
-            py: 2,
-            px: 2.5,
-            borderBottom: '1px solid',
-            borderColor: 'divider',
-          }}
-        >
-          Record Details
-        </DialogTitle>
-        <DialogContent
-          sx={{
-            p: 2.5,
-            // ...scrollableContainerStyle
-          }}
-        >
+        <DialogTitle>Record Details</DialogTitle>
+        <DialogContent>
           {selectedRecord && (
             <RecordDetails
               recordId={selectedRecord.recordId}
@@ -1221,31 +843,12 @@ const ChatMessage = ({
             sx={{
               position: 'absolute',
               top: '50%',
-              left: message.type === 'user' ? 'auto' : '50%',
-              right: message.type === 'user' ? '50%' : 'auto',
+              left: '50%',
               transform: 'translate(-50%, -50%)',
               zIndex: 1,
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              gap: 1,
             }}
           >
             <CircularProgress size={24} />
-            <Typography
-              variant="caption"
-              sx={{
-                color: 'text.secondary',
-                fontWeight: 500,
-                bgcolor: 'background.paper',
-                px: 2,
-                py: 0.5,
-                borderRadius: 1,
-                boxShadow: '0 2px 12px rgba(0, 0, 0, 0.03)',
-              }}
-            >
-              Regenerating...
-            </Typography>
           </Box>
         </Fade>
       )}
