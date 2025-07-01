@@ -457,7 +457,7 @@ async def askAI(
         user_id = request.state.user.get('userId')
         send_user_info = request.query_params.get('sendUserInfo', True)
 
-        result =await retrieval_service.search_with_filters(
+        result = await retrieval_service.search_with_filters(
                 queries=all_queries,
                 org_id=org_id,
                 user_id=user_id,
