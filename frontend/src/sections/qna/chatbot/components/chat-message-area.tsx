@@ -183,7 +183,6 @@ const ChatMessagesArea = ({
     setShouldAutoScroll(isNearBottom);
   }, []);
 
-  // ... (useEffect hooks are unchanged)
   useEffect(() => {
     if (messages.length > prevMessagesLength.current) {
       const latestMessage = messages[messages.length - 1];

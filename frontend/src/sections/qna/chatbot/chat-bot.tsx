@@ -164,17 +164,15 @@ const ChatInterface = () => {
   const [loadingConversations, setLoadingConversations] = useState<{ [key: string]: boolean }>({});
   const theme = useTheme();
 
-  // New streaming-specific state
-  const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
-  const [isGeneratingResponse, setIsGeneratingResponse] = useState<boolean>(false);
-
-  // IMPROVED: Enhanced refs for smoother streaming with debouncing
-  const streamingContentRef = useRef<string>('');
-  const streamingUpdateTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const lastUpdateTimeRef = useRef<number>(0);
-  const pendingContentRef = useRef<string>('');
   const accumulatedContentRef = useRef<string>('');
-  const updateDebounceRef = useRef<NodeJS.Timeout | null>(null);
+  const displayedContentRef = useRef<string>('');
+  const streamingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const wordQueueRef = useRef<string[]>([]);
+  const isStreamingActiveRef = useRef<boolean>(false);
+  const streamingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  
+  const TYPING_SPEED = 50; // milliseconds between word updates (ChatGPT-like speed)
+  const BATCH_SIZE = 1; // words to add per interval (1 for word-by-word, 2-3 for faster)
 
   // IMPROVED: Better conversation status management with error handling
   const [conversationStatus, setConversationStatus] = useState<{
@@ -240,20 +238,121 @@ const ChatInterface = () => {
 
   const [streamingController, setStreamingController] = useState<StreamingController | null>(null);
 
-  const updateStreamingContent = useCallback(
-    (messageId: string, content: string, citations: CustomCitation[] = []) => {
-      setStreamingState((prev) => ({
-        ...prev,
-        messageId,
-        content,
-        citations,
-        isActive: true,
-      }));
+  // NEW: Word-by-word streaming function
+const processWordQueue = useCallback((messageId: string, citations: CustomCitation[], isCompleting = false) => {
+  if (!isStreamingActiveRef.current || wordQueueRef.current.length === 0) {
+    // Clear interval if no more words to process
+    if (streamingIntervalRef.current) {
+      clearInterval(streamingIntervalRef.current);
+      streamingIntervalRef.current = null;
+    }
+    
+    // If this was the final completion, trigger completion handlers
+    if (isCompleting && wordQueueRef.current.length === 0) {
+      // Signal that streaming has naturally completed
+      window.dispatchEvent(new CustomEvent('streamingNaturallyComplete'));
+    }
+    return;
+  }
+
+  // Take next batch of words from queue
+  const wordsToAdd = wordQueueRef.current.splice(0, BATCH_SIZE);
+  displayedContentRef.current += (displayedContentRef.current ? ' ' : '') + wordsToAdd.join(' ');
+
+  // Update the streaming state
+  setStreamingState((prev) => ({
+    ...prev,
+    messageId,
+    content: displayedContentRef.current,
+    citations,
+    isActive: true,
+  }));
+
+  // Update the messages array immediately
+  setMessages((prevMessages) => {
+    const messageIndex = prevMessages.findIndex((msg) => msg.id === messageId);
+    if (messageIndex === -1) return prevMessages;
+
+    const updatedMessages = [...prevMessages];
+    updatedMessages[messageIndex] = {
+      ...updatedMessages[messageIndex],
+      content: displayedContentRef.current,
+      citations,
+      updatedAt: new Date(),
+    };
+    return updatedMessages;
+  });
+}, []);
+
+  // NEW: Start word-by-word streaming
+  const startWordByWordStreaming = useCallback(
+    (messageId: string, citations: CustomCitation[]) => {
+      if (streamingIntervalRef.current) {
+        clearInterval(streamingIntervalRef.current);
+      }
+
+      streamingIntervalRef.current = setInterval(() => {
+        processWordQueue(messageId, citations);
+      }, TYPING_SPEED);
     },
-    []
+    [processWordQueue]
   );
 
+  // MODIFIED: Enhanced updateStreamingContent with word queuing
+  const updateStreamingContent = useCallback(
+    (messageId: string, newChunk: string, citations: CustomCitation[] = []) => {
+      if (!isStreamingActiveRef.current) {
+        // Start new streaming session
+        accumulatedContentRef.current = '';
+        displayedContentRef.current = '';
+        wordQueueRef.current = [];
+        isStreamingActiveRef.current = true;
+      }
+
+      // Accumulate the new chunk
+      accumulatedContentRef.current += newChunk;
+
+      // Split accumulated content into words and add new words to queue
+      const allWords = accumulatedContentRef.current.split(/(\s+)/).filter((word) => word.trim());
+      const currentDisplayedWords = displayedContentRef.current
+        .split(/(\s+)/)
+        .filter((word) => word.trim());
+
+      // Find new words that haven't been displayed yet
+      const newWords = allWords.slice(currentDisplayedWords.length);
+
+      if (newWords.length > 0) {
+        // Add new words to the queue
+        wordQueueRef.current.push(...newWords);
+
+        // Start or continue the word-by-word display
+        if (!streamingIntervalRef.current) {
+          startWordByWordStreaming(messageId, citations);
+        }
+      }
+    },
+    [startWordByWordStreaming]
+  );
+
+  // MODIFIED: Enhanced clearStreaming function
   const clearStreaming = useCallback(() => {
+    // Clear all intervals and timeouts
+    if (streamingIntervalRef.current) {
+      clearInterval(streamingIntervalRef.current);
+      streamingIntervalRef.current = null;
+    }
+    if (streamingTimeoutRef.current) {
+      clearTimeout(streamingTimeoutRef.current);
+      streamingTimeoutRef.current = null;
+    }
+
+    // Reset all refs
+    accumulatedContentRef.current = '';
+    displayedContentRef.current = '';
+    wordQueueRef.current = [];
+    isStreamingActiveRef.current = false;
+
+    // Clear streaming state
     setStreamingState({
       messageId: null,
       content: '',
@@ -277,7 +376,6 @@ const ChatInterface = () => {
   );
 
   const formatMessage = useCallback((apiMessage: Message): FormattedMessage | null => {
-    // ... (This function is unchanged)
     if (!apiMessage) return null;
     const baseMessage = {
       id: apiMessage._id,
@@ -315,7 +413,6 @@ const ChatInterface = () => {
   }, []);
 
   const parseSSELine = (line: string): { event?: string; data?: any } | null => {
-    // ... (This function is unchanged)
     if (line.startsWith('event: ')) {
       return { event: line.substring(7).trim() };
     }
@@ -355,84 +452,6 @@ const ChatInterface = () => {
     setMessages((prev) => [...prev, streamingMessage]);
   }, []);
 
-  const handleStreamingEvent = useCallback(
-    async (
-      event: string,
-      data: any,
-      context: {
-        streamingBotMessageId: string;
-        isNewConversation: boolean;
-        hasCreatedMessage: boolean;
-        onConversationComplete: (conversation: Conversation) => void;
-        onMessageCreated: () => void;
-        onErrorReceived: () => void;
-      }
-    ): Promise<boolean> => {
-      const statusMsg = getEngagingStatusMessage(event, data);
-
-      if (statusMsg) {
-        updateStatus(statusMsg);
-      }
-
-      switch (event) {
-        case 'answer_chunk':
-          if (data.accumulated) {
-            if (!context.hasCreatedMessage) {
-              createStreamingMessage(context.streamingBotMessageId);
-              context.onMessageCreated();
-            }
-            setShowStatus(false);
-            setStatusMessage('');
-            updateStreamingContent(
-              context.streamingBotMessageId,
-              data.accumulated,
-              data.citations || []
-            );
-          }
-          return false;
-
-        case 'complete':
-          setShowStatus(false);
-          setStatusMessage('');
-          if (data.conversation) {
-            context.onConversationComplete(data.conversation);
-          }
-          return false;
-
-        case 'error': {
-          setShowStatus(false);
-          setStatusMessage('');
-          const errorMessage = data.message || data.error || 'An error occurred';
-          if (!context.hasCreatedMessage) {
-            const errorMsg: FormattedMessage = {
-              type: 'bot',
-              content: errorMessage,
-              createdAt: new Date(),
-              updatedAt: new Date(),
-              id: context.streamingBotMessageId,
-              contentFormat: 'MARKDOWN',
-              followUpQuestions: [],
-              citations: [],
-              confidence: '',
-              messageType: 'error',
-              timestamp: new Date(),
-            };
-            setMessages((prev) => [...prev, errorMsg]);
-            context.onMessageCreated();
-          } else {
-            updateStreamingContent(context.streamingBotMessageId, errorMessage, []);
-          }
-          context.onErrorReceived();
-          return true;
-        }
-
-        default:
-          return false;
-      }
-    },
-    [createStreamingMessage, updateStreamingContent, updateStatus]
-  );
-
   const handleStreamingComplete = useCallback(
     async (
       conversation: Conversation,
@@ -465,18 +484,145 @@ const ChatInterface = () => {
     [formatMessage, clearStreaming]
   );
 
+  const handleStreamingEvent = useCallback(
+    async (
+      event: string,
+      data: any,
+      context: {
+        streamingBotMessageId: string;
+        isNewConversation: boolean;
+        hasCreatedMessage: boolean;
+        onConversationComplete: (conversation: Conversation) => void;
+        onMessageCreated: () => void;
+        onErrorReceived: () => void;
+      }
+    ): Promise<boolean> => {
+      const statusMsg = getEngagingStatusMessage(event, data);
+
+      if (statusMsg) {
+        updateStatus(statusMsg);
+      }
+
+      switch (event) {
+        case 'answer_chunk':
+          if (data.chunk) {
+            if (!context.hasCreatedMessage) {
+              createStreamingMessage(context.streamingBotMessageId);
+              context.onMessageCreated();
+            }
+
+            setShowStatus(false);
+            setStatusMessage('');
+
+            // Use the new word-by-word streaming
+            updateStreamingContent(context.streamingBotMessageId, data.chunk, data.citations || []);
+          }
+          return false;
+
+        case 'complete':
+          setShowStatus(false);
+          setStatusMessage('');
+
+          // Ensure all remaining words are displayed before completing
+          if (wordQueueRef.current.length > 0) {
+            // Display all remaining words immediately
+            const remainingWords = wordQueueRef.current.join(' ');
+            displayedContentRef.current +=
+              (displayedContentRef.current ? ' ' : '') + remainingWords;
+            wordQueueRef.current = [];
+
+            // Update final content
+            setMessages((prevMessages) => {
+              const messageIndex = prevMessages.findIndex(
+                (msg) => msg.id === context.streamingBotMessageId
+              );
+              if (messageIndex === -1) return prevMessages;
+
+              const updatedMessages = [...prevMessages];
+              updatedMessages[messageIndex] = {
+                ...updatedMessages[messageIndex],
+                content: displayedContentRef.current,
+                citations: data.citations || [],
+                updatedAt: new Date(),
+              };
+              return updatedMessages;
+            });
+          }
+
+          // Clear streaming after a short delay to show final content
+          setTimeout(() => {
+            clearStreaming();
+          }, 100);
+
+          if (data.conversation) {
+            context.onConversationComplete(data.conversation);
+          }
+          return false;
+
+        case 'error': {
+          setShowStatus(false);
+          setStatusMessage('');
+          clearStreaming();
+
+          const errorMessage = data.message || data.error || 'An error occurred';
+          if (!context.hasCreatedMessage) {
+            const errorMsg: FormattedMessage = {
+              type: 'bot',
+              content: errorMessage,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+              id: context.streamingBotMessageId,
+              contentFormat: 'MARKDOWN',
+              followUpQuestions: [],
+              citations: [],
+              confidence: '',
+              messageType: 'error',
+              timestamp: new Date(),
+            };
+            setMessages((prev) => [...prev, errorMsg]);
+            context.onMessageCreated();
+          } else {
+            setMessages((prevMessages) => {
+              const messageIndex = prevMessages.findIndex(
+                (msg) => msg.id === context.streamingBotMessageId
+              );
+              if (messageIndex !== -1) {
+                const updatedMessages = [...prevMessages];
+                updatedMessages[messageIndex] = {
+                  ...updatedMessages[messageIndex],
+                  content: errorMessage,
+                  messageType: 'error',
+                  updatedAt: new Date(),
+                };
+                return updatedMessages;
+              }
+              return prevMessages;
+            });
+          }
+          context.onErrorReceived();
+          return true;
+        }
+
+        default:
+          return false;
+      }
+    },
+    [createStreamingMessage, updateStreamingContent, updateStatus, clearStreaming]
+  );
+
   const handleStreamingResponse = useCallback(
     async (url: string, body: any, isNewConversation: boolean): Promise<void> => {
       const streamingBotMessageId = `streaming-${Date.now()}`;
 
-      // Define state object to avoid closure issues in loops
+      // Reset accumulated content at the start of new streaming
+      accumulatedContentRef.current = '';
+
       const streamState = {
         finalConversation: null as Conversation | null,
         hasCreatedMessage: false,
         hasReceivedError: false,
       };
 
-      // Define callbacks outside of any loops
       const callbacks = {
         onConversationComplete: (conversation: Conversation) => {
           streamState.finalConversation = conversation;
@@ -516,7 +662,6 @@ const ChatInterface = () => {
         let buffer = '';
         let currentEvent = '';
 
-        // Process a single line
         const processLine = async (line: string): Promise<void> => {
           const trimmedLine = line.trim();
           if (!trimmedLine) return;
@@ -542,7 +687,6 @@ const ChatInterface = () => {
           }
         };
 
-        // Recursive function to read stream chunks
         const readNextChunk = async (): Promise<void> => {
           const { done, value } = await reader.read();
           if (done) return;
@@ -551,10 +695,7 @@ const ChatInterface = () => {
           const lines = buffer.split('\n');
           buffer = lines.pop() || '';
 
-          // Process all lines in parallel to avoid await-in-loop
           await Promise.all(lines.map(processLine));
-
-          // Continue reading recursively - remove 'return' keyword
           await readNextChunk();
         };
 
@@ -571,6 +712,8 @@ const ChatInterface = () => {
         console.error('Streaming connection error:', error);
         setShowStatus(false);
         clearStreaming();
+        // Reset accumulated content on error
+        accumulatedContentRef.current = '';
       } finally {
         setStreamingController(null);
       }
@@ -617,12 +760,34 @@ const ChatInterface = () => {
     [inputValue, currentConversationId, showWelcome, streamingController, handleStreamingResponse]
   );
 
+  const handleNewChat = useCallback(() => {
+    if (streamingController) {
+      streamingController.abort();
+    }
+    clearStreaming(); // This now clears all intervals
+
+    currentConversationIdRef.current = null;
+    setCurrentConversationId(null);
+    navigate('/');
+    clearStreaming();
+    setShowStatus(false);
+    setMessages([]);
+    setInputValue('');
+    setShouldRefreshSidebar(true);
+    setShowWelcome(true);
+    setSelectedChat(null);
+    // Reset accumulated content
+    accumulatedContentRef.current = '';
+  }, [navigate, streamingController, clearStreaming]);
+
   const handleChatSelect = useCallback(
     async (chat: Conversation) => {
       if (!chat?._id) return;
       if (streamingController) {
         streamingController.abort();
       }
+      clearStreaming(); // Clear any ongoing streaming
+
       try {
         setShowWelcome(false);
         setCurrentConversationId(chat._id);
@@ -632,6 +797,9 @@ const ChatInterface = () => {
         clearStreaming();
         setShowStatus(false);
         setMessages([]);
+        // Reset accumulated content
+        accumulatedContentRef.current = '';
+
         const response = await axios.get(`/api/v1/conversations/${chat._id}`);
         const { conversation } = response.data;
         if (conversation?.messages) {
@@ -650,22 +818,6 @@ const ChatInterface = () => {
     },
     [formatMessage, navigate, streamingController, clearStreaming]
   );
-
-  const handleNewChat = useCallback(() => {
-    if (streamingController) {
-      streamingController.abort();
-    }
-    currentConversationIdRef.current = null;
-    setCurrentConversationId(null);
-    navigate('/');
-    clearStreaming();
-    setShowStatus(false);
-    setMessages([]);
-    setInputValue('');
-    setShouldRefreshSidebar(true);
-    setShowWelcome(true);
-    setSelectedChat(null);
-  }, [navigate, streamingController, clearStreaming]);
 
   // Keep ALL existing utility functions exactly as they are
   const resetViewerStates = () => {
@@ -1044,6 +1196,16 @@ const ChatInterface = () => {
       setInputValue(newValue);
     },
     []
+  );
+
+  useEffect(
+    () => () => {
+      if (streamingController) {
+        streamingController.abort();
+      }
+      clearStreaming();
+    },
+    [streamingController, clearStreaming]
   );
 
   useEffect(() => {

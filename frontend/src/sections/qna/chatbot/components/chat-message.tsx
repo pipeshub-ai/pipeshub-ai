@@ -140,7 +140,7 @@ const StreamingContent = React.memo(
     ) => Promise<void>;
   }) => {
     const { streamingState } = useStreamingContent();
-
+    
     const isStreaming = streamingState.messageId === messageId && streamingState.isActive;
     const displayContent = isStreaming ? streamingState.content : fallbackContent;
     const displayCitations = isStreaming ? streamingState.citations : fallbackCitations;
