@@ -3,8 +3,6 @@ import type { Metadata, CustomCitation, FormattedMessage } from './chat-bot';
 export interface ChatMessageProps {
   message: FormattedMessage;
   index: number;
-  isExpanded: boolean;
-  onToggleCitations: (index: number) => void;
   onRegenerate: (messageId: string) => Promise<void>;
   onFeedbackSubmit: (messageId: string, feedback: any) => Promise<void>;
   conversationId: string | null;

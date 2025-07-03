@@ -182,6 +182,57 @@ const CitationHoverCard = ({
   const isDarkMode = theme.palette.mode === 'dark';
   const scrollableStyles = createScrollableContainerStyle(theme);
 
+  // Safe getter functions to prevent undefined access errors
+  const getPageNumber = () => {
+    try {
+      return citation?.metadata?.pageNum?.[0];
+    } catch (error) {
+      console.warn('Error accessing pageNum:', error);
+      return undefined;
+    }
+  };
+
+  const getSheetName = () => {
+    try {
+      return citation?.metadata?.sheetName;
+    } catch (error) {
+      console.warn('Error accessing sheetName:', error);
+      return undefined;
+    }
+  };
+
+  const getBlockNumber = () => {
+    try {
+      return citation?.metadata?.blockNum?.[0];
+    } catch (error) {
+      console.warn('Error accessing blockNum:', error);
+      return undefined;
+    }
+  };
+
+  const getExtension = () => {
+    try {
+      return citation?.metadata?.extension;
+    } catch (error) {
+      console.warn('Error accessing extension:', error);
+      return '';
+    }
+  };
+
+  const getWebUrl = () => {
+    try {
+      let webUrl = citation?.metadata?.webUrl;
+      if (citation?.metadata?.origin === 'UPLOAD' && webUrl && !webUrl.startsWith('http')) {
+        const baseUrl = `${window.location.protocol}//${window.location.host}`;
+        webUrl = baseUrl + webUrl;
+      }
+      return webUrl;
+    } catch (error) {
+      console.warn('Error accessing webUrl:', error);
+      return undefined;
+    }
+  };
+
   const handleClick = (e: React.MouseEvent): void => {
     e.preventDefault();
     e.stopPropagation();
@@ -204,7 +255,8 @@ const CitationHoverCard = ({
 
     if (citation?.metadata?.recordId) {
       try {
-        const isExcelOrCSV = ['csv', 'xlsx', 'xls'].includes(citation.metadata?.extension);
+        const extension = getExtension();
+        const isExcelOrCSV = ['csv', 'xlsx', 'xls'].includes(extension);
         onViewPdf('', citation, aggregatedCitations, isExcelOrCSV);
       } catch (err) {
         console.error('Failed to fetch document:', err);
@@ -228,12 +280,11 @@ const CitationHoverCard = ({
     return viewableExtensions.includes(extension);
   }
 
-  let webUrl = citation?.metadata?.webUrl;
-  if (citation.metadata.origin === 'UPLOAD' && webUrl && !webUrl.startsWith('http')) {
-    const baseUrl = `${window.location.protocol}//${window.location.host}`;
-    const newWebUrl = baseUrl + webUrl;
-    webUrl = newWebUrl;
-  }
+  const pageNumber = getPageNumber();
+  const sheetName = getSheetName();
+  const blockNumber = getBlockNumber();
+  const extension = getExtension();
+  const webUrl = getWebUrl();
 
   return (
     <Fade in={isVisible} timeout={150}>
@@ -306,7 +357,7 @@ const CitationHoverCard = ({
                 </Tooltip>
               )}
 
-              {isDocViewable(citation.metadata.extension) && (
+              {extension && isDocViewable(extension) && (
                 <Tooltip title="View document" arrow placement="top" sx={{ zIndex: 2999, pb: 10 }}>
                   <Box component="span" sx={{ zIndex: 2999 }}>
                     <ActionButton size="small" variant="contained" onClick={handleOpenPdf}>
@@ -324,70 +375,27 @@ const CitationHoverCard = ({
             </Box>
           </Box>
 
-          {/* Document Metadata */}
+          {/* Document Metadata - Fixed with safe access */}
           <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
-            {citation.metadata?.pageNum[0] && (
-              <MetaChip size="small" label={`Page ${citation.metadata?.pageNum[0]}`} />
+            {pageNumber && (
+              <MetaChip size="small" label={`Page ${pageNumber}`} />
             )}
-            {citation.metadata?.sheetName && ['xlsx', 'csv', 'xls'].includes(citation.metadata.extension) && (
-              <MetaChip size="small" label={`${citation.metadata?.sheetName}`} />
+            {sheetName && extension && ['xlsx', 'csv', 'xls'].includes(extension) && (
+              <MetaChip size="small" label={`${sheetName}`} />
             )}
-            {['xlsx', 'csv', 'xls'].includes(citation.metadata.extension) &&
-              citation.metadata?.blockNum &&
-              citation.metadata.blockNum[0] && (
-                <MetaChip size="small" label={`Row ${citation.metadata?.extension === 'csv' ? citation.metadata.blockNum[0] + 1 : citation.metadata.blockNum[0]}`} />
-              )}
-            {citation.metadata?.extension && (
-              <MetaChip size="small" label={citation.metadata.extension.toUpperCase()} />
+            {extension && ['xlsx', 'csv', 'xls'].includes(extension) && blockNumber && (
+              <MetaChip 
+                size="small" 
+                label={`Row ${extension === 'csv' ? blockNumber + 1 : blockNumber}`} 
+              />
+            )}
+            {extension && (
+              <MetaChip size="small" label={extension.toUpperCase()} />
             )}
           </Box>
 
           {/* Citation Content */}
           <CitationContent>{citation?.content || 'No content available.'}</CitationContent>
-
-          {/* Topics and Departments */}
-          {/* <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}> */}
-          {/* Topics */}
-          {/* {citation.metadata?.topics && citation.metadata.topics.length > 0 && (
-              <Box>
-                <SectionHeading>
-                  <Icon
-                    icon={bookmarkIcon}
-                    width={12}
-                    height={12}
-                  />
-                  Topics
-                </SectionHeading>
-                <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
-                  {citation.metadata.topics.slice(0, 4).map((topic, index) => (
-                    <StyledChip key={index} label={topic} size="small" />
-                  ))}
-                  {citation.metadata.topics.length > 4 && (
-                    <MetaChip label={`+${citation.metadata.topics.length - 4}`} size="small" />
-                  )}
-                </Box>
-              </Box>
-            )} */}
-
-          {/* Departments */}
-          {/* {citation.metadata?.departments && citation.metadata.departments.length > 0 && (
-              <Box>
-                <SectionHeading>
-                  <Icon
-                    icon={departmentIcon}
-                    width={12}
-                    height={12}
-                  />
-                  Departments
-                </SectionHeading>
-                <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
-                  {citation.metadata.departments.map((dept, index) => (
-                    <StyledChip key={index} label={dept} size="small" />
-                  ))}
-                </Box>
-              </Box>
-            )} */}
-          {/* </Box> */}
         </Stack>
       </StyledCard>
     </Fade>
