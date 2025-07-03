@@ -1,11 +1,11 @@
-// Self-Contained ChatInput.tsx - Manages its own state
+// Enhanced ChatInput.tsx - Beautiful dark/light mode UI with textarea
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Icon } from '@iconify/react';
 import sendIcon from '@iconify-icons/mdi/send';
-import { Box, Paper, TextField, IconButton, useTheme, alpha } from '@mui/material';
+import { Box, Paper, IconButton, useTheme, alpha } from '@mui/material';
 
 type ChatInputProps = {
-  onSubmit: (message: string) => Promise<void>; // Pass message directly
+  onSubmit: (message: string) => Promise<void>;
   isLoading: boolean;
   disabled?: boolean;
   placeholder?: string;
@@ -19,16 +19,33 @@ const ChatInput: React.FC<ChatInputProps> = ({
 }) => {
   const [localValue, setLocalValue] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const [hasText, setHasText] = useState(false);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const resizeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
 
-  // Internal change handler - doesn't communicate with parent
-  const handleChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    setLocalValue(e.target.value);
+  // Auto-resize textarea with debounce
+  const autoResizeTextarea = useCallback(() => {
+    if (inputRef.current) {
+      inputRef.current.style.height = 'auto';
+      const newHeight = Math.min(Math.max(inputRef.current.scrollHeight, 46), 180);
+      inputRef.current.style.height = `${newHeight}px`;
+    }
   }, []);
 
-  // Submit handler - only communicates final message to parent
+  const handleChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const value = e.target.value;
+    setLocalValue(value);
+    setHasText(!!value.trim());
+
+    // Debounce resize to prevent excessive calculations
+    if (resizeTimeoutRef.current) {
+      clearTimeout(resizeTimeoutRef.current);
+    }
+    resizeTimeoutRef.current = setTimeout(autoResizeTextarea, 50);
+  }, [autoResizeTextarea]);
+
   const handleSubmit = useCallback(async () => {
     const trimmedValue = localValue.trim();
     if (!trimmedValue || isLoading || isSubmitting || disabled) {
@@ -40,125 +57,195 @@ const ChatInput: React.FC<ChatInputProps> = ({
     try {
       // Clear input immediately for better UX
       setLocalValue('');
+      setHasText(false);
       
-      // Send message to parent (this is the ONLY parent communication)
+      // Reset textarea height
+      if (inputRef.current) {
+        setTimeout(() => {
+          if (inputRef.current) {
+            inputRef.current.style.height = '46px';
+          }
+        }, 50);
+      }
+      
       await onSubmit(trimmedValue);
     } catch (error) {
       console.error('Failed to send message:', error);
       // Restore message on error
       setLocalValue(trimmedValue);
+      setHasText(true);
     } finally {
       setIsSubmitting(false);
       
-      // Refocus input
       if (inputRef.current) {
         inputRef.current.focus();
       }
     }
   }, [localValue, isLoading, isSubmitting, disabled, onSubmit]);
 
-  const handleKeyPress = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSubmit();
     }
   }, [handleSubmit]);
 
-  // Auto-focus on mount
   useEffect(() => {
     if (inputRef.current) {
       inputRef.current.focus();
+      
+      // Add scrollbar styles
+      const styleId = 'chat-textarea-style';
+      if (!document.getElementById(styleId)) {
+        const style = document.createElement('style');
+        style.id = styleId;
+        style.textContent = isDark
+          ? `
+        textarea::-webkit-scrollbar {
+          width: 6px;
+          background-color: transparent;
+        }
+        textarea::-webkit-scrollbar-thumb {
+          background-color: rgba(255, 255, 255, 0.2);
+          border-radius: 10px;
+        }
+        textarea::-webkit-scrollbar-thumb:hover {
+          background-color: rgba(255, 255, 255, 0.3);
+        }
+      `
+          : `
+        textarea::-webkit-scrollbar {
+          width: 6px;
+          background-color: transparent;
+        }
+        textarea::-webkit-scrollbar-thumb {
+          background-color: rgba(0, 0, 0, 0.2);
+          border-radius: 10px;
+        }
+        textarea::-webkit-scrollbar-thumb:hover {
+          background-color: rgba(0, 0, 0, 0.3);
+        }
+      `;
+        document.head.appendChild(style);
+      }
     }
-  }, []);
 
-  const canSubmit = localValue.trim() && !isLoading && !isSubmitting && !disabled;
+    return () => {
+      if (resizeTimeoutRef.current) {
+        clearTimeout(resizeTimeoutRef.current);
+      }
+    };
+  }, [isDark]);
+
+  const canSubmit = hasText && !isLoading && !isSubmitting && !disabled;
 
   return (
-    <Box sx={{ p: 1, width: { xs: '90%', sm: '80%', md: '70%' }, mx: 'auto' }}>
+    <Box sx={{ 
+      p: 1, 
+      width: { xs: '90%', sm: '80%', md: '70%' }, 
+      mx: 'auto', 
+    }}>
       <Paper
         elevation={0}
         sx={{
           display: 'flex',
           alignItems: 'center',
-          p: '6px 12px',
+          p: '9px 14px',
           borderRadius: '10px',
-          backgroundColor: isDark ? 'rgba(30, 30, 35, 0.7)' : '#f8f9fa',
+          backgroundColor: isDark ? alpha('#131417', 0.5) : alpha('#f8f9fa', 0.6),
           border: '1px solid',
-          borderColor: isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.06)',
-          boxShadow: isDark 
-            ? '0 4px 12px rgba(0, 0, 0, 0.3)' 
-            : '0 2px 8px rgba(0, 0, 0, 0.05)',
-          transition: 'all 0.2s',
+          borderColor: isDark ? alpha('#fff', 0.06) : alpha('#000', 0.04),
+          boxShadow: isDark ? '0 4px 16px rgba(0, 0, 0, 0.2)' : '0 2px 10px rgba(0, 0, 0, 0.03)',
+          transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
           '&:hover': {
-            borderColor: isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(0, 0, 0, 0.09)',
-          },
-          '&:focus-within': {
-            borderColor: alpha(theme.palette.primary.main, isDark ? 0.5 : 0.3),
-            boxShadow: `0 0 0 1px ${alpha(theme.palette.primary.main, 0.15)}`,
+            borderColor: isDark ? alpha('#fff', 0.1) : alpha('#000', 0.07),
+            boxShadow: isDark ? '0 6px 20px rgba(0, 0, 0, 0.25)' : '0 4px 14px rgba(0, 0, 0, 0.05)',
+            backgroundColor: isDark ? alpha('#131417', 0.7) : alpha('#fff', 0.9),
           },
         }}
       >
-        <TextField
+        <textarea
           ref={inputRef}
-          fullWidth
           placeholder={placeholder}
-          variant="standard"
-          InputProps={{
-            disableUnderline: true,
-            sx: {
-              color: isDark ? 'rgba(255, 255, 255, 0.9)' : 'rgba(0, 0, 0, 0.8)',
-              fontSize: '0.925rem',
-              '::placeholder': {
-                color: isDark ? 'rgba(255, 255, 255, 0.4)' : 'rgba(0, 0, 0, 0.4)',
-                opacity: 1,
-              },
-              padding: '2px 0',
-            }
-          }}
-          sx={{ 
-            mx: 1.5,
-            '& .MuiInputBase-multiline': {
-              padding: '6px 0',
-            }
-          }}
-          value={localValue} // Use local state only
-          onChange={handleChange} // Use local handler only
-          onKeyPress={handleKeyPress}
+          onChange={handleChange}
+          onKeyDown={handleKeyDown}
+          value={localValue}
           disabled={disabled || isSubmitting}
-          multiline
-          maxRows={4}
+          style={{
+            width: '100%',
+            border: 'none',
+            outline: 'none',
+            background: 'transparent',
+            color: isDark ? alpha('#fff', 0.95).toString() : alpha('#000', 0.85).toString(),
+            fontSize: '0.9rem',
+            lineHeight: 1.5,
+            minHeight: '46px',
+            maxHeight: '180px',
+            resize: 'none',
+            padding: '8px 8px',
+            fontFamily: 'Inter, system-ui, -apple-system, sans-serif',
+            margin: '0 6px 0 0',
+            overflowY: 'auto',
+            overflowX: 'hidden',
+            transition: 'height 0.15s ease',
+            letterSpacing: '0.01em',
+          }}
         />
 
         <IconButton
-          size="small"
+          size="medium"
           onClick={handleSubmit}
           disabled={!canSubmit}
           sx={{
-            backgroundColor: canSubmit
-              ? alpha(theme.palette.primary.main, isDark ? 0.15 : 0.08) 
-              : 'transparent',
+            backgroundColor:
+              canSubmit ? alpha(theme.palette.primary.main, 0.9) : 'transparent',
             width: 34,
             height: 34,
-            transition: 'all 0.2s',
-            color: canSubmit
-              ? theme.palette.primary.main
-              : isDark ? 'rgba(255, 255, 255, 0.4)' : 'rgba(0, 0, 0, 0.3)',
+            borderRadius: '8px',
+            flexShrink: 0,
+            alignSelf: 'center',
+            transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+            color:
+              canSubmit ? '#fff' : isDark ? alpha('#fff', 0.4) : alpha('#000', 0.3),
+            opacity: canSubmit ? 1 : 0.6,
+            border:
+              canSubmit
+                ? 'none'
+                : `1px solid ${isDark ? alpha('#fff', 0.1) : alpha('#000', 0.05)}`,
             '&:hover': {
-              backgroundColor: canSubmit
-                ? alpha(theme.palette.primary.main, isDark ? 0.25 : 0.12) 
-                : isDark ? 'rgba(255, 255, 255, 0.04)' : 'rgba(0, 0, 0, 0.03)',
+              backgroundColor:
+                canSubmit
+                  ? theme.palette.primary.main
+                  : isDark
+                    ? alpha('#fff', 0.05)
+                    : alpha('#000', 0.04),
+              transform: canSubmit ? 'translateY(-1px)' : 'none',
+              boxShadow: canSubmit ? '0 4px 8px rgba(0, 0, 0, 0.15)' : 'none',
+            },
+            '&:active': {
+              transform: canSubmit ? 'translateY(0)' : 'none',
+              boxShadow: 'none',
             },
             '&.Mui-disabled': {
-              opacity: 0.5,
-            }
+              opacity: 0.4,
+              backgroundColor: 'transparent',
+              border: `1px solid ${isDark ? alpha('#fff', 0.05) : alpha('#000', 0.03)}`,
+            },
           }}
         >
-          <Icon icon={sendIcon} style={{ fontSize: '1.125rem' }} />
+          <Icon
+            icon={sendIcon}
+            style={{
+              fontSize: '1rem',
+              transform: isSubmitting ? 'rotate(360deg) translateX(1px)' : 'translateX(1px)',
+              transition: 'transform 0.6s ease',
+              filter: canSubmit ? 'drop-shadow(0 1px 1px rgba(0,0,0,0.1))' : 'none',
+            }}
+          />
         </IconButton>
       </Paper>
     </Box>
   );
 };
 
-// CRITICAL: Wrap in React.memo to prevent unnecessary re-renders
 export default React.memo(ChatInput);

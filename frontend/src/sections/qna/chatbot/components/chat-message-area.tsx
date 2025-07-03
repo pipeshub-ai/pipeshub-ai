@@ -1,9 +1,10 @@
-// src/components/chat/chat-message-area.tsx
-
 import type { CustomCitation, FormattedMessage } from 'src/types/chat-bot';
 
 import React, { useMemo, useState, useEffect, useCallback } from 'react';
-import { Box, Fade, Stack, Typography, useTheme, alpha } from '@mui/material';
+import { Box, Fade, Stack, Typography, useTheme, alpha, IconButton, Tooltip } from '@mui/material';
+import { Icon } from '@iconify/react';
+import arrowUpIcon from '@iconify-icons/mdi/arrow-up';
+import arrowDownIcon from '@iconify-icons/mdi/arrow-down';
 import { createScrollableContainerStyle } from '../utils/styles/scrollbar';
 
 import ChatMessage from './chat-message';
@@ -22,7 +23,6 @@ type ChatMessagesAreaProps = {
     isExcelFile?: boolean,
     buffer?: ArrayBuffer
   ) => void;
-  // FIX: Add isStatusVisible to props
   currentStatus?: string;
   isStatusVisible?: boolean;
 };
@@ -47,12 +47,10 @@ type MessageWithControlsProps = {
   showRegenerate: boolean;
 };
 
-// FIX: Simplified the ProcessingIndicator to just display text. The logic to show/hide it is in the parent.
 const ProcessingIndicator = React.memo(({ displayText }: ProcessingIndicatorProps) => {
   const theme = useTheme();
 
   const renderAnimation = () => {
-    // ... (This function is unchanged)
     if (!displayText) return 'thinking';
     if (displayText.includes('🔍') || displayText.toLowerCase().includes('search')) {
       return 'searching';
@@ -61,7 +59,6 @@ const ProcessingIndicator = React.memo(({ displayText }: ProcessingIndicatorProp
   };
 
   const getAnimationType = () => {
-    // ... (This function is unchanged)
     if (!displayText) return 'thinking';
     if (displayText.includes('🔍') || displayText.toLowerCase().includes('search')) {
       return 'searching';
@@ -132,25 +129,27 @@ const ChatMessagesArea = ({
   isLoadingConversation,
   onViewPdf,
   currentStatus,
-  isStatusVisible, // FIX: Destructure the new prop
+  isStatusVisible,
 }: ChatMessagesAreaProps) => {
   const messagesEndRef = React.useRef<HTMLDivElement | null>(null);
   const messagesContainerRef = React.useRef<HTMLDivElement | null>(null);
   const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
   const prevMessagesLength = React.useRef(messages.length);
   const scrollTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
+  
+  // NEW: Scroll button states
+  const [showScrollToTop, setShowScrollToTop] = useState(false);
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
 
   const displayMessages = useMemo(() => messages, [messages]);
 
   const hasStreamingContent = useMemo(() => {
-    // ... (This function is unchanged)
     if (displayMessages.length === 0) return false;
     const lastMessage = displayMessages[displayMessages.length - 1];
     return lastMessage?.type === 'bot' && lastMessage?.id?.startsWith('streaming-');
   }, [displayMessages]);
 
   const canRegenerateMessage = useCallback(
-    // ... (This function is unchanged)
     (message: FormattedMessage) => {
       const botMessages = messages.filter((msg) => msg.type === 'bot');
       const lastBotMessage = botMessages[botMessages.length - 1];
@@ -163,7 +162,6 @@ const ChatMessagesArea = ({
     [messages]
   );
 
-  // ... (scrolling functions are unchanged)
   const scrollToBottomSmooth = useCallback(() => {
     if (!messagesEndRef.current || !shouldAutoScroll) return;
     if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
@@ -176,11 +174,29 @@ const ChatMessagesArea = ({
     messagesEndRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' });
   }, []);
 
+  // NEW: Scroll to top function
+  const scrollToTop = useCallback(() => {
+    if (!messagesContainerRef.current) return;
+    messagesContainerRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+  }, []);
+
+  // NEW: Scroll to bottom function (manual)
+  const scrollToBottom = useCallback(() => {
+    if (!messagesEndRef.current) return;
+    messagesEndRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  }, []);
+
   const handleScroll = useCallback(() => {
     if (!messagesContainerRef.current) return;
     const { scrollTop, scrollHeight, clientHeight } = messagesContainerRef.current;
     const isNearBottom = scrollHeight - scrollTop - clientHeight < 150;
+    const isNearTop = scrollTop < 150;
+    
     setShouldAutoScroll(isNearBottom);
+    
+    // NEW: Show/hide scroll buttons based on position
+    setShowScrollToTop(scrollTop > 200);
+    setShowScrollToBottom(!isNearBottom && scrollHeight > clientHeight + 400);
   }, []);
 
   useEffect(() => {
@@ -201,7 +217,7 @@ const ChatMessagesArea = ({
         if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
       };
     }
-    return undefined; // Explicit return for consistency
+    return undefined;
   }, [hasStreamingContent, shouldAutoScroll, scrollToBottomSmooth]);
 
   useEffect(() => {
@@ -211,15 +227,13 @@ const ChatMessagesArea = ({
     }
   }, [conversationId, displayMessages.length, scrollToBottomImmediate]);
 
-  // FIX: Updated logic to determine when to show the status indicator.
   const shouldShowLoadingIndicator = useMemo(() => {
-    if (hasStreamingContent) return false; // Don't show if the final answer is already streaming
-    if (isLoadingConversation && messages.length === 0) return true; // Show when loading a whole conversation
-    if (isStatusVisible && currentStatus) return true; // Show if the parent says so
+    if (hasStreamingContent) return false; 
+    if (isLoadingConversation && messages.length === 0) return true; 
+    if (isStatusVisible && currentStatus) return true;
     return false;
   }, [isLoadingConversation, messages.length, currentStatus, isStatusVisible, hasStreamingContent]);
 
-  // FIX: Determine the text to display in the indicator
   const indicatorText = useMemo(() => {
     if (isLoadingConversation && messages.length === 0) return 'Loading conversation...';
     return currentStatus || '';
@@ -237,58 +251,145 @@ const ChatMessagesArea = ({
 
   return (
     <Box
-      ref={messagesContainerRef}
-      onScroll={handleScroll}
       sx={{
+        position: 'relative',
         flexGrow: 1,
-        overflow: 'auto',
-        p: 3,
         display: 'flex',
         flexDirection: 'column',
         minHeight: 0,
-        ...scrollableStyles,
       }}
     >
       <Box
+        ref={messagesContainerRef}
+        onScroll={handleScroll}
         sx={{
           flexGrow: 1,
+          overflow: 'auto',
+          p: 3,
           display: 'flex',
           flexDirection: 'column',
-          height: '100%',
-          position: 'relative',
+          minHeight: 0,
+          ...scrollableStyles,
         }}
       >
-        <Box sx={{ minHeight: 4 }} />
-        {displayMessages.map((message, index) => (
-          <MessageWithControls
-            key={`msg-${message.id}`}
-            message={message}
-            index={index}
-            onRegenerate={onRegenerateMessage}
-            onFeedbackSubmit={onFeedbackSubmit}
-            conversationId={conversationId}
-            showRegenerate={canRegenerateMessage(message)}
-            onViewPdf={onViewPdf}
+        <Box
+          sx={{
+            flexGrow: 1,
+            display: 'flex',
+            flexDirection: 'column',
+            height: '100%',
+            position: 'relative',
+          }}
+        >
+          <Box sx={{ minHeight: 4 }} />
+          {displayMessages.map((message, index) => (
+            <MessageWithControls
+              key={`msg-${message.id}`}
+              message={message}
+              index={index}
+              onRegenerate={onRegenerateMessage}
+              onFeedbackSubmit={onFeedbackSubmit}
+              conversationId={conversationId}
+              showRegenerate={canRegenerateMessage(message)}
+              onViewPdf={onViewPdf}
+            />
+          ))}
+          {/* FIX: Render the indicator in the flow with the correct text */}
+          {shouldShowLoadingIndicator && (
+            <Box sx={{ mt: 1,mb:4 }}>
+              <ProcessingIndicator displayText={indicatorText} />
+            </Box>
+          )}
+          <Box sx={{ minHeight: 20 }} />
+          <div
+            ref={messagesEndRef}
+            style={{ float: 'left', clear: 'both', height: 1, width: '100%' }}
           />
-        ))}
-        {/* FIX: Render the indicator in the flow with the correct text */}
-        {shouldShowLoadingIndicator && (
-          <Box sx={{ mt: 1,mb:4 }}>
-            <ProcessingIndicator displayText={indicatorText} />
-          </Box>
-        )}
-        <Box sx={{ minHeight: 20 }} />
-        <div
-          ref={messagesEndRef}
-          style={{ float: 'left', clear: 'both', height: 1, width: '100%' }}
-        />
+        </Box>
       </Box>
+
+      {/* NEW: Scroll to Top Button */}
+      <Fade in={showScrollToTop} timeout={200}>
+        <Box
+          sx={{
+            position: 'absolute',
+            top: 20,
+            right: 20,
+            zIndex: 10,
+          }}
+        >
+          <Tooltip title="Scroll to top" placement="left">
+            <IconButton
+              onClick={scrollToTop}
+              sx={{
+                backgroundColor: (themeVal) => alpha(themeVal.palette.background.paper, 0.9),
+                border: `1px solid ${alpha(theme.palette.divider, 0.2)}`,
+                backdropFilter: 'blur(8px)',
+                boxShadow: (themeVal) => themeVal.shadows[4],
+                width: 36,
+                height: 36,
+                '&:hover': {
+                  backgroundColor: (themeVal) => alpha(themeVal.palette.background.paper, 1),
+                  transform: 'translateY(-2px)',
+                  boxShadow: (themeVal) => themeVal.shadows[8],
+                },
+                transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+              }}
+            >
+              <Icon 
+                icon={arrowUpIcon} 
+                width={16} 
+                height={16} 
+                color={theme.palette.text.secondary}
+              />
+            </IconButton>
+          </Tooltip>
+        </Box>
+      </Fade>
+
+      {/* NEW: Scroll to Bottom Button */}
+      <Fade in={showScrollToBottom} timeout={200}>
+        <Box
+          sx={{
+            position: 'absolute',
+            bottom: 20,
+            right: 20,
+            zIndex: 10,
+          }}
+        >
+          <Tooltip title="Scroll to bottom" placement="left">
+            <IconButton
+              onClick={scrollToBottom}
+              sx={{
+                backgroundColor: (themeVal) => alpha(themeVal.palette.background.paper, 0.9),
+                border: `1px solid ${alpha(theme.palette.divider, 0.2)}`,
+                backdropFilter: 'blur(8px)',
+                boxShadow: (themeVal) => themeVal.shadows[4],
+                width: 36,
+                height: 36,
+                '&:hover': {
+                  backgroundColor: (themeVal) => alpha(themeVal.palette.background.paper, 1),
+                  transform: 'translateY(-2px)',
+                  boxShadow: (themeVal) => themeVal.shadows[8],
+                },
+                transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+              }}
+            >
+              <Icon 
+                icon={arrowDownIcon} 
+                width={16} 
+                height={16} 
+                color={theme.palette.text.secondary}
+              />
+            </IconButton>
+          </Tooltip>
+        </Box>
+      </Fade>
     </Box>
   );
 };
 
 const MessageWithControls = React.memo(
-  // ... (This component is unchanged)
   ({
     message,
     index,

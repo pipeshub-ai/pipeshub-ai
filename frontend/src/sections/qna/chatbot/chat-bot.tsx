@@ -1,4 +1,3 @@
-// Updated ChatInterface component with better error handling and status management
 import type {
   Message,
   Citation,
@@ -79,7 +78,6 @@ const StyledOpenButton = styled(IconButton)(({ theme }) => ({
   },
 }));
 
-// Streaming controller interface
 interface StreamingController {
   abort: () => void;
 }
@@ -124,20 +122,18 @@ const getEngagingStatusMessage = (event: string, data: any): string | null => {
       return 'Finished searching...';
     }
 
-    // These events are not intended for display, so we return null.
     case 'connected':
+      return 'Processing ...';
     case 'query_transformed':
     case 'results_ready':
       return null;
 
     default:
-      // Return null for any other unhandled event to avoid showing a generic message.
       return null;
   }
 };
 
 const ChatInterface = () => {
-  // Existing state variables
   const [messages, setMessages] = useState<FormattedMessage[]>([]);
   const [inputValue, setInputValue] = useState<string>('');
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -170,16 +166,20 @@ const ChatInterface = () => {
   const wordQueueRef = useRef<string[]>([]);
   const isStreamingActiveRef = useRef<boolean>(false);
   const streamingIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  
-  const TYPING_SPEED = 50; // milliseconds between word updates (ChatGPT-like speed)
-  const BATCH_SIZE = 1; // words to add per interval (1 for word-by-word, 2-3 for faster)
+  const completionDataRef = useRef<any>(null);
+  const pendingChunksRef = useRef<string[]>([]);
+  const isCompletionPendingRef = useRef<boolean>(false);
+  const finalMessageIdRef = useRef<string | null>(null);
+  const isProcessingCompletionRef = useRef<boolean>(false); 
 
-  // IMPROVED: Better conversation status management with error handling
+  const BATCH_SIZE = 1; 
+  const TYPING_SPEED = 25;
+  const COMPLETION_DELAY = 300;
+
   const [conversationStatus, setConversationStatus] = useState<{
     [key: string]: string | undefined;
   }>({});
 
-  // FIX: Add error state tracking to prevent duplicate error messages
   const [conversationErrors, setConversationErrors] = useState<{
     [key: string]: boolean;
   }>({});
@@ -187,9 +187,7 @@ const ChatInterface = () => {
   const [pendingResponseConversationId, setPendingResponseConversationId] = useState<string | null>(
     null
   );
-  // const [showWelcome, setShowWelcome] = useState<boolean>(
-  //   () => messages.length === 0 && !currentConversationId
-  // );
+
   const [activeRequestTracker, setActiveRequestTracker] = useState<{
     current: string | null;
     type: 'create' | 'continue' | null;
@@ -238,143 +236,6 @@ const ChatInterface = () => {
 
   const [streamingController, setStreamingController] = useState<StreamingController | null>(null);
 
-  // NEW: Word-by-word streaming function
-const processWordQueue = useCallback((messageId: string, citations: CustomCitation[], isCompleting = false) => {
-  if (!isStreamingActiveRef.current || wordQueueRef.current.length === 0) {
-    // Clear interval if no more words to process
-    if (streamingIntervalRef.current) {
-      clearInterval(streamingIntervalRef.current);
-      streamingIntervalRef.current = null;
-    }
-    
-    // If this was the final completion, trigger completion handlers
-    if (isCompleting && wordQueueRef.current.length === 0) {
-      // Signal that streaming has naturally completed
-      window.dispatchEvent(new CustomEvent('streamingNaturallyComplete'));
-    }
-    return;
-  }
-
-  // Take next batch of words from queue
-  const wordsToAdd = wordQueueRef.current.splice(0, BATCH_SIZE);
-  displayedContentRef.current += (displayedContentRef.current ? ' ' : '') + wordsToAdd.join(' ');
-
-  // Update the streaming state
-  setStreamingState((prev) => ({
-    ...prev,
-    messageId,
-    content: displayedContentRef.current,
-    citations,
-    isActive: true,
-  }));
-
-  // Update the messages array immediately
-  setMessages((prevMessages) => {
-    const messageIndex = prevMessages.findIndex((msg) => msg.id === messageId);
-    if (messageIndex === -1) return prevMessages;
-
-    const updatedMessages = [...prevMessages];
-    updatedMessages[messageIndex] = {
-      ...updatedMessages[messageIndex],
-      content: displayedContentRef.current,
-      citations,
-      updatedAt: new Date(),
-    };
-    return updatedMessages;
-  });
-}, []);
-
-  // NEW: Start word-by-word streaming
-  const startWordByWordStreaming = useCallback(
-    (messageId: string, citations: CustomCitation[]) => {
-      if (streamingIntervalRef.current) {
-        clearInterval(streamingIntervalRef.current);
-      }
-
-      streamingIntervalRef.current = setInterval(() => {
-        processWordQueue(messageId, citations);
-      }, TYPING_SPEED);
-    },
-    [processWordQueue]
-  );
-
-  // MODIFIED: Enhanced updateStreamingContent with word queuing
-  const updateStreamingContent = useCallback(
-    (messageId: string, newChunk: string, citations: CustomCitation[] = []) => {
-      if (!isStreamingActiveRef.current) {
-        // Start new streaming session
-        accumulatedContentRef.current = '';
-        displayedContentRef.current = '';
-        wordQueueRef.current = [];
-        isStreamingActiveRef.current = true;
-      }
-
-      // Accumulate the new chunk
-      accumulatedContentRef.current += newChunk;
-
-      // Split accumulated content into words and add new words to queue
-      const allWords = accumulatedContentRef.current.split(/(\s+)/).filter((word) => word.trim());
-      const currentDisplayedWords = displayedContentRef.current
-        .split(/(\s+)/)
-        .filter((word) => word.trim());
-
-      // Find new words that haven't been displayed yet
-      const newWords = allWords.slice(currentDisplayedWords.length);
-
-      if (newWords.length > 0) {
-        // Add new words to the queue
-        wordQueueRef.current.push(...newWords);
-
-        // Start or continue the word-by-word display
-        if (!streamingIntervalRef.current) {
-          startWordByWordStreaming(messageId, citations);
-        }
-      }
-    },
-    [startWordByWordStreaming]
-  );
-
-  // MODIFIED: Enhanced clearStreaming function
-  const clearStreaming = useCallback(() => {
-    // Clear all intervals and timeouts
-    if (streamingIntervalRef.current) {
-      clearInterval(streamingIntervalRef.current);
-      streamingIntervalRef.current = null;
-    }
-    if (streamingTimeoutRef.current) {
-      clearTimeout(streamingTimeoutRef.current);
-      streamingTimeoutRef.current = null;
-    }
-
-    // Reset all refs
-    accumulatedContentRef.current = '';
-    displayedContentRef.current = '';
-    wordQueueRef.current = [];
-    isStreamingActiveRef.current = false;
-
-    // Clear streaming state
-    setStreamingState({
-      messageId: null,
-      content: '',
-      citations: [],
-      isActive: false,
-    });
-  }, []);
-
-  const updateStatus = useCallback((message: string) => {
-    setStatusMessage(message);
-    setShowStatus(true);
-  }, []);
-
-  const streamingContextValue: StreamingContextType = useMemo(
-    () => ({
-      streamingState,
-      updateStreamingContent,
-      clearStreaming,
-    }),
-    [streamingState, updateStreamingContent, clearStreaming]
-  );
-
   const formatMessage = useCallback((apiMessage: Message): FormattedMessage | null => {
     if (!apiMessage) return null;
     const baseMessage = {
@@ -411,6 +272,227 @@ const processWordQueue = useCallback((messageId: string, citations: CustomCitati
     }
     return baseMessage;
   }, []);
+
+  const clearStreaming = useCallback(() => {
+    if (isProcessingCompletionRef.current) {
+      return;
+    }
+
+    // Clear all intervals and timeouts
+    if (streamingIntervalRef.current) {
+      clearInterval(streamingIntervalRef.current);
+      streamingIntervalRef.current = null;
+    }
+    if (streamingTimeoutRef.current) {
+      clearTimeout(streamingTimeoutRef.current);
+      streamingTimeoutRef.current = null;
+    }
+
+    // Reset all refs
+    accumulatedContentRef.current = '';
+    displayedContentRef.current = '';
+    pendingChunksRef.current = [];
+    isStreamingActiveRef.current = false;
+    completionDataRef.current = null;
+    isCompletionPendingRef.current = false;
+    finalMessageIdRef.current = null;
+    isProcessingCompletionRef.current = false;
+
+    // Only clear streaming state if it's still active
+    setStreamingState((prev) => {
+      if (prev.isActive) {
+        return {
+          messageId: null,
+          content: '',
+          citations: [],
+          isActive: false,
+        };
+      }
+      return prev;
+    });
+  }, []);
+
+  const finalizeStreamingWithCompletion = useCallback(
+    (messageId: string, completionData: any) => {
+      // Mark that we're processing completion
+      isProcessingCompletionRef.current = true;
+
+      if (completionData?.conversation) {
+        const finalBotMessage = completionData.conversation.messages
+          .filter((msg: any) => msg.messageType === 'bot_response')
+          .pop();
+
+        if (finalBotMessage) {
+          const formattedFinalMessage = formatMessage(finalBotMessage);
+          if (formattedFinalMessage) {
+            // Store the final message ID for reference
+            finalMessageIdRef.current = finalBotMessage._id;
+
+            // Apply the final message content with all proper formatting and citations
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === messageId
+                  ? {
+                      ...formattedFinalMessage,
+                      id: finalBotMessage._id,
+                      content: formattedFinalMessage.content,
+                      citations: formattedFinalMessage.citations || [],
+                    }
+                  : msg
+              )
+            );
+
+            // Update streaming state to show completion
+            setStreamingState((prev) => ({
+              ...prev,
+              messageId: finalBotMessage._id,
+              content: formattedFinalMessage.content,
+              citations: formattedFinalMessage.citations || [],
+              isActive: false, 
+            }));
+          }
+        }
+      }
+
+      // Clean up after completion
+      setTimeout(() => {
+        isCompletionPendingRef.current = false;
+        completionDataRef.current = null;
+        isProcessingCompletionRef.current = false;
+
+        // Now safe to clear streaming
+        setTimeout(() => {
+          clearStreaming();
+        }, 100);
+      }, 100);
+    },
+    [formatMessage, clearStreaming]
+  );
+
+  const processChunkQueue = useCallback(
+    (messageId: string, citations: CustomCitation[]) => {
+      if (!isStreamingActiveRef.current && !isCompletionPendingRef.current) {
+        if (streamingIntervalRef.current) {
+          clearInterval(streamingIntervalRef.current);
+          streamingIntervalRef.current = null;
+        }
+        return;
+      }
+
+      // If no more chunks to process
+      if (pendingChunksRef.current.length === 0) {
+        // If completion is pending, finalize now
+        if (isCompletionPendingRef.current && completionDataRef.current) {
+          if (streamingIntervalRef.current) {
+            clearInterval(streamingIntervalRef.current);
+            streamingIntervalRef.current = null;
+          }
+
+          // Apply final message
+          setTimeout(() => {
+            finalizeStreamingWithCompletion(messageId, completionDataRef.current);
+          }, COMPLETION_DELAY);
+
+          return;
+        }
+
+        // No completion pending, just stop the interval
+        if (streamingIntervalRef.current) {
+          clearInterval(streamingIntervalRef.current);
+          streamingIntervalRef.current = null;
+        }
+        return;
+      }
+
+      // Process the next chunk
+      const nextChunk = pendingChunksRef.current.shift();
+      if (nextChunk) {
+        displayedContentRef.current += nextChunk;
+
+        // Update the streaming state
+        setStreamingState((prev) => ({
+          ...prev,
+          messageId,
+          content: displayedContentRef.current,
+          citations,
+          isActive: true,
+        }));
+
+        // Update the messages array
+        setMessages((prevMessages) => {
+          const messageIndex = prevMessages.findIndex((msg) => msg.id === messageId);
+          if (messageIndex === -1) return prevMessages;
+
+          const updatedMessages = [...prevMessages];
+          updatedMessages[messageIndex] = {
+            ...updatedMessages[messageIndex],
+            content: displayedContentRef.current,
+            citations,
+            updatedAt: new Date(),
+          };
+          return updatedMessages;
+        });
+      }
+    },
+    [finalizeStreamingWithCompletion]
+  );
+
+  const startChunkStreaming = useCallback(
+    (messageId: string, citations: CustomCitation[]) => {
+      if (streamingIntervalRef.current) {
+        clearInterval(streamingIntervalRef.current);
+      }
+
+      streamingIntervalRef.current = setInterval(() => {
+        processChunkQueue(messageId, citations);
+      }, TYPING_SPEED);
+    },
+    [processChunkQueue]
+  );
+
+  const updateStreamingContent = useCallback(
+    (messageId: string, newChunk: string, citations: CustomCitation[] = []) => {
+      if (!isStreamingActiveRef.current) {
+        // Start new streaming session
+        accumulatedContentRef.current = '';
+        displayedContentRef.current = '';
+        pendingChunksRef.current = [];
+        isStreamingActiveRef.current = true;
+        completionDataRef.current = null;
+        isCompletionPendingRef.current = false;
+        finalMessageIdRef.current = null;
+        isProcessingCompletionRef.current = false;
+      }
+
+      if (newChunk && newChunk.trim()) {
+        const cleanedChunk = newChunk
+          .replace(/\\n/g, '\n')
+          .replace(/\*\*(\d+)\*\*/g, '[$1]')
+          .replace(/\*\*([^*]+)\*\*/g, '**$1**');
+
+        pendingChunksRef.current.push(cleanedChunk);
+      }
+
+      if (!streamingIntervalRef.current) {
+        startChunkStreaming(messageId, citations);
+      }
+    },
+    [startChunkStreaming]
+  );
+
+  const updateStatus = useCallback((message: string) => {
+    setStatusMessage(message);
+    setShowStatus(true);
+  }, []);
+
+  const streamingContextValue: StreamingContextType = useMemo(
+    () => ({
+      streamingState,
+      updateStreamingContent,
+      clearStreaming,
+    }),
+    [streamingState, updateStreamingContent, clearStreaming]
+  );
 
   const parseSSELine = (line: string): { event?: string; data?: any } | null => {
     if (line.startsWith('event: ')) {
@@ -452,38 +534,6 @@ const processWordQueue = useCallback((messageId: string, citations: CustomCitati
     setMessages((prev) => [...prev, streamingMessage]);
   }, []);
 
-  const handleStreamingComplete = useCallback(
-    async (
-      conversation: Conversation,
-      isNewConversation: boolean,
-      streamingBotMessageId: string
-    ): Promise<void> => {
-      if (isNewConversation) {
-        setSelectedChat(conversation);
-        setCurrentConversationId(conversation._id);
-        currentConversationIdRef.current = conversation._id;
-        setShouldRefreshSidebar(true);
-      }
-      const finalBotMessage = conversation.messages
-        .filter((msg: any) => msg.messageType === 'bot_response')
-        .pop();
-      if (finalBotMessage) {
-        const formattedFinalMessage = formatMessage(finalBotMessage);
-        if (formattedFinalMessage) {
-          setMessages((prev) =>
-            prev.map((msg) =>
-              msg.id === streamingBotMessageId
-                ? { ...formattedFinalMessage, id: finalBotMessage._id }
-                : msg
-            )
-          );
-        }
-      }
-      clearStreaming();
-    },
-    [formatMessage, clearStreaming]
-  );
-
   const handleStreamingEvent = useCallback(
     async (
       event: string,
@@ -514,7 +564,6 @@ const processWordQueue = useCallback((messageId: string, citations: CustomCitati
             setShowStatus(false);
             setStatusMessage('');
 
-            // Use the new word-by-word streaming
             updateStreamingContent(context.streamingBotMessageId, data.chunk, data.citations || []);
           }
           return false;
@@ -523,45 +572,32 @@ const processWordQueue = useCallback((messageId: string, citations: CustomCitati
           setShowStatus(false);
           setStatusMessage('');
 
-          // Ensure all remaining words are displayed before completing
-          if (wordQueueRef.current.length > 0) {
-            // Display all remaining words immediately
-            const remainingWords = wordQueueRef.current.join(' ');
-            displayedContentRef.current +=
-              (displayedContentRef.current ? ' ' : '') + remainingWords;
-            wordQueueRef.current = [];
+          // Store completion data and mark as pending
+          completionDataRef.current = data;
+          isCompletionPendingRef.current = true;
 
-            // Update final content
-            setMessages((prevMessages) => {
-              const messageIndex = prevMessages.findIndex(
-                (msg) => msg.id === context.streamingBotMessageId
-              );
-              if (messageIndex === -1) return prevMessages;
+          // Mark that we're processing completion to prevent clearing
+          isProcessingCompletionRef.current = true;
 
-              const updatedMessages = [...prevMessages];
-              updatedMessages[messageIndex] = {
-                ...updatedMessages[messageIndex],
-                content: displayedContentRef.current,
-                citations: data.citations || [],
-                updatedAt: new Date(),
-              };
-              return updatedMessages;
-            });
+          // If there are no pending chunks, finalize immediately
+          if (pendingChunksRef.current.length === 0) {
+            setTimeout(() => {
+              finalizeStreamingWithCompletion(context.streamingBotMessageId, data);
+              if (data.conversation) {
+                context.onConversationComplete(data.conversation);
+              }
+            }, COMPLETION_DELAY);
           }
 
-          // Clear streaming after a short delay to show final content
-          setTimeout(() => {
-            clearStreaming();
-          }, 100);
-
-          if (data.conversation) {
-            context.onConversationComplete(data.conversation);
-          }
           return false;
 
         case 'error': {
           setShowStatus(false);
           setStatusMessage('');
+
+          // Stop streaming on error
+          isStreamingActiveRef.current = false;
+          isProcessingCompletionRef.current = false;
           clearStreaming();
 
           const errorMessage = data.message || data.error || 'An error occurred';
@@ -607,14 +643,35 @@ const processWordQueue = useCallback((messageId: string, citations: CustomCitati
           return false;
       }
     },
-    [createStreamingMessage, updateStreamingContent, updateStatus, clearStreaming]
+    [
+      createStreamingMessage,
+      updateStreamingContent,
+      updateStatus,
+      clearStreaming,
+      finalizeStreamingWithCompletion,
+    ]
+  );
+
+  const handleStreamingComplete = useCallback(
+    async (
+      conversation: Conversation,
+      isNewConversation: boolean,
+      streamingBotMessageId: string
+    ): Promise<void> => {
+      if (isNewConversation) {
+        setSelectedChat(conversation);
+        setCurrentConversationId(conversation._id);
+        currentConversationIdRef.current = conversation._id;
+        setShouldRefreshSidebar(true);
+      }
+    },
+    []
   );
 
   const handleStreamingResponse = useCallback(
     async (url: string, body: any, isNewConversation: boolean): Promise<void> => {
       const streamingBotMessageId = `streaming-${Date.now()}`;
 
-      // Reset accumulated content at the start of new streaming
       accumulatedContentRef.current = '';
 
       const streamState = {
@@ -764,19 +821,20 @@ const processWordQueue = useCallback((messageId: string, citations: CustomCitati
     if (streamingController) {
       streamingController.abort();
     }
-    clearStreaming(); // This now clears all intervals
+
+    // Force clear streaming even if completion is processing (user wants new chat)
+    isProcessingCompletionRef.current = false;
+    clearStreaming();
 
     currentConversationIdRef.current = null;
     setCurrentConversationId(null);
     navigate('/');
-    clearStreaming();
     setShowStatus(false);
     setMessages([]);
     setInputValue('');
     setShouldRefreshSidebar(true);
     setShowWelcome(true);
     setSelectedChat(null);
-    // Reset accumulated content
     accumulatedContentRef.current = '';
   }, [navigate, streamingController, clearStreaming]);
 
@@ -786,7 +844,10 @@ const processWordQueue = useCallback((messageId: string, citations: CustomCitati
       if (streamingController) {
         streamingController.abort();
       }
-      clearStreaming(); // Clear any ongoing streaming
+
+      // Force clear streaming even if completion is processing (user wants different chat)
+      isProcessingCompletionRef.current = false;
+      clearStreaming();
 
       try {
         setShowWelcome(false);
@@ -794,10 +855,8 @@ const processWordQueue = useCallback((messageId: string, citations: CustomCitati
         currentConversationIdRef.current = chat._id;
         navigate(`/${chat._id}`);
         setIsLoadingConversation(true);
-        clearStreaming();
         setShowStatus(false);
         setMessages([]);
-        // Reset accumulated content
         accumulatedContentRef.current = '';
 
         const response = await axios.get(`/api/v1/conversations/${chat._id}`);
@@ -819,7 +878,6 @@ const processWordQueue = useCallback((messageId: string, citations: CustomCitati
     [formatMessage, navigate, streamingController, clearStreaming]
   );
 
-  // Keep ALL existing utility functions exactly as they are
   const resetViewerStates = () => {
     setTransitioning(true);
     setIsViewerReady(false);
@@ -837,12 +895,10 @@ const processWordQueue = useCallback((messageId: string, citations: CustomCitati
 
   const handleLargePPTFile = (record: any) => {
     if (record.sizeInBytes / 1048576 > 5) {
-      console.log('PPT with large file size');
       throw new Error('Large fize size, redirecting to web page ');
     }
   };
 
-  // Keep all existing onViewPdf, onClosePdf, toggleCitations functions exactly the same
   const onViewPdf = async (
     url: string,
     citation: CustomCitation,
@@ -1082,15 +1138,6 @@ const processWordQueue = useCallback((messageId: string, citations: CustomCitati
     setHighlightedCitation(null);
   };
 
-  const toggleCitations = useCallback((index: number): void => {
-    setExpandedCitations((prev) => {
-      const newState = { ...prev };
-      newState[index] = !prev[index];
-      return newState;
-    });
-  }, []);
-
-  // Keep existing handleRegenerateMessage (using non-streaming API)
   const handleRegenerateMessage = useCallback(
     async (messageId: string): Promise<void> => {
       if (!currentConversationId || !messageId) return;
@@ -1175,27 +1222,6 @@ const processWordQueue = useCallback((messageId: string, citations: CustomCitati
       }
     },
     [currentConversationId]
-  );
-
-  const handleInputChange = useCallback(
-    (input: string | React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>): void => {
-      let newValue: string;
-      if (typeof input === 'string') {
-        newValue = input;
-      } else if (
-        input &&
-        typeof input === 'object' &&
-        'target' in input &&
-        input.target &&
-        'value' in input.target
-      ) {
-        newValue = input.target.value;
-      } else {
-        return;
-      }
-      setInputValue(newValue);
-    },
-    []
   );
 
   useEffect(
@@ -1310,24 +1336,24 @@ const processWordQueue = useCallback((messageId: string, citations: CustomCitati
                   isStatusVisible={showStatus}
                 />
 
-                <Box
+                {/* <Box
                   sx={{
                     flexShrink: 0,
                     borderTop: 1,
                     borderColor: 'divider',
-                    backgroundColor:
-                      theme.palette.mode === 'dark'
-                        ? alpha(theme.palette.background.paper, 0.5)
-                        : theme.palette.background.paper,
+                    // backgroundColor:
+                    //   theme.palette.mode === 'dark'
+                    //     ? alpha(theme.palette.background.paper, 0.5)
+                    //     : theme.palette.background.paper,
                     mt: 'auto',
-                    py: 1.5,
+                    // py: 1.5,
                     minWidth: '95%',
                     mx: 'auto',
                     borderRadius: 2,
                   }}
-                >
+                > */}
                   <ChatInput onSubmit={handleSendMessage} isLoading={streamingState.isActive} />
-                </Box>
+                {/* </Box> */}
               </>
             )}
           </Box>

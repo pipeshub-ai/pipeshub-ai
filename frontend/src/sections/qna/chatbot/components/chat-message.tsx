@@ -1,5 +1,3 @@
-// src/components/chat/chat-message.tsx
-
 import type { Metadata, CustomCitation } from 'src/types/chat-bot';
 import type { Record, ChatMessageProps } from 'src/types/chat-message';
 
@@ -62,7 +60,6 @@ interface StreamingContextType {
   clearStreaming: () => void;
 }
 
-// This is the single source of truth for the context
 export const StreamingContext = createContext<StreamingContextType | null>(null);
 
 export const useStreamingContent = () => {
@@ -73,7 +70,6 @@ export const useStreamingContent = () => {
   return context;
 };
 
-// ... (Rest of the file is unchanged)
 const formatTime = (createdAt: Date) => {
   const date = new Date(createdAt);
   return new Intl.DateTimeFormat('en-US', {
@@ -140,7 +136,7 @@ const StreamingContent = React.memo(
     ) => Promise<void>;
   }) => {
     const { streamingState } = useStreamingContent();
-    
+
     const isStreaming = streamingState.messageId === messageId && streamingState.isActive;
     const displayContent = isStreaming ? streamingState.content : fallbackContent;
     const displayCitations = isStreaming ? streamingState.citations : fallbackCitations;
@@ -156,13 +152,24 @@ const StreamingContent = React.memo(
 
     const citationNumberMap = useMemo(() => {
       const result: { [key: number]: CustomCitation } = {};
-      displayCitations.forEach((citation) => {
+      const citationsToUse = displayCitations.length > 0 ? displayCitations : fallbackCitations;
+
+      citationsToUse.forEach((citation) => {
         if (citation && citation.chunkIndex && !result[citation.chunkIndex]) {
           result[citation.chunkIndex] = citation;
         }
       });
+
+      if (Object.keys(result).length === 0) {
+        citationsToUse.forEach((citation, index) => {
+          if (citation) {
+            result[index + 1] = citation;
+          }
+        });
+      }
+
       return result;
-    }, [displayCitations]);
+    }, [displayCitations, fallbackCitations]);
 
     const handleMouseEnter = useCallback(
       (event: React.MouseEvent, citationRef: string, citationId: string) => {
@@ -235,76 +242,79 @@ const StreamingContent = React.memo(
       [citationNumberMap, aggregatedCitations, onViewPdf, handleCloseHoverCard]
     );
 
-    const renderContentPart = (part: string, index: number) => {
-      const citationMatch = part.match(/\[(\d+)\]/);
-      if (citationMatch) {
-        const citationNumber = parseInt(citationMatch[1], 10);
-        const citation = citationNumberMap[citationNumber];
-        const citationId = `citation-${citationNumber}-${index}`;
+    const renderContentPart = useCallback(
+      (part: string, index: number) => {
+        const citationMatch = part.match(/\[(\d+)\]/);
+        if (citationMatch) {
+          const citationNumber = parseInt(citationMatch[1], 10);
+          const citation = citationNumberMap[citationNumber];
+          const citationId = `citation-${citationNumber}-${index}`;
 
-        if (!citation) return <Fragment key={index}>{part}</Fragment>;
+          if (!citation) return <Fragment key={index}>{part}</Fragment>;
 
-        return (
-          <Box
-            key={citationId}
-            component="span"
-            onMouseEnter={(e) => handleMouseEnter(e, part, citationId)}
-            onClick={(e) => handleClick(e, part)}
-            onMouseLeave={handleMouseLeave}
-            sx={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              ml: 0.5,
-              mr: 0.25,
-              cursor: 'pointer',
-              position: 'relative',
-              '&:hover': {
-                '& .citation-number': {
-                  transform: 'scale(1.15) translateY(-1px)',
-                  bgcolor: 'primary.main',
-                  color: 'white',
-                  boxShadow: '0 3px 8px rgba(25, 118, 210, 0.3)',
-                },
-              },
-              '&::after': {
-                content: '""',
-                position: 'absolute',
-                top: -8,
-                right: -8,
-                bottom: -8,
-                left: -8,
-                zIndex: -1,
-              },
-            }}
-          >
+          return (
             <Box
+              key={citationId}
               component="span"
-              className={`citation-number citation-number-${citationId}`}
+              onMouseEnter={(e) => handleMouseEnter(e, part, citationId)}
+              onClick={(e) => handleClick(e, part)}
+              onMouseLeave={handleMouseLeave}
               sx={{
                 display: 'inline-flex',
                 alignItems: 'center',
-                justifyContent: 'center',
-                width: '18px',
-                height: '18px',
-                borderRadius: '50%',
-                bgcolor: 'rgba(25, 118, 210, 0.08)',
-                color: 'primary.main',
-                fontSize: '0.65rem',
-                fontWeight: 600,
-                transition: 'all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)',
-                textDecoration: 'none',
-                boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
-                border: '1px solid',
-                borderColor: 'rgba(25, 118, 210, 0.12)',
+                ml: 0.5,
+                mr: 0.25,
+                cursor: 'pointer',
+                position: 'relative',
+                '&:hover': {
+                  '& .citation-number': {
+                    transform: 'scale(1.15) translateY(-1px)',
+                    bgcolor: 'primary.main',
+                    color: 'white',
+                    boxShadow: '0 3px 8px rgba(25, 118, 210, 0.3)',
+                  },
+                },
+                '&::after': {
+                  content: '""',
+                  position: 'absolute',
+                  top: -8,
+                  right: -8,
+                  bottom: -8,
+                  left: -8,
+                  zIndex: -1,
+                },
               }}
             >
-              {citationNumber}
+              <Box
+                component="span"
+                className={`citation-number citation-number-${citationId}`}
+                sx={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: '18px',
+                  height: '18px',
+                  borderRadius: '50%',
+                  bgcolor: 'rgba(25, 118, 210, 0.08)',
+                  color: 'primary.main',
+                  fontSize: '0.65rem',
+                  fontWeight: 600,
+                  transition: 'all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)',
+                  textDecoration: 'none',
+                  boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
+                  border: '1px solid',
+                  borderColor: 'rgba(25, 118, 210, 0.12)',
+                }}
+              >
+                {citationNumber}
+              </Box>
             </Box>
-          </Box>
-        );
-      }
-      return <Fragment key={index}>{part}</Fragment>;
-    };
+          );
+        }
+        return <Fragment key={index}>{part}</Fragment>;
+      },
+      [citationNumberMap, handleMouseEnter, handleClick, handleMouseLeave]
+    );
 
     return (
       <Box sx={{ position: 'relative' }}>
@@ -351,6 +361,7 @@ const StreamingContent = React.memo(
                     wordBreak: 'break-word',
                     color: 'text.primary',
                     fontWeight: 400,
+                    whiteSpace: 'pre-wrap',
                   }}
                 >
                   {processedChildren}
@@ -581,72 +592,120 @@ const ChatMessage = React.memo(
             mb: 1,
             display: 'flex',
             justifyContent: message.type === 'user' ? 'flex-end' : 'flex-start',
-            px: 1.5,
-            opacity: isRegenerating ? 0.5 : 1,
-            transition: 'opacity 0.2s ease-in-out',
+            px: 1,
+            opacity: isRegenerating ? 0.6 : 1,
+            transition: 'opacity 0.3s ease',
           }}
         >
           <Stack
             direction="row"
-            spacing={1}
+            spacing={1.5}
             alignItems="center"
             sx={{
-              px: 1,
-              py: 0.25,
-              borderRadius: '8px',
-              backgroundColor: 'rgba(0, 0, 0, 0.02)',
+              px: 1.5,
+              py: 0.5,
+              borderRadius: 1.5,
+              backgroundColor: (themeVal) =>
+                themeVal.palette.mode === 'dark'
+                  ? 'rgba(255, 255, 255, 0.03)'
+                  : 'rgba(0, 0, 0, 0.03)',
+              border: (themeVal) =>
+                `1px solid ${
+                  themeVal.palette.mode === 'dark'
+                    ? 'rgba(255, 255, 255, 0.08)'
+                    : 'rgba(0, 0, 0, 0.08)'
+                }`,
+              backdropFilter: 'blur(8px)',
             }}
           >
-            <Icon
-              icon={message.type === 'user' ? accountIcon : robotIcon}
-              width={14}
-              height={14}
-              color={message.type === 'user' ? '#1976d2' : '#2e7d32'}
-            />
+            <Box
+              sx={{
+                width: 24,
+                height: 24,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                borderRadius: '50%',
+                backgroundColor: (themeVal) =>
+                  message.type === 'user'
+                    ? themeVal.palette.primary.main
+                    : themeVal.palette.success.main,
+                flexShrink: 0,
+                boxShadow: (themeVal) =>
+                  themeVal.palette.mode === 'dark'
+                    ? '0 2px 8px rgba(0, 0, 0, 0.4)'
+                    : '0 2px 8px rgba(0, 0, 0, 0.15)',
+              }}
+            >
+              <Icon
+                icon={message.type === 'user' ? accountIcon : 'lucide:sparkles'}
+                width={12}
+                height={12}
+                color="white"
+              />
+            </Box>
+
             <Typography
               variant="caption"
               sx={{
-                color: 'text.secondary',
-                fontSize: '0.65rem',
+                color: (themeVal) =>
+                  themeVal.palette.mode === 'dark'
+                    ? theme.palette.text.secondary
+                    : 'rgba(0, 0, 0, 0.7)',
+                fontSize: '0.75rem',
                 fontWeight: 500,
+                lineHeight: 1.2,
+                letterSpacing: '0.2px',
               }}
             >
               {formatDate(message.createdAt)} • {formatTime(message.createdAt)}
             </Typography>
-            {message.type === 'bot' && message.confidence && (
-              <Tooltip title="Confidence score" placement="top">
-                <Chip
-                  label={message.confidence}
-                  size="small"
+
+            {message.type === 'bot' &&
+              message.confidence &&
+              !isStreamingMessage &&
+              message.confidence.trim() !== '' && (
+                <Box
                   sx={{
-                    height: '20px',
-                    fontSize: '0.60rem',
-                    fontWeight: 600,
-                    backgroundColor: (themeVal) =>
-                      message.confidence === 'Very High'
-                        ? themeVal.palette.success.dark
-                        : themeVal.palette.warning.dark,
-                    color: (themeVal) => themeVal.palette.common.white,
-                    border: (themeVal) =>
-                      `1px solid ${
-                        message.confidence === 'Very High'
-                          ? themeVal.palette.success.main
-                          : themeVal.palette.warning.main
-                      }`,
-                    '& .MuiChip-label': {
-                      px: 1,
-                      py: 0.25,
+                    px: 1.25,
+                    py: 0.25,
+                    borderRadius: 1.5,
+                    backgroundColor: (themeVal) => {
+                      const isHighConfidence = message.confidence === 'Very High';
+                      const baseColor = isHighConfidence
+                        ? themeVal.palette.success.main
+                        : themeVal.palette.warning.main;
+                      return themeVal.palette.mode === 'dark' ? `${baseColor}20` : `${baseColor}15`;
                     },
-                    '&:hover': {
-                      backgroundColor: (themeVal) =>
-                        message.confidence === 'Very High'
-                          ? themeVal.palette.success.main
-                          : themeVal.palette.warning.main,
+                    border: (themeVal) => {
+                      const isHighConfidence = message.confidence === 'Very High';
+                      const baseColor = isHighConfidence
+                        ? themeVal.palette.success.main
+                        : themeVal.palette.warning.main;
+                      return `1px solid ${themeVal.palette.mode === 'dark' ? `${baseColor}40` : `${baseColor}30`}`;
                     },
                   }}
-                />
-              </Tooltip>
-            )}
+                >
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      color: (themeVal) => {
+                        const isHighConfidence = message.confidence === 'Very High';
+                        return isHighConfidence
+                          ? themeVal.palette.success.main
+                          : themeVal.palette.warning.main;
+                      },
+                      fontSize: '0.65rem',
+                      fontWeight: 500,
+                      lineHeight: 1,
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.5px',
+                    }}
+                  >
+                    {message.confidence}
+                  </Typography>
+                </Box>
+              )}
           </Stack>
         </Box>
 
@@ -655,44 +714,58 @@ const ChatMessage = React.memo(
             elevation={0}
             sx={{
               width: '100%',
-              maxWidth: '80%',
-              p: 2,
+              maxWidth: message.type === 'user' ? '70%' : '90%',
+              p: message.type === 'user' ? 1.5 : 2,
               ml: message.type === 'user' ? 'auto' : 0,
               bgcolor: (themeVal) => {
                 if (message.type === 'user') {
-                  return themeVal.palette.mode === 'dark' ? '#3a3d42' : '#e3f2fd';
+                  return themeVal.palette.mode === 'dark'
+                    ? 'rgba(33, 150, 243, 0.1)'
+                    : 'rgba(25, 118, 210, 0.08)';
                 }
-                return themeVal.palette.mode === 'dark' ? '#2a2d32' : '#f8f9fa';
+                return themeVal.palette.mode === 'dark'
+                  ? 'rgba(255, 255, 255, 0.02)'
+                  : 'rgba(0, 0, 0, 0.02)';
               },
               color: 'text.primary',
-              borderRadius: '8px',
+              borderRadius: 3,
               border: '1px solid',
               borderColor: (themeVal) => {
                 if (message.type === 'user') {
                   return themeVal.palette.mode === 'dark'
-                    ? alpha(themeVal.palette.primary.main, 0.3)
-                    : alpha(themeVal.palette.primary.main, 0.2);
+                    ? alpha(themeVal.palette.primary.main, 0.4)
+                    : alpha(themeVal.palette.primary.main, 0.3);
                 }
-                return themeVal.palette.mode === 'dark' ? '#404448' : '#e1e5e9';
+                return themeVal.palette.mode === 'dark'
+                  ? 'rgba(255, 255, 255, 0.1)'
+                  : 'rgba(0, 0, 0, 0.1)';
               },
               position: 'relative',
-              transition: 'all 0.2s ease-in-out',
+              transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
               opacity: isRegenerating ? 0.5 : 1,
               filter: isRegenerating ? 'blur(0.5px)' : 'none',
-              fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
+              fontFamily:
+                '"Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+              boxShadow: (themeVal) =>
+                themeVal.palette.mode === 'dark'
+                  ? '0 4px 20px rgba(0, 0, 0, 0.15)'
+                  : '0 2px 12px rgba(0, 0, 0, 0.08)',
               '&:hover': {
                 borderColor: (themeVal) => {
                   if (message.type === 'user') {
                     return themeVal.palette.mode === 'dark'
-                      ? alpha(themeVal.palette.primary.main, 0.4)
-                      : alpha(themeVal.palette.primary.main, 0.3);
+                      ? alpha(themeVal.palette.primary.main, 0.6)
+                      : alpha(themeVal.palette.primary.main, 0.5);
                   }
-                  return themeVal.palette.mode === 'dark' ? '#484b52' : '#dee2e6';
+                  return themeVal.palette.mode === 'dark'
+                    ? 'rgba(255, 255, 255, 0.15)'
+                    : 'rgba(0, 0, 0, 0.15)';
                 },
                 boxShadow: (themeVal) =>
                   themeVal.palette.mode === 'dark'
-                    ? '0 2px 8px rgba(0, 0, 0, 0.3)'
-                    : '0 2px 8px rgba(0, 0, 0, 0.05)',
+                    ? '0 8px 32px rgba(0, 0, 0, 0.2)'
+                    : '0 4px 20px rgba(0, 0, 0, 0.12)',
+                transform: 'translateY(-1px)',
               },
             }}
           >
@@ -710,10 +783,14 @@ const ChatMessage = React.memo(
                 sx={{
                   fontSize: '14px',
                   lineHeight: 1.6,
-                  letterSpacing: '0.2px',
+                  letterSpacing: '0.1px',
                   wordBreak: 'break-word',
-                  fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
-                  color: (themeVal) => (themeVal.palette.mode === 'dark' ? '#e8eaed' : '#212529'),
+                  fontFamily:
+                    '"Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+                  color: (themeVal) =>
+                    themeVal.palette.mode === 'dark'
+                      ? 'rgba(255, 255, 255, 0.95)'
+                      : 'rgba(0, 0, 0, 0.87)',
                 }}
               >
                 <ReactMarkdown>{message.content}</ReactMarkdown>
@@ -724,11 +801,11 @@ const ChatMessage = React.memo(
               <Box sx={{ mt: 2 }}>
                 <Tooltip title={isExpanded ? 'Hide Citations' : 'Show Citations'}>
                   <Button
-                    variant="text"
+                    variant="outlined"
                     size="small"
                     onClick={handleToggleCitations}
                     startIcon={
-                      <Icon icon={isExpanded ? downIcon : rightIcon} width={14} height={14} />
+                      <Icon icon={isExpanded ? downIcon : rightIcon} width={16} height={16} />
                     }
                     sx={{
                       color: (themeVal) =>
@@ -738,28 +815,29 @@ const ChatMessage = React.memo(
                       textTransform: 'none',
                       fontWeight: 500,
                       fontSize: '11px',
-                      fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
+                      fontFamily:
+                        '"Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
                       py: 0.5,
                       px: 1.5,
-                      borderRadius: '4px',
-                      border: '1px solid',
+                      borderRadius: 2,
                       borderColor: (themeVal) =>
                         themeVal.palette.mode === 'dark'
-                          ? alpha(themeVal.palette.primary.main, 0.2)
-                          : alpha(themeVal.palette.primary.main, 0.15),
+                          ? alpha(themeVal.palette.primary.main, 0.3)
+                          : alpha(themeVal.palette.primary.main, 0.25),
                       backgroundColor: (themeVal) =>
                         themeVal.palette.mode === 'dark'
                           ? alpha(themeVal.palette.primary.main, 0.08)
-                          : alpha(themeVal.palette.primary.main, 0.04),
+                          : alpha(themeVal.palette.primary.main, 0.05),
                       '&:hover': {
                         backgroundColor: (themeVal) =>
                           themeVal.palette.mode === 'dark'
-                            ? alpha(themeVal.palette.primary.main, 0.12)
-                            : alpha(themeVal.palette.primary.main, 0.06),
+                            ? alpha(themeVal.palette.primary.main, 0.15)
+                            : alpha(themeVal.palette.primary.main, 0.1),
                         borderColor: (themeVal) =>
                           themeVal.palette.mode === 'dark'
-                            ? alpha(themeVal.palette.primary.main, 0.3)
-                            : alpha(themeVal.palette.primary.main, 0.2),
+                            ? alpha(themeVal.palette.primary.main, 0.5)
+                            : alpha(themeVal.palette.primary.main, 0.4),
+                        transform: 'translateY(-1px)',
                       },
                     }}
                   >
@@ -775,20 +853,36 @@ const ChatMessage = React.memo(
                         key={cidx}
                         elevation={0}
                         sx={{
-                          p: 2,
-                          mb: 2,
+                          p: 1.5,
+                          mb: 1.5,
                           bgcolor: (themeVal) =>
-                            themeVal.palette.mode === 'dark' ? '#2a2d32' : '#f8f9fa',
-                          borderRadius: '6px',
+                            themeVal.palette.mode === 'dark'
+                              ? 'rgba(255, 255, 255, 0.03)'
+                              : 'rgba(0, 0, 0, 0.02)',
+                          borderRadius: 2,
                           border: '1px solid',
                           borderColor: (themeVal) =>
-                            themeVal.palette.mode === 'dark' ? '#404448' : '#e1e5e9',
-                          fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
+                            themeVal.palette.mode === 'dark'
+                              ? 'rgba(255, 255, 255, 0.08)'
+                              : 'rgba(0, 0, 0, 0.08)',
+                          fontFamily:
+                            '"Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+                          transition: 'all 0.2s ease',
+                          '&:hover': {
+                            borderColor: (themeVal) =>
+                              themeVal.palette.mode === 'dark'
+                                ? 'rgba(255, 255, 255, 0.12)'
+                                : 'rgba(0, 0, 0, 0.12)',
+                            backgroundColor: (themeVal) =>
+                              themeVal.palette.mode === 'dark'
+                                ? 'rgba(255, 255, 255, 0.05)'
+                                : 'rgba(0, 0, 0, 0.03)',
+                          },
                         }}
                       >
                         <Box
                           sx={{
-                            pl: 2,
+                            pl: 1.5,
                             borderLeft: (themeVal) => `3px solid ${themeVal.palette.primary.main}`,
                             borderRadius: '2px',
                           }}
@@ -798,11 +892,14 @@ const ChatMessage = React.memo(
                               fontSize: '13px',
                               lineHeight: 1.6,
                               color: (themeVal) =>
-                                themeVal.palette.mode === 'dark' ? '#e8eaed' : '#495057',
+                                themeVal.palette.mode === 'dark'
+                                  ? 'rgba(255, 255, 255, 0.85)'
+                                  : 'rgba(0, 0, 0, 0.75)',
                               fontStyle: 'normal',
                               fontWeight: 400,
-                              mb: 2,
-                              fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif',
+                              mb: 1.5,
+                              fontFamily:
+                                '"Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
                             }}
                           >
                             {citation.metadata?.blockText &&
@@ -818,7 +915,7 @@ const ChatMessage = React.memo(
                               sx={{
                                 display: 'flex',
                                 justifyContent: 'flex-end',
-                                gap: 1.5,
+                                gap: 1,
                                 pt: 1,
                               }}
                             >
@@ -828,7 +925,14 @@ const ChatMessage = React.memo(
                                   variant="text"
                                   startIcon={<Icon icon={eyeIcon} width={14} height={14} />}
                                   onClick={() => handleViewCitations(citation.metadata?.recordId)}
-                                  sx={{ textTransform: 'none', fontSize: '11px', fontWeight: 500 }}
+                                  sx={{
+                                    textTransform: 'none',
+                                    fontSize: '11px',
+                                    fontWeight: 500,
+                                    borderRadius: 1,
+                                    px: 1.5,
+                                    py: 0.25,
+                                  }}
                                 >
                                   View Citations
                                 </Button>
@@ -845,7 +949,14 @@ const ChatMessage = React.memo(
                                     });
                                   }
                                 }}
-                                sx={{ textTransform: 'none', fontSize: '11px', fontWeight: 500 }}
+                                sx={{
+                                  textTransform: 'none',
+                                  fontSize: '11px',
+                                  fontWeight: 500,
+                                  borderRadius: 1,
+                                  px: 1.5,
+                                  py: 0.25,
+                                }}
                               >
                                 Details
                               </Button>
@@ -863,7 +974,7 @@ const ChatMessage = React.memo(
                       variant="text"
                       size="small"
                       onClick={handleToggleCitations}
-                      startIcon={<Icon icon={upIcon} width={14} height={14} />}
+                      startIcon={<Icon icon={upIcon} width={16} height={16} />}
                       sx={{
                         color: (themeVal) =>
                           themeVal.palette.mode === 'dark'
@@ -872,6 +983,9 @@ const ChatMessage = React.memo(
                         textTransform: 'none',
                         fontWeight: 500,
                         fontSize: '11px',
+                        borderRadius: 1,
+                        px: 1.5,
+                        py: 0.25,
                       }}
                     >
                       Hide citations
@@ -883,8 +997,16 @@ const ChatMessage = React.memo(
 
             {message.type === 'bot' && !isStreamingMessage && (
               <>
-                <Divider sx={{ my: 1, borderColor: (t) => t.palette.divider }} />
-                <Stack direction="row" spacing={1} alignItems="center">
+                <Divider
+                  sx={{
+                    my: 2,
+                    borderColor: (themeVal) =>
+                      themeVal.palette.mode === 'dark'
+                        ? 'rgba(255, 255, 255, 0.08)'
+                        : 'rgba(0, 0, 0, 0.08)',
+                  }}
+                />
+                <Stack direction="row" spacing={1.5} alignItems="center">
                   {showRegenerate && (
                     <>
                       <Tooltip title="Regenerate response">
@@ -892,6 +1014,26 @@ const ChatMessage = React.memo(
                           onClick={() => onRegenerate(message.id)}
                           size="small"
                           disabled={isRegenerating}
+                          sx={{
+                            borderRadius: 1.5,
+                            p: 1,
+                            backgroundColor: (themeVal) =>
+                              themeVal.palette.mode === 'dark'
+                                ? 'rgba(255, 255, 255, 0.05)'
+                                : 'rgba(0, 0, 0, 0.04)',
+                            border: (themeVal) =>
+                              `1px solid ${
+                                themeVal.palette.mode === 'dark'
+                                  ? 'rgba(255, 255, 255, 0.1)'
+                                  : 'rgba(0, 0, 0, 0.08)'
+                              }`,
+                            '&:hover': {
+                              backgroundColor: (themeVal) =>
+                                themeVal.palette.mode === 'dark'
+                                  ? 'rgba(255, 255, 255, 0.08)'
+                                  : 'rgba(0, 0, 0, 0.06)',
+                            },
+                          }}
                         >
                           <Icon
                             icon={isRegenerating ? loadingIcon : refreshIcon}
@@ -919,9 +1061,26 @@ const ChatMessage = React.memo(
           onClose={handleCloseRecordDetails}
           maxWidth="md"
           fullWidth
-          PaperProps={{ sx: { borderRadius: '12px' } }}
+          PaperProps={{
+            sx: {
+              borderRadius: 3,
+              bgcolor: (themeVal) =>
+                themeVal.palette.mode === 'dark'
+                  ? 'rgba(18, 18, 18, 0.95)'
+                  : 'rgba(255, 255, 255, 0.95)',
+              backdropFilter: 'blur(12px)',
+            },
+          }}
         >
-          <DialogTitle>Record Details</DialogTitle>
+          <DialogTitle
+            sx={{
+              fontFamily:
+                '"Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+              fontWeight: 600,
+            }}
+          >
+            Record Details
+          </DialogTitle>
           <DialogContent>
             {selectedRecord && (
               <RecordDetails
@@ -941,9 +1100,22 @@ const ChatMessage = React.memo(
                 left: '50%',
                 transform: 'translate(-50%, -50%)',
                 zIndex: 1,
+                p: 2,
+                borderRadius: 2,
+                backgroundColor: (themeVal) =>
+                  themeVal.palette.mode === 'dark'
+                    ? 'rgba(0, 0, 0, 0.8)'
+                    : 'rgba(255, 255, 255, 0.9)',
+                backdropFilter: 'blur(8px)',
               }}
             >
-              <CircularProgress size={24} />
+              <CircularProgress
+                size={24}
+                thickness={4}
+                sx={{
+                  color: (themeVal) => themeVal.palette.primary.main,
+                }}
+              />
             </Box>
           </Fade>
         )}
