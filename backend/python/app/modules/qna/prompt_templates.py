@@ -44,6 +44,7 @@ qna_prompt = """
   2. Citation Format:
   - Use square brackets to refer to assigned citation numbers: like [1], [3]
   - There must be exactly one citation number inside each pair of square brackets. DO NOT CLUB MULTIPLE citations like [1, 2]
+  - Ensure the assigned numbers map to actual chunk indexes in the final output using the `chunkIndexes` mapping
   - **When a code block ends, the closing line with ``` MUST stand alone. Put any citation (e.g. [3]) on the *next* line, never on the same line as the fence in the code block.**
 
   3. Improvements Focus:
