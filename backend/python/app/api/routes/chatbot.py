@@ -194,8 +194,8 @@ async def stream_llm_response(llm, messages, final_results) -> AsyncGenerator[Di
             "data": {
                 "answer": normalized_answer,
                 "citations": final_citations,
-                "reason": parsed_json["reason"],
-                "confidence": parsed_json["confidence"]
+                "reason": parsed_json.get("reason"),
+                "confidence": parsed_json.get("confidence")
             }
         }
 
