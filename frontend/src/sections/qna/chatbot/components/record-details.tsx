@@ -606,7 +606,8 @@ const RecordDetails = ({ recordId, onExternalLink, citations = [] }: RecordDetai
 
               {/* Web Development */}
               {recordData.metadata.subcategories1 &&
-                recordData.metadata.subcategories1.length > 0 && (
+                recordData.metadata.subcategories1.length > 0 &&
+                recordData.metadata?.subcategories1[0]?.name !== '' && (
                   <MetadataSection>
                     <Typography
                       variant="caption"
@@ -625,7 +626,8 @@ const RecordDetails = ({ recordId, onExternalLink, citations = [] }: RecordDetai
 
               {/* Technologies */}
               {recordData.metadata.subcategories2 &&
-                recordData.metadata.subcategories2.length > 0 && (
+                recordData.metadata.subcategories2.length > 0 &&
+                recordData.metadata?.subcategories2[0]?.name !== '' && (
                   <MetadataSection>
                     <Typography
                       variant="caption"
@@ -644,7 +646,8 @@ const RecordDetails = ({ recordId, onExternalLink, citations = [] }: RecordDetai
 
               {/* Focus Areas */}
               {recordData.metadata.subcategories3 &&
-                recordData.metadata.subcategories3.length > 0 && (
+                recordData.metadata.subcategories3.length > 0 &&
+                recordData.metadata?.subcategories3[0]?.name !== '' && (
                   <MetadataSection>
                     <Typography
                       variant="caption"

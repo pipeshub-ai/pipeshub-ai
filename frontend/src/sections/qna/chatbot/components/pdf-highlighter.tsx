@@ -172,7 +172,7 @@ const PdfHighlighterComp = ({
   const scrollViewerTo = useRef<(highlight: HighlightType) => void>(() => {});
   const [processedCitations, setProcessedCitations] = useState<ProcessedCitation[]>([]);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
-  const [pdfWidth, setPdfWidth] = useState<number>(80); // Percentage of screen width
+  const [pdfWidth, setPdfWidth] = useState<number>(100); // Percentage of screen width
   const [pdfScale, setPdfScale] = useState<number>(1); // Zoom scale
   const [showWidthControls, setShowWidthControls] = useState<boolean>(false);
   const [showZoomControls, setShowZoomControls] = useState<boolean>(false);
@@ -605,7 +605,6 @@ const PdfHighlighterComp = ({
         display: 'flex', 
         height: '100%', 
         width: '100%',
-        background: '#1a1a1a'
       }}
     >
       {/* Controls - Available in both modes */}

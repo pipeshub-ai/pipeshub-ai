@@ -136,7 +136,7 @@ const ChatMessagesArea = ({
   const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
   const prevMessagesLength = React.useRef(messages.length);
   const scrollTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
-  
+
   // NEW: Scroll button states
   const [showScrollToTop, setShowScrollToTop] = useState(false);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
@@ -191,9 +191,9 @@ const ChatMessagesArea = ({
     const { scrollTop, scrollHeight, clientHeight } = messagesContainerRef.current;
     const isNearBottom = scrollHeight - scrollTop - clientHeight < 150;
     const isNearTop = scrollTop < 150;
-    
+
     setShouldAutoScroll(isNearBottom);
-    
+
     // NEW: Show/hide scroll buttons based on position
     setShowScrollToTop(scrollTop > 200);
     setShowScrollToBottom(!isNearBottom && scrollHeight > clientHeight + 400);
@@ -228,16 +228,41 @@ const ChatMessagesArea = ({
   }, [conversationId, displayMessages.length, scrollToBottomImmediate]);
 
   const shouldShowLoadingIndicator = useMemo(() => {
-    if (hasStreamingContent) return false; 
-    if (isLoadingConversation && messages.length === 0) return true; 
+    if (hasStreamingContent) return false;
+    if (isLoadingConversation && messages.length === 0) return true;
     if (isStatusVisible && currentStatus) return true;
+
+    // NEW: Check if last message is from user (waiting for bot response)
+    if (messages.length > 0) {
+      const lastMessage = messages[messages.length - 1];
+      if (lastMessage?.type === 'user' && !hasStreamingContent) {
+        return true;
+      }
+    }
+
     return false;
-  }, [isLoadingConversation, messages.length, currentStatus, isStatusVisible, hasStreamingContent]);
+  }, [
+    isLoadingConversation,
+    currentStatus,
+    isStatusVisible,
+    hasStreamingContent,
+    messages,
+  ]);
 
   const indicatorText = useMemo(() => {
     if (isLoadingConversation && messages.length === 0) return 'Loading conversation...';
-    return currentStatus || '';
-  }, [isLoadingConversation, messages.length, currentStatus]);
+    if (currentStatus) return currentStatus;
+
+    // NEW: Show processing message when last message is from user
+    if (messages.length > 0) {
+      const lastMessage = messages[messages.length - 1];
+      if (lastMessage?.type === 'user' && !isLoadingConversation) {
+        return 'Processing your request...';
+      }
+    }
+
+    return '';
+  }, [isLoadingConversation, currentStatus, messages]);
 
   const theme = useTheme();
   const scrollableStyles = createScrollableContainerStyle(theme);
@@ -296,7 +321,7 @@ const ChatMessagesArea = ({
           ))}
           {/* FIX: Render the indicator in the flow with the correct text */}
           {shouldShowLoadingIndicator && (
-            <Box sx={{ mt: 1,mb:4 }}>
+            <Box sx={{ mt: 1, mb: 4 }}>
               <ProcessingIndicator displayText={indicatorText} />
             </Box>
           )}
@@ -336,10 +361,10 @@ const ChatMessagesArea = ({
                 transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
               }}
             >
-              <Icon 
-                icon={arrowUpIcon} 
-                width={16} 
-                height={16} 
+              <Icon
+                icon={arrowUpIcon}
+                width={16}
+                height={16}
                 color={theme.palette.text.secondary}
               />
             </IconButton>
@@ -375,10 +400,10 @@ const ChatMessagesArea = ({
                 transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
               }}
             >
-              <Icon 
-                icon={arrowDownIcon} 
-                width={16} 
-                height={16} 
+              <Icon
+                icon={arrowDownIcon}
+                width={16}
+                height={16}
                 color={theme.palette.text.secondary}
               />
             </IconButton>
