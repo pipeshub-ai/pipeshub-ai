@@ -168,7 +168,7 @@ class RetrievalService:
                     embedding_model = DEFAULT_EMBEDDING_MODEL
                     dense_embeddings = await get_default_embedding_model()
                 else:
-                    self.logger.info(f"Using embedding model: {embedding_model}")
+                    self.logger.info(f"Using embedding model: {getattr(embedding_model, 'model', embedding_model)}")
                     dense_embeddings = EmbeddingFactory.create_embedding_model(
                         embedding_model
                     )
@@ -192,7 +192,7 @@ class RetrievalService:
                 )
 
             self.logger.info(
-                f"Using embedding model: {embedding_model}, embedding_size: {embedding_size}"
+                f"Using embedding model: {getattr(embedding_model, 'model', embedding_model)}, embedding_size: {embedding_size}"
             )
             return dense_embeddings
         except Exception as e:
