@@ -172,7 +172,7 @@ async def stream_llm_response(llm, messages, final_results) -> AsyncGenerator[Di
                 normalized_answer, citations = normalize_citations_and_chunks(full_response_buffer, final_results)
                 yield {
                     "event": "complete",
-                    "data": {"answer": normalized_answer, "citations": citations, "reason": parsed_json["reason"], "confidence": parsed_json["confidence"]}
+                    "data": {"answer": normalized_answer, "citations": citations, "reason": None, "confidence": None}
                 }
                 return  # Exit early as there's nothing more to process
 
