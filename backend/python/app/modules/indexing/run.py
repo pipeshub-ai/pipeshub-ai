@@ -509,7 +509,7 @@ class IndexingPipeline:
                 )
 
             self.logger.info(
-                f"Using embedding model: {embedding_model}, embedding_size: {embedding_size}"
+                f"Using embedding model: {embedding_model.model}, embedding_size: {embedding_size}"
             )
 
             # Initialize collection with correct embedding size

@@ -64,6 +64,23 @@ def create_sse_event(event_type: str, data: Union[str, dict, list]) -> str:
     """Create Server-Sent Event format"""
     return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
+_string_re = re.compile(r'"(?:[^"\\]|\\.)*"')   # match any JSON string literal
+
+def _escape_control_chars(raw: str) -> str:
+    """
+    Replace literal \n, \r, \t that appear *inside* quoted strings
+    with their escaped forms (\\n, \\r, \\t).  This makes the payload
+    safe for json.loads().
+    """
+    def _fix(match: re.Match) -> str:
+        s = match.group(0)
+        return (
+            s.replace("\n", "\\n")
+              .replace("\r", "\\r")
+              .replace("\t", "\\t")
+        )
+    return _string_re.sub(_fix, raw)
+
 async def stream_llm_response(llm, messages, final_results) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Waits until the full 'answer' value is streamed from the LLM, cleans it,
@@ -180,7 +197,10 @@ async def stream_llm_response(llm, messages, final_results) -> AsyncGenerator[Di
         # This event signals the end and provides the final, authoritative data.
         final_answer_text = ""
         try:
-            parsed_json = json.loads(full_response_buffer)
+            safe_buffer = _escape_control_chars(full_response_buffer).strip()
+
+            parsed_json = json.loads(safe_buffer)
+
             if "answer" in parsed_json:
                 final_answer_text = parsed_json["answer"]
 
@@ -195,7 +215,7 @@ async def stream_llm_response(llm, messages, final_results) -> AsyncGenerator[Di
                     "confidence": parsed_json.get("confidence")
                 }
             }
-        except (json.JSONDecodeError, AttributeError):
+        except Exception:
             # If parsing the full response fails, use the clean answer we extracted.
             final_answer_text = clean_answer if clean_answer else full_response_buffer
             normalized_answer, final_citations = normalize_citations_and_chunks(final_answer_text, final_results)
