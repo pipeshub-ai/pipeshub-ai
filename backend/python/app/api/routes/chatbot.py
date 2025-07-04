@@ -198,7 +198,7 @@ async def stream_llm_response(llm, messages, final_results) -> AsyncGenerator[Di
         except (json.JSONDecodeError, AttributeError):
             # If parsing the full response fails, use the clean answer we extracted.
             final_answer_text = clean_answer if clean_answer else full_response_buffer
-
+            normalized_answer, final_citations = normalize_citations_and_chunks(final_answer_text, final_results)
             yield {
                 "event": "complete",
                 "data": {
