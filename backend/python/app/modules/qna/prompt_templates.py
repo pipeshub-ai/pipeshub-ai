@@ -34,6 +34,7 @@ qna_prompt = """
   - Consider the Persistent Conversation Context to ensure continuity
   - Provide detailed, explanatory answers using all relevant information from the source materials, ensuring the response is clear and self-contained.
   - Include every key point that addresses the question directly
+  - Generate answer in fully valid markdown format with proper headings and formatting and ensure citations generated doesn't break the markdown format
   - Do not summarize or omit important details
   - For each chunk block provide the citations only **relevant indexes** in below format.
       - **Do not list excessive citations for the same point. Include only the top 4-5 most relevant chunk citations per answer.**
@@ -43,7 +44,8 @@ qna_prompt = """
   2. Citation Format:
   - Use square brackets to refer to assigned citation numbers: like [1], [3]
   - There must be exactly one citation number inside each pair of square brackets. DO NOT CLUB MULTIPLE citations like [1, 2]
-  - Ensure the assigned numbers map to actual chunk indexes in the final output using the `chunkIndexes` mapping
+  - **When a code block ends, the closing line with ``` MUST stand alone. Put any citation (e.g. [3]) on the *next* line, never on the same line as the fence in the code block.**
+
   3. Improvements Focus:
   - When suggesting improvements, focus only on those that directly address the question
   - If there are No 'SIGNIFICANT' improvements that can be done, return an empty improvements array. Do not hallucinate trivial improvements.

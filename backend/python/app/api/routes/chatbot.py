@@ -120,7 +120,6 @@ async def stream_llm_response(llm, messages, final_results) -> AsyncGenerator[Di
                         state = "streaming_chunks"
                         # We have the full, raw answer value.
                         clean_answer = answer_buffer[:end_of_answer_index]
-
                         # Normalize the complete answer and get citations.
                         normalized_answer, citations = normalize_citations_and_chunks(clean_answer, final_results)
 
@@ -173,7 +172,7 @@ async def stream_llm_response(llm, messages, final_results) -> AsyncGenerator[Di
                 normalized_answer, citations = normalize_citations_and_chunks(full_response_buffer, final_results)
                 yield {
                     "event": "complete",
-                    "data": {"answer": normalized_answer, "citations": citations}
+                    "data": {"answer": normalized_answer, "citations": citations, "reason": parsed_json["reason"], "confidence": parsed_json["confidence"]}
                 }
                 return  # Exit early as there's nothing more to process
 
@@ -194,7 +193,9 @@ async def stream_llm_response(llm, messages, final_results) -> AsyncGenerator[Di
             "event": "complete",
             "data": {
                 "answer": normalized_answer,
-                "citations": final_citations
+                "citations": final_citations,
+                "reason": parsed_json["reason"],
+                "confidence": parsed_json["confidence"]
             }
         }
 
