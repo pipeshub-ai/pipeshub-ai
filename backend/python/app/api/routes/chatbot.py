@@ -183,22 +183,31 @@ async def stream_llm_response(llm, messages, final_results) -> AsyncGenerator[Di
             parsed_json = json.loads(full_response_buffer)
             if "answer" in parsed_json:
                 final_answer_text = parsed_json["answer"]
+
+            normalized_answer, final_citations = normalize_citations_and_chunks(final_answer_text, final_results)
+
+            yield {
+                "event": "complete",
+                "data": {
+                    "answer": normalized_answer,
+                    "citations": final_citations,
+                    "reason": parsed_json.get("reason"),
+                    "confidence": parsed_json.get("confidence")
+                }
+            }
         except (json.JSONDecodeError, AttributeError):
             # If parsing the full response fails, use the clean answer we extracted.
             final_answer_text = clean_answer if clean_answer else full_response_buffer
 
-        normalized_answer, final_citations = normalize_citations_and_chunks(final_answer_text, final_results)
-
-        yield {
-            "event": "complete",
-            "data": {
-                "answer": normalized_answer,
-                "citations": final_citations,
-                "reason": parsed_json.get("reason"),
-                "confidence": parsed_json.get("confidence")
+            yield {
+                "event": "complete",
+                "data": {
+                    "answer": normalized_answer,
+                    "citations": final_citations,
+                    "reason": None,
+                    "confidence": None
+                }
             }
-        }
-
     except Exception as e:
         yield {
             "event": "error",
