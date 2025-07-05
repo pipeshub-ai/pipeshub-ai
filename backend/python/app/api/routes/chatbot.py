@@ -161,10 +161,7 @@ async def stream_llm_response(
                     if words_in_chunk == target_words_per_chunk:
                         char_end = emit_upto + match.end()
 
-                        while True:
-                            m = CITE_BLOCK_RE.match(answer_buf[char_end:])
-                            if not m:
-                                break
+                        if m := CITE_BLOCK_RE.match(answer_buf[char_end:]):
                             char_end += m.end()
 
 
