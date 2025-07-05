@@ -123,7 +123,9 @@ async def stream_llm_response(
     answer_buf: str    = ""         # the running "answer" value (no quotes)
     answer_done        = False
     ANSWER_KEY_RE   = re.compile(r'"answer"\s*:\s*"')
-    CITE_BLOCK_RE   = re.compile(r'\[(\d+)]')
+    CITE_BLOCK_RE   = re.compile(r'(?:\s*\[\d+])+')
+    INCOMPLETE_CITE_RE   = re.compile(r'\[[^\]]*$')
+
     WORD_ITER = re.compile(r'\S+').finditer
     prev_norm_len = 0  # length of the previous normalised answer
     emit_upto = 0
@@ -157,19 +159,23 @@ async def stream_llm_response(
                 for match in WORD_ITER(answer_buf[emit_upto:]):
                     words_in_chunk += 1
                     if words_in_chunk == target_words_per_chunk:
-                        char_end       = emit_upto + match.end()
+                        char_end = emit_upto + match.end()
 
-                        # --- 🔒 SAFETY EXTENSION: absorb trailing citation block ---------
-                        extra = CITE_BLOCK_RE.match(answer_buf[char_end:])
-                        if extra:                              # if we’re right before "[7]"
-                            char_end += extra.end()            # jump past the entire "[7] [8] "
+                        while True:
+                            m = CITE_BLOCK_RE.match(answer_buf[char_end:])
+                            if not m:
+                                break
+                            char_end += m.end()
 
-                        emit_upto      = char_end
+
+                        emit_upto = char_end
                         words_in_chunk = 0
 
 
                         # raw slice up to emit_upto keeps all whitespace
-                        current_raw      = answer_buf[:emit_upto]
+                        current_raw = answer_buf[:emit_upto]
+                        if INCOMPLETE_CITE_RE.search(current_raw):
+                            continue
 
                         # ↪️ normalise & renumber citations on the slice
                         normalized, cites = normalize_citations_and_chunks(
