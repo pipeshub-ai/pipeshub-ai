@@ -64,176 +64,169 @@ def create_sse_event(event_type: str, data: Union[str, dict, list]) -> str:
     """Create Server-Sent Event format"""
     return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
-_string_re = re.compile(r'"(?:[^"\\]|\\.)*"')   # match any JSON string literal
 
-def _escape_control_chars(raw: str) -> str:
+def find_unescaped_quote(text: str) -> int:
+    """
+    Return index of first un-escaped quote (") or -1 if none.
+    """
+    escaped = False
+    for i, ch in enumerate(text):
+        if escaped:
+            escaped = False
+        elif ch == '\\':
+            escaped = True
+        elif ch == '"':
+            return i
+    return -1
+
+
+def escape_ctl(raw: str) -> str:
     """
     Replace literal \n, \r, \t that appear *inside* quoted strings
     with their escaped forms (\\n, \\r, \\t).  This makes the payload
     safe for json.loads().
     """
-    def _fix(match: re.Match) -> str:
+    string_re = re.compile(r'"(?:[^"\\]|\\.)*"')   # match any JSON string literal
+
+    def fix(match: re.Match) -> str:
         s = match.group(0)
         return (
             s.replace("\n", "\\n")
               .replace("\r", "\\r")
               .replace("\t", "\\t")
         )
-    return _string_re.sub(_fix, raw)
+    return string_re.sub(fix, raw)
 
-async def stream_llm_response(llm, messages, final_results) -> AsyncGenerator[Dict[str, Any], None]:
-    """
-    Waits until the full 'answer' value is streamed from the LLM, cleans it,
-    and then streams the normalized answer to the client in 3-word chunks.
-    This provides a clean, chunked stream after ensuring the full answer is received.
-    """
-    full_response_buffer = ""
-    answer_buffer = ""
-    # States:
-    # finding_key: Looking for the start of the answer field.
-    # accumulating_answer: Found the key, now accumulating the value.
-    # streaming_chunks: Answer value is complete, now streaming it out.
-    state = "finding_key"
+async def aiter_llm_stream(llm, messages) -> AsyncGenerator[str, None]:
+    if hasattr(llm, "astream"):
+        async for part in llm.astream(messages):
+            if part and getattr(part, "content", ""):
+                yield part.content
+    else:
+        # Non-streaming – yield whole blob once
+        yield (await llm.ainvoke(messages)).content if hasattr(llm, "ainvoke") else str(
+            await llm.ainvoke(messages)
+        )
 
-    answer_key_pattern = re.compile(r'"answer"\s*:\s*"')
-    clean_answer = ""
+# ---------------------------------------------------------------------------
+
+async def stream_llm_response(
+    llm,
+    messages,
+    final_results,
+    target_words_per_chunk: int = 5,
+) -> AsyncGenerator[Dict[str, Any], None]:
+    """
+    Incrementally stream the **answer** portion of an LLM JSON response.
+    For each chunk we also emit the citations visible so far.
+    """
+    full_json_buf: str = ""         # whole JSON as it trickles in
+    answer_buf: str    = ""         # the running "answer" value (no quotes)
+    answer_done        = False
+    ANSWER_KEY_RE   = re.compile(r'"answer"\s*:\s*"')
+    CITE_BLOCK_RE   = re.compile(r'\[(\d+)]')
+    WORD_ITER = re.compile(r'\S+').finditer
+    prev_norm_len = 0  # length of the previous normalised answer
+    emit_upto = 0
+    words_in_chunk  = 0
 
     try:
-        # --- Streaming Path ---
-        if hasattr(llm, 'astream'):
-            async for chunk in llm.astream(messages):
-                token = getattr(chunk, 'content', str(chunk))
-                if not token:
-                    continue
+        async for token in aiter_llm_stream(llm, messages):
 
-                # Always accumulate the full, raw response for the final 'complete' event
-                full_response_buffer += token
+            full_json_buf += token
 
-                if state == "finding_key":
-                    match = answer_key_pattern.search(full_response_buffer)
-                    if match:
-                        state = "accumulating_answer"
-                        # Add any part of the answer already in the buffer
-                        answer_buffer += full_response_buffer[match.end():]
+            if not answer_buf:
+                match = ANSWER_KEY_RE.search(full_json_buf)
+                if match:
+                    after_key = full_json_buf[match.end():]
+                    answer_buf += after_key
+                    full_json_buf = full_json_buf  # keep untouched for final parse
 
-                elif state == "accumulating_answer":
-                    answer_buffer += token
+            # --- 2️⃣ keep appending chars once answer started -------------
+            elif not answer_done:
+                answer_buf += token
 
-                    # Check if the answer value is complete by finding its unescaped closing quote.
-                    # This is a simplified parser; it assumes a simple string value.
-                    is_escaped = False
-                    end_of_answer_index = -1
-                    for i, char in enumerate(answer_buffer):
-                        if is_escaped:
-                            is_escaped = False
-                            continue
-                        if char == '\\':
-                            is_escaped = True
-                        elif char == '"':
-                            end_of_answer_index = i
-                            break
+            # --- 3️⃣ check if we've reached end quote ---------------------
+            if not answer_done:
+                end_idx = find_unescaped_quote(answer_buf)
+                if end_idx != -1:
+                    answer_done = True
+                    answer_buf   = answer_buf[:end_idx]
 
-                    if end_of_answer_index != -1:
-                        state = "streaming_chunks"
-                        # We have the full, raw answer value.
-                        clean_answer = answer_buffer[:end_of_answer_index]
-                        # Normalize the complete answer and get citations.
-                        normalized_answer, citations = normalize_citations_and_chunks(clean_answer, final_results)
+            # --- 4️⃣ emit incremental chunks ------------------------------
+            if answer_buf:
+                # Look for NEW words only in the unseen tail
+                for match in WORD_ITER(answer_buf[emit_upto:]):
+                    words_in_chunk += 1
+                    if words_in_chunk == target_words_per_chunk:
+                        char_end       = emit_upto + match.end()
 
-                        # Stream the normalized answer out in 3-word chunks.
-                        words = normalized_answer.split()
-                        target_words_per_chunk = 3
-                        for i in range(0, len(words), target_words_per_chunk):
-                            chunk_words = words[i:i + target_words_per_chunk]
-                            # Add a trailing space for smoother UI concatenation
-                            chunk_text = " ".join(chunk_words) + " "
+                        # --- 🔒 SAFETY EXTENSION: absorb trailing citation block ---------
+                        extra = CITE_BLOCK_RE.match(answer_buf[char_end:])
+                        if extra:                              # if we’re right before "[7]"
+                            char_end += extra.end()            # jump past the entire "[7] [8] "
 
-                            if chunk_text.strip():
-                                yield {
-                                    "event": "answer_chunk",
-                                    "data": {
-                                        "chunk": chunk_text,
-                                        "accumulated": normalized_answer,
-                                        "citations": citations,
-                                    }
-                                }
+                        emit_upto      = char_end
+                        words_in_chunk = 0
 
-                elif state == "streaming_chunks":
-                    # The answer has been streamed. Just consume the rest of the LLM response.
-                    pass
 
-        # --- Fallback Path for Non-Streaming LLMs ---
-        else:
-            response = await llm.ainvoke(messages)
-            full_response_buffer = getattr(response, 'content', str(response))
-            # The full response is available at once, so we process it directly.
-            try:
-                parsed_json = json.loads(full_response_buffer)
-                if "answer" in parsed_json:
-                    answer_text = parsed_json["answer"]
-                    normalized_answer, citations = normalize_citations_and_chunks(answer_text, final_results)
+                        # raw slice up to emit_upto keeps all whitespace
+                        current_raw      = answer_buf[:emit_upto]
 
-                    # Stream the answer in chunks as requested
-                    words = normalized_answer.split()
-                    target_words_per_chunk = 3
-                    for i in range(0, len(words), target_words_per_chunk):
-                        chunk_words = words[i:i + target_words_per_chunk]
-                        chunk_text = " ".join(chunk_words) + " "
-                        if chunk_text.strip():
-                            yield {
-                                "event": "answer_chunk",
-                                "data": {"chunk": chunk_text, "accumulated": normalized_answer, "citations": citations}
-                            }
-            except json.JSONDecodeError:
-                # Handle cases where the non-streaming response is not JSON
-                normalized_answer, citations = normalize_citations_and_chunks(full_response_buffer, final_results)
-                yield {
-                    "event": "complete",
-                    "data": {"answer": normalized_answer, "citations": citations, "reason": None, "confidence": None}
-                }
-                return  # Exit early as there's nothing more to process
+                        # ↪️ normalise & renumber citations on the slice
+                        normalized, cites = normalize_citations_and_chunks(
+                            current_raw, final_results
+                        )
 
-        # --- Finalization: Send the 'complete' event ---
-        # This event signals the end and provides the final, authoritative data.
-        final_answer_text = ""
+                        # send only the delta since last time (keeps citations)
+                        chunk_text        = normalized[prev_norm_len:]
+                        prev_norm_len     = len(normalized)
+
+                        yield {
+                            "event": "answer_chunk",
+                            "data": {
+                                "chunk": chunk_text,
+                                "accumulated": normalized,
+                                "citations": cites,
+                            },
+                        }
+            # Once answer is finished, we just keep consuming tokens
+            # so that `full_json_buf` becomes the truly complete JSON.
+
+        # ------------------------------------------------------------------
+        #                🔚   FINAL COMPLETE EVENT    🔚
+        # ------------------------------------------------------------------
         try:
-            safe_buffer = _escape_control_chars(full_response_buffer).strip()
-
-            parsed_json = json.loads(safe_buffer)
-
-            if "answer" in parsed_json:
-                final_answer_text = parsed_json["answer"]
-
-            normalized_answer, final_citations = normalize_citations_and_chunks(final_answer_text, final_results)
-
+            parsed = json.loads(escape_ctl(full_json_buf))
+            final_answer   = parsed.get("answer", answer_buf)
+            normalized, c  = normalize_citations_and_chunks(final_answer, final_results)
             yield {
                 "event": "complete",
                 "data": {
-                    "answer": normalized_answer,
-                    "citations": final_citations,
-                    "reason": parsed_json.get("reason"),
-                    "confidence": parsed_json.get("confidence")
-                }
+                    "answer": normalized,
+                    "citations": c,
+                    "reason": parsed.get("reason"),
+                    "confidence": parsed.get("confidence"),
+                },
             }
-        except Exception:
-            # If parsing the full response fails, use the clean answer we extracted.
-            final_answer_text = clean_answer if clean_answer else full_response_buffer
-            normalized_answer, final_citations = normalize_citations_and_chunks(final_answer_text, final_results)
+        except Exception:  # pragma: no cover
+            # last-ditch fall-back if JSON never closed etc.
+            normalized, c = normalize_citations_and_chunks(answer_buf, final_results)
             yield {
                 "event": "complete",
                 "data": {
-                    "answer": normalized_answer,
-                    "citations": final_citations,
+                    "answer": normalized,
+                    "citations": c,
                     "reason": None,
-                    "confidence": None
-                }
+                    "confidence": None,
+                },
             }
-    except Exception as e:
+
+    except Exception as exc:
         yield {
             "event": "error",
-            "data": {"error": f"Error in LLM streaming: {str(e)}"}
+            "data": {"error": f"Error in LLM streaming: {exc}"},
         }
-
 
 @router.post("/chat/stream")
 @inject
