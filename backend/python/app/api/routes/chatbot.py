@@ -104,9 +104,8 @@ async def aiter_llm_stream(llm, messages) -> AsyncGenerator[str, None]:
                 yield part.content
     else:
         # Non-streaming – yield whole blob once
-        yield (await llm.ainvoke(messages)).content if hasattr(llm, "ainvoke") else str(
-            await llm.ainvoke(messages)
-        )
+        response = await llm.ainvoke(messages)
+        yield getattr(response, "content", str(response))
 
 # ---------------------------------------------------------------------------
 
@@ -140,7 +139,6 @@ async def stream_llm_response(
                 if match:
                     after_key = full_json_buf[match.end():]
                     answer_buf += after_key
-                    full_json_buf = full_json_buf  # keep untouched for final parse
 
             # --- 2️⃣ keep appending chars once answer started -------------
             elif not answer_done:
