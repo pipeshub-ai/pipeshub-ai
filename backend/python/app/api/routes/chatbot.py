@@ -34,6 +34,7 @@ class ChatQuery(BaseModel):
     previousConversations: List[Dict] = []
     filters: Optional[Dict[str, Any]] = None
     retrieval_mode: Optional[str] = "HYBRID"
+    quick_mode: Optional[bool] = False
 
 
 async def get_retrieval_service(request: Request) -> RetrievalService:
@@ -278,9 +279,12 @@ async def askAIStream(
             # Query decomposition
             yield create_sse_event("status", {"status": "decomposing", "message": "Decomposing query..."})
 
-            decomposition_service = QueryDecompositionService(llm, logger=logger)
-            decomposition_result = await decomposition_service.decompose_query(query_info.query)
-            decomposed_queries = decomposition_result["queries"]
+            decomposed_queries = []
+
+            if not query_info.quick_mode:
+                decomposition_service = QueryDecompositionService(llm, logger=logger)
+                decomposition_result = await decomposition_service.decompose_query(query_info.query)
+                decomposed_queries = decomposition_result["queries"]
 
             if not decomposed_queries:
                 all_queries = [query_info.query]
@@ -340,7 +344,7 @@ async def askAIStream(
             yield create_sse_event("results_ready", {"total_results": len(flattened_results)})
 
             # Re-rank results
-            if len(flattened_results) > 1:
+            if len(flattened_results) > 1 and not query_info.quick_mode:
                 yield create_sse_event("status", {"status": "reranking", "message": "Reranking results for better relevance..."})
                 final_results = await reranker_service.rerank(
                     query=query_info.query,
@@ -463,11 +467,13 @@ async def askAI(
 
         logger.debug(f"query_info.query {query_info.query}")
 
-        decomposition_service = QueryDecompositionService(llm, logger=logger)
-        decomposition_result = await decomposition_service.decompose_query(
-            query_info.query
-        )
-        decomposed_queries = decomposition_result["queries"]
+        decomposed_queries = []
+        if not query_info.quick_mode:
+            decomposition_service = QueryDecompositionService(llm, logger=logger)
+            decomposition_result = await decomposition_service.decompose_query(
+                query_info.query
+            )
+            decomposed_queries = decomposition_result["queries"]
 
         logger.debug(f"decomposed_queries {decomposed_queries}")
         if not decomposed_queries:
@@ -514,7 +520,7 @@ async def askAI(
                 flattened_results.append(result)
 
         # Re-rank the combined results with the original query for better relevance
-        if len(flattened_results) > 1:
+        if len(flattened_results) > 1 and not query_info.quick_mode:
             final_results = await reranker_service.rerank(
                 query=query_info.query,  # Use original query for final ranking
                 documents=flattened_results,

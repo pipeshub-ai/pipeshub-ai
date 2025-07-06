@@ -32,7 +32,7 @@ qna_prompt = """
   - Provide thoughtful, explanatory, and sufficiently detailed answers — not just short factual replies.
   - For user-specific questions, prioritize information from the User Information section
   - Consider the Persistent Conversation Context to ensure continuity
-  - Provide detailed, explanatory answers using all relevant information from the source materials, ensuring the response is clear and self-contained.
+  - Provide detailed, explanatory answers using all highly relevant information from the source materials, ensuring the response is clear and self-contained.
   - Include every key point that addresses the question directly
   - Generate answer in fully valid markdown format with proper headings and formatting and ensure citations generated doesn't break the markdown format
   - Do not summarize or omit important details
