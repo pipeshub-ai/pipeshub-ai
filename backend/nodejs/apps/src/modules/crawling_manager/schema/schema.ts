@@ -547,3 +547,19 @@ export const CrawlingManagerConfig: Model<ICrawlingManagerConfig> =
     CrawlingManagerConfigSchema,
     'crawlingManagerConfigs',
   );
+
+export default {
+  BaseScheduleConfigSchema,
+  BaseConnectorConfigSchema,
+  SlackConnectorSchema,
+  GoogleWorkspaceConnectorSchema,
+  OneDriveConnectorSchema,
+  S3ConnectorSchema,
+  BaseCrawlingScheduleSchema,
+  CustomCrawlingScheduleSchema,
+  WeeklyCrawlingScheduleSchema,
+  DailyCrawlingScheduleSchema,
+  HourlyCrawlingScheduleSchema,
+  MonthlyCrawlingScheduleSchema,
+  OnceCrawlingScheduleSchema,
+};

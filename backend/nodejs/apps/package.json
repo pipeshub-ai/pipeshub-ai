@@ -61,6 +61,7 @@
     "axios": "^1.7.9",
     "axios-retry": "^4.5.0",
     "bcryptjs": "^3.0.2",
+    "bullmq": "^5.56.1",
     "cors": "^2.8.5",
     "crypto": "^1.0.1",
     "dotenv": "^16.4.7",

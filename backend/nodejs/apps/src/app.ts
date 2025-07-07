@@ -47,6 +47,8 @@ import {
   SwaggerService,
 } from './modules/docs/swagger.container';
 import { registerStorageSwagger } from './modules/storage/docs/swagger';
+import { CrawlingManagerContainer } from './modules/crawling_manager/container/cm_container';
+import createCrawlingManagerRouter from './modules/crawling_manager/routes/cm_routes';
 const loggerConfig = {
   service: 'Application',
 };
@@ -64,6 +66,7 @@ export class Application {
   private configurationManagerContainer!: Container;
   private mailServiceContainer!: Container;
   private notificationContainer!: Container;
+  private crawlingManagerContainer!: Container;
   private port: number;
 
   constructor() {
@@ -119,6 +122,12 @@ export class Application {
       this.notificationContainer =
         await NotificationContainer.initialize(appConfig);
 
+      this.crawlingManagerContainer =
+        await CrawlingManagerContainer.initialize(
+          configurationManagerConfig,
+          appConfig,
+        );
+
       // binding prometheus to all services routes
       this.logger.debug('Binding Prometheus Service with other services');
       this.tokenManagerContainer
@@ -152,6 +161,11 @@ export class Application {
         .inSingletonScope();
 
       this.mailServiceContainer
+        .bind<PrometheusService>(PrometheusService)
+        .toSelf()
+        .inSingletonScope();
+
+      this.crawlingManagerContainer
         .bind<PrometheusService>(PrometheusService)
         .toSelf()
         .inSingletonScope();
@@ -303,6 +317,12 @@ export class Application {
     this.app.use(
       '/api/v1/mail',
       createMailServiceRouter(this.mailServiceContainer),
+    );
+
+    // crawling manager routes
+    this.app.use(
+      '/api/v1/crawlingManager',
+      createCrawlingManagerRouter(this.crawlingManagerContainer),
     );
   }
 
