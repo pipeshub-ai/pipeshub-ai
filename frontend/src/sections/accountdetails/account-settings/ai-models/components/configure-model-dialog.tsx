@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback } from 'react';
+import { useRef, useState, useCallback, useEffect } from 'react';
 import settingsIcon from '@iconify-icons/eva/settings-2-outline';
 import closeIcon from '@iconify-icons/eva/close-outline';
 import expandMoreIcon from '@iconify-icons/material-symbols/expand-more';
@@ -50,10 +50,17 @@ const ConfigureModelDialog = ({ open, onClose, onSave, modelType }: ConfigureMod
   const [dialogError, setDialogError] = useState<string | null>(null);
   const scrollableStyles = createScrollableContainerStyle(theme);
 
-  const [expandedAccordion, setExpandedAccordion] = useState<string | false>(false);
-
+  const [expandedAccordion, setExpandedAccordion] = useState<string | false>(modelType || 'llm');
   const llmConfigFormRef = useRef<LlmConfigFormRef>(null);
   const embeddingConfigFormRef = useRef<EmbeddingConfigFormRef>(null);
+  
+  useEffect(() => {
+    if (open) {
+      setExpandedAccordion(modelType || 'llm');
+      setDialogError(null);
+      setIsSaving(false);
+    }
+  }, [open, modelType]);
 
   const getModelColor = useCallback(
     (type: string) => {
