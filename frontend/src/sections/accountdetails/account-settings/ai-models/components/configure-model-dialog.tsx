@@ -50,15 +50,17 @@ const ConfigureModelDialog = ({ open, onClose, onSave, modelType }: ConfigureMod
   const [dialogError, setDialogError] = useState<string | null>(null);
   const scrollableStyles = createScrollableContainerStyle(theme);
 
-  const [expandedAccordion, setExpandedAccordion] = useState<string | false>(modelType || 'llm');
+  const [expandedAccordion, setExpandedAccordion] = useState<string | false>(false);
   const llmConfigFormRef = useRef<LlmConfigFormRef>(null);
   const embeddingConfigFormRef = useRef<EmbeddingConfigFormRef>(null);
-  
+
   useEffect(() => {
     if (open) {
       setExpandedAccordion(modelType || 'llm');
       setDialogError(null);
       setIsSaving(false);
+      setIsLlmValid(false);
+      setIsEmbeddingValid(false);
     }
   }, [open, modelType]);
 
