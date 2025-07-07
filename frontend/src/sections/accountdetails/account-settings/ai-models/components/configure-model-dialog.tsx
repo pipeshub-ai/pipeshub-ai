@@ -23,7 +23,7 @@ import {
 import { Iconify } from 'src/components/iconify';
 import axios from 'src/utils/axios';
 
-import {createScrollableContainerStyle} from 'src/sections/qna/chatbot/utils/styles/scrollbar';
+import { createScrollableContainerStyle } from 'src/sections/qna/chatbot/utils/styles/scrollbar';
 import LlmConfigForm, { LlmConfigFormRef } from './llm-config-form';
 import EmbeddingConfigForm, { EmbeddingConfigFormRef } from './embedding-config-form';
 import { MODEL_TYPE_NAMES, MODEL_TYPE_ICONS } from '../types';
@@ -154,7 +154,7 @@ const ConfigureModelDialog = ({ open, onClose, onSave, modelType }: ConfigureMod
       const savedConfigs = [];
       if (llmFormData) savedConfigs.push('LLM');
       if (embeddingFormData) savedConfigs.push('Embedding');
-      
+
       const successMessage = `${savedConfigs.join(' and ')} configuration${savedConfigs.length > 1 ? 's' : ''} updated successfully`;
 
       onSave({
@@ -164,15 +164,15 @@ const ConfigureModelDialog = ({ open, onClose, onSave, modelType }: ConfigureMod
 
       // Close dialog after successful save
       handleClose();
-
     } catch (error: any) {
       console.error('Error saving configurations:', error);
-      const errorMessage = error?.response?.data?.message || error?.message || 'An unexpected error occurred';
+      const errorMessage =
+        error?.response?.data?.message || error?.message || 'An unexpected error occurred';
       setDialogError(`Failed to save configurations: ${errorMessage}`);
 
       onSave({
         success: false,
-        error: 'Failed to save configurations',
+        error: `Failed to save configurations ${errorMessage}`,
       });
 
       setIsSaving(false);
@@ -257,7 +257,7 @@ const ConfigureModelDialog = ({ open, onClose, onSave, modelType }: ConfigureMod
             px: 3,
             pb: 0,
           },
-          ...scrollableStyles
+          ...scrollableStyles,
         }}
       >
         {dialogError && (

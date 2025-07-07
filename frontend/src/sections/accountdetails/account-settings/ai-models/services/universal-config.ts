@@ -5,6 +5,20 @@ export interface ModelConfig {
   [key: string]: any;
 }
 
+interface AiModelConfiguration {
+  provider: string;
+  configuration: Record<string, any>;
+}
+
+interface AiModelsConfig {
+  ocr: AiModelConfiguration[];
+  slm: AiModelConfiguration[];
+  reasoning: AiModelConfiguration[];
+  multiModal: AiModelConfiguration[];
+  llm: AiModelConfiguration[];
+  embedding: AiModelConfiguration[];
+}
+
 export const getModelConfig = async (
   modelType: 'llm' | 'embedding' | 'ocr'
 ): Promise<ModelConfig | null> => {
@@ -81,44 +95,87 @@ export const updateBothModelConfigs = async (
   embeddingConfig?: ModelConfig
 ): Promise<any> => {
   try {
-    // Get current configuration
+    const updatedConfig: AiModelsConfig = {
+      ocr: [],
+      slm: [],
+      reasoning: [],
+      multiModal: [],
+      llm: [],
+      embedding: [],
+    };
+
+    // If we're updating both configs, we can replace directly without reading current state
+    if (llmConfig && embeddingConfig) {
+      // Both configs provided - safe to replace directly
+      if (llmConfig) {
+        const { modelType: configModelType, _provider, ...cleanLlmConfig } = llmConfig;
+        updatedConfig.llm = [
+          {
+            provider: configModelType,
+            configuration: cleanLlmConfig,
+          },
+        ];
+      }
+
+      if (embeddingConfig.modelType === 'default') {
+        updatedConfig.embedding = [];
+      } else {
+        const { modelType: configModelType, _provider, ...cleanEmbeddingConfig } = embeddingConfig;
+        updatedConfig.embedding = [
+          {
+            provider: configModelType,
+            configuration: cleanEmbeddingConfig,
+          },
+        ];
+      }
+
+      // Send update without reading current state first
+      const updateResponse = await axios.post(
+        '/api/v1/configurationManager/aiModelsConfig',
+        updatedConfig
+      );
+      return updateResponse;
+    }
+
     const response = await axios.get('/api/v1/configurationManager/aiModelsConfig');
     const currentConfig = response.data;
 
-    // Prepare updated configuration
-    const updatedConfig = { ...currentConfig };
+    updatedConfig.ocr = currentConfig.ocr || [];
+    updatedConfig.slm = currentConfig.slm || [];
+    updatedConfig.reasoning = currentConfig.reasoning || [];
+    updatedConfig.multiModal = currentConfig.multiModal || [];
 
-    // Update LLM config if provided
+    // Update LLM config if provided, otherwise preserve existing
     if (llmConfig) {
       const { modelType: configModelType, _provider, ...cleanLlmConfig } = llmConfig;
-      const provider = configModelType;
-
       updatedConfig.llm = [
         {
-          provider,
+          provider: configModelType,
           configuration: cleanLlmConfig,
         },
       ];
+    } else {
+      updatedConfig.llm = currentConfig.llm || [];
     }
 
-    // Update Embedding config if provided
+    // Update Embedding config if provided, otherwise preserve existing
     if (embeddingConfig) {
       if (embeddingConfig.modelType === 'default') {
         updatedConfig.embedding = [];
       } else {
         const { modelType: configModelType, _provider, ...cleanEmbeddingConfig } = embeddingConfig;
-        const provider = configModelType;
-
         updatedConfig.embedding = [
           {
-            provider,
+            provider: configModelType,
             configuration: cleanEmbeddingConfig,
           },
         ];
       }
+    } else {
+      updatedConfig.embedding = currentConfig.embedding || [];
     }
 
-    // Single API call to update both configurations
+    // Send the update
     const updateResponse = await axios.post(
       '/api/v1/configurationManager/aiModelsConfig',
       updatedConfig
