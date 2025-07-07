@@ -134,7 +134,7 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
     label: 'Azure OpenAI Service',
     description: 'Configure Azure OpenAI for embeddings.',
     modelPlaceholder: 'e.g., text-embedding-3-small',
-    fields: ['endpoint', 'apiKey', 'model'],
+    fields: ['endpoint', 'apiKey', 'deploymentName', 'model'],
     customFields: {
       endpoint: {
         placeholder: 'e.g., https://your-resource.openai.azure.com/',
@@ -147,7 +147,7 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
     description: 'Use local Sentence Transformers models (no API key required).',
     modelPlaceholder: 'e.g., all-MiniLM-L6-v2',
     fields: ['model'],
-  }
+  },
 ] as const;
 
 // STORAGE PROVIDERS

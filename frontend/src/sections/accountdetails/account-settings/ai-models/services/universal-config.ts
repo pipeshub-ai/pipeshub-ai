@@ -5,7 +5,9 @@ export interface ModelConfig {
   [key: string]: any;
 }
 
-export const getModelConfig = async (modelType: 'llm' | 'embedding' | 'ocr'): Promise<ModelConfig | null> => {
+export const getModelConfig = async (
+  modelType: 'llm' | 'embedding' | 'ocr'
+): Promise<ModelConfig | null> => {
   try {
     const response = await axios.get('/api/v1/configurationManager/aiModelsConfig');
     const { data } = response;
@@ -74,8 +76,63 @@ export const updateModelConfig = async (
   }
 };
 
+export const updateBothModelConfigs = async (
+  llmConfig?: ModelConfig,
+  embeddingConfig?: ModelConfig
+): Promise<any> => {
+  try {
+    // Get current configuration
+    const response = await axios.get('/api/v1/configurationManager/aiModelsConfig');
+    const currentConfig = response.data;
+
+    // Prepare updated configuration
+    const updatedConfig = { ...currentConfig };
+
+    // Update LLM config if provided
+    if (llmConfig) {
+      const { modelType: configModelType, _provider, ...cleanLlmConfig } = llmConfig;
+      const provider = configModelType;
+
+      updatedConfig.llm = [
+        {
+          provider,
+          configuration: cleanLlmConfig,
+        },
+      ];
+    }
+
+    // Update Embedding config if provided
+    if (embeddingConfig) {
+      if (embeddingConfig.modelType === 'default') {
+        updatedConfig.embedding = [];
+      } else {
+        const { modelType: configModelType, _provider, ...cleanEmbeddingConfig } = embeddingConfig;
+        const provider = configModelType;
+
+        updatedConfig.embedding = [
+          {
+            provider,
+            configuration: cleanEmbeddingConfig,
+          },
+        ];
+      }
+    }
+
+    // Single API call to update both configurations
+    const updateResponse = await axios.post(
+      '/api/v1/configurationManager/aiModelsConfig',
+      updatedConfig
+    );
+    return updateResponse;
+  } catch (error) {
+    console.error('Error updating model configurations:', error);
+    throw error;
+  }
+};
+
 export const getLlmConfig = () => getModelConfig('llm');
 export const updateLlmConfig = (config: ModelConfig) => updateModelConfig('llm', config);
 
 export const getEmbeddingConfig = () => getModelConfig('embedding');
-export const updateEmbeddingConfig = (config: ModelConfig) => updateModelConfig('embedding', config);
+export const updateEmbeddingConfig = (config: ModelConfig) =>
+  updateModelConfig('embedding', config);

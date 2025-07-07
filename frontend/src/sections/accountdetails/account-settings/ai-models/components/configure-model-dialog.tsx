@@ -1,6 +1,7 @@
-import { useRef, useState } from 'react';
-import robotIcon from '@iconify-icons/mdi/robot';
+import { useRef, useState, useCallback } from 'react';
+import settingsIcon from '@iconify-icons/eva/settings-2-outline';
 import closeIcon from '@iconify-icons/eva/close-outline';
+import expandMoreIcon from '@iconify-icons/material-symbols/expand-more';
 
 import {
   Box,
@@ -13,18 +14,21 @@ import {
   DialogTitle,
   DialogContent,
   DialogActions,
+  Accordion,
+  AccordionSummary,
+  AccordionDetails,
+  Typography,
 } from '@mui/material';
 
 import { Iconify } from 'src/components/iconify';
+import axios from 'src/utils/axios';
 
+import {createScrollableContainerStyle} from 'src/sections/qna/chatbot/utils/styles/scrollbar';
 import LlmConfigForm, { LlmConfigFormRef } from './llm-config-form';
-import EmbeddingConfigForm, {
-  EmbeddingConfigFormRef,
-} from './embedding-config-form';
+import EmbeddingConfigForm, { EmbeddingConfigFormRef } from './embedding-config-form';
 import { MODEL_TYPE_NAMES, MODEL_TYPE_ICONS } from '../types';
+import { updateBothModelConfigs } from '../services/universal-config';
 
-
-// Expected save result interface
 interface SaveResult {
   success: boolean;
   warning?: string;
@@ -38,128 +42,154 @@ interface ConfigureModelDialogProps {
   modelType: string | null;
 }
 
-// Create a type for any form ref that has a handleSave method
-type AnyFormRef = LlmConfigFormRef | EmbeddingConfigFormRef;
-
 const ConfigureModelDialog = ({ open, onClose, onSave, modelType }: ConfigureModelDialogProps) => {
   const theme = useTheme();
-  const [isValid, setIsValid] = useState(false);
+  const [isLlmValid, setIsLlmValid] = useState(false);
+  const [isEmbeddingValid, setIsEmbeddingValid] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [dialogError, setDialogError] = useState<string | null>(null);
+  const scrollableStyles = createScrollableContainerStyle(theme);
 
-  // Form refs for different model types
+  const [expandedAccordion, setExpandedAccordion] = useState<string | false>(false);
+
   const llmConfigFormRef = useRef<LlmConfigFormRef>(null);
   const embeddingConfigFormRef = useRef<EmbeddingConfigFormRef>(null);
-  //   const ocrConfigFormRef = useRef<OcrConfigFormRef>(null);
-  //   const slmConfigFormRef = useRef<SlmConfigFormRef>(null);
-  //   const reasoningConfigFormRef = useRef<ReasoningConfigFormRef>(null);
-  //   const multiModalConfigFormRef = useRef<MultiModalConfigFormRef>(null);
 
-  // Get model colors
-  const getModelColor = (type: string | null) => {
-    if (!type) return theme.palette.primary.main;
+  const getModelColor = useCallback(
+    (type: string) => {
+      const colors: Record<string, string> = {
+        llm: '#4CAF50', // Green
+        ocr: '#2196F3', // Blue
+        embedding: '#9C27B0', // Purple
+        slm: '#FF9800', // Orange
+        reasoning: '#E91E63', // Pink
+        multiModal: '#673AB7', // Deep Purple
+      };
+      return colors[type] || theme.palette.primary.main;
+    },
+    [theme.palette.primary.main]
+  );
 
-    const colors: Record<string, string> = {
-      llm: '#4CAF50', // Green
-      ocr: '#2196F3', // Blue
-      embedding: '#9C27B0', // Purple
-      slm: '#FF9800', // Orange
-      reasoning: '#E91E63', // Pink
-      multiModal: '#673AB7', // Deep Purple
-    };
+  const getModelIcon = useCallback((type: string) => MODEL_TYPE_ICONS[type] || settingsIcon, []);
 
-    return colors[type] || theme.palette.primary.main;
-  };
+  const getModelTitle = useCallback(
+    (type: string) => MODEL_TYPE_NAMES[type] || type.toUpperCase(),
+    []
+  );
 
-  // Get the icon for the current model type
-  const getModelIcon = (type: any) => {
-    if (!type) return robotIcon;
-    return MODEL_TYPE_ICONS[type] || robotIcon;
-  };
+  const handleClose = useCallback(() => {
+    setExpandedAccordion(false);
+    setDialogError(null);
+    setIsSaving(false);
+    setIsLlmValid(false);
+    setIsEmbeddingValid(false);
+    onClose();
+  }, [onClose]);
 
-  // Get the title for the current model type
-  const getModelTitle = (type: string | null) => {
-    if (!type) return 'AI Model';
-    return MODEL_TYPE_NAMES[type] || type.toUpperCase();
-  };
+  const handleAccordionChange = useCallback(
+    (panel: string) => (event: React.SyntheticEvent, isExpanded: boolean) => {
+      setExpandedAccordion(isExpanded ? panel : false);
+    },
+    []
+  );
 
-  // Reset state when dialog opens
-  if (!open) {
-    if (dialogError) setDialogError(null);
-    if (isSaving) setIsSaving(false);
-  }
+  const handleLlmAccordionChange = handleAccordionChange('llm');
+  const handleEmbeddingAccordionChange = handleAccordionChange('embedding');
 
-  // Form validation state
-  const handleValidationChange = (valid: boolean) => {
-    setIsValid(valid);
-  };
+  const handleLlmValidationChange = useCallback((valid: boolean) => {
+    setIsLlmValid(valid);
+  }, []);
 
-  // Handle save button click - triggers the form's save method based on the active model type
-  const handleSaveClick = async () => {
+  const handleEmbeddingValidationChange = useCallback((valid: boolean) => {
+    setIsEmbeddingValid(valid);
+  }, []);
+
+  const isValid = isLlmValid || isEmbeddingValid;
+
+  const handleSaveClick = useCallback(async () => {
     setIsSaving(true);
     setDialogError(null);
 
     try {
-      let result: SaveResult | undefined;
+      let llmFormData = null;
+      let embeddingFormData = null;
+      const errors: string[] = [];
 
-      switch (modelType) {
-        case 'llm':
-          if (llmConfigFormRef.current?.handleSave) {
-            result = await llmConfigFormRef.current.handleSave();
-          }
-          break;
-        case 'embedding':
-          if (embeddingConfigFormRef.current?.handleSave) {
-            result = await embeddingConfigFormRef.current.handleSave();
-          }
-          break;
-        default:
-          setDialogError('Unknown model type');
-          setIsSaving(false);
-          return;
-      }
-
-      if (result) {
-        if (result.success) {
-          // Pass result to parent for snackbar display
-          onSave(result);
-        } else {
-          // Show error in dialog and don't close
-          setDialogError(result.error || 'Failed to save configuration');
-          setIsSaving(false);
+      // Get LLM form data if valid
+      if (isLlmValid && llmConfigFormRef.current?.getFormData) {
+        try {
+          llmFormData = await llmConfigFormRef.current.getFormData();
+        } catch (error) {
+          console.error('Error getting LLM form data:', error);
+          errors.push('Failed to get LLM configuration data');
         }
-      } else {
-        // No result returned - treat as error
-        setDialogError('No response from form');
-        setIsSaving(false);
       }
-    } catch (error: any) {
-      console.error('Error saving configuration:', error);
-      const errorMessage = error?.message || 'An unexpected error occurred';
-      setDialogError(`An unexpected error occurred: ${errorMessage}`);
 
-      // Also pass the error to parent for snackbar display
+      // Get Embedding form data if valid
+      if (isEmbeddingValid && embeddingConfigFormRef.current?.getFormData) {
+        try {
+          embeddingFormData = await embeddingConfigFormRef.current.getFormData();
+        } catch (error) {
+          console.error('Error getting Embedding form data:', error);
+          errors.push('Failed to get Embedding configuration data');
+        }
+      }
+
+      if (errors.length > 0) {
+        setDialogError(errors.join(', '));
+        setIsSaving(false);
+        return;
+      }
+
+      if (!llmFormData && !embeddingFormData) {
+        setDialogError('No valid configurations to save');
+        setIsSaving(false);
+        return;
+      }
+
+      // Single API call to update both configurations
+      await updateBothModelConfigs(llmFormData, embeddingFormData);
+
+      // Determine success message based on what was saved
+      const savedConfigs = [];
+      if (llmFormData) savedConfigs.push('LLM');
+      if (embeddingFormData) savedConfigs.push('Embedding');
+      
+      const successMessage = `${savedConfigs.join(' and ')} configuration${savedConfigs.length > 1 ? 's' : ''} updated successfully`;
+
+      onSave({
+        success: true,
+        warning: undefined,
+      });
+
+      // Close dialog after successful save
+      handleClose();
+
+    } catch (error: any) {
+      console.error('Error saving configurations:', error);
+      const errorMessage = error?.response?.data?.message || error?.message || 'An unexpected error occurred';
+      setDialogError(`Failed to save configurations: ${errorMessage}`);
+
       onSave({
         success: false,
-        error: 'An unexpected error occurred while saving configuration',
+        error: 'Failed to save configurations',
       });
 
       setIsSaving(false);
-      return;
-    } finally {
-      setIsSaving(false);
     }
-  };
+  }, [isLlmValid, isEmbeddingValid, onSave, handleClose]);
 
-  // Get the model color for the current model type
-  const modelColor = getModelColor(modelType);
-  const modelIcon = getModelIcon(modelType);
-  const modelTitle = getModelTitle(modelType);
+  const llmColor = getModelColor('llm');
+  const embeddingColor = getModelColor('embedding');
+  const llmIcon = getModelIcon('llm');
+  const embeddingIcon = getModelIcon('embedding');
+  const llmTitle = getModelTitle('llm');
+  const embeddingTitle = getModelTitle('embedding');
 
   return (
     <Dialog
       open={open}
-      onClose={onClose}
+      onClose={handleClose}
       maxWidth="md"
       fullWidth
       BackdropProps={{
@@ -200,17 +230,17 @@ const ConfigureModelDialog = ({ open, onClose, onSave, modelType }: ConfigureMod
               width: 32,
               height: 32,
               borderRadius: '6px',
-              bgcolor: alpha(modelColor, 0.1),
-              color: modelColor,
+              bgcolor: alpha(theme.palette.primary.main, 0.1),
+              color: theme.palette.primary.main,
             }}
           >
-            <Iconify icon={modelIcon} width={18} height={18} />
+            <Iconify icon={settingsIcon} width={18} height={18} />
           </Box>
-          Configure {modelTitle} Integration
+          Configure AI Model Integrations
         </Box>
 
         <IconButton
-          onClick={onClose}
+          onClick={handleClose}
           size="small"
           sx={{ color: theme.palette.text.secondary }}
           aria-label="close"
@@ -227,6 +257,7 @@ const ConfigureModelDialog = ({ open, onClose, onSave, modelType }: ConfigureMod
             px: 3,
             pb: 0,
           },
+          ...scrollableStyles
         }}
       >
         {dialogError && (
@@ -241,41 +272,143 @@ const ConfigureModelDialog = ({ open, onClose, onSave, modelType }: ConfigureMod
           </Alert>
         )}
 
-        <Box>
-          {modelType === 'llm' && (
-            <LlmConfigForm onValidationChange={handleValidationChange} ref={llmConfigFormRef} />
-          )}
-          {modelType === 'embedding' && (
-            <EmbeddingConfigForm
-              onValidationChange={handleValidationChange}
-              ref={embeddingConfigFormRef}
-            />
-          )}
-          {/* {modelType === 'ocr' && (
-            <OcrConfigForm
-              onValidationChange={handleValidationChange}
-              ref={ocrConfigFormRef}
-            />
-          )} */}
-          {/*
-          {modelType === 'slm' && (
-            <SlmConfigForm
-              onValidationChange={handleValidationChange}
-              ref={slmConfigFormRef}
-            />
-          )}
-          {modelType === 'reasoning' && (
-            <ReasoningConfigForm
-              onValidationChange={handleValidationChange}
-              ref={reasoningConfigFormRef}
-            />
-          )}
-          {modelType === 'multiModal' && (
-            <MultiModalConfigForm
-              onValidationChange={handleValidationChange}
-              ref={multiModalConfigFormRef}
-            />
-          )} */}
+        <Box sx={{ mb: 3 }}>
+          {/* LLM Configuration Accordion */}
+          <Accordion
+            expanded={expandedAccordion === 'llm'}
+            onChange={handleLlmAccordionChange}
+            sx={{
+              mb: 2,
+              borderRadius: 1,
+              border: '1px solid',
+              borderColor: theme.palette.divider,
+              '&:before': {
+                display: 'none',
+              },
+              '&.Mui-expanded': {
+                boxShadow: theme.customShadows.z8,
+              },
+            }}
+          >
+            <AccordionSummary
+              expandIcon={<Iconify icon={expandMoreIcon} />}
+              sx={{
+                px: 2.5,
+                py: 1.5,
+                minHeight: 64,
+                '&.Mui-expanded': {
+                  minHeight: 64,
+                },
+                '& .MuiAccordionSummary-content': {
+                  margin: '12px 0',
+                  '&.Mui-expanded': {
+                    margin: '12px 0',
+                  },
+                },
+              }}
+            >
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                <Box
+                  sx={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    width: 40,
+                    height: 40,
+                    borderRadius: '8px',
+                    bgcolor: alpha(llmColor, 0.1),
+                    color: llmColor,
+                  }}
+                >
+                  <Iconify icon={llmIcon} width={20} height={20} />
+                </Box>
+                <Box>
+                  <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+                    {llmTitle}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Configure large language model settings
+                  </Typography>
+                </Box>
+              </Box>
+            </AccordionSummary>
+            <AccordionDetails sx={{ p: 0, pt: 0 }}>
+              <Box sx={{ px: 2.5, pb: 2.5 }}>
+                <LlmConfigForm
+                  onValidationChange={handleLlmValidationChange}
+                  ref={llmConfigFormRef}
+                />
+              </Box>
+            </AccordionDetails>
+          </Accordion>
+
+          {/* Embedding Configuration Accordion */}
+          <Accordion
+            expanded={expandedAccordion === 'embedding'}
+            onChange={handleEmbeddingAccordionChange}
+            sx={{
+              borderRadius: 1,
+              border: '1px solid',
+              borderColor: theme.palette.divider,
+              '&:before': {
+                display: 'none',
+              },
+              '&.Mui-expanded': {
+                boxShadow: theme.customShadows.z8,
+              },
+            }}
+          >
+            <AccordionSummary
+              expandIcon={<Iconify icon={expandMoreIcon} />}
+              sx={{
+                px: 2.5,
+                py: 1.5,
+                minHeight: 64,
+                '&.Mui-expanded': {
+                  minHeight: 64,
+                },
+                '& .MuiAccordionSummary-content': {
+                  margin: '12px 0',
+                  '&.Mui-expanded': {
+                    margin: '12px 0',
+                  },
+                },
+              }}
+            >
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                <Box
+                  sx={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    width: 40,
+                    height: 40,
+                    borderRadius: '8px',
+                    bgcolor: alpha(embeddingColor, 0.1),
+                    color: embeddingColor,
+                  }}
+                >
+                  <Iconify icon={embeddingIcon} width={20} height={20} />
+                </Box>
+                <Box>
+                  <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+                    {embeddingTitle}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Configure embedding model settings for search and retrieval
+                  </Typography>
+                </Box>
+              </Box>
+            </AccordionSummary>
+            <AccordionDetails sx={{ p: 0, pt: 0 }}>
+              <Box sx={{ px: 2.5, pb: 2.5 }}>
+                <EmbeddingConfigForm
+                  onValidationChange={handleEmbeddingValidationChange}
+                  ref={embeddingConfigFormRef}
+                />
+              </Box>
+            </AccordionDetails>
+          </Accordion>
         </Box>
       </DialogContent>
 
@@ -289,7 +422,7 @@ const ConfigureModelDialog = ({ open, onClose, onSave, modelType }: ConfigureMod
       >
         <Button
           variant="text"
-          onClick={onClose}
+          onClick={handleClose}
           sx={{
             color: theme.palette.text.secondary,
             fontWeight: 500,
@@ -315,7 +448,7 @@ const ConfigureModelDialog = ({ open, onClose, onSave, modelType }: ConfigureMod
             px: 3,
           }}
         >
-          {isSaving ? 'Saving...' : 'Save'}
+          {isSaving ? 'Saving...' : 'Save Configurations'}
         </Button>
       </DialogActions>
     </Dialog>
