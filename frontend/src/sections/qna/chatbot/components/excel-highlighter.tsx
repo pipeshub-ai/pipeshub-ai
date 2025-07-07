@@ -598,7 +598,8 @@ const ExcelViewer = ({
 
           // Process all rows including the header row
           const data: TableRowType[] = [];
-          const maxRows = Math.min(range.e.r + 1, headerRowIndex + 50);
+          const MAX_ROWS_TO_DISPLAY = 1000; // Adjust as needed
+          const maxRows = Math.min(range.e.r + 2, headerRowIndex + MAX_ROWS_TO_DISPLAY);
           let displayIndex = 0;
 
           for (let rowIndex = headerRowIndex; rowIndex < maxRows; rowIndex += 1) {
