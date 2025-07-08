@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import { ConnectorType, CrawlingScheduleType } from '../schema/enums';
 
-
 // Base Schedule Configuration Schemas
 const BaseScheduleConfigSchema = z.object({
   scheduleType: z.nativeEnum(CrawlingScheduleType),
@@ -61,13 +60,25 @@ const ScheduleConfigSchema = z.discriminatedUnion('scheduleType', [
 // Main API Request Schema
 export const CrawlingScheduleRequestSchema = z.object({
   params: z.object({
-    connectorType: z.nativeEnum(ConnectorType),
+    connectorType: z.nativeEnum(ConnectorType).refine((val) => Object.values(ConnectorType).includes(val), {
+      message: 'Invalid connector type',
+    }),
   }),
   body: z.object({
     scheduleConfig: ScheduleConfigSchema,
     priority: z.number().min(1).max(10).default(5),
     maxRetries: z.number().min(0).max(10).default(3),
     timeout: z.number().min(1000).max(600000).default(300000), // 5 minutes default
+  }),
+  headers: z.object({
+    authorization: z.string(),
+  }),
+});
+
+// Job Status Request Schema
+export const JobStatusRequestSchema = z.object({
+  params: z.object({
+    connectorType: z.nativeEnum(ConnectorType),
   }),
   headers: z.object({
     authorization: z.string(),

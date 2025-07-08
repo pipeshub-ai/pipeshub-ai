@@ -22,6 +22,36 @@ import {
   IWeeklyCrawlingSchedule,
 } from './scheduler/scheduler';
 
+export interface CrawlingJobData {
+  connectorType: ConnectorType;
+  scheduleConfig: ICrawlingSchedule;
+  orgId: string;
+  userId: string;
+  timestamp: Date;
+  metadata?: Record<string, any>;
+}
+
+export interface ScheduleJobOptions {
+  priority?: number;
+  maxRetries?: number;
+  timeout?: number;
+  metadata?: Record<string, any>;
+}
+
+export interface JobStatus {
+  id: string | undefined;
+  name: string;
+  data: CrawlingJobData;
+  progress: number | object;
+  delay: number | undefined;
+  timestamp: number;
+  attemptsMade: number;
+  finishedOn: number | undefined;
+  processedOn: number | undefined;
+  failedReason: string | undefined;
+  state: string;
+}
+
 export interface IUserExclusionConfig {
   userId: Types.ObjectId;
   userEmail?: string;

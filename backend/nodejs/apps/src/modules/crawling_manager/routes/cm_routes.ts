@@ -3,7 +3,7 @@ import { Container } from 'inversify';
 import { CrawlingSchedulerService } from '../services/crawling_service';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import { CrawlingScheduleRequestSchema } from '../validator/validator';
-import { scheduleCrawlingJob } from '../controller/cm_controller';
+import { getJobStatus, removeJob, scheduleCrawlingJob } from '../controller/cm_controller';
 import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck';
 import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
@@ -15,7 +15,7 @@ export function createCrawlingManagerRouter(container: Container): Router {
   );
   const authMiddleware = container.get<AuthMiddleware>(AuthMiddleware);
 
-  // POST /api/v1/crawling/:connectorType/schedule - Schedule a crawling job
+  // POST /api/v1/crawlingManager/:connectorType/schedule - Schedule a crawling job
    router.post(
     '/:connectorType/schedule',
     authMiddleware.authenticate,
@@ -23,6 +23,22 @@ export function createCrawlingManagerRouter(container: Container): Router {
     metricsMiddleware(container),
     ValidationMiddleware.validate(CrawlingScheduleRequestSchema),
     scheduleCrawlingJob(crawlingService),
+  );
+
+  router.get(
+    '/:connectorType/schedule',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    getJobStatus(crawlingService),
+  );
+
+  router.delete(
+    '/:connectorType/schedule',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    removeJob(crawlingService),
   );
 
   return router;

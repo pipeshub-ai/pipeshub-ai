@@ -20,13 +20,13 @@ export enum CrawlingStatus {
 }
 
 export enum ConnectorType {
-    GOOGLE_WORKSPACE = 'Google Workspace',
-    SLACK = 'Slack',
-    CONFLUENCE = 'Confluence',
-    ONE_DRIVE = 'OneDrive',
-    SHAREPOINT = 'SharePoint',
-    S3 = 'S3',
-    AZURE_BLOB_STORAGE = 'Azure Blob Storage',
+    GOOGLE_WORKSPACE = 'google_workspace',
+    SLACK = 'slack',
+    CONFLUENCE = 'confluence',
+    ONE_DRIVE = 'one_drive',
+    SHAREPOINT = 'sharepoint',
+    S3 = 's3',
+    AZURE_BLOB_STORAGE = 'azure_blob_storage',
 }
 
 

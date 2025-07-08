@@ -2,12 +2,17 @@ import { Container } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
 import { RedisService } from '../../../libs/services/redis.service';
 import { AppConfig } from '../../tokens_manager/config/config';
-import { CrawlingSchedulerService } from '../services/crawling_service';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
-import { RedisConfig } from '../../../libs/types/redis.types';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { ConfigurationManagerConfig } from '../../configuration_manager/config/config';
+import { CrawlingWorkerService } from '../services/crawling_worker';
+import { GoogleWorkspaceCrawlingService } from '../services/connectors/google_workspace';
+import { SlackCrawlingService } from '../services/connectors/slack';
+import { S3CrawlingService } from '../services/connectors/s3';
+import { CrawlingTaskFactory } from '../services/task/crawling_task_service_factory';
+import { CrawlingSchedulerService } from '../services/crawling_service';
+import { RedisConfig } from '../../../libs/types/redis.types';
 
 const loggerConfig = {
   service: 'Crawling Manager Container',
@@ -43,25 +48,43 @@ export class CrawlingManagerContainer {
     try {
       const logger = container.get<Logger>('Logger');
       logger.info('Initializing Crawling Manager services');
+      setupCrawlingDependencies(container, appConfig.redis);
 
-      const redisService = new RedisService(
-        appConfig.redis,
-        container.get('Logger'),
-      );
-      container
-        .bind<RedisService>('RedisService')
-        .toConstantValue(redisService);
+      logger.info('Testing GoogleWorkspaceCrawlingService...');
+    const googleService = container.get<GoogleWorkspaceCrawlingService>(GoogleWorkspaceCrawlingService);
+    logger.info('✅ GoogleWorkspaceCrawlingService OK', {
+      googleService,
+    });
+    
+    logger.info('Testing SlackCrawlingService...');
+    const slackService = container.get<SlackCrawlingService>(SlackCrawlingService);
+    logger.info('✅ SlackCrawlingService OK', {
+      slackService,
+    });
+    
+    logger.info('Testing S3CrawlingService...');
+    const s3Service = container.get<S3CrawlingService>(S3CrawlingService);
+    logger.info('✅ S3CrawlingService OK', {
+      s3Service,
+    });
+    
+    logger.info('Testing CrawlingTaskFactory...');
+    const taskFactory = container.get<CrawlingTaskFactory>(CrawlingTaskFactory);
+    logger.info('✅ CrawlingTaskFactory OK', {
+      taskFactory,
+    });
 
-      // Bind RedisConfig for CrawlingSchedulerService
-      container
-        .bind<RedisConfig>('RedisConfig')
-        .toConstantValue(appConfig.redis);
+    logger.info('Testing CrawlingSchedulerService...');
+    const schedulerService = container.get<CrawlingSchedulerService>(CrawlingSchedulerService);
+    logger.info('✅ CrawlingSchedulerService OK', {
+      schedulerService,
+    }); 
 
-      // Crawling Scheduler Service
-      container
-        .bind<CrawlingSchedulerService>(CrawlingSchedulerService)
-        .to(CrawlingSchedulerService)
-        .inSingletonScope();
+    logger.info('Testing CrawlingWorkerService...');
+    const crawlingWorkerService2 = container.get<CrawlingWorkerService>(CrawlingWorkerService);
+    logger.info('✅ CrawlingWorkerService OK', {
+      crawlingWorkerService2,
+    });   
 
       const authTokenService = new AuthTokenService(
         appConfig.jwtSecret,
@@ -85,6 +108,17 @@ export class CrawlingManagerContainer {
       container
         .bind<KeyValueStoreService>('KeyValueStoreService')
         .toConstantValue(keyValueStoreService);
+
+      logger.info('Starting crawling worker service...');
+      const crawlingWorkerService = container.get<CrawlingWorkerService>(
+        CrawlingWorkerService,
+      );
+
+      if (!crawlingWorkerService) {
+        throw new Error('CrawlingWorkerService not found');
+      }
+
+      logger.info('Crawling worker service started successfully');
 
       this.logger.info('Crawling Manager services initialized successfully');
     } catch (error) {
@@ -111,9 +145,25 @@ export class CrawlingManagerContainer {
           ? this.instance.get<RedisService>('RedisService')
           : null;
 
-        // Disconnect services if they have a disconnect method
         if (redisService && redisService.isConnected()) {
           await redisService.disconnect();
+        }
+
+        const crawlingWorkerService = this.instance.isBound(
+          CrawlingWorkerService,
+        )
+          ? this.instance.get<CrawlingWorkerService>(CrawlingWorkerService)
+          : null;
+        if (crawlingWorkerService) {
+          await crawlingWorkerService.close();
+        }
+
+        const keyValueStoreService = this.instance.isBound(KeyValueStoreService)
+          ? this.instance.get<KeyValueStoreService>(KeyValueStoreService)
+          : null;
+        if (keyValueStoreService && keyValueStoreService.isConnected()) {
+          await keyValueStoreService.disconnect();
+          this.logger.info('KeyValueStoreService disconnected successfully');
         }
 
         this.logger.info(
@@ -131,4 +181,46 @@ export class CrawlingManagerContainer {
       }
     }
   }
+}
+
+export function setupCrawlingDependencies(
+  container: Container,
+  redisConfig: RedisConfig,
+): void {
+  // Bind Redis config
+  container.bind<RedisConfig>('RedisConfig').toConstantValue(redisConfig);
+
+  // Bind crawling connector services
+  container
+    .bind<GoogleWorkspaceCrawlingService>(GoogleWorkspaceCrawlingService)
+    .to(GoogleWorkspaceCrawlingService)
+    .inSingletonScope();
+
+  container
+    .bind<SlackCrawlingService>(SlackCrawlingService)
+    .to(SlackCrawlingService)
+    .inSingletonScope();
+
+  container
+    .bind<S3CrawlingService>(S3CrawlingService)
+    .to(S3CrawlingService)
+    .inSingletonScope();
+
+  // Bind task factory
+  container
+    .bind<CrawlingTaskFactory>(CrawlingTaskFactory)
+    .to(CrawlingTaskFactory)
+    .inSingletonScope();
+
+  // Bind core services
+  container
+    .bind<CrawlingSchedulerService>(CrawlingSchedulerService)
+    .to(CrawlingSchedulerService)
+    .inSingletonScope();
+
+  // Bind crawling worker service
+  container
+    .bind<CrawlingWorkerService>(CrawlingWorkerService)
+    .to(CrawlingWorkerService)
+    .inSingletonScope();
 }
