@@ -8,6 +8,7 @@ from typing_extensions import TypedDict
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_arango import ArangoService
 from app.modules.retrieval.retrieval_service import RetrievalService
+from app.modules.streaming.streaming_service import StreamingService
 
 
 class ChatMessage(TypedDict):
@@ -25,12 +26,13 @@ class ChatState(TypedDict):
     retrieval_service: RetrievalService
     arango_service: ArangoService
     reranker_service: RerankerService
+    streaming_service: StreamingService
 
     query: str
     limit: int # Number of chunks to retrieve from the vector database
     messages: List[ChatMessage]
     previous_conversations: List[Dict[str, str]]
-    should_decompose: bool  # Renamed from decompose_query to avoid conflict
+    quick_mode: bool  # Renamed from decompose_query to avoid conflict
     filters: Optional[Dict[str, Any]]
     retrieval_mode: str
     decomposed_queries: List[Dict[str, str]]
@@ -48,14 +50,14 @@ class ChatState(TypedDict):
 
 def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], llm: BaseChatModel,
                         logger: Logger, retrieval_service: RetrievalService, arango_service: ArangoService,
-                        reranker_service: RerankerService) -> ChatState:
+                        reranker_service: RerankerService, streaming_service: StreamingService) -> ChatState:
     """Build the initial state from the chat query and user info"""
     return {
         "query": chat_query.get("query", ""),
         "limit": chat_query.get("limit", 50),
         "messages": [{"role": "system", "content": "You are an enterprise questions answering expert"}],
         "previous_conversations": chat_query.get("previousConversations", []),
-        "should_decompose": chat_query.get("useDecomposition", True),  # Renamed
+        "quick_mode": chat_query.get("quick_mode", False),  # Renamed
         "filters": chat_query.get("filters"),
         "retrieval_mode": chat_query.get("retrieval_mode", "HYBRID"),
         "decomposed_queries": [],
@@ -74,5 +76,6 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
         "logger": logger,
         "retrieval_service": retrieval_service,
         "arango_service": arango_service,
-        "reranker_service": reranker_service
+        "reranker_service": reranker_service,
+        "streaming_service": streaming_service
     }

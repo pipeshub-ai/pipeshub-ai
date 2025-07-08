@@ -1,22 +1,23 @@
-from typing import Any, Dict, List, Optional
+import asyncio
+import json
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 # Import placeholder for services that would need to be adapted
 from app.modules.agents.qna.chat_state import build_initial_state
-from app.modules.agents.qna.graph import create_qna_graph
+from app.modules.agents.qna.graph import qna_graph
+from app.modules.streaming.streaming_service import StreamingService
 
 router = APIRouter()
-
-
 
 class ChatQuery(BaseModel):
     query: str
     limit: Optional[int] = 50
     previousConversations: List[Dict] = []
-    useDecomposition: bool = True
+    quick_mode: bool = False
     filters: Optional[Dict[str, Any]] = None
     retrieval_mode: Optional[str] = "HYBRID"
 
@@ -62,21 +63,15 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
         retrieval_service = services["retrieval_service"]
         llm = services["llm"]
 
+        response_queue = asyncio.Queue()
+
+        streaming_service = StreamingService(response_queue)
         # Extract user info from request
         user_info = {
             "orgId": request.state.user.get('orgId'),
             "userId": request.state.user.get('userId'),
             "sendUserInfo": request.query_params.get('sendUserInfo', True)
         }
-
-        # Create the LangGraph agent
-        qna_graph = create_qna_graph(
-            llm=llm,
-            retrieval_service=retrieval_service,
-            arango_service=arango_service,
-            reranker_service=reranker_service,
-            logger=logger
-        )
 
         # Build initial state
         initial_state = build_initial_state(
@@ -86,7 +81,8 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
             logger,
             retrieval_service,
             arango_service,
-            reranker_service
+            reranker_service,
+            streaming_service
         )
 
         # Execute the graph with async
@@ -114,4 +110,119 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
         raise he
     except Exception as e:
         logger.error(f"Error in askAI: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/agent-chat-stream")
+async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingResponse:
+    """Process chat query using LangGraph agent with streaming"""
+    try:
+        # Get all services
+        services = await get_services(request)
+        logger = services["logger"]
+        arango_service = services["arango_service"]
+        reranker_service = services["reranker_service"]
+        retrieval_service = services["retrieval_service"]
+        llm = services["llm"]
+
+        # Extract user info from request
+        user_info = {
+            "orgId": request.state.user.get('orgId'),
+            "userId": request.state.user.get('userId'),
+            "sendUserInfo": request.query_params.get('sendUserInfo', True)
+        }
+
+        # Use asyncio.Queue for real-time streaming
+        event_queue = asyncio.Queue()
+
+        async def event_producer() -> None:
+            """Producer that runs the LangGraph and puts events in queue"""
+            try:
+                # Create streaming service that puts events in queue
+                def event_callback(event: str) -> None:
+                    event_queue.put_nowait(event)
+
+                streaming_service = StreamingService(event_callback)
+
+                # Build initial state with streaming service
+                initial_state = build_initial_state(
+                    query_info.model_dump(),
+                    user_info,
+                    llm,
+                    logger,
+                    retrieval_service,
+                    arango_service,
+                    reranker_service,
+                    streaming_service
+                )
+
+                # Execute the graph with async
+                logger.info(f"Starting LangGraph execution for query: {query_info.query}")
+                final_state = await qna_graph.ainvoke(initial_state)
+
+                # Check for errors
+                if final_state.get("error"):
+                    error = final_state["error"]
+                    streaming_service.send_event("error", {
+                        "status_code": error.get("status_code", 500),
+                        "status": error.get("status", "error"),
+                        "message": error.get("message", error.get("detail", "An error occurred"))
+                    })
+                else:
+                    # Send final response
+                    streaming_service.send_event("response", {"content": final_state["response"]})
+
+                # Send completion event
+                streaming_service.send_event("complete", {"status": "completed"})
+
+            except Exception as e:
+                logger.error(f"Error in producer: {str(e)}", exc_info=True)
+                error_event = f"event: error\ndata: {json.dumps({'message': str(e)})}\n\n"
+                event_queue.put_nowait(error_event)
+            finally:
+                # Signal end of stream
+                event_queue.put_nowait(None)
+
+        async def stream_generator() -> AsyncGenerator[str, None]:
+            """Generator that yields events as they arrive"""
+            try:
+                # Send initial event
+                yield f"event: status\ndata: {json.dumps({'status': 'started', 'message': 'Starting AI processing...'})}\n\n"
+
+                # Start the producer task
+                producer_task = asyncio.create_task(event_producer())
+
+                # Yield events as they arrive
+                while True:
+                    try:
+                        event = await asyncio.wait_for(event_queue.get(), timeout=30.0)
+                        if event is None:  # End of stream
+                            break
+                        yield event
+                    except asyncio.TimeoutError:
+                        break
+
+                # Wait for producer to complete
+                await producer_task
+
+            except Exception as e:
+                logger.error(f"Error in stream generator: {str(e)}", exc_info=True)
+                error_event = f"event: error\ndata: {json.dumps({'message': str(e)})}\n\n"
+                yield error_event
+
+
+        return StreamingResponse(
+            stream_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Headers": "*",
+            }
+        )
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        logger.error(f"Error in askAIStream: {str(e)}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))

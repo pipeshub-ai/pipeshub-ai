@@ -1,5 +1,8 @@
 # Create node functions properly designed for LangGraph
 import asyncio
+import json
+import re
+from typing import Any, AsyncGenerator, Dict
 
 from app.config.utils.named_constants.arangodb_constants import (
     AccountType,
@@ -7,9 +10,150 @@ from app.config.utils.named_constants.arangodb_constants import (
 )
 from app.modules.agents.qna.chat_state import ChatState
 from app.modules.qna.prompt_templates import qna_prompt
-from app.utils.citations import process_citations
+from app.utils.citations import normalize_citations_and_chunks, process_citations
 from app.utils.query_transform import setup_query_transformation
 
+
+# Streaming functions from chatbot module
+def find_unescaped_quote(text: str) -> int:
+    """Return index of first un-escaped quote (") or -1 if none."""
+    escaped = False
+    for i, ch in enumerate(text):
+        if escaped:
+            escaped = False
+        elif ch == '\\':
+            escaped = True
+        elif ch == '"':
+            return i
+    return -1
+
+
+def escape_ctl(raw: str) -> str:
+    """Replace literal \n, \r, \t that appear *inside* quoted strings with their escaped forms."""
+    string_re = re.compile(r'"(?:[^"\\]|\\.)*"')   # match any JSON string literal
+
+    def fix(match: re.Match) -> str:
+        s = match.group(0)
+        return (
+            s.replace("\n", "\\n")
+              .replace("\r", "\\r")
+              .replace("\t", "\\t")
+        )
+    return string_re.sub(fix, raw)
+
+
+async def aiter_llm_stream(llm, messages) -> AsyncGenerator[str, None]:
+    """Async iterator for LLM streaming"""
+    if hasattr(llm, "astream"):
+        async for part in llm.astream(messages):
+            if part and getattr(part, "content", ""):
+                yield part.content
+    else:
+        # Non-streaming – yield whole blob once
+        response = await llm.ainvoke(messages)
+        yield getattr(response, "content", str(response))
+
+
+async def stream_llm_response(
+    llm,
+    messages,
+    final_results,
+    target_words_per_chunk: int = 5,
+) -> AsyncGenerator[Dict[str, Any], None]:
+    """Incrementally stream the answer portion of an LLM JSON response."""
+    full_json_buf: str = ""
+    answer_buf: str = ""
+    answer_done = False
+    ANSWER_KEY_RE = re.compile(r'"answer"\s*:\s*"')
+    CITE_BLOCK_RE = re.compile(r'(?:\s*\[\d+])+')
+    INCOMPLETE_CITE_RE = re.compile(r'\[[^\]]*$')
+
+    WORD_ITER = re.compile(r'\S+').finditer
+    prev_norm_len = 0
+    emit_upto = 0
+    words_in_chunk = 0
+
+    try:
+        async for token in aiter_llm_stream(llm, messages):
+            full_json_buf += token
+
+            if not answer_buf:
+                match = ANSWER_KEY_RE.search(full_json_buf)
+                if match:
+                    after_key = full_json_buf[match.end():]
+                    answer_buf += after_key
+
+            elif not answer_done:
+                answer_buf += token
+
+            if not answer_done:
+                end_idx = find_unescaped_quote(answer_buf)
+                if end_idx != -1:
+                    answer_done = True
+                    answer_buf = answer_buf[:end_idx]
+
+            if answer_buf:
+                for match in WORD_ITER(answer_buf[emit_upto:]):
+                    words_in_chunk += 1
+                    if words_in_chunk == target_words_per_chunk:
+                        char_end = emit_upto + match.end()
+
+                        if m := CITE_BLOCK_RE.match(answer_buf[char_end:]):
+                            char_end += m.end()
+
+                        emit_upto = char_end
+                        words_in_chunk = 0
+
+                        current_raw = answer_buf[:emit_upto]
+                        if INCOMPLETE_CITE_RE.search(current_raw):
+                            continue
+
+                        normalized, cites = normalize_citations_and_chunks(
+                            current_raw, final_results
+                        )
+
+                        chunk_text = normalized[prev_norm_len:]
+                        prev_norm_len = len(normalized)
+
+                        yield {
+                            "event": "answer_chunk",
+                            "data": {
+                                "chunk": chunk_text,
+                                "accumulated": normalized,
+                                "citations": cites,
+                            },
+                        }
+
+        try:
+            parsed = json.loads(escape_ctl(full_json_buf))
+            final_answer = parsed.get("answer", answer_buf)
+            normalized, c = normalize_citations_and_chunks(final_answer, final_results)
+            yield {
+                "event": "complete",
+                "data": {
+                    "answer": normalized,
+                    "citations": c,
+                    "reason": parsed.get("reason"),
+                    "confidence": parsed.get("confidence"),
+                },
+            }
+        except Exception:
+            normalized, c = normalize_citations_and_chunks(answer_buf, final_results)
+            yield {
+                "event": "complete",
+                "data": {
+                    "answer": normalized,
+                    "citations": c,
+                    "reason": None,
+                    "confidence": None,
+                },
+            }
+
+    except Exception as exc:
+        yield {
+            "event": "error",
+            "data": {"error": f"Error in LLM streaming: {exc}"},
+        }
 
 # 1. Decomposition Node (FIXED - made async compatible)
 async def decompose_query_node(
@@ -20,7 +164,11 @@ async def decompose_query_node(
         logger = state["logger"]
         llm = state["llm"]
 
-        if not state["should_decompose"]:
+        # Send streaming event
+        if state.get("streaming_service"):
+            state["streaming_service"].send_event("status", {"status": "decomposing", "message": "Decomposing query..."})
+
+        if state["quick_mode"]:
             state["decomposed_queries"] = [{"query": state["query"]}]
             return state
 
@@ -53,6 +201,10 @@ async def transform_query_node(
     try:
         logger = state["logger"]
         llm = state["llm"]
+
+        # Send streaming event
+        if state.get("streaming_service"):
+            state["streaming_service"].send_event("status", {"status": "transforming", "message": "Transforming queries..."})
 
         rewrite_chain, expansion_chain = setup_query_transformation(llm=llm)
 
@@ -102,6 +254,10 @@ async def retrieve_documents_node(
         logger = state["logger"]
         retrieval_service = state["retrieval_service"]
         arango_service = state["arango_service"]
+
+        # Send streaming event
+        if state.get("streaming_service"):
+            state["streaming_service"].send_event("status", {"status": "retrieving", "message": "Retrieving documents..."})
 
         if state.get("error"):
             return state
@@ -172,6 +328,10 @@ async def rerank_results_node(
         logger = state["logger"]
         reranker_service = state["reranker_service"]
 
+        # Send streaming event
+        if state.get("streaming_service"):
+            state["streaming_service"].send_event("status", {"status": "reranking", "message": "Reranking results..."})
+
         if state.get("error"):
             return state
 
@@ -187,7 +347,7 @@ async def rerank_results_node(
                 flattened_results.append(result)
 
         # Rerank if we have multiple results
-        if len(flattened_results) > 1:
+        if len(flattened_results) > 1 and not state["quick_mode"]:
             final_results = await reranker_service.rerank(
                 query=state["query"],  # Use original query for final ranking
                 documents=flattened_results,
@@ -270,15 +430,38 @@ async def generate_answer_node(
         logger = state["logger"]
         llm = state["llm"]
 
+        # Send streaming event
+        if state.get("streaming_service"):
+            state["streaming_service"].send_event("status", {"status": "generating", "message": "Generating answer..."})
+
         if state.get("error"):
             return state
 
-        # Make async LLM call
-        response = await llm.ainvoke(state["messages"])
-        # Process citations
-        processed_response = process_citations(response, state["final_results"])
+        # Check if we should stream the response
+        if state.get("streaming_service"):
+            # Stream the LLM response similar to chatbot
+            full_response = ""
+            async for chunk in stream_llm_response(llm, state["messages"], state["final_results"]):
+                if chunk["event"] == "answer_chunk":
+                    # Send chunk to client
+                    state["streaming_service"].send_event("answer_chunk", chunk["data"])
+                    full_response += chunk["data"]["chunk"]
+                elif chunk["event"] == "complete":
+                    # Final response with citations
+                    state["streaming_service"].send_event("complete", chunk["data"])
+                    full_response = chunk["data"]["answer"]
+                    break
+                elif chunk["event"] == "error":
+                    state["error"] = {"status_code": 400, "detail": chunk["data"]["error"]}
+                    return state
 
-        state["response"] = processed_response
+            state["response"] = full_response
+        else:
+            # Non-streaming fallback
+            response = await llm.ainvoke(state["messages"])
+            processed_response = process_citations(response, state["final_results"])
+            state["response"] = processed_response
+
         return state
     except Exception as e:
         logger.error(f"Error in answer generation node: {str(e)}", exc_info=True)

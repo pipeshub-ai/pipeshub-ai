@@ -1,7 +1,5 @@
 
-from logging import Logger
 
-from langchain.chat_models.base import BaseChatModel
 from langgraph.graph import END, StateGraph
 
 from app.modules.agents.qna.chat_state import ChatState
@@ -15,18 +13,9 @@ from app.modules.agents.qna.nodes import (
     retrieve_documents_node,
     transform_query_node,
 )
-from app.modules.reranker.reranker import RerankerService
-from app.modules.retrieval.retrieval_arango import ArangoService
-from app.modules.retrieval.retrieval_service import RetrievalService
 
 
-def create_qna_graph(
-    llm: BaseChatModel,
-    retrieval_service: RetrievalService,
-    arango_service: ArangoService,
-    reranker_service: RerankerService,
-    logger: Logger
-) -> StateGraph:
+def create_qna_graph() -> StateGraph:
     """Create the LangGraph for QnA processing"""
 
     workflow = StateGraph(ChatState)
@@ -94,3 +83,6 @@ def create_qna_graph(
     workflow.set_entry_point("decompose")
 
     return workflow.compile()
+
+
+qna_graph = create_qna_graph()
