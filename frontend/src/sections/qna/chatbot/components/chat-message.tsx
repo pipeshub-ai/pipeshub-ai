@@ -21,6 +21,7 @@ import React, {
   Fragment,
   useContext,
   createContext,
+  useEffect,
 } from 'react';
 
 import {
@@ -70,6 +71,78 @@ export const useStreamingContent = () => {
   return context;
 };
 
+// Content processing utilities
+const processMarkdownContent = (content: string): string => {
+  if (!content) return '';
+
+  return (
+    content
+      // Fix escaped newlines
+      .replace(/\\n/g, '\n')
+      // Fix citation formatting - convert **number** to [number]
+      // .replace(/\*\*(\d+)\*\*/g, '[$1]')
+      // // Preserve other bold formatting
+      // .replace(/\*\*([^*]+)\*\*/g, '**$1**')
+      // // Clean up multiple newlines (but preserve intentional spacing)
+      // .replace(/\n{4,}/g, '\n\n\n')
+      // // Fix list spacing issues
+      // .replace(/(\n\d+\.\s)/g, '\n$1')
+      // .replace(/(\n[-*]\s)/g, '\n$1')
+      // // Clean up code block formatting
+      // .replace(/```\n\n+```/g, '```\n```')
+      // // Ensure proper spacing around code blocks
+      // .replace(/([^\n])```/g, '$1\n```')
+      // .replace(/```([^\n])/g, '```\n$1')
+      // Clean up trailing whitespace but preserve structure
+      .trim()
+  );
+};
+
+const extractAndProcessCitations = (
+  content: string,
+  streamingCitations: CustomCitation[] = []
+): {
+  processedContent: string;
+  citations: CustomCitation[];
+  citationMap: { [key: number]: CustomCitation };
+} => {
+  // Extract citation numbers from content
+  const citationMatches = Array.from(content.matchAll(/\[(\d+)\]/g));
+  const citationNumbers = new Set(citationMatches.map((match) => parseInt(match[1], 10)));
+
+  // Build citation map - prefer streaming citations, fall back to content-based numbering
+  const citationMap: { [key: number]: CustomCitation } = {};
+  const processedCitations: CustomCitation[] = [];
+
+  // First, map citations by their chunkIndex if available
+  streamingCitations.forEach((citation, index) => {
+    const citationNumber = citation.chunkIndex || index + 1;
+    if (!citationMap[citationNumber]) {
+      citationMap[citationNumber] = citation;
+      processedCitations.push(citation);
+    }
+  });
+
+  // Ensure we have citations for all numbers mentioned in content
+  citationNumbers.forEach((num) => {
+    if (!citationMap[num] && streamingCitations[num - 1]) {
+      citationMap[num] = streamingCitations[num - 1];
+      if (!processedCitations.includes(streamingCitations[num - 1])) {
+        processedCitations.push(streamingCitations[num - 1]);
+      }
+    }
+  });
+
+  // Process the content for better markdown rendering
+  const processedContent = processMarkdownContent(content);
+
+  return {
+    processedContent,
+    citations: processedCitations,
+    citationMap,
+  };
+};
+
 const formatTime = (createdAt: Date) => {
   const date = new Date(createdAt);
   return new Intl.DateTimeFormat('en-US', {
@@ -113,6 +186,7 @@ function isDocViewable(extension: string) {
   return viewableExtensions.includes(extension);
 }
 
+// Enhanced StreamingContent component with proper processing
 const StreamingContent = React.memo(
   ({
     messageId,
@@ -136,40 +210,51 @@ const StreamingContent = React.memo(
     ) => Promise<void>;
   }) => {
     const { streamingState } = useStreamingContent();
-
-    const isStreaming = streamingState.messageId === messageId && streamingState.isActive;
-    const displayContent = isStreaming ? streamingState.content : fallbackContent;
-    const displayCitations = isStreaming ? streamingState.citations : fallbackCitations;
-
     const [hoveredCitationId, setHoveredCitationId] = useState<string | null>(null);
     const [hoveredRecordCitations, setHoveredRecordCitations] = useState<CustomCitation[]>([]);
     const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
     const [hoveredCitation, setHoveredCitation] = useState<CustomCitation | null>(null);
-
     const [popperAnchor, setPopperAnchor] = useState<null | {
       getBoundingClientRect: () => DOMRect;
     }>(null);
 
-    const citationNumberMap = useMemo(() => {
-      const result: { [key: number]: CustomCitation } = {};
-      const citationsToUse = displayCitations.length > 0 ? displayCitations : fallbackCitations;
+    // Determine if this message is currently streaming
+    const isStreaming = streamingState.messageId === messageId && streamingState.isActive;
 
-      citationsToUse.forEach((citation) => {
-        if (citation && citation.chunkIndex && !result[citation.chunkIndex]) {
-          result[citation.chunkIndex] = citation;
-        }
-      });
+    // Process content and citations properly
+    const {
+      processedContent,
+      citations: processedCitations,
+      citationMap,
+    } = useMemo(() => {
+      const rawContent =
+        isStreaming && streamingState.content ? streamingState.content : fallbackContent;
 
-      if (Object.keys(result).length === 0) {
-        citationsToUse.forEach((citation, index) => {
-          if (citation) {
-            result[index + 1] = citation;
-          }
-        });
-      }
+      const rawCitations =
+        isStreaming && streamingState.citations?.length > 0
+          ? streamingState.citations
+          : fallbackCitations;
 
-      return result;
-    }, [displayCitations, fallbackCitations]);
+      return extractAndProcessCitations(rawContent, rawCitations);
+    }, [
+      isStreaming,
+      streamingState.content,
+      streamingState.citations,
+      fallbackContent,
+      fallbackCitations,
+    ]);
+
+    // Show streaming indicator when actively streaming
+    const showStreamingIndicator = isStreaming && processedContent.length > 0;
+
+    console.log('🎬 StreamingContent render:', {
+      messageId: messageId.slice(-8),
+      isStreaming,
+      contentLength: processedContent.length,
+      citationsCount: processedCitations.length,
+      showIndicator: showStreamingIndicator,
+      citationMapKeys: Object.keys(citationMap),
+    });
 
     const handleMouseEnter = useCallback(
       (event: React.MouseEvent, citationRef: string, citationId: string) => {
@@ -190,7 +275,7 @@ const StreamingContent = React.memo(
         });
 
         const citationNumber = parseInt(citationRef.replace(/[[\]]/g, ''), 10);
-        const citation = citationNumberMap[citationNumber];
+        const citation = citationMap[citationNumber];
 
         if (citation) {
           if (citation.metadata?.recordId) {
@@ -201,7 +286,7 @@ const StreamingContent = React.memo(
           setHoveredCitationId(citationId);
         }
       },
-      [citationNumberMap, aggregatedCitations]
+      [citationMap, aggregatedCitations]
     );
 
     const handleCloseHoverCard = useCallback(() => {
@@ -226,7 +311,7 @@ const StreamingContent = React.memo(
         event.stopPropagation();
 
         const citationNumber = parseInt(citationRef.replace(/[[\]]/g, ''), 10);
-        const citation = citationNumberMap[citationNumber];
+        const citation = citationMap[citationNumber];
 
         if (citation?.metadata?.recordId) {
           try {
@@ -239,7 +324,7 @@ const StreamingContent = React.memo(
         }
         handleCloseHoverCard();
       },
-      [citationNumberMap, aggregatedCitations, onViewPdf, handleCloseHoverCard]
+      [citationMap, aggregatedCitations, onViewPdf, handleCloseHoverCard]
     );
 
     const renderContentPart = useCallback(
@@ -247,10 +332,13 @@ const StreamingContent = React.memo(
         const citationMatch = part.match(/\[(\d+)\]/);
         if (citationMatch) {
           const citationNumber = parseInt(citationMatch[1], 10);
-          const citation = citationNumberMap[citationNumber];
-          const citationId = `citation-${citationNumber}-${index}`;
+          const citation = citationMap[citationNumber];
+          const citationId = `citation-${citationNumber}-${index}-${messageId}`;
 
-          if (!citation) return <Fragment key={index}>{part}</Fragment>;
+          if (!citation) {
+            console.warn('No citation found for number:', citationNumber);
+            return <Fragment key={index}>{part}</Fragment>;
+          }
 
           return (
             <Box
@@ -313,12 +401,26 @@ const StreamingContent = React.memo(
         }
         return <Fragment key={index}>{part}</Fragment>;
       },
-      [citationNumberMap, handleMouseEnter, handleClick, handleMouseLeave]
+      [citationMap, handleMouseEnter, handleClick, handleMouseLeave, messageId]
+    );
+
+    const processChildrenForCitations = useCallback(
+      (children: React.ReactNode): React.ReactNode =>
+        React.Children.toArray(children).flatMap((child, childIndex) => {
+          if (typeof child === 'string') {
+            return child
+              .split(/(\[\d+\])/g)
+              .map((part, partIndex) => renderContentPart(part, childIndex * 1000 + partIndex));
+          }
+          return child;
+        }),
+      [renderContentPart]
     );
 
     return (
       <Box sx={{ position: 'relative' }}>
-        {isStreaming && (
+        {/* Streaming indicator */}
+        {showStreamingIndicator && (
           <Box
             sx={{
               position: 'absolute',
@@ -342,18 +444,12 @@ const StreamingContent = React.memo(
           remarkPlugins={[remarkGfm]}
           components={{
             p: ({ children }) => {
-              const processedChildren = React.Children.toArray(children).flatMap((child) => {
-                if (typeof child === 'string') {
-                  return child.split(/(\[\d+\])/g).map(renderContentPart);
-                }
-                return child;
-              });
-
+              const processedChildren = processChildrenForCitations(children);
               return (
                 <Typography
                   component="p"
                   sx={{
-                    mb: 2,
+                    mb: 1.5,
                     '&:last-child': { mb: 0 },
                     fontSize: '0.90rem',
                     lineHeight: 1.6,
@@ -361,7 +457,6 @@ const StreamingContent = React.memo(
                     wordBreak: 'break-word',
                     color: 'text.primary',
                     fontWeight: 400,
-                    whiteSpace: 'pre-wrap',
                   }}
                 >
                   {processedChildren}
@@ -369,95 +464,161 @@ const StreamingContent = React.memo(
               );
             },
             h1: ({ children }) => (
-              <Typography variant="h1" sx={{ fontSize: '1.4rem', my: 2 }}>
-                {children}
+              <Typography variant="h3" sx={{ fontSize: '1.3rem', my: 2, fontWeight: 600 }}>
+                {processChildrenForCitations(children)}
               </Typography>
             ),
             h2: ({ children }) => (
-              <Typography variant="h2" sx={{ fontSize: '1.2rem', my: 2 }}>
-                {children}
+              <Typography variant="h4" sx={{ fontSize: '1.2rem', my: 2, fontWeight: 600 }}>
+                {processChildrenForCitations(children)}
               </Typography>
             ),
             h3: ({ children }) => (
-              <Typography variant="h3" sx={{ fontSize: '1.1rem', my: 1.5 }}>
-                {children}
+              <Typography variant="h4" sx={{ fontSize: '1.1rem', my: 1.5, fontWeight: 600 }}>
+                {processChildrenForCitations(children)}
               </Typography>
             ),
             ul: ({ children }) => (
-              <Box component="ul" sx={{ pl: 2.5, mb: 1.5 }}>
+              <Box component="ul" sx={{ pl: 2.5, mb: 1.5, '& li': { mb: 0.5 } }}>
                 {children}
               </Box>
             ),
             ol: ({ children }) => (
-              <Box component="ol" sx={{ pl: 2.5, mb: 1.5 }}>
+              <Box component="ol" sx={{ pl: 2.5, mb: 1.5, '& li': { mb: 0.5 } }}>
                 {children}
               </Box>
             ),
             li: ({ children }) => {
-              const processedChildren = React.Children.toArray(children).flatMap((child) => {
-                if (typeof child === 'string') {
-                  return child.split(/(\[\d+\])/g).map(renderContentPart);
-                }
-                if (React.isValidElement(child) && child.props.children) {
-                  const grandChildren = React.Children.toArray(child.props.children).flatMap(
-                    (grandChild) =>
-                      typeof grandChild === 'string'
-                        ? grandChild.split(/(\[\d+\])/g).map(renderContentPart)
-                        : grandChild
-                  );
-                  return React.cloneElement(child, { ...child.props }, grandChildren);
-                }
-                return child;
-              });
+              const processedChildren = processChildrenForCitations(children);
               return (
-                <Typography component="li" sx={{ mb: 0.75 }}>
+                <Typography component="li" sx={{ mb: 0.5, lineHeight: 1.6 }}>
                   {processedChildren}
                 </Typography>
               );
             },
             code: ({ children, className }) => {
               const match = /language-(\w+)/.exec(className || '');
-              return !match ? (
+
+              // Inline code
+              if (!match) {
+                return (
+                  <Box
+                    component="code"
+                    sx={{
+                      bgcolor: (theme) =>
+                        theme.palette.mode === 'dark'
+                          ? 'rgba(255, 255, 255, 0.1)'
+                          : 'rgba(0, 0, 0, 0.08)',
+                      px: '0.4em',
+                      py: '0.2em',
+                      borderRadius: '4px',
+                      fontFamily:
+                        '"Fira Code", "JetBrains Mono", "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, "Courier New", monospace',
+                      fontSize: '0.875em',
+                      fontWeight: 500,
+                      color: (theme) =>
+                        theme.palette.mode === 'dark'
+                          ? 'rgba(255, 255, 255, 0.9)'
+                          : 'rgba(0, 0, 0, 0.8)',
+                    }}
+                  >
+                    {children}
+                  </Box>
+                );
+              }
+
+              // Code block
+              return (
                 <Box
-                  component="code"
                   sx={{
-                    bgcolor: 'rgba(0, 0, 0, 0.04)',
-                    px: '0.4em',
-                    py: '0.2em',
-                    borderRadius: '4px',
-                    fontFamily: 'monospace',
-                    fontSize: '0.9em',
-                  }}
-                >
-                  {children}
-                </Box>
-              ) : (
-                <Box
-                  sx={{
-                    bgcolor: 'rgba(0, 0, 0, 0.04)',
-                    p: 1.5,
-                    borderRadius: '4px',
-                    fontFamily: 'monospace',
+                    bgcolor: (theme) =>
+                      theme.palette.mode === 'dark' ? 'rgba(0, 0, 0, 0.4)' : 'rgba(0, 0, 0, 0.04)',
+                    p: 2,
+                    borderRadius: '8px',
+                    fontFamily:
+                      '"Fira Code", "JetBrains Mono", "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, "Courier New", monospace',
                     fontSize: '0.85em',
                     overflow: 'auto',
-                    my: 1.5,
+                    my: 2,
+                    border: (theme) =>
+                      `1px solid ${
+                        theme.palette.mode === 'dark'
+                          ? 'rgba(255, 255, 255, 0.1)'
+                          : 'rgba(0, 0, 0, 0.1)'
+                      }`,
+                    position: 'relative',
+                    '&::before': match
+                      ? {
+                          content: `"${match[1]}"`,
+                          position: 'absolute',
+                          top: '8px',
+                          right: '12px',
+                          fontSize: '0.75em',
+                          color: 'text.secondary',
+                          opacity: 0.7,
+                          textTransform: 'uppercase',
+                          fontWeight: 500,
+                        }
+                      : {},
                   }}
                 >
-                  <pre style={{ margin: 0 }}>
-                    <code>{children}</code>
+                  <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordWrap: 'break-word' }}>
+                    <code style={{ color: 'inherit' }}>{children}</code>
                   </pre>
                 </Box>
               );
             },
-            a: ({ href, children }) => (
-              <a href={href} target="_blank" rel="noopener noreferrer">
+            blockquote: ({ children }) => (
+              <Box
+                component="blockquote"
+                sx={{
+                  pl: 2,
+                  py: 1,
+                  my: 2,
+                  borderLeft: (theme) => `4px solid ${theme.palette.primary.main}`,
+                  bgcolor: (theme) =>
+                    theme.palette.mode === 'dark'
+                      ? 'rgba(33, 150, 243, 0.1)'
+                      : 'rgba(25, 118, 210, 0.05)',
+                  fontStyle: 'italic',
+                  '& p': { mb: 0 },
+                }}
+              >
                 {children}
-              </a>
+              </Box>
             ),
+            a: ({ href, children }) => (
+              <Box
+                component="a"
+                href={href}
+                target="_blank"
+                rel="noopener noreferrer"
+                sx={{
+                  color: 'primary.main',
+                  textDecoration: 'underline',
+                  '&:hover': {
+                    textDecoration: 'none',
+                  },
+                }}
+              >
+                {children}
+              </Box>
+            ),
+            strong: ({ children }) => (
+              <Box component="strong" sx={{ fontWeight: 600 }}>
+                {processChildrenForCitations(children)}
+              </Box>
+            ),
+            em: ({ children }) => (
+              <Box component="em" sx={{ fontStyle: 'italic' }}>
+                {processChildrenForCitations(children)}
+              </Box>
+            ),
+            hr: () => <Divider sx={{ my: 3 }} />,
           }}
           className="markdown-body"
         >
-          {displayContent}
+          {processedContent}
         </ReactMarkdown>
 
         <Popper
@@ -506,6 +667,7 @@ const StreamingContent = React.memo(
   }
 );
 
+// Rest of the ChatMessage component remains the same...
 const ChatMessage = React.memo(
   ({
     message,

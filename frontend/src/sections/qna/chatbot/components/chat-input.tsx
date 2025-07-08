@@ -1,4 +1,4 @@
-// Enhanced ChatInput.tsx - Beautiful dark/light mode UI with textarea
+// Enhanced ChatInput.tsx - Beautiful dark/light mode UI with subtle visual loading states
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Icon } from '@iconify/react';
 import sendIcon from '@iconify-icons/mdi/send';
@@ -24,6 +24,32 @@ const ChatInput: React.FC<ChatInputProps> = ({
   const resizeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
+
+  // Debug logging for input state
+  useEffect(() => {
+    console.log('💬 ChatInput received props:', {
+      isLoading,
+      disabled,
+      isSubmitting,
+      hasText,
+      isInputDisabled: disabled || isSubmitting || isLoading,
+      canSubmit: hasText && !(disabled || isSubmitting || isLoading)
+    });
+  }, [isLoading, disabled, isSubmitting, hasText]);
+
+  // Additional debugging for the textarea element
+  useEffect(() => {
+    if (inputRef.current) {
+      const actuallyDisabled = inputRef.current.disabled;
+      console.log('💬 Textarea actual disabled state:', actuallyDisabled);
+      
+      // Force enable if it shouldn't be disabled (debugging)
+      if (actuallyDisabled && !isLoading && !disabled && !isSubmitting) {
+        console.log('⚠️ Textarea is disabled but should be enabled! Force enabling...');
+        inputRef.current.disabled = false;
+      }
+    }
+  });
 
   // Auto-resize textarea with debounce
   const autoResizeTextarea = useCallback(() => {
@@ -137,115 +163,145 @@ const ChatInput: React.FC<ChatInputProps> = ({
     };
   }, [isDark]);
 
-  const canSubmit = hasText && !isLoading && !isSubmitting && !disabled;
+  // Only disable input if THIS conversation is actively loading/submitting
+  const isInputDisabled = disabled || isSubmitting || isLoading;
+  const canSubmit = hasText && !isInputDisabled;
 
   return (
-    <Box sx={{ 
-      p: 1, 
-      width: { xs: '90%', sm: '80%', md: '70%' }, 
-      mx: 'auto', 
-    }}>
-      <Paper
-        elevation={0}
-        sx={{
-          display: 'flex',
-          alignItems: 'center',
-          p: '9px 14px',
-          borderRadius: '10px',
-          backgroundColor: isDark ? alpha('#131417', 0.5) : alpha('#f8f9fa', 0.6),
-          border: '1px solid',
-          borderColor: isDark ? alpha('#fff', 0.06) : alpha('#000', 0.04),
-          boxShadow: isDark ? '0 4px 16px rgba(0, 0, 0, 0.2)' : '0 2px 10px rgba(0, 0, 0, 0.03)',
-          transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
-          '&:hover': {
-            borderColor: isDark ? alpha('#fff', 0.1) : alpha('#000', 0.07),
-            boxShadow: isDark ? '0 6px 20px rgba(0, 0, 0, 0.25)' : '0 4px 14px rgba(0, 0, 0, 0.05)',
-            backgroundColor: isDark ? alpha('#131417', 0.7) : alpha('#fff', 0.9),
-          },
-        }}
-      >
-        <textarea
-          ref={inputRef}
-          placeholder={placeholder}
-          onChange={handleChange}
-          onKeyDown={handleKeyDown}
-          value={localValue}
-          disabled={disabled || isSubmitting}
-          style={{
-            width: '100%',
-            border: 'none',
-            outline: 'none',
-            background: 'transparent',
-            color: isDark ? alpha('#fff', 0.95).toString() : alpha('#000', 0.85).toString(),
-            fontSize: '0.9rem',
-            lineHeight: 1.5,
-            minHeight: '46px',
-            maxHeight: '180px',
-            resize: 'none',
-            padding: '8px 8px',
-            fontFamily: 'Inter, system-ui, -apple-system, sans-serif',
-            margin: '0 6px 0 0',
-            overflowY: 'auto',
-            overflowX: 'hidden',
-            transition: 'height 0.15s ease',
-            letterSpacing: '0.01em',
-          }}
-        />
-
-        <IconButton
-          size="medium"
-          onClick={handleSubmit}
-          disabled={!canSubmit}
+    <>
+      {/* Add keyframes for spinner animation */}
+      <style>
+        {`
+          @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+          }
+        `}
+      </style>
+      
+      <Box sx={{ 
+        p: 1, 
+        width: { xs: '90%', sm: '80%', md: '70%' }, 
+        mx: 'auto',
+        position: 'relative',
+      }}>
+        <Paper
+          elevation={0}
           sx={{
-            backgroundColor:
-              canSubmit ? alpha(theme.palette.primary.main, 0.9) : 'transparent',
-            width: 34,
-            height: 34,
-            borderRadius: '8px',
-            flexShrink: 0,
-            alignSelf: 'center',
-            transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
-            color:
-              canSubmit ? '#fff' : isDark ? alpha('#fff', 0.4) : alpha('#000', 0.3),
-            opacity: canSubmit ? 1 : 0.6,
-            border:
-              canSubmit
-                ? 'none'
-                : `1px solid ${isDark ? alpha('#fff', 0.1) : alpha('#000', 0.05)}`,
+            display: 'flex',
+            alignItems: 'center',
+            p: '9px 14px',
+            borderRadius: '10px',
+            backgroundColor: isDark ? alpha('#131417', 0.5) : alpha('#f8f9fa', 0.6),
+            border: '2px solid',
+            borderColor: isDark ? alpha('#fff', 0.06) : alpha('#000', 0.04),
+            boxShadow: isDark ? '0 4px 16px rgba(0, 0, 0, 0.2)' : '0 2px 10px rgba(0, 0, 0, 0.03)',
+            transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
+            position: 'relative',
+            overflow: 'hidden',
             '&:hover': {
-              backgroundColor:
-                canSubmit
-                  ? theme.palette.primary.main
-                  : isDark
-                    ? alpha('#fff', 0.05)
-                    : alpha('#000', 0.04),
-              transform: canSubmit ? 'translateY(-1px)' : 'none',
-              boxShadow: canSubmit ? '0 4px 8px rgba(0, 0, 0, 0.15)' : 'none',
-            },
-            '&:active': {
-              transform: canSubmit ? 'translateY(0)' : 'none',
-              boxShadow: 'none',
-            },
-            '&.Mui-disabled': {
-              opacity: 0.4,
-              backgroundColor: 'transparent',
-              border: `1px solid ${isDark ? alpha('#fff', 0.05) : alpha('#000', 0.03)}`,
+              borderColor: isDark ? alpha('#fff', 0.1) : alpha('#000', 0.07),
+              boxShadow: isDark ? '0 6px 20px rgba(0, 0, 0, 0.25)' : '0 4px 14px rgba(0, 0, 0, 0.05)',
+              backgroundColor: isDark ? alpha('#131417', 0.7) : alpha('#fff', 0.9),
             },
           }}
         >
-          <Icon
-            icon={sendIcon}
+          <textarea
+            ref={inputRef}
+            placeholder={placeholder}
+            onChange={handleChange}
+            onKeyDown={handleKeyDown}
+            value={localValue}
+            disabled={isInputDisabled}
             style={{
-              fontSize: '1rem',
-              transform: isSubmitting ? 'rotate(360deg) translateX(1px)' : 'translateX(1px)',
-              transition: 'transform 0.6s ease',
-              filter: canSubmit ? 'drop-shadow(0 1px 1px rgba(0,0,0,0.1))' : 'none',
+              width: '100%',
+              border: 'none',
+              outline: 'none',
+              background: 'transparent',
+              color: isDark ? alpha('#fff', 0.95).toString() : alpha('#000', 0.85).toString(),
+              fontSize: '0.9rem',
+              lineHeight: 1.5,
+              minHeight: '46px',
+              maxHeight: '180px',
+              resize: 'none',
+              padding: '8px 8px',
+              fontFamily: 'Inter, system-ui, -apple-system, sans-serif',
+              margin: '0 6px 0 0',
+              overflowY: 'auto',
+              overflowX: 'hidden',
+              transition: 'all 0.2s ease',
+              letterSpacing: '0.01em',
+              cursor: 'text',
+              opacity: isInputDisabled ? 0.6 : 1,
             }}
           />
-        </IconButton>
-      </Paper>
-    </Box>
+
+          <IconButton
+            size="medium"
+            onClick={handleSubmit}
+            disabled={!canSubmit}
+            sx={{
+              backgroundColor: canSubmit 
+                ? alpha(theme.palette.primary.main, 0.9) 
+                : 'transparent',
+              width: 34,
+              height: 34,
+              borderRadius: '8px',
+              flexShrink: 0,
+              alignSelf: 'center',
+              transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+              color: canSubmit 
+                ? '#fff' 
+                : (isDark ? alpha('#fff', 0.4) : alpha('#000', 0.3)),
+              opacity: canSubmit ? 1 : 0.6,
+              border: canSubmit
+                ? 'none'
+                : `1px solid ${isDark ? alpha('#fff', 0.1) : alpha('#000', 0.05)}`,
+              '&:hover': !isInputDisabled ? {
+                backgroundColor: canSubmit
+                  ? theme.palette.primary.main
+                  : (isDark ? alpha('#fff', 0.05) : alpha('#000', 0.04)),
+                transform: canSubmit ? 'translateY(-1px)' : 'none',
+                boxShadow: canSubmit ? '0 4px 8px rgba(0, 0, 0, 0.15)' : 'none',
+              } : {},
+              '&:active': {
+                transform: canSubmit ? 'translateY(0)' : 'none',
+                boxShadow: 'none',
+              },
+              '&.Mui-disabled': {
+                opacity: 0.6,
+                backgroundColor: 'transparent',
+                border: `1px solid ${isDark ? alpha('#fff', 0.05) : alpha('#000', 0.03)}`,
+              },
+            }}
+          >
+            {isInputDisabled ? (
+              <Box
+                sx={{
+                  width: '16px',
+                  height: '16px',
+                  border: `2px solid ${isDark ? alpha('#fff', 0.2) : alpha('#000', 0.2)}`,
+                  borderTop: `2px solid ${isDark ? alpha('#fff', 0.6) : alpha('#000', 0.6)}`,
+                  borderRadius: '50%',
+                  animation: 'spin 1s linear infinite',
+                }}
+              />
+            ) : (
+              <Icon
+                icon={sendIcon}
+                style={{
+                  fontSize: '1rem',
+                  transform: 'translateX(1px)',
+                  transition: 'transform 0.2s ease',
+                  filter: canSubmit ? 'drop-shadow(0 1px 1px rgba(0,0,0,0.1))' : 'none',
+                }}
+              />
+            )}
+          </IconButton>
+        </Paper>
+      </Box>
+    </>
   );
 };
 
-export default React.memo(ChatInput);
+export default ChatInput; // Remove React.memo temporarily for debugging

@@ -10,7 +10,6 @@ import type {
 
 import { Icon } from '@iconify/react';
 import menuIcon from '@iconify-icons/mdi/menu';
-import closeIcon from '@iconify-icons/mdi/close';
 import { useParams, useNavigate } from 'react-router';
 import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 
@@ -25,6 +24,7 @@ import {
   IconButton,
   CircularProgress,
   alpha,
+  Typography,
 } from '@mui/material';
 
 import axios from 'src/utils/axios';
@@ -48,17 +48,424 @@ import { StreamingContext } from './components/chat-message';
 
 const DRAWER_WIDTH = 300;
 
-interface StreamingState {
+// Per-conversation streaming state
+interface ConversationStreamingState {
   messageId: string | null;
   content: string;
   citations: CustomCitation[];
   isActive: boolean;
+  controller: AbortController | null;
+  accumulatedContent: string;
+  completionData: any;
+  isCompletionPending: boolean;
+  finalMessageId: string | null;
+  isProcessingCompletion: boolean;
+  statusMessage: string;
+  showStatus: boolean;
+  pendingNavigation: {
+    conversationId: string;
+    shouldNavigate: boolean;
+  } | null;
+  isStreamingCompleted: boolean;
+}
+
+// Store messages per conversation
+interface ConversationMessages {
+  [conversationKey: string]: FormattedMessage[];
 }
 
 interface StreamingContextType {
-  streamingState: StreamingState;
+  streamingState: {
+    messageId: string | null;
+    content: string;
+    citations: CustomCitation[];
+    isActive: boolean;
+  };
   updateStreamingContent: (messageId: string, content: string, citations: CustomCitation[]) => void;
   clearStreaming: () => void;
+}
+
+class StreamingManager {
+  private static instance: StreamingManager;
+
+  private conversationStates: { [key: string]: ConversationStreamingState } = {};
+
+  private messageToConversationMap: { [messageId: string]: string } = {};
+
+  private conversationMessages: ConversationMessages = {};
+
+  private updateCallbacks: Set<() => void> = new Set();
+
+  private notifyTimeout: NodeJS.Timeout | null = null;
+
+  private completedNavigations: Set<string> = new Set();
+
+  static getInstance(): StreamingManager {
+    if (!StreamingManager.instance) {
+      StreamingManager.instance = new StreamingManager();
+    }
+    return StreamingManager.instance;
+  }
+
+  addUpdateCallback(callback: () => void) {
+    this.updateCallbacks.add(callback);
+  }
+
+  removeUpdateCallback(callback: () => void) {
+    this.updateCallbacks.delete(callback);
+  }
+
+  private notifyUpdates() {
+    if (this.notifyTimeout) {
+      clearTimeout(this.notifyTimeout);
+    }
+    this.notifyTimeout = setTimeout(() => {
+      this.updateCallbacks.forEach((callback) => {
+        try {
+          callback();
+        } catch (error) {
+          console.error('Error in update callback:', error);
+        }
+      });
+    }, 16); // 16ms for ~60fps updates
+  }
+
+  private static processStreamingContent(
+    rawContent: string,
+    citations: CustomCitation[] = []
+  ): {
+    processedContent: string;
+    processedCitations: CustomCitation[];
+  } {
+    if (!rawContent) return { processedContent: '', processedCitations: citations };
+
+    const processedContent = rawContent
+      .replace(/\\n/g, '\n')
+      // .replace(/\*\*(\d+)\*\*/g, '[$1]')
+      // .replace(/\*\*([^*]+)\*\*/g, '**$1**')
+      // .replace(/\n{4,}/g, '\n\n\n')
+      .trim();
+
+    const citationMatches = Array.from(processedContent.matchAll(/\[(\d+)\]/g));
+    const mentionedCitationNumbers = new Set(
+      citationMatches.map((match) => parseInt(match[1], 10))
+    );
+
+    const processedCitations = [...citations].map((citation, index) => ({
+      ...citation,
+      chunkIndex: citation.chunkIndex || index + 1,
+    }));
+
+    mentionedCitationNumbers.forEach((citationNum) => {
+      if (
+        !processedCitations.some((c) => c.chunkIndex === citationNum) &&
+        citations[citationNum - 1]
+      ) {
+        processedCitations.push({
+          ...citations[citationNum - 1],
+          chunkIndex: citationNum,
+        });
+      }
+    });
+
+    return {
+      processedContent,
+      processedCitations: processedCitations.sort(
+        (a, b) => (a.chunkIndex || 0) - (b.chunkIndex || 0)
+      ),
+    };
+  }
+
+  getConversationState(conversationKey: string): ConversationStreamingState | null {
+    return this.conversationStates[conversationKey] || null;
+  }
+
+  getConversationMessages(conversationKey: string): FormattedMessage[] {
+    return this.conversationMessages[conversationKey] || [];
+  }
+
+  setConversationMessages(conversationKey: string, messages: FormattedMessage[]) {
+    this.conversationMessages[conversationKey] = messages;
+    this.notifyUpdates();
+  }
+
+  updateConversationMessages(
+    conversationKey: string,
+    updater: (prev: FormattedMessage[]) => FormattedMessage[]
+  ) {
+    this.conversationMessages[conversationKey] = updater(
+      this.conversationMessages[conversationKey] || []
+    );
+    this.notifyUpdates();
+  }
+
+  updateConversationState(conversationKey: string, updates: Partial<ConversationStreamingState>) {
+    if (!this.conversationStates[conversationKey]) {
+      this.conversationStates[conversationKey] = StreamingManager.initializeStreamingState();
+    }
+    this.conversationStates[conversationKey] = {
+      ...this.conversationStates[conversationKey],
+      ...updates,
+    };
+    this.notifyUpdates();
+  }
+
+  updateStatus(conversationKey: string, message: string) {
+    this.updateConversationState(conversationKey, {
+      statusMessage: message,
+      showStatus: true,
+    });
+  }
+
+  clearStatus(conversationKey: string) {
+    this.updateConversationState(conversationKey, {
+      statusMessage: '',
+      showStatus: false,
+    });
+  }
+
+  mapMessageToConversation(messageId: string, conversationKey: string) {
+    this.messageToConversationMap[messageId] = conversationKey;
+  }
+
+  getConversationForMessage(messageId: string): string | null {
+    return this.messageToConversationMap[messageId] || null;
+  }
+
+  // Updated: Transfer data from 'new' conversation to actual conversation ID without navigation
+  transferNewConversationData(newConversationId: string) {
+    const newKey = 'new';
+    const actualKey = newConversationId;
+
+    console.log(`🔄 Transferring state from "new" to "${actualKey}"`);
+
+    const newMessages = this.getConversationMessages(newKey);
+    this.setConversationMessages(actualKey, [...newMessages]);
+
+    const newState = this.getConversationState(newKey);
+    if (newState) {
+      this.conversationStates[actualKey] = {
+        ...newState,
+        pendingNavigation: null, // No navigation pending
+      };
+
+      // Update message-to-conversation mapping
+      if (newState.messageId) this.mapMessageToConversation(newState.messageId, actualKey);
+      if (newState.finalMessageId)
+        this.mapMessageToConversation(newState.finalMessageId, actualKey);
+    }
+
+    // Clean up the temporary 'new' state
+    delete this.conversationStates[newKey];
+    delete this.conversationMessages[newKey];
+
+    console.log(`✅ State transferred to "${actualKey}". No navigation will occur.`);
+    this.notifyUpdates();
+  }
+
+  // Remove pending navigation logic since we're not navigating
+  static getPendingNavigation(): { conversationId: string; shouldNavigate: boolean } | null {
+    return null; // Always return null to prevent navigation
+  }
+
+  updateStreamingContent(messageId: string, newChunk: string, citations: CustomCitation[] = []) {
+    const conversationKey = this.getConversationForMessage(messageId);
+    if (!conversationKey) return;
+
+    const state = this.conversationStates[conversationKey];
+    if (!state?.isActive) {
+      this.updateConversationState(conversationKey, {
+        messageId,
+        isActive: true,
+        isStreamingCompleted: false,
+        isProcessingCompletion: false,
+        content: '',
+        citations: [],
+        accumulatedContent: '',
+      });
+    }
+
+    const currentState = this.conversationStates[conversationKey];
+    const updatedAccumulatedContent = (currentState?.accumulatedContent || '') + newChunk;
+    const { processedContent, processedCitations } = StreamingManager.processStreamingContent(
+      updatedAccumulatedContent,
+      citations.length > 0 ? citations : currentState?.citations || []
+    );
+
+    this.updateConversationState(conversationKey, {
+      accumulatedContent: updatedAccumulatedContent,
+      content: processedContent,
+      citations: processedCitations,
+    });
+
+    this.updateConversationMessages(conversationKey, (prev) => {
+      const messageIndex = prev.findIndex((msg) => msg.id === messageId);
+      if (messageIndex === -1) return prev;
+      const updated = [...prev];
+      updated[messageIndex] = {
+        ...updated[messageIndex],
+        content: processedContent,
+        citations: processedCitations,
+      };
+      return updated;
+    });
+  }
+
+  finalizeStreaming(conversationKey: string, messageId: string, completionData: any) {
+    console.log(`🏁 Finalizing stream for conversation: "${conversationKey}"`);
+
+    const state = this.conversationStates[conversationKey];
+    if (state?.isStreamingCompleted) {
+      console.warn(`⚠️ Stream for "${conversationKey}" already finalized.`);
+      return;
+    }
+
+    let finalContent = state?.content || '';
+    let finalCitations = state?.citations || [];
+    let finalMessageId = messageId;
+
+    if (completionData?.conversation) {
+      const finalBotMessage = completionData.conversation.messages
+        .filter((msg: any) => msg.messageType === 'bot_response')
+        .pop();
+
+      if (finalBotMessage) {
+        const formatted = StreamingManager.formatMessage(finalBotMessage);
+        if (formatted) {
+          finalMessageId = formatted.id;
+          const { processedContent, processedCitations } = StreamingManager.processStreamingContent(
+            formatted.content,
+            formatted.citations
+          );
+          finalContent = processedContent;
+          finalCitations = processedCitations;
+        }
+      }
+    }
+
+    this.updateConversationMessages(conversationKey, (prev) =>
+      prev.map((msg) =>
+        msg.id === messageId
+          ? { ...msg, id: finalMessageId, content: finalContent, citations: finalCitations }
+          : msg
+      )
+    );
+    this.mapMessageToConversation(finalMessageId, conversationKey);
+
+    this.updateConversationState(conversationKey, {
+      isActive: false,
+      isProcessingCompletion: false,
+      isCompletionPending: false,
+      isStreamingCompleted: true,
+      content: finalContent,
+      citations: finalCitations,
+      finalMessageId,
+      messageId: finalMessageId,
+      statusMessage: '',
+      showStatus: false,
+      completionData: null,
+    });
+
+    console.log(`✅ Stream for "${conversationKey}" successfully finalized.`);
+  }
+
+  private static formatMessage(apiMessage: any): FormattedMessage | null {
+    if (!apiMessage) return null;
+    const baseMessage = {
+      id: apiMessage._id,
+      timestamp: new Date(apiMessage.createdAt || new Date()),
+      content: apiMessage.content || '',
+      type: apiMessage.messageType === 'user_query' ? 'user' : 'bot',
+      contentFormat: apiMessage.contentFormat || 'MARKDOWN',
+      followUpQuestions: apiMessage.followUpQuestions || [],
+      createdAt: apiMessage.createdAt ? new Date(apiMessage.createdAt) : new Date(),
+      updatedAt: apiMessage.updatedAt ? new Date(apiMessage.updatedAt) : new Date(),
+    };
+
+    if (apiMessage.messageType === 'user_query') {
+      return { ...baseMessage, type: 'user', feedback: apiMessage.feedback || [] };
+    }
+
+    if (apiMessage.messageType === 'bot_response') {
+      return {
+        ...baseMessage,
+        type: 'bot',
+        confidence: apiMessage.confidence || '',
+        citations: (apiMessage?.citations || []).map((citation: any) => ({
+          id: citation.citationId,
+          _id: citation?.citationData?._id || citation.citationId,
+          citationId: citation.citationId,
+          content: citation?.citationData?.content || '',
+          metadata: citation?.citationData?.metadata || [],
+          orgId: citation?.citationData?.metadata?.orgId || '',
+          citationType: citation?.citationType || '',
+          createdAt: citation?.citationData?.createdAt || new Date().toISOString(),
+          updatedAt: citation?.citationData?.updatedAt || new Date().toISOString(),
+          chunkIndex: citation?.citationData?.chunkIndex || 1,
+        })),
+      };
+    }
+    return baseMessage;
+  }
+
+  clearStreaming(conversationKey: string) {
+    const state = this.conversationStates[conversationKey];
+    if (!state) return;
+
+    if (state.controller && !state.controller.signal.aborted) {
+      state.controller.abort();
+    }
+    this.conversationStates[conversationKey] = StreamingManager.initializeStreamingState();
+    this.notifyUpdates();
+  }
+
+  private static initializeStreamingState(): ConversationStreamingState {
+    return {
+      messageId: null,
+      content: '',
+      citations: [],
+      isActive: false,
+      controller: null,
+      accumulatedContent: '',
+      completionData: null,
+      isCompletionPending: false,
+      finalMessageId: null,
+      isProcessingCompletion: false,
+      statusMessage: '',
+      showStatus: false,
+      pendingNavigation: null,
+      isStreamingCompleted: false,
+    };
+  }
+
+  createStreamingMessage(messageId: string, conversationKey: string) {
+    const streamingMessage: FormattedMessage = {
+      type: 'bot',
+      content: '',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      id: messageId,
+      contentFormat: 'MARKDOWN',
+      followUpQuestions: [],
+      citations: [],
+      confidence: '',
+      messageType: 'bot_response',
+      timestamp: new Date(),
+    };
+
+    this.mapMessageToConversation(messageId, conversationKey);
+    this.updateConversationMessages(conversationKey, (prev) => [...prev, streamingMessage]);
+  }
+
+  resetNavigationTracking() {
+    this.completedNavigations.clear();
+    console.log('🧹 Navigation tracking reset.');
+  }
+
+  isConversationLoading(conversationKey: string): boolean {
+    const state = this.getConversationState(conversationKey);
+    return !!(state && (state.isActive || state.isProcessingCompletion || state.showStatus));
+  }
 }
 
 const StyledOpenButton = styled(IconButton)(({ theme }) => ({
@@ -78,73 +485,65 @@ const StyledOpenButton = styled(IconButton)(({ theme }) => ({
   },
 }));
 
-interface StreamingController {
-  abort: () => void;
-}
-
 const getEngagingStatusMessage = (event: string, data: any): string | null => {
   switch (event) {
     case 'status': {
       const message = data.message || data.status || 'Processing...';
       switch (data.status) {
         case 'searching':
-          return `${message}`;
+          return `🔍 ${message}`;
         case 'decomposing':
-          return `${message}`;
+          return `🧩 ${message}`;
         case 'parallel_processing':
-          return `${message}`;
+          return `⚡ ${message}`;
         case 'reranking':
-          return `${message}`;
+          return `📊 ${message}`;
         case 'generating':
-          return `${message}`;
+          return `✨ ${message}`;
         case 'deduplicating':
-          return `${message}`;
+          return `🔧 ${message}`;
         case 'preparing_context':
-          return `${message}`;
+          return `📋 ${message}`;
         default:
           return `⚙️ ${message}`;
       }
     }
-
     case 'query_decomposed': {
       const queryCount = data.queries?.length || 0;
-      if (queryCount > 1) {
-        return `Breaking your request into ${queryCount} questions for a better answer.`;
-      }
-      return 'Analyzing your request...';
+      return queryCount > 1
+        ? `🧩 Breaking your request into ${queryCount} questions for a better answer.`
+        : '🤔 Analyzing your request...';
     }
-
     case 'search_complete': {
       const resultsCount = data.results_count || 0;
-      if (resultsCount > 0) {
-        return `Found ${resultsCount} potential sources. Now processing them...`;
-      }
-      return 'Finished searching...';
+      return resultsCount > 0
+        ? `📚 Found ${resultsCount} potential sources. Now processing them...`
+        : '✅ Finished searching...';
     }
-
     case 'connected':
-      return 'Processing ...';
+      return '🔌 Connected and processing...';
     case 'query_transformed':
     case 'results_ready':
       return null;
-
     default:
-      return null;
+      return 'Processing ...';
   }
 };
 
 const ChatInterface = () => {
-  const [messages, setMessages] = useState<FormattedMessage[]>([]);
   const [inputValue, setInputValue] = useState<string>('');
-  const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isLoadingConversation, setIsLoadingConversation] = useState<boolean>(false);
   const [expandedCitations, setExpandedCitations] = useState<ExpandedCitationsState>({});
   const [isDrawerOpen, setDrawerOpen] = useState<boolean>(true);
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
   const [selectedChat, setSelectedChat] = useState<Conversation | null>(null);
   const [shouldRefreshSidebar, setShouldRefreshSidebar] = useState<boolean>(false);
+  const [isNavigationBlocked, setIsNavigationBlocked] = useState<boolean>(false);
+
   const navigate = useNavigate();
   const { conversationId } = useParams<{ conversationId: string }>();
+
+  // PDF viewer states
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [aggregatedCitations, setAggregatedCitations] = useState<CustomCitation[] | null>([]);
   const [openPdfView, setOpenPdfView] = useState<boolean>(false);
@@ -157,84 +556,68 @@ const ChatInterface = () => {
   const [isMarkdown, setIsMarkdown] = useState<boolean>(false);
   const [isHtml, setIsHtml] = useState<boolean>(false);
   const [isTextFile, setIsTextFile] = useState<boolean>(false);
-  const [loadingConversations, setLoadingConversations] = useState<{ [key: string]: boolean }>({});
-  const theme = useTheme();
-
-  const accumulatedContentRef = useRef<string>('');
-  const displayedContentRef = useRef<string>('');
-  const streamingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const wordQueueRef = useRef<string[]>([]);
-  const isStreamingActiveRef = useRef<boolean>(false);
-  const streamingIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const completionDataRef = useRef<any>(null);
-  const pendingChunksRef = useRef<string[]>([]);
-  const isCompletionPendingRef = useRef<boolean>(false);
-  const finalMessageIdRef = useRef<string | null>(null);
-  const isProcessingCompletionRef = useRef<boolean>(false); 
-
-  const BATCH_SIZE = 1; 
-  const TYPING_SPEED = 25;
-  const COMPLETION_DELAY = 300;
-
-  const [conversationStatus, setConversationStatus] = useState<{
-    [key: string]: string | undefined;
-  }>({});
-
-  const [conversationErrors, setConversationErrors] = useState<{
-    [key: string]: boolean;
-  }>({});
-
-  const [pendingResponseConversationId, setPendingResponseConversationId] = useState<string | null>(
-    null
-  );
-
-  const [activeRequestTracker, setActiveRequestTracker] = useState<{
-    current: string | null;
-    type: 'create' | 'continue' | null;
-  }>({
-    current: null,
-    type: null,
-  });
-  const currentConversationIdRef = useRef<string | null>(null);
-
-  const isCurrentConversationLoading = useCallback(
-    () =>
-      currentConversationId
-        ? loadingConversations[currentConversationId]
-        : loadingConversations.new,
-    [currentConversationId, loadingConversations]
-  );
-
-  const isCurrentConversationThinking = useCallback(() => {
-    const conversationKey = currentConversationId || 'new';
-    return conversationStatus[conversationKey] === 'Inprogress';
-  }, [currentConversationId, conversationStatus]);
-
   const [highlightedCitation, setHighlightedCitation] = useState<CustomCitation | null>(null);
-
   const [snackbar, setSnackbar] = useState({
     open: false,
     message: '',
     severity: 'success' as 'success' | 'error' | 'warning' | 'info',
   });
+  const [showWelcome, setShowWelcome] = useState<boolean>(true);
+
+  const [updateTrigger, setUpdateTrigger] = useState(0);
+  const forceUpdate = useCallback(() => setUpdateTrigger((prev) => prev + 1), []);
+
+  const streamingManager = StreamingManager.getInstance();
+  const theme = useTheme();
+
+  const getConversationKey = useCallback((convId: string | null) => convId || 'new', []);
+
+  const currentConversationKey = useMemo(
+    () => getConversationKey(currentConversationId),
+    [currentConversationId, getConversationKey]
+  );
+
+  const currentMessages = useMemo(
+    () => streamingManager.getConversationMessages(currentConversationKey),
+    // eslint-disable-next-line
+    [streamingManager, currentConversationKey, updateTrigger]
+  );
+
+  const currentStreamingState = useMemo(() => {
+    const state = streamingManager.getConversationState(currentConversationKey);
+    return state
+      ? {
+          messageId: state.messageId,
+          content: state.content,
+          citations: state.citations,
+          isActive: state.isActive,
+        }
+      : { messageId: null, content: '', citations: [], isActive: false };
+    // eslint-disable-next-line
+  }, [streamingManager, currentConversationKey, updateTrigger]);
+
+  const currentConversationStatus = useMemo(() => {
+    const state = streamingManager.getConversationState(currentConversationKey);
+    return { statusMessage: state?.statusMessage || '', showStatus: state?.showStatus || false };
+    // eslint-disable-next-line
+  }, [streamingManager, currentConversationKey, updateTrigger]);
+
+  const isCurrentConversationLoading = useMemo(() => {
+    const streamingState = streamingManager.getConversationState(currentConversationKey);
+    return streamingManager.isConversationLoading(currentConversationKey) || isLoadingConversation;
+    // eslint-disable-next-line
+  }, [streamingManager, currentConversationKey, updateTrigger, isLoadingConversation]);
+
+  useEffect(() => {
+    streamingManager.addUpdateCallback(forceUpdate);
+    return () => streamingManager.removeUpdateCallback(forceUpdate);
+  }, [streamingManager, forceUpdate]);
+
+  // Remove automatic navigation useEffect since we're not navigating automatically anymore
 
   const handleCloseSnackbar = (): void => {
     setSnackbar({ open: false, message: '', severity: 'success' });
   };
-
-  const [showWelcome, setShowWelcome] = useState<boolean>(true);
-
-  const [streamingState, setStreamingState] = useState<StreamingState>({
-    messageId: null,
-    content: '',
-    citations: [],
-    isActive: false,
-  });
-
-  const [statusMessage, setStatusMessage] = useState<string>('');
-  const [showStatus, setShowStatus] = useState<boolean>(false);
-
-  const [streamingController, setStreamingController] = useState<StreamingController | null>(null);
 
   const formatMessage = useCallback((apiMessage: Message): FormattedMessage | null => {
     if (!apiMessage) return null;
@@ -273,509 +656,221 @@ const ChatInterface = () => {
     return baseMessage;
   }, []);
 
-  const clearStreaming = useCallback(() => {
-    if (isProcessingCompletionRef.current) {
-      return;
-    }
-
-    // Clear all intervals and timeouts
-    if (streamingIntervalRef.current) {
-      clearInterval(streamingIntervalRef.current);
-      streamingIntervalRef.current = null;
-    }
-    if (streamingTimeoutRef.current) {
-      clearTimeout(streamingTimeoutRef.current);
-      streamingTimeoutRef.current = null;
-    }
-
-    // Reset all refs
-    accumulatedContentRef.current = '';
-    displayedContentRef.current = '';
-    pendingChunksRef.current = [];
-    isStreamingActiveRef.current = false;
-    completionDataRef.current = null;
-    isCompletionPendingRef.current = false;
-    finalMessageIdRef.current = null;
-    isProcessingCompletionRef.current = false;
-
-    // Only clear streaming state if it's still active
-    setStreamingState((prev) => {
-      if (prev.isActive) {
-        return {
-          messageId: null,
-          content: '',
-          citations: [],
-          isActive: false,
-        };
-      }
-      return prev;
-    });
-  }, []);
-
-  const finalizeStreamingWithCompletion = useCallback(
-    (messageId: string, completionData: any) => {
-      // Mark that we're processing completion
-      isProcessingCompletionRef.current = true;
-
-      if (completionData?.conversation) {
-        const finalBotMessage = completionData.conversation.messages
-          .filter((msg: any) => msg.messageType === 'bot_response')
-          .pop();
-
-        if (finalBotMessage) {
-          const formattedFinalMessage = formatMessage(finalBotMessage);
-          if (formattedFinalMessage) {
-            // Store the final message ID for reference
-            finalMessageIdRef.current = finalBotMessage._id;
-
-            // Apply the final message content with all proper formatting and citations
-            setMessages((prev) =>
-              prev.map((msg) =>
-                msg.id === messageId
-                  ? {
-                      ...formattedFinalMessage,
-                      id: finalBotMessage._id,
-                      content: formattedFinalMessage.content,
-                      citations: formattedFinalMessage.citations || [],
-                    }
-                  : msg
-              )
-            );
-
-            // Update streaming state to show completion
-            setStreamingState((prev) => ({
-              ...prev,
-              messageId: finalBotMessage._id,
-              content: formattedFinalMessage.content,
-              citations: formattedFinalMessage.citations || [],
-              isActive: false, 
-            }));
-          }
-        }
-      }
-
-      // Clean up after completion
-      setTimeout(() => {
-        isCompletionPendingRef.current = false;
-        completionDataRef.current = null;
-        isProcessingCompletionRef.current = false;
-
-        // Now safe to clear streaming
-        setTimeout(() => {
-          clearStreaming();
-        }, 100);
-      }, 100);
-    },
-    [formatMessage, clearStreaming]
-  );
-
-  const processChunkQueue = useCallback(
-    (messageId: string, citations: CustomCitation[]) => {
-      if (!isStreamingActiveRef.current && !isCompletionPendingRef.current) {
-        if (streamingIntervalRef.current) {
-          clearInterval(streamingIntervalRef.current);
-          streamingIntervalRef.current = null;
-        }
-        return;
-      }
-
-      // If no more chunks to process
-      if (pendingChunksRef.current.length === 0) {
-        // If completion is pending, finalize now
-        if (isCompletionPendingRef.current && completionDataRef.current) {
-          if (streamingIntervalRef.current) {
-            clearInterval(streamingIntervalRef.current);
-            streamingIntervalRef.current = null;
-          }
-
-          // Apply final message
-          setTimeout(() => {
-            finalizeStreamingWithCompletion(messageId, completionDataRef.current);
-          }, COMPLETION_DELAY);
-
-          return;
-        }
-
-        // No completion pending, just stop the interval
-        if (streamingIntervalRef.current) {
-          clearInterval(streamingIntervalRef.current);
-          streamingIntervalRef.current = null;
-        }
-        return;
-      }
-
-      // Process the next chunk
-      const nextChunk = pendingChunksRef.current.shift();
-      if (nextChunk) {
-        displayedContentRef.current += nextChunk;
-
-        // Update the streaming state
-        setStreamingState((prev) => ({
-          ...prev,
-          messageId,
-          content: displayedContentRef.current,
-          citations,
-          isActive: true,
-        }));
-
-        // Update the messages array
-        setMessages((prevMessages) => {
-          const messageIndex = prevMessages.findIndex((msg) => msg.id === messageId);
-          if (messageIndex === -1) return prevMessages;
-
-          const updatedMessages = [...prevMessages];
-          updatedMessages[messageIndex] = {
-            ...updatedMessages[messageIndex],
-            content: displayedContentRef.current,
-            citations,
-            updatedAt: new Date(),
-          };
-          return updatedMessages;
-        });
-      }
-    },
-    [finalizeStreamingWithCompletion]
-  );
-
-  const startChunkStreaming = useCallback(
-    (messageId: string, citations: CustomCitation[]) => {
-      if (streamingIntervalRef.current) {
-        clearInterval(streamingIntervalRef.current);
-      }
-
-      streamingIntervalRef.current = setInterval(() => {
-        processChunkQueue(messageId, citations);
-      }, TYPING_SPEED);
-    },
-    [processChunkQueue]
-  );
-
-  const updateStreamingContent = useCallback(
-    (messageId: string, newChunk: string, citations: CustomCitation[] = []) => {
-      if (!isStreamingActiveRef.current) {
-        // Start new streaming session
-        accumulatedContentRef.current = '';
-        displayedContentRef.current = '';
-        pendingChunksRef.current = [];
-        isStreamingActiveRef.current = true;
-        completionDataRef.current = null;
-        isCompletionPendingRef.current = false;
-        finalMessageIdRef.current = null;
-        isProcessingCompletionRef.current = false;
-      }
-
-      if (newChunk && newChunk.trim()) {
-        const cleanedChunk = newChunk
-          .replace(/\\n/g, '\n')
-          .replace(/\*\*(\d+)\*\*/g, '[$1]')
-          .replace(/\*\*([^*]+)\*\*/g, '**$1**');
-
-        pendingChunksRef.current.push(cleanedChunk);
-      }
-
-      if (!streamingIntervalRef.current) {
-        startChunkStreaming(messageId, citations);
-      }
-    },
-    [startChunkStreaming]
-  );
-
-  const updateStatus = useCallback((message: string) => {
-    setStatusMessage(message);
-    setShowStatus(true);
-  }, []);
-
   const streamingContextValue: StreamingContextType = useMemo(
     () => ({
-      streamingState,
-      updateStreamingContent,
-      clearStreaming,
+      streamingState: currentStreamingState,
+      updateStreamingContent: (messageId: string, content: string, citations: CustomCitation[]) => {
+        streamingManager.updateStreamingContent(messageId, content, citations);
+      },
+      clearStreaming: () => {
+        streamingManager.clearStreaming(currentConversationKey);
+      },
     }),
-    [streamingState, updateStreamingContent, clearStreaming]
+    [currentStreamingState, streamingManager, currentConversationKey]
   );
 
   const parseSSELine = (line: string): { event?: string; data?: any } | null => {
-    if (line.startsWith('event: ')) {
-      return { event: line.substring(7).trim() };
-    }
+    if (line.startsWith('event: ')) return { event: line.substring(7).trim() };
     if (line.startsWith('data: ')) {
       try {
-        const data = JSON.parse(line.substring(6).trim());
-        return { data };
+        return { data: JSON.parse(line.substring(6).trim()) };
       } catch (e) {
+        console.warn('Failed to parse SSE data:', line.substring(6).trim());
         return null;
       }
     }
     return null;
   };
 
-  const createStreamingController = (
-    reader: ReadableStreamDefaultReader<Uint8Array>
-  ): StreamingController => ({
-    abort: () => {
-      reader.cancel().catch(console.error);
-    },
-  });
-
-  const createStreamingMessage = useCallback((messageId: string) => {
-    const streamingMessage: FormattedMessage = {
-      type: 'bot',
-      content: '',
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      id: messageId,
-      contentFormat: 'MARKDOWN',
-      followUpQuestions: [],
-      citations: [],
-      confidence: '',
-      messageType: 'bot_response',
-      timestamp: new Date(),
-    };
-    setMessages((prev) => [...prev, streamingMessage]);
-  }, []);
-
-  const handleStreamingEvent = useCallback(
-    async (
-      event: string,
-      data: any,
-      context: {
-        streamingBotMessageId: string;
-        isNewConversation: boolean;
-        hasCreatedMessage: boolean;
-        onConversationComplete: (conversation: Conversation) => void;
-        onMessageCreated: () => void;
-        onErrorReceived: () => void;
-      }
-    ): Promise<boolean> => {
-      const statusMsg = getEngagingStatusMessage(event, data);
-
-      if (statusMsg) {
-        updateStatus(statusMsg);
-      }
-
-      switch (event) {
-        case 'answer_chunk':
-          if (data.chunk) {
-            if (!context.hasCreatedMessage) {
-              createStreamingMessage(context.streamingBotMessageId);
-              context.onMessageCreated();
-            }
-
-            setShowStatus(false);
-            setStatusMessage('');
-
-            updateStreamingContent(context.streamingBotMessageId, data.chunk, data.citations || []);
-          }
-          return false;
-
-        case 'complete':
-          setShowStatus(false);
-          setStatusMessage('');
-
-          // Store completion data and mark as pending
-          completionDataRef.current = data;
-          isCompletionPendingRef.current = true;
-
-          // Mark that we're processing completion to prevent clearing
-          isProcessingCompletionRef.current = true;
-
-          // If there are no pending chunks, finalize immediately
-          if (pendingChunksRef.current.length === 0) {
-            setTimeout(() => {
-              finalizeStreamingWithCompletion(context.streamingBotMessageId, data);
-              if (data.conversation) {
-                context.onConversationComplete(data.conversation);
-              }
-            }, COMPLETION_DELAY);
-          }
-
-          return false;
-
-        case 'error': {
-          setShowStatus(false);
-          setStatusMessage('');
-
-          // Stop streaming on error
-          isStreamingActiveRef.current = false;
-          isProcessingCompletionRef.current = false;
-          clearStreaming();
-
-          const errorMessage = data.message || data.error || 'An error occurred';
-          if (!context.hasCreatedMessage) {
-            const errorMsg: FormattedMessage = {
-              type: 'bot',
-              content: errorMessage,
-              createdAt: new Date(),
-              updatedAt: new Date(),
-              id: context.streamingBotMessageId,
-              contentFormat: 'MARKDOWN',
-              followUpQuestions: [],
-              citations: [],
-              confidence: '',
-              messageType: 'error',
-              timestamp: new Date(),
-            };
-            setMessages((prev) => [...prev, errorMsg]);
-            context.onMessageCreated();
-          } else {
-            setMessages((prevMessages) => {
-              const messageIndex = prevMessages.findIndex(
-                (msg) => msg.id === context.streamingBotMessageId
-              );
-              if (messageIndex !== -1) {
-                const updatedMessages = [...prevMessages];
-                updatedMessages[messageIndex] = {
-                  ...updatedMessages[messageIndex],
-                  content: errorMessage,
-                  messageType: 'error',
-                  updatedAt: new Date(),
-                };
-                return updatedMessages;
-              }
-              return prevMessages;
-            });
-          }
-          context.onErrorReceived();
-          return true;
-        }
-
-        default:
-          return false;
-      }
-    },
-    [
-      createStreamingMessage,
-      updateStreamingContent,
-      updateStatus,
-      clearStreaming,
-      finalizeStreamingWithCompletion,
-    ]
-  );
-
-  const handleStreamingComplete = useCallback(
-    async (
-      conversation: Conversation,
-      isNewConversation: boolean,
-      streamingBotMessageId: string
-    ): Promise<void> => {
-      if (isNewConversation) {
-        setSelectedChat(conversation);
-        setCurrentConversationId(conversation._id);
-        currentConversationIdRef.current = conversation._id;
-        setShouldRefreshSidebar(true);
-      }
-    },
-    []
-  );
-
   const handleStreamingResponse = useCallback(
-    async (url: string, body: any, isNewConversation: boolean): Promise<void> => {
-      const streamingBotMessageId = `streaming-${Date.now()}`;
+    async (url: string, body: any, isNewConversation: boolean): Promise<string | null> =>
+      // eslint-disable-next-line
+      new Promise(async (resolve, reject) => {
+        const streamingBotMessageId = `streaming-${Date.now()}`;
+        const conversationKey = isNewConversation
+          ? 'new'
+          : getConversationKey(currentConversationId);
 
-      accumulatedContentRef.current = '';
+        console.log(`🚀 Starting streaming for key: "${conversationKey}"`);
 
-      const streamState = {
-        finalConversation: null as Conversation | null,
-        hasCreatedMessage: false,
-        hasReceivedError: false,
-      };
+        streamingManager.updateStatus(conversationKey, 'Connecting...');
+        const controller = new AbortController();
+        streamingManager.updateConversationState(conversationKey, { controller });
 
-      const callbacks = {
-        onConversationComplete: (conversation: Conversation) => {
-          streamState.finalConversation = conversation;
-        },
-        onMessageCreated: () => {
-          streamState.hasCreatedMessage = true;
-        },
-        onErrorReceived: () => {
-          streamState.hasReceivedError = true;
-        },
-      };
+        const hasCreatedMessage = { current: false };
 
-      try {
-        const token = localStorage.getItem('jwt_access_token');
-        const response = await fetch(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Accept: 'text/event-stream',
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify(body),
-        });
+        const handleStreamingEvent = async (
+          event: string,
+          data: any,
+          context: {
+            conversationKey: string;
+            streamingBotMessageId: string;
+            isNewConversation: boolean;
+            hasCreatedMessage: React.MutableRefObject<boolean>;
+          }
+        ) => {
+          const statusMsg = getEngagingStatusMessage(event, data);
+          if (statusMsg) {
+            streamingManager.updateStatus(context.conversationKey, statusMsg);
+          }
 
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
+          switch (event) {
+            case 'answer_chunk':
+              if (data.chunk) {
+                if (!context.hasCreatedMessage.current) {
+                  streamingManager.createStreamingMessage(
+                    context.streamingBotMessageId,
+                    context.conversationKey
+                  );
+                  context.hasCreatedMessage.current = true;
+                }
+                streamingManager.clearStatus(context.conversationKey);
+                streamingManager.updateStreamingContent(
+                  context.streamingBotMessageId,
+                  data.chunk,
+                  data.citations || []
+                );
+              }
+              return;
 
-        const reader = response.body?.getReader();
-        if (!reader) {
-          throw new Error('Failed to get response reader');
-        }
-
-        const controller = createStreamingController(reader);
-        setStreamingController(controller);
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let currentEvent = '';
-
-        const processLine = async (line: string): Promise<void> => {
-          const trimmedLine = line.trim();
-          if (!trimmedLine) return;
-
-          const parsed = parseSSELine(trimmedLine);
-          if (!parsed) return;
-
-          if (parsed.event) {
-            currentEvent = parsed.event;
-          } else if (parsed.data && currentEvent) {
-            const errorReceived = await handleStreamingEvent(currentEvent, parsed.data, {
-              streamingBotMessageId,
-              isNewConversation,
-              hasCreatedMessage: streamState.hasCreatedMessage,
-              onConversationComplete: callbacks.onConversationComplete,
-              onMessageCreated: callbacks.onMessageCreated,
-              onErrorReceived: callbacks.onErrorReceived,
-            });
-
-            if (errorReceived) {
-              streamState.hasReceivedError = true;
+            case 'complete': {
+              streamingManager.clearStatus(context.conversationKey);
+              const completedConversation = data.conversation;
+              if (completedConversation?._id) {
+                let finalKey = context.conversationKey;
+                if (context.isNewConversation && context.conversationKey === 'new') {
+                  console.log(
+                    `📦 'complete' event received for new conversation. New ID: ${completedConversation._id}`
+                  );
+                  // Transfer data without navigation
+                  streamingManager.transferNewConversationData(completedConversation._id);
+                  finalKey = completedConversation._id;
+                  // Resolve with the new ID so component can update its state
+                  resolve(completedConversation._id);
+                }
+                streamingManager.finalizeStreaming(finalKey, context.streamingBotMessageId, data);
+              }
+              // If it's not a new conversation, resolve with null
+              if (!context.isNewConversation) {
+                resolve(null);
+              }
+              return;
             }
+
+            case 'error': {
+              streamingManager.clearStreaming(context.conversationKey);
+              const errorMessage = data.message || data.error || 'An error occurred';
+              if (!context.hasCreatedMessage.current) {
+                const errorMsg: FormattedMessage = {
+                  type: 'bot',
+                  content: errorMessage,
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+                  id: context.streamingBotMessageId,
+                  contentFormat: 'MARKDOWN',
+                  followUpQuestions: [],
+                  citations: [],
+                  confidence: '',
+                  messageType: 'error',
+                  timestamp: new Date(),
+                };
+                streamingManager.mapMessageToConversation(
+                  context.streamingBotMessageId,
+                  context.conversationKey
+                );
+                streamingManager.updateConversationMessages(context.conversationKey, (prev) => [
+                  ...prev,
+                  errorMsg,
+                ]);
+                context.hasCreatedMessage.current = true;
+              } else {
+                streamingManager.updateConversationMessages(context.conversationKey, (prev) =>
+                  prev.map((msg) =>
+                    msg.id === context.streamingBotMessageId
+                      ? { ...msg, content: errorMessage, messageType: 'error' }
+                      : msg
+                  )
+                );
+              }
+              reject(new Error(errorMessage));
+              // eslint-disable-next-line
+              return;
+            }
+            default:
+              // eslint-disable-next-line
+              return;
           }
         };
 
-        const readNextChunk = async (): Promise<void> => {
-          const { done, value } = await reader.read();
-          if (done) return;
+        try {
+          const token = localStorage.getItem('jwt_access_token');
+          const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Accept: 'text/event-stream',
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify(body),
+            signal: controller.signal,
+          });
 
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
+          if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+          const reader = response.body?.getReader();
+          if (!reader) throw new Error('Failed to get response reader');
 
-          await Promise.all(lines.map(processLine));
+          const decoder = new TextDecoder();
+          let buffer = '';
+          let currentEvent = '';
+
+          const readNextChunk = async (): Promise<void> => {
+            try {
+              const { done, value } = await reader.read();
+              if (done) return;
+
+              buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split('\n');
+              buffer = lines.pop() || '';
+
+              for (let i = 0; i < lines.length; i += 1) {
+                const line = lines[i];
+                const trimmedLine = line.trim();
+                // eslint-disable-next-line
+                if (!trimmedLine) continue;
+
+                const parsed = parseSSELine(trimmedLine);
+                // eslint-disable-next-line
+                if (!parsed) continue;
+
+                if (parsed.event) {
+                  currentEvent = parsed.event;
+                } else if (parsed.data && currentEvent) {
+                  // eslint-disable-next-line
+                  await handleStreamingEvent(currentEvent, parsed.data, {
+                    conversationKey,
+                    streamingBotMessageId,
+                    isNewConversation,
+                    hasCreatedMessage,
+                  });
+                }
+              }
+              if (!controller.signal.aborted) await readNextChunk();
+            } catch (error) {
+              if (error.name !== 'AbortError') throw error;
+            }
+          };
           await readNextChunk();
-        };
-
-        await readNextChunk();
-
-        if (streamState.finalConversation && !streamState.hasReceivedError) {
-          await handleStreamingComplete(
-            streamState.finalConversation,
-            isNewConversation,
-            streamingBotMessageId
-          );
+          // If the stream finishes cleanly without triggering an event that resolves the promise, resolve with null.
+          resolve(null);
+        } catch (error) {
+          if (error.name !== 'AbortError') {
+            console.error('Streaming connection error:', error);
+            streamingManager.clearStreaming(conversationKey);
+            reject(error);
+          }
         }
-      } catch (error) {
-        console.error('Streaming connection error:', error);
-        setShowStatus(false);
-        clearStreaming();
-        // Reset accumulated content on error
-        accumulatedContentRef.current = '';
-      } finally {
-        setStreamingController(null);
-      }
-    },
-    [handleStreamingEvent, handleStreamingComplete, clearStreaming]
+      }),
+    [currentConversationId, getConversationKey, streamingManager]
   );
 
   const handleSendMessage = useCallback(
@@ -783,10 +878,15 @@ const ChatInterface = () => {
       const trimmedInput =
         typeof messageOverride === 'string' ? messageOverride.trim() : inputValue.trim();
       if (!trimmedInput) return;
-      if (streamingController) {
-        streamingController.abort();
-      }
-      const wasCreatingNewConversation = currentConversationId === null;
+      if (isNavigationBlocked || isCurrentConversationLoading) return;
+
+      const wasCreatingNewConversation = !currentConversationId;
+      const conversationKey = getConversationKey(currentConversationId);
+
+      console.log(
+        `📤 Sending message to conversation: ${conversationKey}, isNew: ${wasCreatingNewConversation}`
+      );
+
       const tempUserMessage: FormattedMessage = {
         type: 'user',
         content: trimmedInput,
@@ -800,84 +900,222 @@ const ChatInterface = () => {
         messageType: 'user_query',
         timestamp: new Date(),
       };
-      if (typeof messageOverride === 'string' && showWelcome) {
-        setShowWelcome(false);
-      }
+
+      if (typeof messageOverride === 'string' && showWelcome) setShowWelcome(false);
       setInputValue('');
-      setMessages((prev) => [...prev, tempUserMessage]);
+      streamingManager.updateConversationMessages(conversationKey, (prev) => [
+        ...prev,
+        tempUserMessage,
+      ]);
+
       const streamingUrl = wasCreatingNewConversation
         ? `${CONFIG.backendUrl}/api/v1/conversations/stream`
         : `${CONFIG.backendUrl}/api/v1/conversations/${currentConversationId}/messages/stream`;
-      await handleStreamingResponse(
-        streamingUrl,
-        { query: trimmedInput },
-        wasCreatingNewConversation
-      );
+
+      try {
+        const createdConversationId = await handleStreamingResponse(
+          streamingUrl,
+          { query: trimmedInput },
+          wasCreatingNewConversation
+        );
+
+        if (wasCreatingNewConversation && createdConversationId) {
+          console.log(
+            `📝 New conversation ${createdConversationId} created. Updating state without navigation.`
+          );
+          setCurrentConversationId(createdConversationId);
+          setShouldRefreshSidebar(true);
+          setShowWelcome(false);
+        }
+      } catch (error) {
+        console.error('Error in streaming response:', error);
+      }
     },
-    [inputValue, currentConversationId, showWelcome, streamingController, handleStreamingResponse]
+    [
+      inputValue,
+      currentConversationId,
+      showWelcome,
+      streamingManager,
+      getConversationKey,
+      handleStreamingResponse,
+      isNavigationBlocked,
+      isCurrentConversationLoading,
+    ]
   );
 
   const handleNewChat = useCallback(() => {
-    if (streamingController) {
-      streamingController.abort();
-    }
+    streamingManager.clearStreaming(getConversationKey(currentConversationId));
+    streamingManager.resetNavigationTracking();
 
-    // Force clear streaming even if completion is processing (user wants new chat)
-    isProcessingCompletionRef.current = false;
-    clearStreaming();
-
-    currentConversationIdRef.current = null;
     setCurrentConversationId(null);
-    navigate('/');
-    setShowStatus(false);
-    setMessages([]);
+    navigate('/', { replace: true });
     setInputValue('');
     setShouldRefreshSidebar(true);
     setShowWelcome(true);
     setSelectedChat(null);
-    accumulatedContentRef.current = '';
-  }, [navigate, streamingController, clearStreaming]);
+    setIsNavigationBlocked(false);
+
+    console.log('🆕 Started new chat session');
+  }, [navigate, streamingManager, currentConversationId, getConversationKey]);
 
   const handleChatSelect = useCallback(
     async (chat: Conversation) => {
-      if (!chat?._id) return;
-      if (streamingController) {
-        streamingController.abort();
-      }
-
-      // Force clear streaming even if completion is processing (user wants different chat)
-      isProcessingCompletionRef.current = false;
-      clearStreaming();
+      if (!chat?._id || isNavigationBlocked) return;
 
       try {
-        setShowWelcome(false);
-        setCurrentConversationId(chat._id);
-        currentConversationIdRef.current = chat._id;
-        navigate(`/${chat._id}`);
-        setIsLoadingConversation(true);
-        setShowStatus(false);
-        setMessages([]);
-        accumulatedContentRef.current = '';
+        const chatKey = getConversationKey(chat._id);
 
-        const response = await axios.get(`/api/v1/conversations/${chat._id}`);
-        const { conversation } = response.data;
-        if (conversation?.messages) {
-          const formattedMessages = conversation.messages
-            .map(formatMessage)
-            .filter(Boolean) as FormattedMessage[];
-          setMessages(formattedMessages);
-          setSelectedChat(conversation);
+        // Check if this conversation is currently streaming
+        const streamingState = streamingManager.getConversationState(chatKey);
+        const isCurrentlyStreaming =
+          streamingState?.isActive ||
+          streamingState?.isProcessingCompletion ||
+          streamingState?.showStatus;
+
+        console.log(`🔄 Selecting chat ${chat._id}, isStreaming: ${isCurrentlyStreaming}`);
+
+        // If the conversation is streaming, don't set loading state as it might interfere
+        if (!isCurrentlyStreaming) {
+          setIsLoadingConversation(true);
+        }
+
+        // Hide welcome screen immediately when selecting a chat
+        setShowWelcome(false);
+
+        // Update current conversation ID before navigation
+        setCurrentConversationId(chat._id);
+
+        // Navigate to the chat
+        navigate(`/${chat._id}`, { replace: true });
+
+        const existingMessages = streamingManager.getConversationMessages(chatKey);
+
+        if (!existingMessages.length && !isCurrentlyStreaming) {
+          // Only fetch if we don't have messages and it's not currently streaming
+          const response = await axios.get(`/api/v1/conversations/${chat._id}`);
+          const { conversation } = response.data;
+          if (conversation?.messages) {
+            const formattedMessages = conversation.messages
+              .map(formatMessage)
+              .filter(Boolean) as FormattedMessage[];
+            streamingManager.setConversationMessages(chatKey, formattedMessages);
+            setSelectedChat(conversation);
+          }
+        } else {
+          setSelectedChat(chat);
         }
       } catch (error) {
-        console.error('Error loading conversation:', error);
-        setMessages([]);
+        console.error('❌ Error loading conversation:', error);
+        streamingManager.setConversationMessages(getConversationKey(chat._id), []);
       } finally {
-        setIsLoadingConversation(false);
+        // Only clear loading if we set it
+        const chatKey = getConversationKey(chat._id);
+        const streamingState = streamingManager.getConversationState(chatKey);
+        const isCurrentlyStreaming =
+          streamingState?.isActive ||
+          streamingState?.isProcessingCompletion ||
+          streamingState?.showStatus;
+
+        if (!isCurrentlyStreaming) {
+          setIsLoadingConversation(false);
+        }
       }
     },
-    [formatMessage, navigate, streamingController, clearStreaming]
+    [formatMessage, navigate, streamingManager, getConversationKey, isNavigationBlocked]
   );
 
+  // Update the useEffect to better handle streaming conversations
+  useEffect(() => {
+    const urlConversationId = conversationId;
+    if (isNavigationBlocked) return;
+
+    if (urlConversationId && urlConversationId !== currentConversationId) {
+      const chatKey = getConversationKey(urlConversationId);
+      const existingMessages = streamingManager.getConversationMessages(chatKey);
+      const streamingState = streamingManager.getConversationState(chatKey);
+      const isCurrentlyStreaming =
+        streamingState?.isActive ||
+        streamingState?.isProcessingCompletion ||
+        streamingState?.showStatus;
+
+      console.log(
+        `🔄 URL changed to ${urlConversationId}, hasMessages: ${existingMessages.length > 0}, isStreaming: ${isCurrentlyStreaming}`
+      );
+
+      if (existingMessages.length > 0 || isCurrentlyStreaming) {
+        // We have existing messages or it's streaming, just switch to this conversation
+        setCurrentConversationId(urlConversationId);
+        setShowWelcome(false);
+        const existingConversation =
+          selectedChat?._id === urlConversationId
+            ? selectedChat
+            : ({ _id: urlConversationId } as Conversation);
+        setSelectedChat(existingConversation);
+
+        // Don't set loading if it's currently streaming
+        if (!isCurrentlyStreaming) {
+          setIsLoadingConversation(false);
+        }
+      } else if (currentConversationId !== urlConversationId) {
+        handleChatSelect({ _id: urlConversationId } as Conversation);
+      }
+    } else if (!urlConversationId && currentConversationId !== null) {
+      // Only reset to new chat if we're not in the middle of creating a conversation
+      const crtMessages = streamingManager.getConversationMessages(
+        getConversationKey(currentConversationId)
+      );
+      const crtStreamingState = streamingManager.getConversationState(
+        getConversationKey(currentConversationId)
+      );
+      const isCurrentlyStreaming =
+        crtStreamingState?.isActive || crtStreamingState?.isProcessingCompletion;
+
+      if (!isCurrentlyStreaming && crtMessages.length === 0) {
+        handleNewChat();
+      }
+    }
+  }, [
+    conversationId,
+    currentConversationId,
+    streamingManager,
+    handleChatSelect,
+    selectedChat,
+    isNavigationBlocked,
+    handleNewChat,
+    getConversationKey,
+  ]);
+
+  // Update the shouldShowWelcome logic to consider streaming state
+  const shouldShowWelcome = useMemo(() => {
+    const crtStreamingState = streamingManager.getConversationState(currentConversationKey);
+    const isCurrentlyStreaming =
+      crtStreamingState?.isActive ||
+      crtStreamingState?.isProcessingCompletion ||
+      crtStreamingState?.showStatus;
+
+    // Show welcome only if:
+    // 1. showWelcome is true AND
+    // 2. we don't have a current conversation ID AND
+    // 3. we don't have any messages in the current conversation AND
+    // 4. we're not loading a conversation AND
+    // 5. we're not currently streaming
+    return (
+      showWelcome &&
+      !currentConversationId &&
+      currentMessages.length === 0 &&
+      !isLoadingConversation &&
+      !isCurrentlyStreaming
+    );
+  }, [
+    showWelcome,
+    currentConversationId,
+    currentMessages.length,
+    isLoadingConversation,
+    streamingManager,
+    currentConversationKey,
+  ]);
+
+  // PDF viewer functions
   const resetViewerStates = () => {
     setTransitioning(true);
     setIsViewerReady(false);
@@ -895,7 +1133,7 @@ const ChatInterface = () => {
 
   const handleLargePPTFile = (record: any) => {
     if (record.sizeInBytes / 1048576 > 5) {
-      throw new Error('Large fize size, redirecting to web page ');
+      throw new Error('Large file size, redirecting to web page');
     }
   };
 
@@ -1140,44 +1378,33 @@ const ChatInterface = () => {
 
   const handleRegenerateMessage = useCallback(
     async (messageId: string): Promise<void> => {
-      if (!currentConversationId || !messageId) return;
+      if (!currentConversationId || !messageId || isCurrentConversationLoading) return;
 
       try {
-        setIsLoading(true);
+        const conversationKey = getConversationKey(currentConversationId);
+
         const response = await axios.post<{ conversation: Conversation }>(
           `/api/v1/conversations/${currentConversationId}/message/${messageId}/regenerate`,
           { instruction: 'Improve writing style and clarity' }
         );
 
-        if (!response?.data?.conversation?.messages) {
-          throw new Error('Invalid response format');
-        }
+        if (!response?.data?.conversation?.messages) throw new Error('Invalid response format');
 
         const allMessages = response.data.conversation.messages
           .map(formatMessage)
           .filter(Boolean) as FormattedMessage[];
-
         const regeneratedMessage = allMessages.filter((msg) => msg.type === 'bot').pop();
+        if (!regeneratedMessage) throw new Error('No regenerated message found in response');
 
-        if (!regeneratedMessage) {
-          throw new Error('No regenerated message found in response');
-        }
-
-        setMessages((prevMessages) =>
-          prevMessages.map((msg) => {
-            if (msg.id === messageId) {
-              return {
-                ...regeneratedMessage,
-                createdAt: msg.createdAt,
-              };
-            }
-            return msg;
-          })
+        streamingManager.updateConversationMessages(conversationKey, (prevMessages) =>
+          prevMessages.map((msg) =>
+            msg.id === messageId ? { ...regeneratedMessage, createdAt: msg.createdAt } : msg
+          )
         );
 
         setExpandedCitations((prevStates) => {
           const newStates = { ...prevStates };
-          const messageIndex = messages.findIndex((msg) => msg.id === messageId);
+          const messageIndex = currentMessages.findIndex((msg) => msg.id === messageId);
           if (messageIndex !== -1) {
             const hasCitations =
               regeneratedMessage.citations && regeneratedMessage.citations.length > 0;
@@ -1186,7 +1413,8 @@ const ChatInterface = () => {
           return newStates;
         });
       } catch (error) {
-        setMessages((prevMessages) =>
+        const conversationKey = getConversationKey(currentConversationId);
+        streamingManager.updateConversationMessages(conversationKey, (prevMessages) =>
           prevMessages.map((msg) =>
             msg.id === messageId
               ? {
@@ -1197,21 +1425,23 @@ const ChatInterface = () => {
               : msg
           )
         );
-      } finally {
-        setIsLoading(false);
       }
     },
-    [currentConversationId, formatMessage, messages]
+    [
+      currentConversationId,
+      formatMessage,
+      currentMessages,
+      getConversationKey,
+      streamingManager,
+      isCurrentConversationLoading,
+    ]
   );
 
-  const handleSidebarRefreshComplete = useCallback(() => {
-    setShouldRefreshSidebar(false);
-  }, []);
+  const handleSidebarRefreshComplete = useCallback(() => setShouldRefreshSidebar(false), []);
 
   const handleFeedbackSubmit = useCallback(
     async (messageId: string, feedback: any) => {
       if (!currentConversationId || !messageId) return;
-
       try {
         await axios.post(
           `/api/v1/conversations/${currentConversationId}/message/${messageId}/feedback`,
@@ -1224,44 +1454,12 @@ const ChatInterface = () => {
     [currentConversationId]
   );
 
-  useEffect(
-    () => () => {
-      if (streamingController) {
-        streamingController.abort();
-      }
-      clearStreaming();
-    },
-    [streamingController, clearStreaming]
-  );
-
-  useEffect(() => {
-    if (conversationId && conversationId !== currentConversationId) {
-      handleChatSelect({ _id: conversationId } as Conversation);
-    }
-  }, [conversationId, handleChatSelect, currentConversationId]);
-
-  useEffect(
-    () => () => {
-      if (streamingController) {
-        streamingController.abort();
-      }
-    },
-    [streamingController]
-  );
-
   const MemoizedChatMessagesArea = useMemo(() => React.memo(ChatMessagesArea), []);
   const MemoizedWelcomeMessage = useMemo(() => React.memo(WelcomeMessage), []);
 
   return (
     <StreamingContext.Provider value={streamingContextValue}>
-      <Box
-        sx={{
-          display: 'flex',
-          width: '100%',
-          height: '90vh',
-          overflow: 'hidden',
-        }}
-      >
+      <Box sx={{ display: 'flex', width: '100%', height: '90vh', overflow: 'hidden' }}>
         {!isDrawerOpen && (
           <Tooltip title="Open Sidebar" placement="right">
             <StyledOpenButton
@@ -1316,49 +1514,37 @@ const ChatInterface = () => {
               position: 'relative',
             }}
           >
-            {showWelcome ? (
+            {shouldShowWelcome ? (
               <MemoizedWelcomeMessage
                 key="welcome-screen"
                 onSubmit={handleSendMessage}
-                isLoading={streamingState.isActive}
+                isLoading={isCurrentConversationLoading}
               />
             ) : (
               <>
                 <MemoizedChatMessagesArea
-                  messages={messages}
-                  isLoading={streamingState.isActive}
+                  messages={currentMessages}
+                  isLoading={isCurrentConversationLoading}
                   onRegenerateMessage={handleRegenerateMessage}
                   onFeedbackSubmit={handleFeedbackSubmit}
                   conversationId={currentConversationId}
                   isLoadingConversation={isLoadingConversation}
                   onViewPdf={onViewPdf}
-                  currentStatus={statusMessage}
-                  isStatusVisible={showStatus}
+                  currentStatus={currentConversationStatus.statusMessage}
+                  isStatusVisible={currentConversationStatus.showStatus}
                 />
-
-                {/* <Box
-                  sx={{
-                    flexShrink: 0,
-                    borderTop: 1,
-                    borderColor: 'divider',
-                    // backgroundColor:
-                    //   theme.palette.mode === 'dark'
-                    //     ? alpha(theme.palette.background.paper, 0.5)
-                    //     : theme.palette.background.paper,
-                    mt: 'auto',
-                    // py: 1.5,
-                    minWidth: '95%',
-                    mx: 'auto',
-                    borderRadius: 2,
-                  }}
-                > */}
-                  <ChatInput onSubmit={handleSendMessage} isLoading={streamingState.isActive} />
-                {/* </Box> */}
+                <ChatInput
+                  key={`chat-input-${currentConversationId || 'new'}`}
+                  onSubmit={handleSendMessage}
+                  isLoading={isCurrentConversationLoading}
+                  disabled={isCurrentConversationLoading || isNavigationBlocked}
+                  placeholder="Type your message..."
+                />
               </>
             )}
           </Box>
 
-          {/* PDF Viewer remains the same */}
+          {/* PDF Viewer */}
           {openPdfView && (
             <Box
               sx={{
@@ -1471,9 +1657,7 @@ const ChatInterface = () => {
               width: '100%',
               borderRadius: 0.75,
               boxShadow: theme.shadows[3],
-              '& .MuiAlert-icon': {
-                fontSize: '1.2rem',
-              },
+              '& .MuiAlert-icon': { fontSize: '1.2rem' },
             }}
           >
             {snackbar.message}
