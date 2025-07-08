@@ -1044,7 +1044,7 @@ const ExcelViewer = ({
                                 leaveDelay={200}
                                 PopperProps={{
                                   sx: {
-                                    zIndex: isFullscreen ? 2147483647 : 1500,
+                                    zIndex: isFullscreen ? 2000 : 1500,
                                     '& .MuiTooltip-tooltip': {
                                       maxWidth: '300px',
                                       fontSize: '11px',
@@ -1060,9 +1060,7 @@ const ExcelViewer = ({
                                       color: 'rgba(0, 0, 0, 0.9)',
                                     },
                                   },
-                                  container: isFullscreen
-                                    ? document.fullscreenElement || document.body
-                                    : document.body,
+                                 container: document.fullscreenElement || document.body,
                                 }}
                               >
                                 <Typography
@@ -1147,7 +1145,7 @@ const ExcelViewer = ({
                                     leaveDelay={200}
                                     PopperProps={{
                                       sx: {
-                                        zIndex: isFullscreen ? 2147483647 : 1500,
+                                        zIndex: isFullscreen ? 2000 : 1500,
                                         '& .MuiTooltip-tooltip': {
                                           maxWidth: '400px',
                                           fontSize: '12px',
@@ -1162,9 +1160,7 @@ const ExcelViewer = ({
                                           color: 'rgba(0, 0, 0, 0.9)',
                                         },
                                       },
-                                      container: isFullscreen
-                                        ? document.fullscreenElement || document.body
-                                        : document.body,
+                                      container: document.fullscreenElement || document.body,
                                     }}
                                   >
                                     <span>{displayValue}</span>
