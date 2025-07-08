@@ -194,7 +194,7 @@ async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingRespo
                 # Yield events as they arrive
                 while True:
                     try:
-                        event = await asyncio.wait_for(event_queue.get(), timeout=30.0)
+                        event = await asyncio.wait_for(event_queue.get(), timeout=120.0)
                         if event is None:  # End of stream
                             break
                         yield event
