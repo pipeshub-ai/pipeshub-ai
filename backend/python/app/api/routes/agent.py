@@ -159,7 +159,9 @@ async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingRespo
                 logger.info(f"Starting LangGraph execution for query: {query_info.query}")
                 final_state = await qna_graph.ainvoke(initial_state)
 
-                # Check for errors
+                # Check for errors that might have occurred during graph execution.
+                # This is a fallback in case a node sets an error in the state
+                # without sending an SSE event itself.
                 if final_state.get("error"):
                     error = final_state["error"]
                     streaming_service.send_event("error", {
@@ -167,12 +169,6 @@ async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingRespo
                         "status": error.get("status", "error"),
                         "message": error.get("message", error.get("detail", "An error occurred"))
                     })
-                else:
-                    # Send final response
-                    streaming_service.send_event("response", {"content": final_state["response"]})
-
-                # Send completion event
-                streaming_service.send_event("complete", {"status": "completed"})
 
             except Exception as e:
                 logger.error(f"Error in producer: {str(e)}", exc_info=True)
