@@ -63,9 +63,9 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
         retrieval_service = services["retrieval_service"]
         llm = services["llm"]
 
-        response_queue = asyncio.Queue()
-
-        streaming_service = StreamingService(response_queue)
+        # For the non-streaming endpoint, we don't need a real queue or callback.
+        # The StreamingService will fall back to printing events if the callback is None.
+        streaming_service = StreamingService()
         # Extract user info from request
         user_info = {
             "orgId": request.state.user.get('orgId'),
