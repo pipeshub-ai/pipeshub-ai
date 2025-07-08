@@ -49,6 +49,7 @@ import {
 import RecordDetails from './record-details';
 import MessageFeedback from './message-feedback';
 import CitationHoverCard from './citations-hover-card';
+import { extractAndProcessCitations } from '../utils/styles/content-processing';
 
 interface StreamingContextType {
   streamingState: {
@@ -71,77 +72,77 @@ export const useStreamingContent = () => {
   return context;
 };
 
-// Content processing utilities
-const processMarkdownContent = (content: string): string => {
-  if (!content) return '';
+// // Content processing utilities
+// const processMarkdownContent = (content: string): string => {
+//   if (!content) return '';
 
-  return (
-    content
-      // Fix escaped newlines
-      .replace(/\\n/g, '\n')
-      // Fix citation formatting - convert **number** to [number]
-      // .replace(/\*\*(\d+)\*\*/g, '[$1]')
-      // // Preserve other bold formatting
-      // .replace(/\*\*([^*]+)\*\*/g, '**$1**')
-      // // Clean up multiple newlines (but preserve intentional spacing)
-      // .replace(/\n{4,}/g, '\n\n\n')
-      // // Fix list spacing issues
-      // .replace(/(\n\d+\.\s)/g, '\n$1')
-      // .replace(/(\n[-*]\s)/g, '\n$1')
-      // // Clean up code block formatting
-      // .replace(/```\n\n+```/g, '```\n```')
-      // // Ensure proper spacing around code blocks
-      // .replace(/([^\n])```/g, '$1\n```')
-      // .replace(/```([^\n])/g, '```\n$1')
-      // Clean up trailing whitespace but preserve structure
-      .trim()
-  );
-};
+//   return (
+//     content
+//       // Fix escaped newlines
+//       .replace(/\\n/g, '\n')
+//       // Fix citation formatting - convert **number** to [number]
+//       // .replace(/\*\*(\d+)\*\*/g, '[$1]')
+//       // // Preserve other bold formatting
+//       // .replace(/\*\*([^*]+)\*\*/g, '**$1**')
+//       // // Clean up multiple newlines (but preserve intentional spacing)
+//       // .replace(/\n{4,}/g, '\n\n\n')
+//       // // Fix list spacing issues
+//       // .replace(/(\n\d+\.\s)/g, '\n$1')
+//       // .replace(/(\n[-*]\s)/g, '\n$1')
+//       // // Clean up code block formatting
+//       // .replace(/```\n\n+```/g, '```\n```')
+//       // // Ensure proper spacing around code blocks
+//       // .replace(/([^\n])```/g, '$1\n```')
+//       // .replace(/```([^\n])/g, '```\n$1')
+//       // Clean up trailing whitespace but preserve structure
+//       .trim()
+//   );
+// };
 
-const extractAndProcessCitations = (
-  content: string,
-  streamingCitations: CustomCitation[] = []
-): {
-  processedContent: string;
-  citations: CustomCitation[];
-  citationMap: { [key: number]: CustomCitation };
-} => {
-  // Extract citation numbers from content
-  const citationMatches = Array.from(content.matchAll(/\[(\d+)\]/g));
-  const citationNumbers = new Set(citationMatches.map((match) => parseInt(match[1], 10)));
+// const extractAndProcessCitations = (
+//   content: string,
+//   streamingCitations: CustomCitation[] = []
+// ): {
+//   processedContent: string;
+//   citations: CustomCitation[];
+//   citationMap: { [key: number]: CustomCitation };
+// } => {
+//   // Extract citation numbers from content
+//   const citationMatches = Array.from(content.matchAll(/\[(\d+)\]/g));
+//   const citationNumbers = new Set(citationMatches.map((match) => parseInt(match[1], 10)));
 
-  // Build citation map - prefer streaming citations, fall back to content-based numbering
-  const citationMap: { [key: number]: CustomCitation } = {};
-  const processedCitations: CustomCitation[] = [];
+//   // Build citation map - prefer streaming citations, fall back to content-based numbering
+//   const citationMap: { [key: number]: CustomCitation } = {};
+//   const processedCitations: CustomCitation[] = [];
 
-  // First, map citations by their chunkIndex if available
-  streamingCitations.forEach((citation, index) => {
-    const citationNumber = citation.chunkIndex || index + 1;
-    if (!citationMap[citationNumber]) {
-      citationMap[citationNumber] = citation;
-      processedCitations.push(citation);
-    }
-  });
+//   // First, map citations by their chunkIndex if available
+//   streamingCitations.forEach((citation, index) => {
+//     const citationNumber = citation.chunkIndex || index + 1;
+//     if (!citationMap[citationNumber]) {
+//       citationMap[citationNumber] = citation;
+//       processedCitations.push(citation);
+//     }
+//   });
 
-  // Ensure we have citations for all numbers mentioned in content
-  citationNumbers.forEach((num) => {
-    if (!citationMap[num] && streamingCitations[num - 1]) {
-      citationMap[num] = streamingCitations[num - 1];
-      if (!processedCitations.includes(streamingCitations[num - 1])) {
-        processedCitations.push(streamingCitations[num - 1]);
-      }
-    }
-  });
+//   // Ensure we have citations for all numbers mentioned in content
+//   citationNumbers.forEach((num) => {
+//     if (!citationMap[num] && streamingCitations[num - 1]) {
+//       citationMap[num] = streamingCitations[num - 1];
+//       if (!processedCitations.includes(streamingCitations[num - 1])) {
+//         processedCitations.push(streamingCitations[num - 1]);
+//       }
+//     }
+//   });
 
-  // Process the content for better markdown rendering
-  const processedContent = processMarkdownContent(content);
+//   // Process the content for better markdown rendering
+//   const processedContent = processMarkdownContent(content);
 
-  return {
-    processedContent,
-    citations: processedCitations,
-    citationMap,
-  };
-};
+//   return {
+//     processedContent,
+//     citations: processedCitations,
+//     citationMap,
+//   };
+// };
 
 const formatTime = (createdAt: Date) => {
   const date = new Date(createdAt);
@@ -186,7 +187,7 @@ function isDocViewable(extension: string) {
   return viewableExtensions.includes(extension);
 }
 
-// Enhanced StreamingContent component with proper processing
+// StreamingContent component with proper processing
 const StreamingContent = React.memo(
   ({
     messageId,
@@ -246,15 +247,6 @@ const StreamingContent = React.memo(
 
     // Show streaming indicator when actively streaming
     const showStreamingIndicator = isStreaming && processedContent.length > 0;
-
-    console.log('🎬 StreamingContent render:', {
-      messageId: messageId.slice(-8),
-      isStreaming,
-      contentLength: processedContent.length,
-      citationsCount: processedCitations.length,
-      showIndicator: showStreamingIndicator,
-      citationMapKeys: Object.keys(citationMap),
-    });
 
     const handleMouseEnter = useCallback(
       (event: React.MouseEvent, citationRef: string, citationId: string) => {
@@ -336,7 +328,6 @@ const StreamingContent = React.memo(
           const citationId = `citation-${citationNumber}-${index}-${messageId}`;
 
           if (!citation) {
-            console.warn('No citation found for number:', citationNumber);
             return <Fragment key={index}>{part}</Fragment>;
           }
 
@@ -667,7 +658,6 @@ const StreamingContent = React.memo(
   }
 );
 
-// Rest of the ChatMessage component remains the same...
 const ChatMessage = React.memo(
   ({
     message,

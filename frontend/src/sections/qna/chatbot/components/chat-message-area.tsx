@@ -25,7 +25,6 @@ type ChatMessagesAreaProps = {
   ) => void;
   currentStatus?: string;
   isStatusVisible?: boolean;
-  // Enhanced: Add props for better loading state handling
   isCreatingConversation?: boolean;
   isNavigatingToConversation?: boolean;
 };
@@ -55,7 +54,6 @@ const ProcessingIndicator = React.memo(
   ({ displayText, isCreating = false }: ProcessingIndicatorProps) => {
     const theme = useTheme();
 
-    // Enhanced: Different visual treatment for creation vs regular processing
     const indicatorColor = isCreating ? theme.palette.primary.main : theme.palette.text.secondary;
     const backgroundColor = isCreating
       ? alpha(theme.palette.primary.main, 0.1)
@@ -216,7 +214,6 @@ const ChatMessagesArea = ({
     };
   }, [hasStreamingContent, isLoading, shouldAutoScroll, scrollToBottomSmooth, messages]);
 
-  // Enhanced: Better logic for determining when to show loading indicator
   const shouldShowLoadingIndicator = useMemo(() => {
     // Always show status if we have a specific status message
     if (isStatusVisible && currentStatus) return true;
@@ -248,7 +245,6 @@ const ChatMessagesArea = ({
     isLoading,
   ]);
 
-  // Enhanced: Better indicator text with context awareness
   const indicatorText = useMemo(() => {
     if (isStatusVisible && currentStatus) return currentStatus;
     if (isCreatingConversation) return '🚀 Creating your conversation...';
@@ -266,7 +262,6 @@ const ChatMessagesArea = ({
     isLoading,
   ]);
 
-  // Enhanced: Determine if this is a creation-related loading state
   const isCreationLoading = useMemo(
     () => isCreatingConversation || (isStatusVisible && currentStatus?.includes('Creating')),
     [isCreatingConversation, isStatusVisible, currentStatus]
@@ -388,7 +383,7 @@ const MessageWithControls = React.memo(
       </Box>
     );
   },
-  // Enhanced comparison for better memoization
+
   (prevProps, nextProps) =>
     prevProps.message.id === nextProps.message.id &&
     prevProps.message.content === nextProps.message.content &&

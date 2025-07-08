@@ -1,4 +1,3 @@
-// Enhanced ChatInput.tsx - Beautiful dark/light mode UI with subtle visual loading states
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Icon } from '@iconify/react';
 import sendIcon from '@iconify-icons/mdi/send';
@@ -25,27 +24,11 @@ const ChatInput: React.FC<ChatInputProps> = ({
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
 
-  // Debug logging for input state
-  useEffect(() => {
-    console.log('💬 ChatInput received props:', {
-      isLoading,
-      disabled,
-      isSubmitting,
-      hasText,
-      isInputDisabled: disabled || isSubmitting || isLoading,
-      canSubmit: hasText && !(disabled || isSubmitting || isLoading)
-    });
-  }, [isLoading, disabled, isSubmitting, hasText]);
-
-  // Additional debugging for the textarea element
   useEffect(() => {
     if (inputRef.current) {
       const actuallyDisabled = inputRef.current.disabled;
-      console.log('💬 Textarea actual disabled state:', actuallyDisabled);
       
-      // Force enable if it shouldn't be disabled (debugging)
       if (actuallyDisabled && !isLoading && !disabled && !isSubmitting) {
-        console.log('⚠️ Textarea is disabled but should be enabled! Force enabling...');
         inputRef.current.disabled = false;
       }
     }
@@ -81,7 +64,6 @@ const ChatInput: React.FC<ChatInputProps> = ({
     setIsSubmitting(true);
     
     try {
-      // Clear input immediately for better UX
       setLocalValue('');
       setHasText(false);
       
@@ -304,4 +286,4 @@ const ChatInput: React.FC<ChatInputProps> = ({
   );
 };
 
-export default ChatInput; // Remove React.memo temporarily for debugging
+export default ChatInput;

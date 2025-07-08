@@ -6,6 +6,7 @@ import type {
   CustomCitation,
   FormattedMessage,
   ExpandedCitationsState,
+  CompletionData,
 } from 'src/types/chat-bot';
 
 import { Icon } from '@iconify/react';
@@ -45,6 +46,7 @@ import MarkdownViewer from './components/markdown-highlighter';
 import DocxHighlighterComp from './components/docx-highlighter';
 import WelcomeMessage from './components/welcome-message';
 import { StreamingContext } from './components/chat-message';
+import { processStreamingContentLegacy } from './utils/styles/content-processing';
 
 const DRAWER_WIDTH = 300;
 
@@ -56,7 +58,7 @@ interface ConversationStreamingState {
   isActive: boolean;
   controller: AbortController | null;
   accumulatedContent: string;
-  completionData: any;
+  completionData: CompletionData | null;
   isCompletionPending: boolean;
   finalMessageId: string | null;
   isProcessingCompletion: boolean;
@@ -127,54 +129,54 @@ class StreamingManager {
           console.error('Error in update callback:', error);
         }
       });
-    }, 16); // 16ms for ~60fps updates
+    }, 16);
   }
 
-  private static processStreamingContent(
-    rawContent: string,
-    citations: CustomCitation[] = []
-  ): {
-    processedContent: string;
-    processedCitations: CustomCitation[];
-  } {
-    if (!rawContent) return { processedContent: '', processedCitations: citations };
+  // private static processStreamingContent(
+  //   rawContent: string,
+  //   citations: CustomCitation[] = []
+  // ): {
+  //   processedContent: string;
+  //   processedCitations: CustomCitation[];
+  // } {
+  //   if (!rawContent) return { processedContent: '', processedCitations: citations };
 
-    const processedContent = rawContent
-      .replace(/\\n/g, '\n')
-      // .replace(/\*\*(\d+)\*\*/g, '[$1]')
-      // .replace(/\*\*([^*]+)\*\*/g, '**$1**')
-      // .replace(/\n{4,}/g, '\n\n\n')
-      .trim();
+  //   const processedContent = rawContent
+  //     .replace(/\\n/g, '\n')
+  //     // .replace(/\*\*(\d+)\*\*/g, '[$1]')
+  //     // .replace(/\*\*([^*]+)\*\*/g, '**$1**')
+  //     // .replace(/\n{4,}/g, '\n\n\n')
+  //     .trim();
 
-    const citationMatches = Array.from(processedContent.matchAll(/\[(\d+)\]/g));
-    const mentionedCitationNumbers = new Set(
-      citationMatches.map((match) => parseInt(match[1], 10))
-    );
+  //   const citationMatches = Array.from(processedContent.matchAll(/\[(\d+)\]/g));
+  //   const mentionedCitationNumbers = new Set(
+  //     citationMatches.map((match) => parseInt(match[1], 10))
+  //   );
 
-    const processedCitations = [...citations].map((citation, index) => ({
-      ...citation,
-      chunkIndex: citation.chunkIndex || index + 1,
-    }));
+  //   const processedCitations = [...citations].map((citation, index) => ({
+  //     ...citation,
+  //     chunkIndex: citation.chunkIndex || index + 1,
+  //   }));
 
-    mentionedCitationNumbers.forEach((citationNum) => {
-      if (
-        !processedCitations.some((c) => c.chunkIndex === citationNum) &&
-        citations[citationNum - 1]
-      ) {
-        processedCitations.push({
-          ...citations[citationNum - 1],
-          chunkIndex: citationNum,
-        });
-      }
-    });
+  //   mentionedCitationNumbers.forEach((citationNum) => {
+  //     if (
+  //       !processedCitations.some((c) => c.chunkIndex === citationNum) &&
+  //       citations[citationNum - 1]
+  //     ) {
+  //       processedCitations.push({
+  //         ...citations[citationNum - 1],
+  //         chunkIndex: citationNum,
+  //       });
+  //     }
+  //   });
 
-    return {
-      processedContent,
-      processedCitations: processedCitations.sort(
-        (a, b) => (a.chunkIndex || 0) - (b.chunkIndex || 0)
-      ),
-    };
-  }
+  //   return {
+  //     processedContent,
+  //     processedCitations: processedCitations.sort(
+  //       (a, b) => (a.chunkIndex || 0) - (b.chunkIndex || 0)
+  //     ),
+  //   };
+  // }
 
   getConversationState(conversationKey: string): ConversationStreamingState | null {
     return this.conversationStates[conversationKey] || null;
@@ -232,13 +234,9 @@ class StreamingManager {
     return this.messageToConversationMap[messageId] || null;
   }
 
-  // Updated: Transfer data from 'new' conversation to actual conversation ID without navigation
   transferNewConversationData(newConversationId: string) {
     const newKey = 'new';
     const actualKey = newConversationId;
-
-    console.log(`🔄 Transferring state from "new" to "${actualKey}"`);
-
     const newMessages = this.getConversationMessages(newKey);
     this.setConversationMessages(actualKey, [...newMessages]);
 
@@ -246,26 +244,21 @@ class StreamingManager {
     if (newState) {
       this.conversationStates[actualKey] = {
         ...newState,
-        pendingNavigation: null, // No navigation pending
+        pendingNavigation: null,
       };
 
-      // Update message-to-conversation mapping
       if (newState.messageId) this.mapMessageToConversation(newState.messageId, actualKey);
       if (newState.finalMessageId)
         this.mapMessageToConversation(newState.finalMessageId, actualKey);
     }
 
-    // Clean up the temporary 'new' state
     delete this.conversationStates[newKey];
     delete this.conversationMessages[newKey];
-
-    console.log(`✅ State transferred to "${actualKey}". No navigation will occur.`);
     this.notifyUpdates();
   }
 
-  // Remove pending navigation logic since we're not navigating
   static getPendingNavigation(): { conversationId: string; shouldNavigate: boolean } | null {
-    return null; // Always return null to prevent navigation
+    return null;
   }
 
   updateStreamingContent(messageId: string, newChunk: string, citations: CustomCitation[] = []) {
@@ -287,7 +280,7 @@ class StreamingManager {
 
     const currentState = this.conversationStates[conversationKey];
     const updatedAccumulatedContent = (currentState?.accumulatedContent || '') + newChunk;
-    const { processedContent, processedCitations } = StreamingManager.processStreamingContent(
+    const { processedContent, processedCitations } = processStreamingContentLegacy(
       updatedAccumulatedContent,
       citations.length > 0 ? citations : currentState?.citations || []
     );
@@ -311,12 +304,9 @@ class StreamingManager {
     });
   }
 
-  finalizeStreaming(conversationKey: string, messageId: string, completionData: any) {
-    console.log(`🏁 Finalizing stream for conversation: "${conversationKey}"`);
-
+  finalizeStreaming(conversationKey: string, messageId: string, completionData: CompletionData) {
     const state = this.conversationStates[conversationKey];
     if (state?.isStreamingCompleted) {
-      console.warn(`⚠️ Stream for "${conversationKey}" already finalized.`);
       return;
     }
 
@@ -333,7 +323,7 @@ class StreamingManager {
         const formatted = StreamingManager.formatMessage(finalBotMessage);
         if (formatted) {
           finalMessageId = formatted.id;
-          const { processedContent, processedCitations } = StreamingManager.processStreamingContent(
+          const { processedContent, processedCitations } = processStreamingContentLegacy(
             formatted.content,
             formatted.citations
           );
@@ -365,8 +355,6 @@ class StreamingManager {
       showStatus: false,
       completionData: null,
     });
-
-    console.log(`✅ Stream for "${conversationKey}" successfully finalized.`);
   }
 
   private static formatMessage(apiMessage: any): FormattedMessage | null {
@@ -459,7 +447,6 @@ class StreamingManager {
 
   resetNavigationTracking() {
     this.completedNavigations.clear();
-    console.log('🧹 Navigation tracking reset.');
   }
 
   isConversationLoading(conversationKey: string): boolean {
@@ -613,8 +600,6 @@ const ChatInterface = () => {
     return () => streamingManager.removeUpdateCallback(forceUpdate);
   }, [streamingManager, forceUpdate]);
 
-  // Remove automatic navigation useEffect since we're not navigating automatically anymore
-
   const handleCloseSnackbar = (): void => {
     setSnackbar({ open: false, message: '', severity: 'success' });
   };
@@ -675,204 +660,233 @@ const ChatInterface = () => {
       try {
         return { data: JSON.parse(line.substring(6).trim()) };
       } catch (e) {
-        console.warn('Failed to parse SSE data:', line.substring(6).trim());
         return null;
       }
     }
     return null;
   };
 
+  // Extract the stream processing logic into a separate helper function
+  const processStreamChunk = async (
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+    decoder: TextDecoder,
+    parseSSELineFunc: (line: string) => { event?: string; data?: any } | null,
+    handleStreamingEvent: (event: string, data: any, context: any) => Promise<void>,
+    context: {
+      conversationKey: string;
+      streamingBotMessageId: string;
+      isNewConversation: boolean;
+      hasCreatedMessage: React.MutableRefObject<boolean>;
+      conversationIdRef: React.MutableRefObject<string | null>;
+    },
+    controller: AbortController
+  ): Promise<void> => {
+    let buffer = '';
+    let currentEvent = '';
+
+    const readNextChunk = async (): Promise<void> => {
+      const { done, value } = await reader.read();
+      if (done) return;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (let i = 0; i < lines.length; i += 1) {
+        const line = lines[i];
+        const trimmedLine = line.trim();
+        // eslint-disable-next-line
+        if (!trimmedLine) continue;
+
+        const parsed = parseSSELineFunc(trimmedLine);
+        // eslint-disable-next-line
+        if (!parsed) continue;
+
+        if (parsed.event) {
+          currentEvent = parsed.event;
+        } else if (parsed.data && currentEvent) {
+          // eslint-disable-next-line
+          await handleStreamingEvent(currentEvent, parsed.data, context);
+        }
+      }
+
+      if (!controller.signal.aborted) {
+        await readNextChunk();
+      }
+    };
+
+    await readNextChunk();
+  };
+
+  // Refactored main function as a standard async function
   const handleStreamingResponse = useCallback(
-    async (url: string, body: any, isNewConversation: boolean): Promise<string | null> =>
-      // eslint-disable-next-line
-      new Promise(async (resolve, reject) => {
-        const streamingBotMessageId = `streaming-${Date.now()}`;
-        const conversationKey = isNewConversation
-          ? 'new'
-          : getConversationKey(currentConversationId);
+    async (url: string, body: any, isNewConversation: boolean): Promise<string | null> => {
+      const streamingBotMessageId = `streaming-${Date.now()}`;
+      const conversationKey = isNewConversation ? 'new' : getConversationKey(currentConversationId);
 
-        console.log(`🚀 Starting streaming for key: "${conversationKey}"`);
+      // Initialize streaming state
+      streamingManager.updateStatus(conversationKey, 'Connecting...');
+      const controller = new AbortController();
+      streamingManager.updateConversationState(conversationKey, { controller });
 
-        streamingManager.updateStatus(conversationKey, 'Connecting...');
-        const controller = new AbortController();
-        streamingManager.updateConversationState(conversationKey, { controller });
+      const hasCreatedMessage = { current: false };
+      const conversationIdRef = { current: null as string | null };
 
-        const hasCreatedMessage = { current: false };
+      // Define the event handler
+      const handleStreamingEvent = async (
+        event: string,
+        data: any,
+        context: {
+          conversationKey: string;
+          streamingBotMessageId: string;
+          isNewConversation: boolean;
+          hasCreatedMessage: React.MutableRefObject<boolean>;
+          conversationIdRef: React.MutableRefObject<string | null>;
+        }
+      ): Promise<void> => {
+        const statusMsg = getEngagingStatusMessage(event, data);
+        if (statusMsg) {
+          streamingManager.updateStatus(context.conversationKey, statusMsg);
+        }
 
-        const handleStreamingEvent = async (
-          event: string,
-          data: any,
-          context: {
-            conversationKey: string;
-            streamingBotMessageId: string;
-            isNewConversation: boolean;
-            hasCreatedMessage: React.MutableRefObject<boolean>;
-          }
-        ) => {
-          const statusMsg = getEngagingStatusMessage(event, data);
-          if (statusMsg) {
-            streamingManager.updateStatus(context.conversationKey, statusMsg);
-          }
-
-          switch (event) {
-            case 'answer_chunk':
-              if (data.chunk) {
-                if (!context.hasCreatedMessage.current) {
-                  streamingManager.createStreamingMessage(
-                    context.streamingBotMessageId,
-                    context.conversationKey
-                  );
-                  context.hasCreatedMessage.current = true;
-                }
-                streamingManager.clearStatus(context.conversationKey);
-                streamingManager.updateStreamingContent(
-                  context.streamingBotMessageId,
-                  data.chunk,
-                  data.citations || []
-                );
-              }
-              return;
-
-            case 'complete': {
-              streamingManager.clearStatus(context.conversationKey);
-              const completedConversation = data.conversation;
-              if (completedConversation?._id) {
-                let finalKey = context.conversationKey;
-                if (context.isNewConversation && context.conversationKey === 'new') {
-                  console.log(
-                    `📦 'complete' event received for new conversation. New ID: ${completedConversation._id}`
-                  );
-                  // Transfer data without navigation
-                  streamingManager.transferNewConversationData(completedConversation._id);
-                  finalKey = completedConversation._id;
-                  // Resolve with the new ID so component can update its state
-                  resolve(completedConversation._id);
-                }
-                streamingManager.finalizeStreaming(finalKey, context.streamingBotMessageId, data);
-              }
-              // If it's not a new conversation, resolve with null
-              if (!context.isNewConversation) {
-                resolve(null);
-              }
-              return;
-            }
-
-            case 'error': {
-              streamingManager.clearStreaming(context.conversationKey);
-              const errorMessage = data.message || data.error || 'An error occurred';
+        switch (event) {
+          case 'answer_chunk':
+            if (data.chunk) {
               if (!context.hasCreatedMessage.current) {
-                const errorMsg: FormattedMessage = {
-                  type: 'bot',
-                  content: errorMessage,
-                  createdAt: new Date(),
-                  updatedAt: new Date(),
-                  id: context.streamingBotMessageId,
-                  contentFormat: 'MARKDOWN',
-                  followUpQuestions: [],
-                  citations: [],
-                  confidence: '',
-                  messageType: 'error',
-                  timestamp: new Date(),
-                };
-                streamingManager.mapMessageToConversation(
+                streamingManager.createStreamingMessage(
                   context.streamingBotMessageId,
                   context.conversationKey
                 );
-                streamingManager.updateConversationMessages(context.conversationKey, (prev) => [
-                  ...prev,
-                  errorMsg,
-                ]);
                 context.hasCreatedMessage.current = true;
-              } else {
-                streamingManager.updateConversationMessages(context.conversationKey, (prev) =>
-                  prev.map((msg) =>
-                    msg.id === context.streamingBotMessageId
-                      ? { ...msg, content: errorMessage, messageType: 'error' }
-                      : msg
-                  )
-                );
               }
-              reject(new Error(errorMessage));
-              // eslint-disable-next-line
-              return;
+              streamingManager.clearStatus(context.conversationKey);
+              streamingManager.updateStreamingContent(
+                context.streamingBotMessageId,
+                data.chunk,
+                data.citations || []
+              );
             }
-            default:
-              // eslint-disable-next-line
-              return;
-          }
-        };
+            break;
 
-        try {
-          const token = localStorage.getItem('jwt_access_token');
-          const response = await fetch(url, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Accept: 'text/event-stream',
-              Authorization: `Bearer ${token}`,
-            },
-            body: JSON.stringify(body),
-            signal: controller.signal,
-          });
-
-          if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-          const reader = response.body?.getReader();
-          if (!reader) throw new Error('Failed to get response reader');
-
-          const decoder = new TextDecoder();
-          let buffer = '';
-          let currentEvent = '';
-
-          const readNextChunk = async (): Promise<void> => {
-            try {
-              const { done, value } = await reader.read();
-              if (done) return;
-
-              buffer += decoder.decode(value, { stream: true });
-              const lines = buffer.split('\n');
-              buffer = lines.pop() || '';
-
-              for (let i = 0; i < lines.length; i += 1) {
-                const line = lines[i];
-                const trimmedLine = line.trim();
-                // eslint-disable-next-line
-                if (!trimmedLine) continue;
-
-                const parsed = parseSSELine(trimmedLine);
-                // eslint-disable-next-line
-                if (!parsed) continue;
-
-                if (parsed.event) {
-                  currentEvent = parsed.event;
-                } else if (parsed.data && currentEvent) {
-                  // eslint-disable-next-line
-                  await handleStreamingEvent(currentEvent, parsed.data, {
-                    conversationKey,
-                    streamingBotMessageId,
-                    isNewConversation,
-                    hasCreatedMessage,
-                  });
-                }
+          case 'complete': {
+            streamingManager.clearStatus(context.conversationKey);
+            const completedConversation = data.conversation;
+            if (completedConversation?._id) {
+              let finalKey = context.conversationKey;
+              if (context.isNewConversation && context.conversationKey === 'new') {
+                streamingManager.transferNewConversationData(completedConversation._id);
+                finalKey = completedConversation._id;
+                // Store the conversation ID in the ref for the calling function
+                context.conversationIdRef.current = completedConversation._id;
               }
-              if (!controller.signal.aborted) await readNextChunk();
-            } catch (error) {
-              if (error.name !== 'AbortError') throw error;
+              streamingManager.finalizeStreaming(finalKey, context.streamingBotMessageId, data);
             }
-          };
-          await readNextChunk();
-          // If the stream finishes cleanly without triggering an event that resolves the promise, resolve with null.
-          resolve(null);
-        } catch (error) {
-          if (error.name !== 'AbortError') {
-            console.error('Streaming connection error:', error);
-            streamingManager.clearStreaming(conversationKey);
-            reject(error);
+            break;
           }
+
+          case 'error': {
+            streamingManager.clearStreaming(context.conversationKey);
+            const errorMessage = data.message || data.error || 'An error occurred';
+
+            if (!context.hasCreatedMessage.current) {
+              const errorMsg: FormattedMessage = {
+                type: 'bot',
+                content: errorMessage,
+                createdAt: new Date(),
+                updatedAt: new Date(),
+                id: context.streamingBotMessageId,
+                contentFormat: 'MARKDOWN',
+                followUpQuestions: [],
+                citations: [],
+                confidence: '',
+                messageType: 'error',
+                timestamp: new Date(),
+              };
+              streamingManager.mapMessageToConversation(
+                context.streamingBotMessageId,
+                context.conversationKey
+              );
+              streamingManager.updateConversationMessages(context.conversationKey, (prev) => [
+                ...prev,
+                errorMsg,
+              ]);
+              context.hasCreatedMessage.current = true;
+            } else {
+              streamingManager.updateConversationMessages(context.conversationKey, (prev) =>
+                prev.map((msg) =>
+                  msg.id === context.streamingBotMessageId
+                    ? { ...msg, content: errorMessage, messageType: 'error' }
+                    : msg
+                )
+              );
+            }
+            throw new Error(errorMessage);
+          }
+
+          default:
+            break;
         }
-      }),
+      };
+
+      try {
+        // Make the HTTP request
+        const token = localStorage.getItem('jwt_access_token');
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'text/event-stream',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const reader = response.body?.getReader();
+        if (!reader) {
+          throw new Error('Failed to get response reader');
+        }
+
+        const decoder = new TextDecoder();
+
+        // Process the stream using the helper function
+        await processStreamChunk(
+          reader,
+          decoder,
+          parseSSELine,
+          handleStreamingEvent,
+          {
+            conversationKey,
+            streamingBotMessageId,
+            isNewConversation,
+            hasCreatedMessage,
+            conversationIdRef,
+          },
+          controller
+        );
+
+        // Return the conversation ID if it was captured during streaming
+        return conversationIdRef.current;
+      } catch (error) {
+        // Handle AbortError separately
+        if (error instanceof Error && error.name === 'AbortError') {
+          // Don't log abort errors as they're intentional
+          return null;
+        }
+
+        console.error('Streaming connection error:', error);
+        streamingManager.clearStreaming(conversationKey);
+        throw error; // Re-throw non-abort errors
+      }
+    },
     [currentConversationId, getConversationKey, streamingManager]
   );
 
+  // Updated handleSendMessage to properly handle the promise
   const handleSendMessage = useCallback(
     async (messageOverride?: string): Promise<void> => {
       const trimmedInput =
@@ -882,10 +896,6 @@ const ChatInterface = () => {
 
       const wasCreatingNewConversation = !currentConversationId;
       const conversationKey = getConversationKey(currentConversationId);
-
-      console.log(
-        `📤 Sending message to conversation: ${conversationKey}, isNew: ${wasCreatingNewConversation}`
-      );
 
       const tempUserMessage: FormattedMessage = {
         type: 'user',
@@ -920,15 +930,20 @@ const ChatInterface = () => {
         );
 
         if (wasCreatingNewConversation && createdConversationId) {
-          console.log(
-            `📝 New conversation ${createdConversationId} created. Updating state without navigation.`
-          );
           setCurrentConversationId(createdConversationId);
           setShouldRefreshSidebar(true);
           setShowWelcome(false);
         }
       } catch (error) {
         console.error('Error in streaming response:', error);
+        // Handle error state appropriately
+        streamingManager.updateConversationMessages(conversationKey, (prev) => [
+          ...prev.slice(0, -1), // Remove the temporary user message
+          {
+            ...tempUserMessage,
+            error: true, // Mark as error if needed
+          },
+        ]);
       }
     },
     [
@@ -954,8 +969,6 @@ const ChatInterface = () => {
     setShowWelcome(true);
     setSelectedChat(null);
     setIsNavigationBlocked(false);
-
-    console.log('🆕 Started new chat session');
   }, [navigate, streamingManager, currentConversationId, getConversationKey]);
 
   const handleChatSelect = useCallback(
@@ -971,8 +984,6 @@ const ChatInterface = () => {
           streamingState?.isActive ||
           streamingState?.isProcessingCompletion ||
           streamingState?.showStatus;
-
-        console.log(`🔄 Selecting chat ${chat._id}, isStreaming: ${isCurrentlyStreaming}`);
 
         // If the conversation is streaming, don't set loading state as it might interfere
         if (!isCurrentlyStreaming) {
@@ -1037,10 +1048,6 @@ const ChatInterface = () => {
         streamingState?.isActive ||
         streamingState?.isProcessingCompletion ||
         streamingState?.showStatus;
-
-      console.log(
-        `🔄 URL changed to ${urlConversationId}, hasMessages: ${existingMessages.length > 0}, isStreaming: ${isCurrentlyStreaming}`
-      );
 
       if (existingMessages.length > 0 || isCurrentlyStreaming) {
         // We have existing messages or it's streaming, just switch to this conversation

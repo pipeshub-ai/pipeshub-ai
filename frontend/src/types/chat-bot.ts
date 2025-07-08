@@ -243,3 +243,16 @@ export interface ChatProps {
 export interface ExpandedCitationsState {
   [key: number]: boolean;
 }
+
+export interface CompletionData {
+  conversation?: Conversation;
+  recordsUsed?: number;
+  meta?: {
+    requestId: string;
+    timestamp: string;
+    duration: number;
+    recordsUsed: number;
+  };
+  status?: string;
+  error?: string;
+}
