@@ -1,5 +1,6 @@
 import json
-from typing import Any, Callable, Dict, Optional
+import asyncio
+from typing import Any, Callable, Dict, Optional, AsyncGenerator
 
 
 class StreamingService:
@@ -14,4 +15,3 @@ class StreamingService:
         else:
             # Fallback for non-streaming mode
             print(f"Sending event: {event_type} with data: {data}")
-

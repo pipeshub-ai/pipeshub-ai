@@ -212,8 +212,8 @@ async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingRespo
             headers={
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Headers": "*",
+                "Access-Control-Allow-Origin": request.headers.get("Origin", ""),
+                "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Requested-With",
             }
         )
 
