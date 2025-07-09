@@ -1,6 +1,5 @@
 import json
-import asyncio
-from typing import Any, Callable, Dict, Optional, AsyncGenerator
+from typing import Any, Callable, Dict, Optional
 
 
 class StreamingService:

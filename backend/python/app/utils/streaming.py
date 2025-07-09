@@ -151,4 +151,4 @@ async def stream_llm_response(
 
 def create_sse_event(event_type: str, data: Union[str, dict, list]) -> str:
     """Create Server-Sent Event format"""
-    return f"event: {event_type}\ndata: {json.dumps(data)}\n\n" 
+    return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"

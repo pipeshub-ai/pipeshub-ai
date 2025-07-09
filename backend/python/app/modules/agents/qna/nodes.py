@@ -1,6 +1,5 @@
 # Create node functions properly designed for LangGraph
 import asyncio
-from typing import Any, Dict
 
 from app.config.utils.named_constants.arangodb_constants import (
     AccountType,
@@ -11,6 +10,7 @@ from app.modules.qna.prompt_templates import qna_prompt
 from app.utils.citations import process_citations
 from app.utils.query_transform import setup_query_transformation
 from app.utils.streaming import stream_llm_response
+
 
 # 1. Decomposition Node (OPTIMIZED - reduced streaming overhead)
 async def decompose_query_node(
@@ -73,7 +73,7 @@ async def transform_query_node(
         for query_dict in state["decomposed_queries"]:
             query = query_dict.get("query")
             task = asyncio.gather(
-                rewrite_chain.ainvoke(query), 
+                rewrite_chain.ainvoke(query),
                 expansion_chain.ainvoke(query)
             )
             query_tasks.append((query, task))
@@ -173,7 +173,7 @@ async def get_user_info_node(
         # Fetch user and org info in parallel
         user_task = arango_service.get_user_by_user_id(state["user_id"])
         org_task = arango_service.get_document(state["org_id"], CollectionNames.ORGS.value)
-        
+
         user_info, org_info = await asyncio.gather(user_task, org_task)
 
         state["user_info"] = user_info
