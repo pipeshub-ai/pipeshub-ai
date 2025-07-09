@@ -1,6 +1,6 @@
 import type { Icon as IconifyIcon } from '@iconify/react';
-
 import googleIcon from '@iconify-icons/mdi/google';
+import slackIcon from '@iconify-icons/mdi/slack';
 
 export interface ConnectorConfig {
   id: string;
@@ -9,9 +9,12 @@ export interface ConnectorConfig {
   description: string;
   color: string;
 }
+
 export interface ConfigStatus {
   googleWorkspace: boolean;
+  slack: boolean;
 }
+
 export const GOOGLE_WORKSPACE_SCOPE = [
   'email openid',
   'https://www.googleapis.com/auth/drive.readonly',
@@ -28,5 +31,13 @@ export const CONNECTORS_LIST: ConnectorConfig[] = [
     description:
       'Integrate with Google Workspace for calendar, gmail, spreadsheets, drive and document sharing',
     color: '#4285F4',
+  },
+  {
+    id: 'slack',
+    icon: slackIcon,
+    title: 'Slack',
+    description:
+      'Integrate with Slack for messages, channels, and team communication',
+    color: '#ECB22E',
   },
 ];

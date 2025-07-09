@@ -61,7 +61,7 @@ belongs_to_schema = {
             "_to": {"type": "string", "minLength": 1},
             "entityType": {
                 "type": "string",
-                "enum": ["GROUP", "DOMAIN", "ORGANIZATION", "KB"],
+                "enum": ["GROUP", "DOMAIN", "ORGANIZATION", "KB", "WORKSPACE","SLACK_CHANNEL"],
             },
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
@@ -101,7 +101,6 @@ permissions_schema = {
     "level": "strict",
     "message": "Document does not match the permissions schema.",
 }
-
 
 user_app_relation_schema = {
     "rule": {

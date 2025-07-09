@@ -15,13 +15,14 @@ from dependency_injector.wiring import Provide, inject
 from fastapi import (
     APIRouter,
     BackgroundTasks,
+    Body,
     Depends,
     File,
     HTTPException,
     Request,
     UploadFile,
 )
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
@@ -40,6 +41,9 @@ from app.config.utils.named_constants.arangodb_constants import (
 from app.config.utils.named_constants.http_status_code_constants import (
     HttpStatusCode,
 )
+from app.config.utils.named_constants.timestamp_constants import (
+    SLACK_TIMESTAMP_TOLERANCE_SECONDS,
+)
 from app.connectors.api.middleware import WebhookAuthVerifier
 from app.connectors.sources.google.admin.admin_webhook_handler import (
     AdminWebhookHandler,
@@ -55,12 +59,19 @@ from app.connectors.sources.google.gmail.gmail_webhook_handler import (
 from app.connectors.sources.google.google_drive.drive_webhook_handler import (
     AbstractDriveWebhookHandler,
 )
+from app.connectors.sources.slack.core.slack_health_check import (
+    validate_slack_credentials,
+)
+from app.connectors.sources.slack.handlers.slack_webhook_handler import (
+    AbstractSlackWebhookHandler,
+)
 from app.modules.parsers.google_files.google_docs_parser import GoogleDocsParser
 from app.modules.parsers.google_files.google_sheets_parser import GoogleSheetsParser
 from app.modules.parsers.google_files.google_slides_parser import GoogleSlidesParser
 from app.setups.connector_setup import AppContainer
 from app.utils.llm import get_llm
 from app.utils.logger import create_logger
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 logger = create_logger("connector_service")
 
@@ -1619,4 +1630,251 @@ async def get_user_credentials(org_id: str, user_id: str, logger, google_token_h
             container.user_creds_cache.pop(cache_key, None)
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error accessing user credentials"
+        )
+
+
+async def get_slack_webhook_handler(request: Request) -> Optional[AbstractSlackWebhookHandler]:
+    """Get the appropriate Slack webhook handler based on account type."""
+    try:
+        container = request.app.container
+        logger = container.logger()
+
+        # Get team_id from the request body to identify the workspace
+        try:
+            body = await request.body()
+            body_str = body.decode()
+            event_data = json.loads(body_str)
+            team_id = event_data.get("team_id")
+
+            if not team_id:
+                logger.error("Team ID not provided in request body")
+                return None
+
+            # Get workspace to determine org_id - Handle async provider
+            logger.debug("Getting arango service from container...")
+            arango_service = await container.arango_service()
+            logger.debug("Got arango service, looking up workspace...")
+
+            workspace = await arango_service.get_workspace_by_team_id(team_id)
+
+            if not workspace:
+                logger.error(f"No workspace found for team {team_id}")
+                return None
+
+            org_id = workspace.get("orgId")
+            logger.debug(f"Found org_id: {org_id}")
+
+            # Get webhook handler instance - Handle async provider
+            logger.debug("Getting slack webhook handler from container...")
+            webhook_handler = await container.slack_webhook_handler()
+            logger.debug(f"Got webhook handler: {type(webhook_handler)}")
+
+            # Initialize webhook handler if needed
+            if not hasattr(webhook_handler, 'initialized') or not webhook_handler.initialized:
+                logger.info(f"Initializing webhook handler for org_id: {org_id}")
+                if not await webhook_handler.initialize(org_id=org_id):
+                    logger.error("Failed to initialize webhook handler")
+                    return None
+                logger.debug("Webhook handler initialized successfully")
+
+            return webhook_handler
+
+        except json.JSONDecodeError:
+            # This might be a verification request - try to get handler without body parsing
+            logger.info("Request body is not JSON, attempting verification initialization")
+            webhook_handler = await container.slack_webhook_handler()
+
+            # For verification requests, we might not have org_id, so try to initialize without it
+            if not hasattr(webhook_handler, 'initialized') or not webhook_handler.initialized:
+                logger.info("Initializing webhook handler for verification request")
+                # Try to initialize without org_id for verification
+                if not await webhook_handler.initialize():
+                    logger.error("Failed to initialize webhook handler for verification")
+                    return None
+            return webhook_handler
+
+    except Exception as e:
+        logger.error("❌ Failed to get slack webhook handler: %s", str(e), exc_info=True)
+        return None
+
+
+@router.post("/slack/events")
+@inject
+async def handle_slack_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    slack_webhook_handler=Depends(Provide[AppContainer.slack_webhook_handler]),
+    arango_service=Depends(Provide[AppContainer.arango_service])
+) -> Dict[str, Any]:
+    """Handle incoming webhook notifications from Slack"""
+    try:
+        # Get verification headers
+        timestamp = request.headers.get("x-slack-request-timestamp", "")
+        signature = request.headers.get("x-slack-signature", "")
+
+        # Get raw body for verification
+        body = await request.body()
+        body_str = body.decode()
+
+        # Verify timestamp freshness
+        if not timestamp or abs(time() - int(timestamp)) > SLACK_TIMESTAMP_TOLERANCE_SECONDS:
+            raise HTTPException(status_code=403, detail="Invalid timestamp")
+
+        # Parse event data
+        event_data = json.loads(body_str)
+        logger.debug("Event data: %s", event_data)
+
+        # Handle URL verification challenge immediately
+        if event_data.get("type") == "url_verification":
+            return {"challenge": event_data.get("challenge")}
+
+        # Get team_id and org_id for initialization
+        team_id = event_data.get("team_id")
+        if not team_id:
+            logger.error("Team ID not provided in request body")
+            raise HTTPException(status_code=400, detail="Team ID missing")
+
+        # Get workspace to determine org_id
+        workspace = await arango_service.get_workspace_by_team_id(team_id)
+        if not workspace:
+            logger.error(f"No workspace found for team {team_id}")
+            raise HTTPException(status_code=404, detail="Workspace not found")
+
+        org_id = workspace.get("orgId")
+
+        # Initialize webhook handler if needed
+        if not hasattr(slack_webhook_handler, 'initialized') or not slack_webhook_handler.initialized:
+            logger.info(f"Initializing webhook handler for org_id: {org_id}")
+            if not await slack_webhook_handler.initialize(org_id=org_id):
+                logger.error("Failed to initialize webhook handler")
+                raise HTTPException(status_code=503, detail="Handler initialization failed")
+
+        # Verify request signature
+        if not await slack_webhook_handler.verify_slack_request(
+            body_str,
+            timestamp,
+            signature,
+            org_id=org_id
+        ):
+            logger.error("Invalid Slack request signature")
+            raise HTTPException(
+                status_code=403,
+                detail="Invalid signature"
+            )
+
+        # Add raw body to headers for signature verification in background task
+        headers = dict(request.headers)
+        headers["raw_body"] = body_str
+
+        # Process notification in background
+        background_tasks.add_task(
+            slack_webhook_handler.process_notification,
+            headers,
+            event_data
+        )
+        return {"ok": True}
+
+    except json.JSONDecodeError as e:
+        logger.error("Invalid JSON in webhook body: %s", str(e))
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_REQUEST,
+            detail=f"Invalid JSON format: {str(e)}"
+        )
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logger.error("Error processing Slack webhook: %s", str(e), exc_info=True)
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+@router.post("/api/v1/slack-health-check")
+@inject
+async def slack_health_check(request: Request, slack_configs: dict = Body(...)) -> JSONResponse:
+    """Simple Slack health check endpoint to validate credentials"""
+    try:
+        app = request.app
+        logger = app.container.logger()
+        config_service = app.container.config_service()
+
+        logger.info("🔍 Starting Slack health check")
+
+        # Extract required fields
+        bot_token = slack_configs.get("bot_token")
+        signing_secret = slack_configs.get("signing_secret")
+        strict_mode = slack_configs.get("strict_mode", True)
+
+        # Validate required fields
+        if not bot_token:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "status": "not healthy",
+                    "error": "bot_token is required",
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                }
+            )
+
+        if not signing_secret:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "status": "not healthy",
+                    "error": "signing_secret is required",
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                }
+            )
+
+        # Perform health check validation
+        health_result = await validate_slack_credentials(
+            bot_token=bot_token,
+            signing_secret=signing_secret,
+            logger=logger,
+            config_service=config_service,
+            arango_service=None,
+            strict_mode=strict_mode
+        )
+
+        # Simple response - just success or failure
+        if health_result.status.value in ["HEALTHY", "DEGRADED"]:
+            logger.info(f"✅ Slack health check passed: {health_result.status.value}")
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "status": "healthy",
+                    "message": f"Slack credentials validated successfully - {health_result.status.value}",
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                }
+            )
+        else:
+            # Health check failed
+            error_details = health_result.checks_failed
+            warning_details = health_result.warnings
+
+            error_message = "Slack credential validation failed"
+            if error_details:
+                error_message += f": {', '.join(error_details)}"
+            if warning_details:
+                error_message += f". Warnings: {', '.join(warning_details)}"
+
+            logger.error(f"❌ Slack health check failed: {health_result.status.value}")
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "status": "not healthy",
+                    "error": error_message,
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                }
+            )
+
+    except Exception as e:
+        logger.error(f"❌ Slack health check failed: {str(e)}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "not healthy",
+                "error": f"Slack health check failed: {str(e)}",
+                "timestamp": get_epoch_timestamp_in_ms(),
+            }
         )

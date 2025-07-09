@@ -24,10 +24,12 @@ import { Container } from 'inversify';
 import { GoogleWorkspaceApp, scopeToAppMap } from '../types/connector.types';
 import { AppConfig, loadAppConfig } from '../config/config';
 import {
+  CONNECTORS_TYPES,
   GOOGLE_WORKSPACE_BUSINESS_CREDENTIALS_PATH,
   GOOGLE_WORKSPACE_INDIVIDUAL_CREDENTIALS_PATH,
   GOOGLE_WORKSPACE_TOKEN_EXCHANGE_PATH,
   REFRESH_TOKEN_PATH,
+  SLACK_CREDENTIALS_PATH,
 } from '../consts/constants';
 import {
   deleteGoogleWorkspaceCredentials,
@@ -39,6 +41,8 @@ import {
   getRefreshTokenCredentials,
   getRefreshTokenConfig,
   setRefreshTokenCredentials,
+  setSlackCredentials,
+  getSlackCredentials,
 } from '../services/connectors-config.service';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import { verifyGoogleWorkspaceToken } from '../utils/verifyToken';
@@ -53,7 +57,34 @@ import {
 } from '../services/entity_event.service';
 import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck';
 
-const CONNECTORS = [{ key: 'googleWorkspace', name: 'Google Workspace' }];
+const googleWorkSpaceSchema = z.object({
+  // Direct fields (when provided directly in the request body)
+  clientId: z
+    .string()
+    .min(1, 'Client ID cannot be empty')
+    .max(255, 'Client ID exceeds maximum length of 255 characters'),
+  clientSecret: z
+    .string()
+    .min(1, 'Client Secret cannot be empty')
+    .max(255, 'Client Secret exceeds maximum length of 255 characters'),
+  enableRealTimeUpdates: z.union([z.boolean(), z.string()]).optional(),
+  topicName: z.string().optional(),
+});
+
+const slackSchema = z.object({
+  botToken: z.string().min(1, 'At least one bot token is required'),
+  signingSecret: z
+    .string()
+    .min(1, 'At least one signing secret is required'),
+  enableRealTimeUpdates: z.union([z.boolean(), z.string()]).optional(),
+});
+
+const CONNECTORS = [
+  { key: 'googleWorkspace', name: 'Google Workspace' },
+  { key: 'notion', name: 'Notion' },
+  { key: 'slack', name: 'Slack' },
+];
+
 const logger = Logger.getInstance({
   service: 'Connectors Routes',
 });
@@ -70,32 +101,10 @@ axiosRetry(axios, {
   },
 });
 
-const oAuthConfigSchema = z.object({
-  // Direct fields (when provided directly in the request body)
-  clientId: z
-    .string()
-    .min(1, 'Client ID cannot be empty')
-    .max(255, 'Client ID exceeds maximum length of 255 characters'),
-  clientSecret: z
-    .string()
-    .min(1, 'Client Secret cannot be empty')
-    .max(255, 'Client Secret exceeds maximum length of 255 characters'),
-  enableRealTimeUpdates: z.union([z.boolean(), z.string()]).optional(),
-  topicName: z.string().optional(),
-});
-
-const oAuthValidationSchema = z.object({
-  body: oAuthConfigSchema,
-  query: z.object({
-    service: z.enum(['googleWorkspace']), // Enum validation
-  }),
-  params: z.object({}),
-  headers: z.object({}),
-});
 const ServiceValidationSchema = z.object({
-  body: z.object({}),
+  body: z.any(),
   query: z.object({
-    service: z.enum(['googleWorkspace']), // Enum validation
+    service: z.enum(['googleWorkspace', 'notion','slack']), // Enum validation
   }),
   params: z.object({}),
   headers: z.object({}),
@@ -304,93 +313,149 @@ export function createConnectorRouter(container: Container) {
         if (!org) {
           throw new BadRequestError('Organisaton not found');
         }
-        const userType = org.accountType;
 
-        let response;
-        switch (userType.toLowerCase()) {
-          case googleWorkspaceTypes.INDIVIDUAL.toLowerCase():
-            response = await getGoogleWorkspaceConfig(
+        const connectorApp = req.query.service;
+
+        switch (connectorApp) {
+          case CONNECTORS_TYPES.GOOGLE_WORKSPACE:
+            let googleWorkspaceResponse;
+            const userType = org.accountType;
+
+            switch (userType.toLowerCase()) {
+              case googleWorkspaceTypes.INDIVIDUAL.toLowerCase():
+                googleWorkspaceResponse = await getGoogleWorkspaceConfig(
+                  req,
+                  config.cmBackend,
+                  config.scopedJwtSecret,
+                );
+                if (googleWorkspaceResponse.statusCode !== 200) {
+                  if (
+                    googleWorkspaceResponse.data &&
+                    typeof googleWorkspaceResponse.data === 'object' &&
+                    Object.keys(googleWorkspaceResponse.data).length === 0
+                  ) {
+                    res.status(204).end();
+                    return;
+                  }
+                  throw new InternalServerError(
+                    'Error getting config',
+                    googleWorkspaceResponse?.data,
+                  );
+                }
+                const configData = googleWorkspaceResponse.data;
+                if (
+                  googleWorkspaceResponse.data &&
+                  typeof googleWorkspaceResponse.data === 'object' &&
+                  Object.keys(googleWorkspaceResponse.data).length === 0
+                ) {
+                  res.status(204).end();
+                  return;
+                }
+                if (!configData.clientId) {
+                  throw new NotFoundError('Client Id is missing');
+                }
+                if (!configData.clientSecret) {
+                  throw new NotFoundError('Client Secret is missing');
+                }
+
+                res.status(200).json({
+                  googleClientId: configData.clientId,
+                  googleClientSecret: configData.clientSecret,
+                  enableRealTimeUpdates: configData?.enableRealTimeUpdates,
+                  topicName: configData?.topicName,
+                });
+
+                break;
+
+              case googleWorkspaceTypes.BUSINESS.toLowerCase():
+                googleWorkspaceResponse =
+                  await getGoogleWorkspaceBusinessCredentials(
+                    req,
+                    config.cmBackend,
+                    config.scopedJwtSecret,
+                  );
+
+                if (googleWorkspaceResponse.statusCode !== 200) {
+                  logger.error('Config response', googleWorkspaceResponse);
+                  throw new InternalServerError(
+                    'Error getting credentials',
+                    googleWorkspaceResponse?.data,
+                  );
+                } else {
+                  if (googleWorkspaceResponse.data.client_id) {
+                    res.status(200).json({
+                      adminEmail: googleWorkspaceResponse?.data?.adminEmail,
+                      isConfigured: true,
+                    });
+                  } else {
+                    if (
+                      googleWorkspaceResponse.data &&
+                      typeof googleWorkspaceResponse.data === 'object' &&
+                      Object.keys(googleWorkspaceResponse.data).length === 0
+                    ) {
+                      res.status(204).end();
+                      return;
+                    }
+                    throw new InternalServerError(
+                      'Error getting config',
+                      googleWorkspaceResponse?.data,
+                    );
+                  }
+                }
+                break;
+
+              default:
+                throw new BadRequestError(
+                  `Unsupported google workspace type: ${userType}`,
+                );
+            }
+            break; // Added missing break statement here
+
+          case CONNECTORS_TYPES.SLACK:
+            let slackResponse = await getSlackCredentials(
               req,
               config.cmBackend,
               config.scopedJwtSecret,
             );
-            if (response.statusCode !== 200) {
-              if (
-                response.data &&
-                typeof response.data === 'object' &&
-                Object.keys(response.data).length === 0
-              ) {
-                res.status(204).end();
-                return;
-              }
-              throw new InternalServerError(
-                'Error getting config',
-                response?.data,
-              );
-            }
-            const configData = response.data;
-            if (
-              response.data &&
-              typeof response.data === 'object' &&
-              Object.keys(response.data).length === 0
-            ) {
-              res.status(204).end();
-              return;
-            }
-            if (!configData.clientId) {
-              throw new NotFoundError('Client Id is missing');
-            }
-            if (!configData.clientSecret) {
-              throw new NotFoundError('Client Secret is missing');
-            }
+            console.log(slackResponse);
 
-            res.status(200).json({
-              googleClientId: configData.clientId,
-              googleClientSecret: configData.clientSecret,
-              enableRealTimeUpdates: configData?.enableRealTimeUpdates,
-              topicName: configData?.topicName,
-            });
-
-            break;
-
-          case googleWorkspaceTypes.BUSINESS.toLowerCase():
-            response = await getGoogleWorkspaceBusinessCredentials(
-              req,
-              config.cmBackend,
-              config.scopedJwtSecret,
-            );
-            logger.error('Config response', response);
-            if (response.statusCode !== 200) {
+            if (slackResponse.statusCode !== 200) {
+              logger.error('Config response', slackResponse);
               throw new InternalServerError(
                 'Error getting credentials',
-                response?.data,
+                slackResponse?.data,
               );
             } else {
-              if (response.data.client_id) {
+              if (
+                slackResponse.data.botToken &&
+                slackResponse.data.signingSecret
+              ) {
                 res.status(200).json({
-                  adminEmail: response?.data?.adminEmail,
-                  isConfigured: true,
+                  botToken: slackResponse?.data?.botToken,
+                  signingSecret: slackResponse?.data?.signingSecret,
+                  enableRealTimeUpdates:
+                    slackResponse?.data?.enableRealTimeUpdates,
                 });
               } else {
                 if (
-                  response.data &&
-                  typeof response.data === 'object' &&
-                  Object.keys(response.data).length === 0
+                  slackResponse.data &&
+                  typeof slackResponse.data === 'object' &&
+                  Object.keys(slackResponse.data).length === 0
                 ) {
                   res.status(204).end();
                   return;
                 }
                 throw new InternalServerError(
                   'Error getting config',
-                  response?.data,
+                  slackResponse?.data,
                 );
               }
             }
-            break;
+            break; // Added missing break here
 
           default:
             throw new BadRequestError(
-              `Unsupported google workspace type: ${userType}`,
+              `Unsupported connector app type: ${connectorApp}`,
             );
         }
       } catch (error) {
@@ -403,25 +468,67 @@ export function createConnectorRouter(container: Container) {
     '/config',
     authMiddleware.authenticate,
     userAdminCheck,
-    ValidationMiddleware.validate(oAuthValidationSchema),
+    // ValidationMiddleware.validate(ServiceValidationSchema),
     async (
       req: AuthenticatedUserRequest,
       res: Response,
       next: NextFunction,
     ) => {
       try {
-        let response = await setGoogleWorkspaceConfig(
-          req,
-          config.cmBackend,
-          config.scopedJwtSecret,
-        );
+        const connectorApp = req.query.service;
+        let validationResult;
+        switch (connectorApp) {
+          case CONNECTORS_TYPES.GOOGLE_WORKSPACE:
+            validationResult = googleWorkSpaceSchema.safeParse(req.body);
+            if (!validationResult.success) {
+              throw new BadRequestError(validationResult.error.message);
+            }
+            let googleWorkspaceResponse = await setGoogleWorkspaceConfig(
+              req,
+              config.cmBackend,
+              config.scopedJwtSecret,
+            );
 
-        if (response.statusCode !== 200) {
-          throw new InternalServerError('Error setting config', response?.data);
+            if (googleWorkspaceResponse.statusCode !== 200) {
+              throw new InternalServerError(
+                'Error setting config',
+                googleWorkspaceResponse?.data,
+              );
+            }
+            res.status(200).json({
+              message: 'config successfully updated',
+            });
+            break; // Added missing break statement here
+
+          case CONNECTORS_TYPES.SLACK:
+            console.log("request body",req.body)
+            validationResult = slackSchema.safeParse(req.body);
+            if (!validationResult.success) {
+              throw new BadRequestError(validationResult.error.message);
+            }
+            let slackResponse = await setSlackCredentials(
+              req,
+              config.cmBackend,
+              config.scopedJwtSecret,
+            );
+
+            if (slackResponse.statusCode !== 200) {
+              throw new InternalServerError(
+                'Error setting config',
+                slackResponse?.data,
+              );
+            }
+
+            res.status(200).json({
+              message: 'config successfully updated',
+            });
+            break;
+
+          default:
+            throw new BadRequestError(
+              `Unsupported connector app type: ${connectorApp}`,
+            );
         }
-        res.status(200).json({
-          message: 'config successfully updated',
-        });
       } catch (error) {
         next(error);
       }
@@ -440,8 +547,8 @@ export function createConnectorRouter(container: Container) {
         if (!req.user) {
           throw new NotFoundError('User not found');
         }
-        const { service } = req.query;
-        const connectorData = CONNECTORS.find((c) => c.key === service);
+        const connectorApp = req.query.service;
+        const connectorData = CONNECTORS.find((c) => c.key === connectorApp);
         if (!connectorData) {
           throw new NotFoundError('Invalid service name');
         }
@@ -453,29 +560,51 @@ export function createConnectorRouter(container: Container) {
         if (connector) {
           connector.isEnabled = false;
           connector.lastUpdatedBy = req.user.userId;
+          let event: Event;
+          switch (connectorApp) {
+            case CONNECTORS_TYPES.GOOGLE_WORKSPACE:
+              event = {
+                eventType: EventType.AppDisabledEvent,
+                timestamp: Date.now(),
+                payload: {
+                  orgId: req.user.orgId,
+                  appGroup: connector.name,
+                  appGroupId: connector._id,
+                  apps: [
+                    GoogleWorkspaceApp.Drive,
+                    GoogleWorkspaceApp.Gmail,
+                    GoogleWorkspaceApp.Calendar,
+                  ],
+                } as AppDisabledEvent,
+              };
+              await eventService.publishEvent(event);
+              break;
 
-          const event: Event = {
-            eventType: EventType.AppDisabledEvent,
-            timestamp: Date.now(),
-            payload: {
-              orgId: req.user.orgId,
-              appGroup: connector.name,
-              appGroupId: connector._id,
-              apps: [
-                GoogleWorkspaceApp.Drive,
-                GoogleWorkspaceApp.Gmail,
-                GoogleWorkspaceApp.Calendar,
-              ],
-            } as AppDisabledEvent,
-          };
+            case CONNECTORS_TYPES.SLACK:
+              event = {
+                eventType: EventType.AppDisabledEvent,
+                timestamp: Date.now(),
+                payload: {
+                  orgId: req.user.orgId,
+                  appGroup: connector.name,
+                  appGroupId: connector._id,
+                  apps: ['SLACK'],
+                } as AppDisabledEvent,
+              };
+              await eventService.publishEvent(event);
+              break;
 
-          await eventService.publishEvent(event);
+            default:
+              throw new BadRequestError(
+                `Unsupported connector app type: ${connectorApp}`,
+              );
+          }
 
           await eventService.stop();
           await connector.save();
 
           res.status(200).json({
-            message: `Connector ${service} is now disabled`,
+            message: `Connector ${connectorApp} is now disabled`,
             connector,
           });
         } else {
@@ -504,8 +633,8 @@ export function createConnectorRouter(container: Container) {
         if (!req.user) {
           throw new NotFoundError('User not found');
         }
-        const { service } = req.query;
-        const connectorData = CONNECTORS.find((c) => c.key === service);
+        const connectorApp = req.query.service;
+        const connectorData = CONNECTORS.find((c) => c.key === connectorApp);
         if (!connectorData) {
           throw new NotFoundError('Invalid service name');
         }
@@ -515,31 +644,57 @@ export function createConnectorRouter(container: Container) {
         });
         await eventService.start();
         let event: Event;
-
         if (connector) {
           connector.isEnabled = true;
           connector.lastUpdatedBy = req.user.userId;
-          event = {
-            eventType: EventType.AppEnabledEvent,
-            timestamp: Date.now(),
-            payload: {
-              orgId: req.user.orgId,
-              appGroup: connector.name,
-              appGroupId: connector._id,
-              credentialsRoute: `${config.cmBackend}/${GOOGLE_WORKSPACE_BUSINESS_CREDENTIALS_PATH}`,
-              apps: [
-                GoogleWorkspaceApp.Drive,
-                GoogleWorkspaceApp.Gmail,
-                GoogleWorkspaceApp.Calendar,
-              ],
-              syncAction: 'immediate',
-            } as AppEnabledEvent,
-          };
-          await eventService.publishEvent(event);
+
+          switch (connectorApp) {
+            case CONNECTORS_TYPES.GOOGLE_WORKSPACE:
+              event = {
+                eventType: EventType.AppEnabledEvent,
+                timestamp: Date.now(),
+                payload: {
+                  orgId: req.user.orgId,
+                  appGroup: connector.name,
+                  appGroupId: connector._id,
+                  credentialsRoute: `${config.cmBackend}/${GOOGLE_WORKSPACE_BUSINESS_CREDENTIALS_PATH}`,
+                  apps: [
+                    GoogleWorkspaceApp.Drive,
+                    GoogleWorkspaceApp.Gmail,
+                    GoogleWorkspaceApp.Calendar,
+                  ],
+                  syncAction: 'immediate',
+                } as AppEnabledEvent,
+              };
+              await eventService.publishEvent(event);
+              break;
+
+            case CONNECTORS_TYPES.SLACK:
+              event = {
+                eventType: EventType.AppEnabledEvent,
+                timestamp: Date.now(),
+                payload: {
+                  orgId: req.user.orgId,
+                  appGroup: connector.name,
+                  appGroupId: connector._id,
+                  credentialsRoute: `${config.cmBackend}/${SLACK_CREDENTIALS_PATH}`,
+                  apps: ['SLACK'],
+                  syncAction: 'immediate',
+                } as AppEnabledEvent,
+              };
+              await eventService.publishEvent(event);
+              break;
+
+            default:
+              throw new BadRequestError(
+                `Unsupported connector app type: ${connectorApp}`,
+              );
+          }
+
           await connector.save();
           await eventService.stop();
           res.status(200).json({
-            message: `Connector ${service} is now enabled`,
+            message: `Connector ${connectorApp} is now enabled`,
             connector,
           });
         } else {
@@ -557,24 +712,52 @@ export function createConnectorRouter(container: Container) {
           if (!connector) {
             throw new InternalServerError('Error in creating connector');
           }
-          event = {
-            eventType: EventType.AppEnabledEvent,
-            timestamp: Date.now(),
-            payload: {
-              orgId: req.user.orgId,
-              appGroup: connector.name,
-              appGroupId: connector._id,
-              credentialsRoute: `${config.cmBackend}/${GOOGLE_WORKSPACE_BUSINESS_CREDENTIALS_PATH}`,
-              apps: [
-                GoogleWorkspaceApp.Drive,
-                GoogleWorkspaceApp.Gmail,
-                GoogleWorkspaceApp.Calendar,
-              ],
-              syncAction: 'immediate',
-            } as AppEnabledEvent,
-          };
-          await eventService.publishEvent(event);
+
+          switch (connectorApp) {
+            case CONNECTORS_TYPES.GOOGLE_WORKSPACE:
+              event = {
+                eventType: EventType.AppEnabledEvent,
+                timestamp: Date.now(),
+                payload: {
+                  orgId: req.user.orgId,
+                  appGroup: connector.name,
+                  appGroupId: connector._id,
+                  credentialsRoute: `${config.cmBackend}/${GOOGLE_WORKSPACE_BUSINESS_CREDENTIALS_PATH}`,
+                  apps: [
+                    GoogleWorkspaceApp.Drive,
+                    GoogleWorkspaceApp.Gmail,
+                    GoogleWorkspaceApp.Calendar,
+                  ],
+                  syncAction: 'immediate',
+                } as AppEnabledEvent,
+              };
+              await eventService.publishEvent(event);
+              break;
+
+            case CONNECTORS_TYPES.SLACK:
+              event = {
+                eventType: EventType.AppEnabledEvent,
+                timestamp: Date.now(),
+                payload: {
+                  orgId: req.user.orgId,
+                  appGroup: connector.name,
+                  appGroupId: connector._id,
+                  credentialsRoute: `${config.cmBackend}/${SLACK_CREDENTIALS_PATH}`,
+                  apps: ['SLACK'],
+                  syncAction: 'immediate',
+                } as AppEnabledEvent,
+              };
+              await eventService.publishEvent(event);
+              break;
+
+            default:
+              throw new BadRequestError(
+                `Unsupported connector app type: ${connectorApp}`,
+              );
+          }
+
           await eventService.stop();
+
           res.status(201).json({
             message: `Connector ${connectorData.name} created and enabled`,
             connector,
@@ -590,6 +773,7 @@ export function createConnectorRouter(container: Container) {
       }
     },
   );
+
   router.post(
     '/getTokenFromCode',
     authMiddleware.authenticate,

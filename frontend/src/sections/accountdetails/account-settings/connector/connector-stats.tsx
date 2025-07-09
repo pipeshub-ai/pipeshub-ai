@@ -348,7 +348,7 @@ const ConnectorCard = ({ connector }: { connector: ConnectorData }): JSX.Element
       case 'DROPBOX':
         return '#0061FF'; // Dropbox blue
       case 'SLACK':
-        return '#4A154B'; // Slack purple
+        return '#ECB22E'; // Slack purple
       case 'TEAMS':
         return '#6264A7'; // Teams purple
       case 'JIRA':
