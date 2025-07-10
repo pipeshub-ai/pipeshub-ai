@@ -192,8 +192,7 @@ async def askAIStream(
 
                 user_info = await arango_service.get_user_by_user_id(user_id)
                 org_info = await arango_service.get_document(org_id, CollectionNames.ORGS.value)
-                print(f"org_info {org_info}")
-                print(f"user_info {user_info}")
+
                 if (org_info is not None and (
                     org_info.get("accountType") == AccountType.ENTERPRISE.value
                     or org_info.get("accountType") == AccountType.BUSINESS.value

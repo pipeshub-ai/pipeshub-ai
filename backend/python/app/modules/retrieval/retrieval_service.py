@@ -1,4 +1,5 @@
 import asyncio
+import time
 from typing import Any, Dict, List, Optional, Union
 
 from langchain.chat_models.base import BaseChatModel
@@ -540,7 +541,6 @@ class RetrievalService:
 
     async def _execute_parallel_searches(self, queries, qdrant_filter, limit, vector_store) -> List[Dict[str, Any]]:
         """Execute all searches in parallel"""
-        import time
         all_results = []
         seen_chunks = set()
 
