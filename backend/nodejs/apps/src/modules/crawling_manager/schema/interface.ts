@@ -21,6 +21,7 @@ import {
   IOnceCrawlingSchedule,
   IWeeklyCrawlingSchedule,
 } from './scheduler/scheduler';
+import { JobProgress } from 'bullmq';
 
 export interface CrawlingJobData {
   connectorType: ConnectorType;
@@ -42,7 +43,7 @@ export interface JobStatus {
   id: string | undefined;
   name: string;
   data: CrawlingJobData;
-  progress: number | object;
+  progress: JobProgress;
   delay: number | undefined;
   timestamp: number;
   attemptsMade: number;

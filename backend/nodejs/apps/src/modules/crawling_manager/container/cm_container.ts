@@ -50,42 +50,6 @@ export class CrawlingManagerContainer {
       logger.info('Initializing Crawling Manager services');
       setupCrawlingDependencies(container, appConfig.redis);
 
-      logger.info('Testing GoogleWorkspaceCrawlingService...');
-    const googleService = container.get<GoogleWorkspaceCrawlingService>(GoogleWorkspaceCrawlingService);
-    logger.info('✅ GoogleWorkspaceCrawlingService OK', {
-      googleService,
-    });
-    
-    logger.info('Testing SlackCrawlingService...');
-    const slackService = container.get<SlackCrawlingService>(SlackCrawlingService);
-    logger.info('✅ SlackCrawlingService OK', {
-      slackService,
-    });
-    
-    logger.info('Testing S3CrawlingService...');
-    const s3Service = container.get<S3CrawlingService>(S3CrawlingService);
-    logger.info('✅ S3CrawlingService OK', {
-      s3Service,
-    });
-    
-    logger.info('Testing CrawlingTaskFactory...');
-    const taskFactory = container.get<CrawlingTaskFactory>(CrawlingTaskFactory);
-    logger.info('✅ CrawlingTaskFactory OK', {
-      taskFactory,
-    });
-
-    logger.info('Testing CrawlingSchedulerService...');
-    const schedulerService = container.get<CrawlingSchedulerService>(CrawlingSchedulerService);
-    logger.info('✅ CrawlingSchedulerService OK', {
-      schedulerService,
-    }); 
-
-    logger.info('Testing CrawlingWorkerService...');
-    const crawlingWorkerService2 = container.get<CrawlingWorkerService>(CrawlingWorkerService);
-    logger.info('✅ CrawlingWorkerService OK', {
-      crawlingWorkerService2,
-    });   
-
       const authTokenService = new AuthTokenService(
         appConfig.jwtSecret,
         appConfig.scopedJwtSecret,

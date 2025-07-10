@@ -57,12 +57,17 @@ const ScheduleConfigSchema = z.discriminatedUnion('scheduleType', [
   OnceScheduleConfigSchema,
 ]);
 
+// connector type schema
+export const ConnectorTypeSchema = z.object({
+  params: z.object({
+    connectorType: z.nativeEnum(ConnectorType),
+  }),
+});
+
 // Main API Request Schema
 export const CrawlingScheduleRequestSchema = z.object({
   params: z.object({
-    connectorType: z.nativeEnum(ConnectorType).refine((val) => Object.values(ConnectorType).includes(val), {
-      message: 'Invalid connector type',
-    }),
+    connectorType: z.nativeEnum(ConnectorType),
   }),
   body: z.object({
     scheduleConfig: ScheduleConfigSchema,
