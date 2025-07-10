@@ -1,5 +1,6 @@
 import json
 import re
+import time
 from typing import Any, AsyncGenerator, Dict, Union
 
 from app.utils.citations import normalize_citations_and_chunks
@@ -34,13 +35,47 @@ def escape_ctl(raw: str) -> str:
 
 async def aiter_llm_stream(llm, messages) -> AsyncGenerator[str, None]:
     """Async iterator for LLM streaming"""
+    # TIMING: Start timing the LLM streaming
+    llm_start_time = time.time()
+    first_part_received = False
+    first_part_time = None
+
     if hasattr(llm, "astream"):
+        print(f"TIMING: Starting LLM astream at {llm_start_time}")
+
+        # TIMING: Log the time before the actual astream call
+        pre_astream_call = time.time()
+        astream_setup_time = pre_astream_call - llm_start_time
+        print(f"TIMING: LLM astream setup took {astream_setup_time:.3f}s")
+
+        # TIMING: Track the actual HTTP request timing
+        http_request_start = time.time()
+
+
         async for part in llm.astream(messages):
+            # TIMING: Log when we receive the first part
+            if not first_part_received:
+                first_part_time = time.time()
+                llm_to_first_part = first_part_time - llm_start_time
+                http_to_first_part = first_part_time - http_request_start
+                first_part_received = True
+                print(f"TIMING: First LLM part received after {llm_to_first_part:.3f}s from astream start")
+                print(f"TIMING: HTTP request to first part took {http_to_first_part:.3f}s")
+
+                # Additional analysis
+                if http_to_first_part > 1.0:
+                    print(f"⚠️  WARNING: HTTP request took {http_to_first_part:.3f}s - this is high for Azure OpenAI")
+                    print("💡 SUGGESTION: Check Azure region, deployment size, or network latency")
+
             if part and getattr(part, "content", ""):
                 yield part.content
     else:
         # Non-streaming – yield whole blob once
+        print(f"TIMING: Starting LLM ainvoke at {llm_start_time}")
         response = await llm.ainvoke(messages)
+        first_part_time = time.time()
+        llm_to_first_part = first_part_time - llm_start_time
+        print(f"TIMING: LLM ainvoke completed after {llm_to_first_part:.3f}s")
         yield getattr(response, "content", str(response))
 
 
@@ -54,6 +89,10 @@ async def stream_llm_response(
     Incrementally stream the answer portion of an LLM JSON response.
     For each chunk we also emit the citations visible so far.
     """
+    # TIMING: Start timing the streaming process
+    stream_start_time = time.time()
+    timing_logs = {}
+
     full_json_buf: str = ""         # whole JSON as it trickles in
     answer_buf: str = ""            # the running "answer" value (no quotes)
     answer_done = False
@@ -66,9 +105,40 @@ async def stream_llm_response(
     emit_upto = 0
     words_in_chunk = 0
 
+    first_token_received = False
+    first_token_time = None
+    first_chunk_generated = False
+    first_chunk_time = None
+
+    # Heartbeat tracking
+    last_heartbeat_time = time.time()
+    heartbeat_interval = 10.0  # Send heartbeat every 10 seconds
+
     try:
+        # TIMING: Log when we start the LLM stream
+        llm_stream_start = time.time()
+        timing_logs["llm_stream_start"] = llm_stream_start - stream_start_time
+
         async for token in aiter_llm_stream(llm, messages):
-            full_json_buf += token
+            # TIMING: Log when we receive the first token
+            if not first_token_received:
+                first_token_time = time.time()
+                timing_logs["first_token"] = first_token_time - stream_start_time
+                timing_logs["llm_to_first_token"] = first_token_time - llm_stream_start
+                first_token_received = True
+                print(f"TIMING: First token received after {timing_logs['llm_to_first_token']:.3f}s from LLM stream start")
+
+            # Send heartbeat if enough time has passed
+            current_time = time.time()
+            if current_time - last_heartbeat_time > heartbeat_interval:
+                yield {
+                    "event": "heartbeat",
+                    "data": {"timestamp": current_time, "status": "generating"}
+                }
+                last_heartbeat_time = current_time
+
+            if token:
+                full_json_buf += token
 
             if not answer_buf:
                 match = ANSWER_KEY_RE.search(full_json_buf)
@@ -100,6 +170,14 @@ async def stream_llm_response(
                         current_raw = answer_buf[:emit_upto]
                         if INCOMPLETE_CITE_RE.search(current_raw):
                             continue
+
+                        # TIMING: Log when we generate the first chunk
+                        if not first_chunk_generated:
+                            first_chunk_time = time.time()
+                            timing_logs["first_chunk_generated"] = first_chunk_time - stream_start_time
+                            timing_logs["first_token_to_first_chunk"] = first_chunk_time - first_token_time
+                            first_chunk_generated = True
+                            print(f"TIMING: First chunk generated after {timing_logs['first_token_to_first_chunk']:.3f}s from first token")
 
                         normalized, cites = normalize_citations_and_chunks(
                             current_raw, final_results
@@ -141,6 +219,11 @@ async def stream_llm_response(
                     "confidence": None,
                 },
             }
+
+        # TIMING: Log final timing summary
+        if first_chunk_time:
+            total_time = time.time() - stream_start_time
+            print(f"TIMING SUMMARY (stream_llm_response): Total={total_time:.3f}s, LLM-to-first-token={timing_logs.get('llm_to_first_token', 0):.3f}s, First-token-to-first-chunk={timing_logs.get('first_token_to_first_chunk', 0):.3f}s")
 
     except Exception as exc:
         yield {

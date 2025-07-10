@@ -1,4 +1,5 @@
 import os
+import time
 from datetime import datetime
 from typing import Dict, Optional
 
@@ -60,7 +61,7 @@ class AwsBedrockLLMConfig(BaseLLMConfig):
 class CostTrackingCallback(BaseCallbackHandler):
     """Callback handler for tracking LLM usage and costs"""
 
-    def __init__(self, logger):
+    def __init__(self, logger) -> None:
         super().__init__()
         self.logger = logger
         # Azure GPT-4 pricing (per 1K tokens)
@@ -76,13 +77,13 @@ class CostTrackingCallback(BaseCallbackHandler):
             "cost": 0.0,
         }
 
-    def on_llm_start(self, *args, **kwargs):
+    def on_llm_start(self, *args, **kwargs) -> None:
         self.current_usage["start_time"] = datetime.now()
 
-    def on_llm_end(self, *args, **kwargs):
+    def on_llm_end(self, *args, **kwargs) -> None:
         self.current_usage["end_time"] = datetime.now()
 
-    def on_llm_new_token(self, *args, **kwargs):
+    def on_llm_new_token(self, *args, **kwargs) -> None:
         pass
 
     def calculate_cost(self, model: str) -> float:
@@ -103,10 +104,16 @@ class LLMFactory:
     @staticmethod
     def create_llm(logger, config: BaseLLMConfig) -> BaseChatModel:
         """Create an LLM instance based on configuration"""
+        # TIMING: Start timing LLM creation
+        start_time = time.time()
+
         cost_callback = CostTrackingCallback(logger)
 
         if isinstance(config, AzureLLMConfig):
-            return AzureChatOpenAI(
+            # TIMING: Log the time before Azure LLM creation
+            pre_azure_creation = time.time()
+
+            llm = AzureChatOpenAI(
                 api_key=config.api_key,
                 model=config.model,
                 azure_endpoint=config.azure_endpoint,
@@ -114,16 +121,50 @@ class LLMFactory:
                 temperature=0.2,
                 azure_deployment=config.azure_deployment,
                 callbacks=[cost_callback],
+                # Optimized timeout settings for Azure
+                timeout=15.0,  # Reduced from 30s to 15s for faster failure detection
+                max_retries=1,  # Reduced retries for faster response
+                request_timeout=15.0,  # Reduced request timeout
+                # Azure-specific optimizations
+                max_tokens=None,  # Let the model decide
+                streaming=True,  # Enable streaming for better performance
+                # Additional Azure optimizations
+                n=1,  # Single response for faster generation
+                stop=None,  # No stop sequences for faster response
             )
 
+            # TIMING: Log the time after Azure LLM creation
+            post_azure_creation = time.time()
+            azure_creation_time = post_azure_creation - pre_azure_creation
+            logger.info(f"TIMING: Azure LLM client creation took {azure_creation_time:.3f}s")
+
+            return llm
+
         elif isinstance(config, OpenAILLMConfig):
-            return ChatOpenAI(
+            # TIMING: Log the time before OpenAI LLM creation
+            pre_openai_creation = time.time()
+
+            llm = ChatOpenAI(
                 model=config.model,
                 temperature=0.2,
                 api_key=config.api_key,
                 organization=config.organization_id,
                 callbacks=[cost_callback],
+                # Add timeout and connection optimization settings
+                timeout=30.0,
+                max_retries=2,
+                request_timeout=30.0,
+                # Additional optimization parameters
+                max_tokens=None,  # Let the model decide
+                streaming=True,  # Enable streaming for better performance
             )
+
+            # TIMING: Log the time after OpenAI LLM creation
+            post_openai_creation = time.time()
+            openai_creation_time = post_openai_creation - pre_openai_creation
+            logger.info(f"TIMING: OpenAI LLM client creation took {openai_creation_time:.3f}s")
+
+            return llm
 
         elif isinstance(config, GeminiLLMConfig):
             return ChatGoogleGenerativeAI(
@@ -164,13 +205,34 @@ class LLMFactory:
                 base_url=base_url
             )
         elif isinstance(config, OpenAICompatibleLLMConfig):
-            return ChatOpenAI(
+            # TIMING: Log the time before OpenAI Compatible LLM creation
+            pre_openai_compat_creation = time.time()
+
+            llm = ChatOpenAI(
                 model=config.model,
                 temperature=0.2,
                 api_key=config.api_key,
                 base_url=config.endpoint,
-                callbacks=[cost_callback]
+                callbacks=[cost_callback],
+                # Add timeout and connection optimization settings
+                timeout=30.0,
+                max_retries=2,
+                request_timeout=30.0,
+                # Additional optimization parameters
+                max_tokens=None,  # Let the model decide
+                streaming=True,  # Enable streaming for better performance
             )
+
+            # TIMING: Log the time after OpenAI Compatible LLM creation
+            post_openai_compat_creation = time.time()
+            openai_compat_creation_time = post_openai_compat_creation - pre_openai_compat_creation
+            logger.info(f"TIMING: OpenAI Compatible LLM client creation took {openai_compat_creation_time:.3f}s")
+
+            return llm
+
+        # TIMING: Log total LLM creation time
+        total_time = time.time() - start_time
+        logger.info(f"TIMING: Total LLM creation took {total_time:.3f}s")
 
         raise ValueError(f"Unsupported config type: {type(config)}")
 

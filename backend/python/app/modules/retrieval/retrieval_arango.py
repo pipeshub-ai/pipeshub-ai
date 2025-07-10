@@ -135,7 +135,7 @@ class ArangoService:
         )
 
         try:
-            # First get counts separately
+            # Build the base query structure
             query = f"""
             LET userDoc = FIRST(
                 FOR user IN @@users
@@ -187,6 +187,7 @@ class ArangoService:
             # Add filter conditions if provided
             filter_conditions = []
             if filters:
+                self.logger.info("🚀 Adding filters to query")
                 if filters.get("departments"):
                     filter_conditions.append(
                         f"""
@@ -281,8 +282,10 @@ class ArangoService:
                     ) > 0
                     """
                     )
-            # Add filter conditions to main query
+
+            # Complete the query based on whether filters are applied
             if filter_conditions:
+                self.logger.info(f"🚀 Using filtered query with {len(filter_conditions)} conditions")
                 query += (
                     """
                 FOR record IN allAccessibleRecords
@@ -293,6 +296,7 @@ class ArangoService:
                 """
                 )
             else:
+                self.logger.info("🚀 Using unfiltered query")
                 query += """
                 RETURN allAccessibleRecords
                 """
@@ -338,15 +342,32 @@ class ArangoService:
                         app.lower() for app in filters["apps"]
                     ]  # Lowercase app names
 
-            # Execute with profiling enabled
+            # Execute with profiling enabled and optimization hints
             cursor = self.db.aql.execute(
                 query,
                 bind_vars=bind_vars,
                 profile=2,
                 fail_on_warning=False,
-                stream=True
+                stream=True,
+                optimizer_rules=["+use-indexes", "+use-index-for-sort"],
+                max_runtime=30.0  # 30 second timeout
             )
-            result = list(cursor)
+
+            # Process results in batches to avoid memory issues
+            result = []
+            batch_size = 1000
+            batch = []
+
+            for doc in cursor:
+                batch.append(doc)
+                if len(batch) >= batch_size:
+                    result.extend(batch)
+                    batch = []
+                    self.logger.debug(f"Processed batch of {batch_size} records, total: {len(result)}")
+
+            # Add remaining records
+            if batch:
+                result.extend(batch)
             if result:
                 if isinstance(result[0], dict):
                     return result

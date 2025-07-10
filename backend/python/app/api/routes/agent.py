@@ -17,9 +17,9 @@ class ChatQuery(BaseModel):
     query: str
     limit: Optional[int] = 50
     previousConversations: List[Dict] = []
-    quick_mode: bool = False
+    quickMode: bool = False
     filters: Optional[Dict[str, Any]] = None
-    retrieval_mode: Optional[str] = "HYBRID"
+    retrievalMode: Optional[str] = "HYBRID"
 
 async def get_services(request: Request) -> Dict[str, Any]:
     """Get all required services from the container"""
