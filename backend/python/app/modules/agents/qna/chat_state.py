@@ -57,9 +57,9 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
         "limit": chat_query.get("limit", 50),
         "messages": [{"role": "system", "content": "You are an enterprise questions answering expert"}],
         "previous_conversations": chat_query.get("previousConversations", []),
-        "quick_mode": chat_query.get("quick_mode", False),  # Renamed
+        "quick_mode": chat_query.get("quickMode", False),  # Renamed
         "filters": chat_query.get("filters"),
-        "retrieval_mode": chat_query.get("retrieval_mode", "HYBRID"),
+        "retrieval_mode": chat_query.get("retrievalMode", "HYBRID"),
         "decomposed_queries": [],
         "rewritten_queries": [],
         "expanded_queries": [],

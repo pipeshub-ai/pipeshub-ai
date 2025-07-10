@@ -400,7 +400,6 @@ class IndexingPipeline:
                     vectors_config={
                         "dense": models.VectorParams(
                             size=embedding_size,
-                            on_disk=False,
                             distance=models.Distance.COSINE,
                         )
                     },
@@ -410,9 +409,31 @@ class IndexingPipeline:
                             modifier=models.Modifier.IDF if sparse_idf else None,
                         )
                     },
+                    optimizers_config=models.OptimizersConfigDiff(default_segment_number=8),
+                    quantization_config=models.ScalarQuantization(
+                                scalar=models.ScalarQuantizationConfig(
+                                    type=models.ScalarType.INT8,
+                                    quantile=0.95,
+                                    always_ram=True,
+                                ),
+                            ),
                 )
                 self.logger.info(
                     f"✅ Successfully created collection {self.collection_name}"
+                )
+                self.qdrant_client.create_payload_index(
+                    collection_name=self.collection_name,
+                    field_name="metadata.virtualRecordId",
+                    field_schema=models.KeywordIndexParams(
+                        type=models.KeywordIndexType.KEYWORD,
+                    ),
+                )
+                self.qdrant_client.create_payload_index(
+                    collection_name=self.collection_name,
+                    field_name="metadata.orgId",
+                    field_schema=models.KeywordIndexParams(
+                        type=models.KeywordIndexType.KEYWORD,
+                    ),
                 )
             except Exception as e:
                 self.logger.error(

@@ -125,9 +125,8 @@ async def recreate_collection(retrieval_service, embedding_size, logger) -> None
             vectors_config={
                 "dense": models.VectorParams(
                     size=embedding_size,
-                    on_disk=False,
                     distance=models.Distance.COSINE,
-                )
+                ),
             },
             sparse_vectors_config={
                 "sparse": models.SparseVectorParams(
@@ -135,6 +134,29 @@ async def recreate_collection(retrieval_service, embedding_size, logger) -> None
                     modifier=models.Modifier.IDF if SPARSE_IDF else None,
                 )
             },
+            optimizers_config=models.OptimizersConfigDiff(default_segment_number=8),
+            quantization_config=models.ScalarQuantization(
+                                scalar=models.ScalarQuantizationConfig(
+                                    type=models.ScalarType.INT8,
+                                    quantile=0.95,
+                                    always_ram=True,
+                                ),
+                            ),
+        )
+
+        retrieval_service.qdrant_client.create_payload_index(
+            collection_name=retrieval_service.collection_name,
+            field_name="metadata.virtualRecordId",
+            field_schema=models.KeywordIndexParams(
+                type=models.KeywordIndexType.KEYWORD,
+            ),
+        )
+        retrieval_service.qdrant_client.create_payload_index(
+            collection_name=retrieval_service.collection_name,
+            field_name="metadata.orgId",
+            field_schema=models.KeywordIndexParams(
+                type=models.KeywordIndexType.KEYWORD,
+            ),
         )
         logger.info(f"Successfully created new collection {retrieval_service.collection_name} with vector size {embedding_size}")
     except Exception as e:

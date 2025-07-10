@@ -540,6 +540,7 @@ class RetrievalService:
 
     async def _execute_parallel_searches(self, queries, qdrant_filter, limit, vector_store) -> List[Dict[str, Any]]:
         """Execute all searches in parallel"""
+        import time
         all_results = []
         seen_chunks = set()
 
@@ -553,7 +554,10 @@ class RetrievalService:
             for query in queries
         ]
 
+        start_time = time.monotonic()
         search_results = await asyncio.gather(*search_tasks)
+        elapsed = time.monotonic() - start_time
+        self.logger.debug(f"VectorDB lookup for {len(queries)} queries took {elapsed:.3f} seconds.")
 
         # Deduplicate results
         for results in search_results:

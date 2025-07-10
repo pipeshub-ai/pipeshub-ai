@@ -32,8 +32,8 @@ class ChatQuery(BaseModel):
     limit: Optional[int] = 50
     previousConversations: List[Dict] = []
     filters: Optional[Dict[str, Any]] = None
-    retrieval_mode: Optional[str] = "HYBRID"
-    quick_mode: Optional[bool] = False
+    retrievalMode: Optional[str] = "HYBRID"
+    quickMode: Optional[bool] = False
 
 
 async def get_retrieval_service(request: Request) -> RetrievalService:
@@ -113,7 +113,7 @@ async def askAIStream(
 
             decomposed_queries = []
 
-            if not query_info.quick_mode:
+            if not query_info.quickMode:
                 decomposition_service = QueryDecompositionService(llm, logger=logger)
                 decomposition_result = await decomposition_service.decompose_query(query_info.query)
                 decomposed_queries = decomposition_result["queries"]
@@ -176,7 +176,7 @@ async def askAIStream(
             yield create_sse_event("results_ready", {"total_results": len(flattened_results)})
 
             # Re-rank results
-            if len(flattened_results) > 1 and not query_info.quick_mode:
+            if len(flattened_results) > 1 and not query_info.quickMode:
                 yield create_sse_event("status", {"status": "reranking", "message": "Reranking results for better relevance..."})
                 final_results = await reranker_service.rerank(
                     query=query_info.query,
@@ -192,9 +192,12 @@ async def askAIStream(
 
                 user_info = await arango_service.get_user_by_user_id(user_id)
                 org_info = await arango_service.get_document(org_id, CollectionNames.ORGS.value)
-
-                if (org_info.get("accountType") == AccountType.ENTERPRISE.value or
-                    org_info.get("accountType") == AccountType.BUSINESS.value):
+                print(f"org_info {org_info}")
+                print(f"user_info {user_info}")
+                if (org_info is not None and (
+                    org_info.get("accountType") == AccountType.ENTERPRISE.value
+                    or org_info.get("accountType") == AccountType.BUSINESS.value
+                )):
                     user_data = (
                         "I am the user of the organization. "
                         f"My name is {user_info.get('fullName', 'a user')} "
@@ -300,7 +303,7 @@ async def askAI(
         logger.debug(f"query_info.query {query_info.query}")
 
         decomposed_queries = []
-        if not query_info.quick_mode:
+        if not query_info.quickMode:
             decomposition_service = QueryDecompositionService(llm, logger=logger)
             decomposition_result = await decomposition_service.decompose_query(
                 query_info.query
@@ -352,7 +355,7 @@ async def askAI(
                 flattened_results.append(result)
 
         # Re-rank the combined results with the original query for better relevance
-        if len(flattened_results) > 1 and not query_info.quick_mode:
+        if len(flattened_results) > 1 and not query_info.quickMode:
             final_results = await reranker_service.rerank(
                 query=query_info.query,  # Use original query for final ranking
                 documents=flattened_results,
@@ -368,8 +371,10 @@ async def askAI(
                 org_id, CollectionNames.ORGS.value
             )
             if (
-                org_info.get("accountType") == AccountType.ENTERPRISE.value
-                or org_info.get("accountType") == AccountType.BUSINESS.value
+                org_info is not None and (
+                    org_info.get("accountType") == AccountType.ENTERPRISE.value
+                    or org_info.get("accountType") == AccountType.BUSINESS.value
+                )
             ):
                 user_data = (
                     "I am the user of the organization. "
