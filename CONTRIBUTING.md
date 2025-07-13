@@ -66,7 +66,7 @@ docker run -d --name redis --restart always -p 6379:6379 redis:bookworm
 
 **Qdrant:** (API Key must match with .env)
 ```bash
-docker run -p 6333:6333 -p 6334:6334 -e QDRANT__SERVICE__API_KEY=your_qdrant_api_key qdrant/qdrant:v1.13.6
+docker run -p 6333:6333 -p 6334:6334 -e QDRANT__SERVICE__API_KEY=your_qdrant_secret_api_key qdrant/qdrant:v1.13.6
 ```
 
 **ETCD Server:**
@@ -81,7 +81,7 @@ docker run -d --name etcd-server --restart always -p 2379:2379 -p 2380:2380 quay
 
 **ArangoDB:** (Password must match with .env)
 ```bash
-docker run -e ARANGO_ROOT_PASSWORD=your_arango_password -p 8529:8529 --name arango --restart always -d arangodb:3.12.4
+docker run -e ARANGO_ROOT_PASSWORD=your_password -p 8529:8529 --name arango --restart always -d arangodb:3.12.4
 ```
 
 **MongoDB:** (Password must match with .env MONGO URI)
