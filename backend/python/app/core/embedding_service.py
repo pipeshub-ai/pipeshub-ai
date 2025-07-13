@@ -1,12 +1,5 @@
 from typing import Any, Dict, Optional, Union
 
-from langchain_cohere import CohereEmbeddings
-from langchain_community.embeddings import (
-    HuggingFaceEmbeddings,
-    SentenceTransformerEmbeddings,
-)
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from langchain_openai.embeddings import AzureOpenAIEmbeddings, OpenAIEmbeddings
 from pydantic import BaseModel, Field
 
 
@@ -58,6 +51,8 @@ class EmbeddingFactory:
                                             HuggingFaceEmbeddingConfig, SentenceTransformersEmbeddingConfig,
                                             GeminiEmbeddingConfig, CohereEmbeddingConfig, OpenAICompatibleEmbeddingConfig, None]) -> BaseEmbeddingConfig:
         if isinstance(config, AzureEmbeddingConfig):
+            from langchain_openai.embeddings import AzureOpenAIEmbeddings
+
             return AzureOpenAIEmbeddings(
                 model=config.model,
                 api_key=config.api_key,
@@ -66,6 +61,7 @@ class EmbeddingFactory:
             )
 
         elif isinstance(config, OpenAIEmbeddingConfig):
+            from langchain_openai.embeddings import OpenAIEmbeddings
             return OpenAIEmbeddings(
                 model=config.model,
                 api_key=config.api_key,
@@ -73,6 +69,8 @@ class EmbeddingFactory:
             )
 
         elif isinstance(config, HuggingFaceEmbeddingConfig):
+            from langchain_community.embeddings import HuggingFaceEmbeddings
+
             model_kwargs = config.model_kwargs.copy()
             # Hugging Face embedding models typically don't use API keys in the same way
             # but we include it in case it's needed for private models
@@ -91,6 +89,8 @@ class EmbeddingFactory:
             )
 
         elif isinstance(config, SentenceTransformersEmbeddingConfig):
+            from langchain_community.embeddings import SentenceTransformerEmbeddings
+
             encode_kwargs = config.encode_kwargs.copy()
 
             return SentenceTransformerEmbeddings(
@@ -100,12 +100,15 @@ class EmbeddingFactory:
             )
 
         elif isinstance(config, CohereEmbeddingConfig):
+            from langchain_cohere import CohereEmbeddings
+
             return CohereEmbeddings(
                 model=config.model,
                 cohere_api_key=config.api_key,
             )
 
         elif isinstance(config, GeminiEmbeddingConfig):
+            from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
             # Add "models/" prefix if it's missing
             model_name = config.model
