@@ -139,7 +139,7 @@ async def stream_response(
     async for chunk in qna_graph.astream(initial_state, stream_mode="custom"):
         if isinstance(chunk, dict) and "event" in chunk:
             # Convert dict to JSON string for streaming
-            yield f"data: {json.dumps(chunk)}\n\n"
+            yield f"event: {chunk['event']}\ndata: {json.dumps(chunk['data'])}\n\n"
 
 
 @router.post("/agent-chat-stream")
