@@ -8,7 +8,6 @@ from typing_extensions import TypedDict
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_arango import ArangoService
 from app.modules.retrieval.retrieval_service import RetrievalService
-from app.modules.streaming.streaming_service import StreamingService
 
 
 class ChatMessage(TypedDict):
@@ -26,7 +25,6 @@ class ChatState(TypedDict):
     retrieval_service: RetrievalService
     arango_service: ArangoService
     reranker_service: RerankerService
-    streaming_service: StreamingService
 
     query: str
     limit: int # Number of chunks to retrieve from the vector database
@@ -50,7 +48,7 @@ class ChatState(TypedDict):
 
 def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], llm: BaseChatModel,
                         logger: Logger, retrieval_service: RetrievalService, arango_service: ArangoService,
-                        reranker_service: RerankerService, streaming_service: StreamingService) -> ChatState:
+                        reranker_service: RerankerService) -> ChatState:
     """Build the initial state from the chat query and user info"""
     return {
         "query": chat_query.get("query", ""),
@@ -76,6 +74,5 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
         "logger": logger,
         "retrieval_service": retrieval_service,
         "arango_service": arango_service,
-        "reranker_service": reranker_service,
-        "streaming_service": streaming_service
+        "reranker_service": reranker_service
     }

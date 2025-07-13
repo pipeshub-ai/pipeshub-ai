@@ -1,6 +1,8 @@
 # Create node functions properly designed for LangGraph
 import asyncio
 
+from langgraph.types import StreamWriter
+
 from app.config.utils.named_constants.arangodb_constants import (
     AccountType,
     CollectionNames,
@@ -15,19 +17,19 @@ from app.utils.streaming import stream_llm_response
 # 1. Decomposition Node (OPTIMIZED - reduced streaming overhead)
 async def decompose_query_node(
     state: ChatState,
+    writer: StreamWriter
 ) -> ChatState:
     """Node to decompose the query into sub-queries"""
     try:
         logger = state["logger"]
         llm = state["llm"]
 
-        # Only send streaming event if streaming service exists and is needed
-        if state.get("streaming_service") and not state["quick_mode"]:
-            state["streaming_service"].send_event("status", {"status": "decomposing", "message": "Decomposing query..."})
-
         if state["quick_mode"]:
             state["decomposed_queries"] = [{"query": state["query"]}]
             return state
+
+        logger.info("Writing status event: Decomposing query...")
+        writer({"event": "status", "data": {"status": "decomposing", "message": "Decomposing query..."}})
 
         # Import here to avoid circular imports
         from app.utils.query_decompose import QueryDecompositionService
@@ -52,16 +54,17 @@ async def decompose_query_node(
 
 # 2. Query Transformation Node (OPTIMIZED - parallel processing)
 async def transform_query_node(
-    state: ChatState
+    state: ChatState,
+    writer: StreamWriter
 ) -> ChatState:
     """Node to transform and expand the queries"""
     try:
         logger = state["logger"]
         llm = state["llm"]
 
+
         # Only send streaming event if streaming service exists
-        if state.get("streaming_service"):
-            state["streaming_service"].send_event("status", {"status": "transforming", "message": "Transforming queries..."})
+        writer({"event": "status", "data": {"status": "transforming", "message": "Transforming queries..."}})
 
         rewrite_chain, expansion_chain = setup_query_transformation(llm=llm)
 
@@ -111,6 +114,7 @@ async def transform_query_node(
 # 3. Document Retrieval Node (OPTIMIZED - simplified)
 async def retrieve_documents_node(
     state: ChatState,
+    writer: StreamWriter
 ) -> ChatState:
     """Node to retrieve documents based on queries"""
     try:
@@ -119,8 +123,7 @@ async def retrieve_documents_node(
         arango_service = state["arango_service"]
 
         # Only send streaming event if streaming service exists
-        if state.get("streaming_service"):
-            state["streaming_service"].send_event("status", {"status": "retrieving", "message": "Retrieving documents..."})
+        writer({"event": "status", "data": {"status": "retrieving", "message": "Retrieving documents..."}})
 
         if state.get("error"):
             return state
@@ -187,6 +190,7 @@ async def get_user_info_node(
 # 5. Reranker Node (OPTIMIZED - simplified)
 async def rerank_results_node(
     state: ChatState,
+    writer: StreamWriter
 ) -> ChatState:
     """Node to rerank the search results"""
     try:
@@ -194,8 +198,7 @@ async def rerank_results_node(
         reranker_service = state["reranker_service"]
 
         # Only send streaming event if streaming service exists
-        if state.get("streaming_service"):
-            state["streaming_service"].send_event("status", {"status": "reranking", "message": "Reranking results..."})
+        writer({"event": "status", "data": {"status": "reranking", "message": "Reranking results..."}})
 
         if state.get("error"):
             return state
@@ -232,6 +235,7 @@ async def rerank_results_node(
 # 6. Prompt Creation Node (OPTIMIZED - simplified)
 def prepare_prompt_node(
     state: ChatState,
+    writer: StreamWriter
 ) -> ChatState:
     """Node to prepare the prompt for the LLM"""
     try:
@@ -289,6 +293,7 @@ def prepare_prompt_node(
 # 7. Answer Generation Node (OPTIMIZED - simplified streaming)
 async def generate_answer_node(
     state: ChatState,
+    writer: StreamWriter
 ) -> ChatState:
     """Node to generate the answer from the LLM"""
     try:
@@ -296,24 +301,23 @@ async def generate_answer_node(
         llm = state["llm"]
 
         # Only send streaming event if streaming service exists
-        if state.get("streaming_service"):
-            state["streaming_service"].send_event("status", {"status": "generating", "message": "Generating answer..."})
+        writer({"event": "status", "data": {"status": "generating", "message": "Generating answer..."}})
 
         if state.get("error"):
             return state
 
-        # Check if we should stream the response
-        if state.get("streaming_service"):
+        if hasattr(llm, "astream"):
+            # Check if we should stream the response
             # Stream the LLM response similar to chatbot
             full_response = ""
-            async for chunk in stream_llm_response(llm, state["messages"], state["final_results"]):
+            async for chunk in stream_llm_response(llm, state["messages"], final_results=state["final_results"]):
                 if chunk["event"] == "answer_chunk":
                     # Send chunk to client
-                    state["streaming_service"].send_event("answer_chunk", chunk["data"])
+                    writer({"event": "answer_chunk", "data": chunk["data"]})
                     full_response += chunk["data"]["chunk"]
                 elif chunk["event"] == "complete":
                     # Final response with citations
-                    state["streaming_service"].send_event("complete", chunk["data"])
+                    writer({"event": "complete", "data": chunk["data"]})
                     full_response = chunk["data"]["answer"]
                     break
                 elif chunk["event"] == "error":
