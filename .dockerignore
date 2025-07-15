@@ -6,7 +6,6 @@ README.md
 .env
 .nyc_output
 coverage
-.nyc_output
 .vscode
 .idea
 *.log
@@ -14,10 +13,8 @@ dist
 build
 .DS_Store
 Thumbs.db
-.git
 **/__pycache__
 frontend/dist
 backend/**/dist
-*.log
 docs
 tests

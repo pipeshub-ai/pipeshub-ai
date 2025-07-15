@@ -24,10 +24,9 @@ COPY ./backend/python/pyproject.toml /app/python/
 WORKDIR /app/python
 RUN uv pip install --system -e .
 # Download NLTK and spaCy models
-RUN python -m spacy download en_core_web_sm
-RUN python -m nltk.downloader punkt
-RUN python -c "from sentence_transformers import CrossEncoder; \
-    model = CrossEncoder(model_name='BAAI/bge-reranker-base')"
+RUN python -m spacy download en_core_web_sm && \
+    python -m nltk.downloader punkt && \
+    python -c "from sentence_transformers import CrossEncoder; model = CrossEncoder(model_name='BAAI/bge-reranker-base')"
 
 # Stage 3: Node.js backend
 FROM base AS nodejs-backend
