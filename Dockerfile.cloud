@@ -26,6 +26,10 @@ RUN uv pip install --system -e .
 # Download NLTK and spaCy models
 RUN python -m spacy download en_core_web_sm
 RUN python -m nltk.downloader punkt
+RUN python -c "from langchain_huggingface import HuggingFaceEmbeddings; \
+    model = HuggingFaceEmbeddings(model_name='BAAI/bge-large-en-v1.5')"
+RUN python -c "from langchain_qdrant import FastEmbedSparse; \
+    model = FastEmbedSparse(model_name='Qdrant/BM25')"
 RUN python -c "from sentence_transformers import CrossEncoder; \
     model = CrossEncoder(model_name='BAAI/bge-reranker-base')"
 
