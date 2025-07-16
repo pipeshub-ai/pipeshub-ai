@@ -16,6 +16,7 @@ from app.config.utils.named_constants.arangodb_constants import (
 from app.setups.connector_setup import (
     initialize_enterprise_account_services_fn,
     initialize_individual_account_services_fn,
+    initialize_slack_account_services_fn,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -672,6 +673,11 @@ class EntityKafkaRouteConsumer:
                     else:
                         self.logger.error("Account Type not valid")
                         return False
+
+                    # --- SLACK LOGIC ---
+                    if Connectors.SLACK.value in enabled_apps:
+                        await initialize_slack_account_services_fn(org_id, self.app_container)
+                        self.logger.info(f"✅ Successfully initialized Slack services for org: {org_id}")
                     self.logger.info(
                         f"✅ Successfully initialized services for account type: {org['accountType']}"
                     )

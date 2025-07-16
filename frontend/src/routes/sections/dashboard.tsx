@@ -40,6 +40,10 @@ const GoogleWorkspaceIndividualPage = lazy(
   () => import('src/pages/dashboard/account/connectors/googleWorkspace-individual-config')
 );
 
+const SlackConnectorConfigPage = lazy(
+  () => import('src/pages/dashboard/account/connectors/slack-config')
+);
+
 const SamlSsoConfigPage = lazy(() => import('src/pages/dashboard/account/saml-sso-config'));
 
 // knowledge-base
@@ -320,6 +324,14 @@ export const dashboardRoutes = [
                           <BusinessAdminOnlyRoute component={GoogleWorkspaceBusinessPage} />
                         ),
                       },
+                      {
+                        path: 'slack',
+                        element: CONFIG.auth.skip ? (
+                          <SlackConnectorConfigPage />
+                        ) : (
+                          <BusinessAdminOnlyRoute component={SlackConnectorConfigPage} />
+                        ),
+                      },
                     ],
                   },
                   {
@@ -420,6 +432,14 @@ export const dashboardRoutes = [
                           <GoogleWorkspaceIndividualPage />
                         ) : (
                           <IndividualOnlyRoute component={GoogleWorkspaceIndividualPage} />
+                        ),
+                      },
+                      {
+                        path: 'slack',
+                        element: CONFIG.auth.skip ? (
+                          <SlackConnectorConfigPage />
+                        ) : (
+                          <IndividualOnlyRoute component={SlackConnectorConfigPage} />
                         ),
                       },
                     ],
