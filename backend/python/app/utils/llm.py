@@ -1,3 +1,7 @@
+import os
+
+from langchain.chat_models.base import BaseChatModel
+
 from app.config.configuration_service import ConfigurationService, config_node_constants
 from app.config.utils.named_constants.ai_models_named_constants import (
     AzureOpenAILLM,
@@ -15,7 +19,7 @@ from app.core.llm_service import (
 )
 
 
-async def get_llm(logger, config_service: ConfigurationService, llm_configs = None):
+async def get_llm(logger, config_service: ConfigurationService, llm_configs = None) -> BaseChatModel:
     if not llm_configs:
         ai_models = await config_service.get_config(config_node_constants.AI_MODELS.value)
         llm_configs = ai_models["llm"]
@@ -67,13 +71,14 @@ async def get_llm(logger, config_service: ConfigurationService, llm_configs = No
             llm_config = OllamaConfig(
                 model=config['configuration']['model'],
                 temperature=0.2,
-                api_key=config['configuration']['apiKey'],
+                api_key=config['configuration'].get('apiKey', ''),
+                base_url = config['configuration'].get('endpoint', os.getenv("OLLAMA_API_URL", "http://localhost:11434")) # Set default value directly in getenv
             )
         elif provider == LLMProvider.OPENAI_COMPATIBLE.value:
             llm_config = OpenAICompatibleLLMConfig(
                 model=config['configuration']['model'],
                 temperature=0.2,
-                api_key=config['configuration']['apiKey'],
+                api_key=config['configuration'].get('apiKey', ''),
                 endpoint=config['configuration']['endpoint'],
             )
     if not llm_config:

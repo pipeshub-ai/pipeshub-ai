@@ -57,6 +57,8 @@ services:
       - QDRANT_HOST=qdrant
       - QDRANT_GRPC_PORT=6334
       - QDRANT_PORT=6333
+
+      - OLLAMA_API_URL=http://host.docker.internal:11434
     depends_on:
       qdrant:
         condition: service_healthy
@@ -73,6 +75,8 @@ services:
     volumes:
       - pipeshub_data:/data/pipeshub
       - pipeshub_root_local:/root/.local
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   mongodb:
     image: mongo:8.0.6

@@ -2,6 +2,7 @@ import json
 import re
 from typing import Any, AsyncGenerator, Dict, Union
 
+from app.modules.qna.prompt_templates import AnswerWithMetadata
 from app.utils.citations import normalize_citations_and_chunks
 
 
@@ -65,6 +66,10 @@ async def stream_llm_response(
     prev_norm_len = 0  # length of the previous normalised answer
     emit_upto = 0
     words_in_chunk = 0
+    try:
+        llm.with_structured_output(AnswerWithMetadata)
+    except NotImplementedError as e:
+        print(f"Error adding structured output to LLM: {e}")
 
     try:
         async for token in aiter_llm_stream(llm, messages):

@@ -71,6 +71,9 @@ services:
       - pipeshub_data:/data/pipeshub
       - pipeshub_root_local:/root/.local
 
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
   mongodb:
     image: mongo:8.0.6
     restart: always

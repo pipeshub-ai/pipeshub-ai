@@ -1,3 +1,16 @@
+from typing import List, Literal
+
+from pydantic import BaseModel
+
+
+class AnswerWithMetadata(BaseModel):
+    """Schema for the answer with metadata"""
+    answer: str
+    reason: str
+    confidence: Literal["Very High", "High", "Medium", "Low"]
+    answerMatchType: Literal["Derived From Chunks", "Exact Match", "Fuzzy Match", "Inferred", "Other"]
+    chunkIndexes: List[int]
+
 qna_prompt = """
 <task>
   You are an expert AI assistant within an enterprise who can answer any question person in the company has based on companies Knowledge sources and user information.

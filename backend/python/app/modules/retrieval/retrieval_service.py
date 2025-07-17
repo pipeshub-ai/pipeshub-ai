@@ -1,4 +1,5 @@
 import asyncio
+import os
 import time
 from typing import Any, Dict, List, Optional, Union
 
@@ -138,7 +139,8 @@ class RetrievalService:
                     llm_config = OllamaConfig(
                         model=config['configuration']['model'],
                         temperature=0.2,
-                        api_key=config['configuration']['apiKey'],
+                        api_key=config['configuration'].get('apiKey', ''),
+                        base_url = config['configuration'].get('endpoint', os.getenv("OLLAMA_API_URL", "http://localhost:11434")) # Set default value directly in getenv
                     )
                 elif provider == LLMProvider.OPENAI_COMPATIBLE.value:
                     llm_config = OpenAICompatibleLLMConfig(

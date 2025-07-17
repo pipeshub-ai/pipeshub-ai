@@ -226,6 +226,11 @@ class QueryDecompositionService:
             Dictionary with queries list (with confidence), reason, and operation type
         """
         try:
+            try:
+                self.llm.with_structured_output(DecomposedQueries)
+            except NotImplementedError as e:
+                self.logger.error(f"Error adding structured output to LLM: {e}")
+
             # Create the processing chain
             decomposition_chain = (
                 {"query": RunnablePassthrough()}
