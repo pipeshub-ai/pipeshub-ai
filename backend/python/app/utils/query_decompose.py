@@ -229,7 +229,7 @@ class QueryDecompositionService:
             try:
                 self.llm.with_structured_output(DecomposedQueries)
             except NotImplementedError as e:
-                self.logger.error(f"Error adding structured output to LLM: {e}")
+                self.logger.warning(f"LLM provider or api does not support structured output: {e}")
 
             # Create the processing chain
             decomposition_chain = (

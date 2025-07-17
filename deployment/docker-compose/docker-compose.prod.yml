@@ -54,6 +54,8 @@ services:
       - QDRANT_HOST=qdrant
       - QDRANT_GRPC_PORT=6334
       - QDRANT_PORT=6333
+
+      - OLLAMA_API_URL=http://host.docker.internal:11434
     depends_on:
       qdrant:
         condition: service_healthy

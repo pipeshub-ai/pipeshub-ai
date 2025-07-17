@@ -69,7 +69,7 @@ async def stream_llm_response(
     try:
         llm.with_structured_output(AnswerWithMetadata)
     except NotImplementedError as e:
-        print(f"Error adding structured output to LLM: {e}")
+        print(f"LLM provider or api does not support structured output: {e}")
 
     try:
         async for token in aiter_llm_stream(llm, messages):
