@@ -105,8 +105,8 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
     description: 'Connect to your local Ollama instance.',
     modelPlaceholder: 'e.g., llama2, codellama, mistral',
     fields: [
-      { name: 'model', required: true },     // Optional apikey
-      { name: 'apiKey', required: false },     // Optional apikey
+      { name: 'model', required: true },    
+      { name: 'apiKey', required: false },     // API key is optional for Ollama
       { name: 'endpoint', required: false, defaultValue: 'http://host.docker.internal:11434' }, // Optional endpoint
     ],
     customFields: {

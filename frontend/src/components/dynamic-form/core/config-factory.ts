@@ -34,6 +34,34 @@ export class DynamicConfigFactory {
     };
   }
 
+  private static generateDefaultValues(
+    fields: FieldTemplate[],
+    providerId: string
+  ): Record<string, any> {
+    const defaultValues: Record<string, any> = {
+      modelType: providerId,
+      providerType: providerId,
+    };
+
+    fields.forEach((field: FieldTemplate) => {
+      // Use custom default value if provided
+      const customDefaultValue = (field as any).customDefaultValue;
+      if (customDefaultValue !== undefined) {
+        defaultValues[field.name] = customDefaultValue;
+      } else if (field.type === 'number') {
+        defaultValues[field.name] = field.name === 'port' ? 587 : 0;
+      } else if (field.type === 'checkbox') {
+        defaultValues[field.name] = false;
+      } else if (field.type === 'select' && field.options) {
+        defaultValues[field.name] = field.options[0]?.value || '';
+      } else {
+        defaultValues[field.name] = '';
+      }
+    });
+
+    return defaultValues;
+  }
+
   static generateProvider(definition: ProviderConfig): GeneratedProvider {
     // Handle special providers (like default)
     if (definition.isSpecial) {
@@ -69,10 +97,10 @@ export class DynamicConfigFactory {
         throw new Error(`Field template '${fieldName}' not found`);
       }
 
-      // 🚀 Use helper function to create a mutable field template
+      // Use helper function to create a mutable field template
       const field = this.createFieldFromTemplate(template);
 
-      // 🚀 ENHANCED: Apply custom required from field object
+      // Apply custom required from field object
       if (customRequired !== undefined) {
         field.required = customRequired;
       }
@@ -94,27 +122,7 @@ export class DynamicConfigFactory {
     // Generate Zod schema with custom validation if provided
     if (definition.customValidation) {
       const schema = definition.customValidation({});
-
-      const defaultValues: Record<string, any> = {
-        modelType: definition.id,
-        providerType: definition.id,
-      };
-
-      allFields.forEach((field: FieldTemplate) => {
-        // 🚀 ENHANCED: Use custom default value if provided
-        const customDefaultValue = (field as any).customDefaultValue;
-        if (customDefaultValue !== undefined) {
-          defaultValues[field.name] = customDefaultValue;
-        } else if (field.type === 'number') {
-          defaultValues[field.name] = field.name === 'port' ? 587 : 0;
-        } else if (field.type === 'checkbox') {
-          defaultValues[field.name] = false;
-        } else if (field.type === 'select' && field.options) {
-          defaultValues[field.name] = field.options[0]?.value || '';
-        } else {
-          defaultValues[field.name] = '';
-        }
-      });
+      const defaultValues = this.generateDefaultValues(allFields, definition.id);
 
       return {
         id: definition.id,
@@ -133,11 +141,6 @@ export class DynamicConfigFactory {
     const schemaFields: Record<string, any> = {
       modelType: z.literal(definition.id),
       providerType: z.literal(definition.id),
-    };
-
-    const defaultValues: Record<string, any> = {
-      modelType: definition.id,
-      providerType: definition.id,
     };
 
     allFields.forEach((field: FieldTemplate) => {
@@ -171,20 +174,9 @@ export class DynamicConfigFactory {
           schemaFields[field.name] = field.validation;
         }
       }
-
-      const customDefaultValue = (field as any).customDefaultValue;
-      if (customDefaultValue !== undefined) {
-        defaultValues[field.name] = customDefaultValue;
-      } else if (field.type === 'number') {
-        defaultValues[field.name] = field.name === 'port' ? 587 : 0;
-      } else if (field.type === 'checkbox') {
-        defaultValues[field.name] = false;
-      } else if (field.type === 'select' && field.options) {
-        defaultValues[field.name] = field.options[0]?.value || '';
-      } else {
-        defaultValues[field.name] = '';
-      }
     });
+
+    const defaultValues = this.generateDefaultValues(allFields, definition.id);
 
     return {
       id: definition.id,
