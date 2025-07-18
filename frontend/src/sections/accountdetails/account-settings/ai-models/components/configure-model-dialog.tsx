@@ -19,7 +19,6 @@ import {
   AccordionSummary,
   AccordionDetails,
   Typography,
-  Snackbar
 } from '@mui/material';
 
 import { Iconify } from 'src/components/iconify';
@@ -478,7 +477,7 @@ const ConfigureModelDialog = ({ open, onClose, onSave, modelType }: ConfigureMod
               position: 'fixed',
               top: 72,
               right: 24,
-              zIndex: 9999, 
+              zIndex: theme.zIndex.snackbar, 
               pointerEvents: 'none',
             }}
           >
