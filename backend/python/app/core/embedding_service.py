@@ -41,7 +41,11 @@ class GeminiEmbeddingConfig(BaseEmbeddingConfig):
     google_api_endpoint: Optional[str] = None
 
 class OllamaEmbeddingConfig(BaseEmbeddingConfig):
-    """Ollama embedding models"""
+    """Configuration for Ollama embedding models.
+
+    Attributes:
+        base_url: The base URL of the Ollama server.
+    """
     base_url: str
 
 class CohereEmbeddingConfig(BaseEmbeddingConfig):
