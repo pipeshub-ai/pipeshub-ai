@@ -32,11 +32,11 @@ async def decompose_query_node(
         writer({"event": "status", "data": {"status": "decomposing", "message": "Decomposing query..."}})
 
         # Import here to avoid circular imports
-        from app.utils.query_decompose import QueryDecompositionService
+        from app.utils.query_decompose import QueryDecompositionExpansionService
 
         # Call the async function directly
-        decomposition_service = QueryDecompositionService(llm=llm, logger=logger)
-        decomposition_result = await decomposition_service.decompose_query(state["query"])
+        decomposition_service = QueryDecompositionExpansionService(llm=llm, logger=logger)
+        decomposition_result = await decomposition_service.transform_query(state["query"])
 
         decomposed_queries = decomposition_result.get("queries", [])
 

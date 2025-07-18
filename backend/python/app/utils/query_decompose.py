@@ -27,7 +27,7 @@ class DecomposedQueries(BaseModel):
     operation: str = Field(description="The operation performed: decompose_and_expand, expansion, or none")
 
 
-class QueryDecompositionService:
+class QueryDecompositionExpansionService:
     """Service for intelligently decomposing and expanding queries using LLM-driven decisions"""
 
     def __init__(self, llm, logger) -> None:
@@ -215,7 +215,7 @@ class QueryDecompositionService:
             self.logger.error(f"Response parsing error: {str(e)}")
             return {"error": f"Response parsing failed: {str(e)}"}
 
-    async def decompose_query(self, query: str) -> Dict[str, Any]:
+    async def transform_query(self, query: str) -> Dict[str, Any]:
         """
         Use LLM to intelligently analyze and process queries with decomposition/expansion
 
@@ -241,7 +241,6 @@ class QueryDecompositionService:
 
             # Execute the chain
             result = await decomposition_chain.ainvoke(query)
-
             # Handle errors from parsing
             if "error" in result:
                 self.logger.error(f"LLM processing failed: {result['error']}")
@@ -333,7 +332,7 @@ class QueryDecompositionService:
             Dictionary with processed queries list (with confidence), reason, and operation type
         """
         # The LLM will make the intelligent decision about whether expansion is appropriate
-        return await self.decompose_query(query)
+        return await self.transform_query(query)
 
     async def get_query_analysis(self, query: str) -> Dict[str, Any]:
         """

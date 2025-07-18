@@ -17,7 +17,7 @@ from app.modules.retrieval.retrieval_arango import ArangoService
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.setups.query_setup import AppContainer
 from app.utils.citations import process_citations
-from app.utils.query_decompose import QueryDecompositionService
+from app.utils.query_decompose import QueryDecompositionExpansionService
 from app.utils.query_transform import (
     setup_followup_query_transformation,
 )
@@ -114,8 +114,8 @@ async def askAIStream(
             decomposed_queries = []
 
             if not query_info.quickMode:
-                decomposition_service = QueryDecompositionService(llm, logger=logger)
-                decomposition_result = await decomposition_service.decompose_query(query_info.query)
+                decomposition_service = QueryDecompositionExpansionService(llm, logger=logger)
+                decomposition_result = await decomposition_service.transform_query(query_info.query)
                 decomposed_queries = decomposition_result["queries"]
 
             if not decomposed_queries:
@@ -303,8 +303,8 @@ async def askAI(
 
         decomposed_queries = []
         if not query_info.quickMode:
-            decomposition_service = QueryDecompositionService(llm, logger=logger)
-            decomposition_result = await decomposition_service.decompose_query(
+            decomposition_service = QueryDecompositionExpansionService(llm, logger=logger)
+            decomposition_result = await decomposition_service.transform_query(
                 query_info.query
             )
             decomposed_queries = decomposition_result["queries"]
