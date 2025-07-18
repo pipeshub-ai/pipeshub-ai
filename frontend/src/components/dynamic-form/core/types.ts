@@ -1,7 +1,3 @@
-// ===================================================================
-// 📁 src/entities/dynamic-forms/core/types.ts
-// ===================================================================
-
 // BASE TYPES
 export interface BaseFormValues {
   modelType?: string;

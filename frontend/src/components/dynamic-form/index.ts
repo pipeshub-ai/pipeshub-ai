@@ -1,7 +1,3 @@
-// ===================================================================
-// 📁 src/entities/dynamic-forms/index.ts - MAIN EXPORT BARREL
-// ===================================================================
-
 // Core exports
 export * from './core/field-templates';
 export * from './core/providers';

@@ -1,7 +1,3 @@
-// ===================================================================
-// 📁 src/entities/dynamic-forms/hooks/use-dynamic-form.ts
-// ===================================================================
-
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useForm, UseFormReturn } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -78,12 +74,52 @@ export const useDynamicForm = (
     control,
     handleSubmit,
     reset,
-    formState: { isValid, isDirty, errors },
+    formState: { isDirty, errors },
     getValues,
     watch,
     clearErrors,
     providerConfig,
   } = useDynamicProviderForm(configType, currentProvider);
+
+  const calculateIsValid = useCallback(() => {
+    if (!providerConfig?.allFields) return false;
+
+    const formData = getValues();
+    const requiredFields = providerConfig.allFields.filter((field: any) => field.required === true);
+    
+    // Check if we have any data
+    const nonMetaKeys = Object.keys(formData).filter(
+      (key) => key !== 'providerType' && key !== 'modelType' && key !== '_provider'
+    );
+    const hasData = nonMetaKeys.some((key) => {
+      const value = formData[key];
+      return value && value.toString().trim() !== '';
+    });
+
+    // Check if all required fields are filled
+    const allRequiredFilled = requiredFields.every((field: any) => {
+      const value = formData[field.name];
+      return value && value.toString().trim() !== '';
+    });
+
+    return hasData && allRequiredFilled;
+  }, [providerConfig, getValues]);
+
+  const [isValid, setIsValid] = useState(false);
+
+  useEffect(() => {
+    if (isSwitchingProvider) return () => {};
+
+    const subscription = watch(() => {
+      const newIsValid = calculateIsValid();
+      setIsValid(newIsValid);
+    });
+
+    // Initial calculation
+    setIsValid(calculateIsValid());
+
+    return () => subscription.unsubscribe();
+  }, [watch, calculateIsValid, isSwitchingProvider]);
 
   useEffect(() => {
     if (isSwitchingProvider) return () => {};

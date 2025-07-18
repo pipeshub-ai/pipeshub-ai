@@ -1,5 +1,3 @@
-// src/entities/dynamic-forms/core/field-templates.ts
-
 import { z } from 'zod';
 import keyIcon from '@iconify-icons/mdi/key';
 import linkIcon from '@iconify-icons/mdi/link';
@@ -24,6 +22,7 @@ export interface FieldTemplate {
   acceptedFileTypes?: string[];
   maxFileSize?: number;
   fileProcessor?: (data: any) => any;
+  [key: string]: any;
 }
 
 export const FIELD_TEMPLATES = {
@@ -339,3 +338,5 @@ export const FIELD_TEMPLATES = {
     validation: z.string().optional(),
   },
 } as const;
+
+export type FieldTemplateName = keyof typeof FIELD_TEMPLATES;

@@ -1,16 +1,18 @@
-// ===================================================================
-// 📁 src/entities/dynamic-forms/core/providers.ts
-// ===================================================================
-
 import { z } from 'zod';
-import { FIELD_TEMPLATES, FieldTemplate } from './field-templates';
+import { FIELD_TEMPLATES, FieldTemplate, FieldTemplateName } from './field-templates';
+
+export interface FieldConfig {
+  name: FieldTemplateName;
+  required?: boolean; // Optional, defaults to template's required value
+  defaultValue?: any;
+}
 
 export interface ProviderConfig {
   id: string;
   label: string;
   description?: string;
   modelPlaceholder?: string;
-  fields?: readonly (keyof typeof FIELD_TEMPLATES)[];
+  fields?: readonly (FieldTemplateName | FieldConfig)[];
   customFields?: Record<string, Partial<FieldTemplate>>;
   customValidation?: (fields: any) => z.ZodType;
   isSpecial?: boolean;
@@ -94,6 +96,22 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
     customFields: {
       endpoint: {
         placeholder: 'e.g., https://api.together.xyz/v1/',
+      },
+    },
+  },
+  {
+    id: 'ollama',
+    label: 'Ollama',
+    description: 'Connect to your local Ollama instance.',
+    modelPlaceholder: 'e.g., llama2, codellama, mistral',
+    fields: [
+      { name: 'model', required: true },     // Optional apikey
+      { name: 'apiKey', required: false },     // Optional apikey
+      { name: 'endpoint', required: false, defaultValue: 'http://host.docker.internal:11434' }, // Optional endpoint
+    ],
+    customFields: {
+      endpoint: {
+        placeholder: 'http://localhost:11434/v1',
       },
     },
   },

@@ -60,7 +60,7 @@ const DynamicField = memo(({
   name,
   label,
   control,
-  required = true,
+  required = false,
   isEditing,
   isDisabled = false,
   type = 'text',
@@ -613,7 +613,7 @@ const DynamicField = memo(({
         render={({ field, fieldState }) => (
           <TextField
             {...field}
-            label={`${label}${required ? ' *' : ''}`}
+            label={label}
             fullWidth
             size="small"
             multiline={multiline}

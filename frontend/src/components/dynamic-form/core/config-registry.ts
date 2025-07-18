@@ -1,7 +1,3 @@
-// ===================================================================
-// 📁 src/entities/dynamic-forms/core/config-registry.ts
-// ===================================================================
-
 import { DynamicConfigFactory, GeneratedProvider } from "./config-factory";
 import { EMBEDDING_PROVIDERS, LLM_PROVIDERS, SMTP_PROVIDERS, STORAGE_PROVIDERS, URL_PROVIDERS } from "./providers";
 
