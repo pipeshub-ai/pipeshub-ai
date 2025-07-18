@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom';
 import { useRef, useState, useCallback, useEffect } from 'react';
 import settingsIcon from '@iconify-icons/eva/settings-2-outline';
 import closeIcon from '@iconify-icons/eva/close-outline';
@@ -18,10 +19,10 @@ import {
   AccordionSummary,
   AccordionDetails,
   Typography,
+  Snackbar
 } from '@mui/material';
 
 import { Iconify } from 'src/components/iconify';
-import axios from 'src/utils/axios';
 
 import { createScrollableContainerStyle } from 'src/sections/qna/chatbot/utils/styles/scrollbar';
 import LlmConfigForm, { LlmConfigFormRef } from './llm-config-form';
@@ -49,6 +50,7 @@ const ConfigureModelDialog = ({ open, onClose, onSave, modelType }: ConfigureMod
   const [isSaving, setIsSaving] = useState(false);
   const [dialogError, setDialogError] = useState<string | null>(null);
   const scrollableStyles = createScrollableContainerStyle(theme);
+  const [healthCheckInfo, setHealthCheckInfo] = useState<string | null>(null);
 
   const [expandedAccordion, setExpandedAccordion] = useState<string | false>(false);
   const llmConfigFormRef = useRef<LlmConfigFormRef>(null);
@@ -61,6 +63,7 @@ const ConfigureModelDialog = ({ open, onClose, onSave, modelType }: ConfigureMod
       setIsSaving(false);
       setIsLlmValid(false);
       setIsEmbeddingValid(false);
+      setHealthCheckInfo(null);
     }
   }, [open, modelType]);
 
@@ -156,14 +159,18 @@ const ConfigureModelDialog = ({ open, onClose, onSave, modelType }: ConfigureMod
         return;
       }
 
-      // Single API call to update both configurations
-      await updateBothModelConfigs(llmFormData, embeddingFormData);
-
       // Determine success message based on what was saved
       const savedConfigs = [];
       if (llmFormData) savedConfigs.push('LLM');
       if (embeddingFormData) savedConfigs.push('Embedding');
+      setHealthCheckInfo(
+        `Running health checks for ${savedConfigs.join(' and ')} model${savedConfigs.length > 1 ? 's' : ''}. This may take a few moments...`
+      );
 
+      // Single API call to update both configurations
+      await updateBothModelConfigs(llmFormData, embeddingFormData);
+
+      setHealthCheckInfo(null);
       const successMessage = `${savedConfigs.join(' and ')} configuration${savedConfigs.length > 1 ? 's' : ''} updated successfully`;
 
       onSave({
@@ -178,7 +185,7 @@ const ConfigureModelDialog = ({ open, onClose, onSave, modelType }: ConfigureMod
       const errorMessage =
         error?.response?.data?.message || error?.message || 'An unexpected error occurred';
       setDialogError(`Failed to save configurations: ${errorMessage}`);
-
+      setHealthCheckInfo(null);
       onSave({
         success: false,
         error: `Failed to save configurations ${errorMessage}`,
@@ -196,271 +203,311 @@ const ConfigureModelDialog = ({ open, onClose, onSave, modelType }: ConfigureMod
   const embeddingTitle = getModelTitle('embedding');
 
   return (
-    <Dialog
-      open={open}
-      onClose={handleClose}
-      maxWidth="md"
-      fullWidth
-      BackdropProps={{
-        sx: {
-          backdropFilter: 'blur(1px)',
-          backgroundColor: alpha(theme.palette.common.black, 0.3),
-        },
-      }}
-      PaperProps={{
-        sx: {
-          borderRadius: 1,
-          boxShadow: '0 10px 35px rgba(0, 0, 0, 0.1)',
-          overflow: 'hidden',
-        },
-      }}
-    >
-      <DialogTitle
-        sx={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          p: 2.5,
-          pl: 3,
-          color: theme.palette.text.primary,
-          borderBottom: '1px solid',
-          borderColor: theme.palette.divider,
-          fontWeight: 500,
-          fontSize: '1rem',
-          m: 0,
+    <>
+      <Dialog
+        open={open}
+        onClose={handleClose}
+        maxWidth="md"
+        fullWidth
+        BackdropProps={{
+          sx: {
+            backdropFilter: 'blur(1px)',
+            backgroundColor: alpha(theme.palette.common.black, 0.3),
+          },
+        }}
+        PaperProps={{
+          sx: {
+            borderRadius: 1,
+            boxShadow: '0 10px 35px rgba(0, 0, 0, 0.1)',
+            // overflow: 'hidden',
+          },
         }}
       >
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+        <DialogTitle
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            p: 2.5,
+            pl: 3,
+            color: theme.palette.text.primary,
+            borderBottom: '1px solid',
+            borderColor: theme.palette.divider,
+            fontWeight: 500,
+            fontSize: '1rem',
+            m: 0,
+          }}
+        >
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+            <Box
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: 32,
+                height: 32,
+                borderRadius: '6px',
+                bgcolor: alpha(theme.palette.primary.main, 0.1),
+                color: theme.palette.primary.main,
+              }}
+            >
+              <Iconify icon={settingsIcon} width={18} height={18} />
+            </Box>
+            Configure AI Model Integrations
+          </Box>
+
+          <IconButton
+            onClick={handleClose}
+            size="small"
+            sx={{ color: theme.palette.text.secondary }}
+            aria-label="close"
+          >
+            <Iconify icon={closeIcon} width={20} height={20} />
+          </IconButton>
+        </DialogTitle>
+
+        <DialogContent
+          sx={{
+            p: 0,
+            '&.MuiDialogContent-root': {
+              pt: 3,
+              px: 3,
+              pb: 0,
+            },
+            ...scrollableStyles,
+          }}
+        >
+          {dialogError && (
+            <Alert
+              severity="error"
+              sx={{
+                mb: 3,
+                borderRadius: 1,
+              }}
+            >
+              {dialogError}
+            </Alert>
+          )}
+
+          <Box sx={{ mb: 3 }}>
+            {/* LLM Configuration Accordion */}
+            <Accordion
+              expanded={expandedAccordion === 'llm'}
+              onChange={handleLlmAccordionChange}
+              sx={{
+                mb: 2,
+                borderRadius: 1,
+                border: '1px solid',
+                borderColor: theme.palette.divider,
+                '&:before': {
+                  display: 'none',
+                },
+                '&.Mui-expanded': {
+                  boxShadow: theme.customShadows.z8,
+                },
+              }}
+            >
+              <AccordionSummary
+                expandIcon={<Iconify icon={expandMoreIcon} />}
+                sx={{
+                  px: 2.5,
+                  py: 1.5,
+                  minHeight: 64,
+                  '&.Mui-expanded': {
+                    minHeight: 64,
+                  },
+                  '& .MuiAccordionSummary-content': {
+                    margin: '12px 0',
+                    '&.Mui-expanded': {
+                      margin: '12px 0',
+                    },
+                  },
+                }}
+              >
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                  <Box
+                    sx={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      width: 40,
+                      height: 40,
+                      borderRadius: '8px',
+                      bgcolor: alpha(llmColor, 0.1),
+                      color: llmColor,
+                    }}
+                  >
+                    <Iconify icon={llmIcon} width={20} height={20} />
+                  </Box>
+                  <Box>
+                    <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+                      {llmTitle}
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      Configure large language model settings
+                    </Typography>
+                  </Box>
+                </Box>
+              </AccordionSummary>
+              <AccordionDetails sx={{ p: 0, pt: 0 }}>
+                <Box sx={{ px: 2.5, pb: 2.5 }}>
+                  <LlmConfigForm
+                    onValidationChange={handleLlmValidationChange}
+                    ref={llmConfigFormRef}
+                  />
+                </Box>
+              </AccordionDetails>
+            </Accordion>
+
+            {/* Embedding Configuration Accordion */}
+            <Accordion
+              expanded={expandedAccordion === 'embedding'}
+              onChange={handleEmbeddingAccordionChange}
+              sx={{
+                borderRadius: 1,
+                border: '1px solid',
+                borderColor: theme.palette.divider,
+                '&:before': {
+                  display: 'none',
+                },
+                '&.Mui-expanded': {
+                  boxShadow: theme.customShadows.z8,
+                },
+              }}
+            >
+              <AccordionSummary
+                expandIcon={<Iconify icon={expandMoreIcon} />}
+                sx={{
+                  px: 2.5,
+                  py: 1.5,
+                  minHeight: 64,
+                  '&.Mui-expanded': {
+                    minHeight: 64,
+                  },
+                  '& .MuiAccordionSummary-content': {
+                    margin: '12px 0',
+                    '&.Mui-expanded': {
+                      margin: '12px 0',
+                    },
+                  },
+                }}
+              >
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                  <Box
+                    sx={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      width: 40,
+                      height: 40,
+                      borderRadius: '8px',
+                      bgcolor: alpha(embeddingColor, 0.1),
+                      color: embeddingColor,
+                    }}
+                  >
+                    <Iconify icon={embeddingIcon} width={20} height={20} />
+                  </Box>
+                  <Box>
+                    <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+                      {embeddingTitle}
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      Configure embedding model settings for search and retrieval
+                    </Typography>
+                  </Box>
+                </Box>
+              </AccordionSummary>
+              <AccordionDetails sx={{ p: 0, pt: 0 }}>
+                <Box sx={{ px: 2.5, pb: 2.5 }}>
+                  <EmbeddingConfigForm
+                    onValidationChange={handleEmbeddingValidationChange}
+                    ref={embeddingConfigFormRef}
+                  />
+                </Box>
+              </AccordionDetails>
+            </Accordion>
+          </Box>
+        </DialogContent>
+
+        <DialogActions
+          sx={{
+            p: 2.5,
+            borderTop: '1px solid',
+            borderColor: theme.palette.divider,
+            bgcolor: alpha(theme.palette.background.default, 0.5),
+          }}
+        >
+          <Button
+            variant="text"
+            onClick={handleClose}
+            sx={{
+              color: theme.palette.text.secondary,
+              fontWeight: 500,
+              '&:hover': {
+                backgroundColor: alpha(theme.palette.divider, 0.8),
+              },
+            }}
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            onClick={handleSaveClick}
+            disabled={!isValid || isSaving}
+            sx={{
+              bgcolor: theme.palette.primary.main,
+              boxShadow: 'none',
+              fontWeight: 500,
+              '&:hover': {
+                bgcolor: theme.palette.primary.dark,
+                boxShadow: 'none',
+              },
+              px: 3,
+            }}
+          >
+            {isSaving ? 'Saving...' : 'Save Configurations'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Health Check Snackbar - positioned above dialog */}
+     {healthCheckInfo &&
+        createPortal(
           <Box
             sx={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              width: 32,
-              height: 32,
-              borderRadius: '6px',
-              bgcolor: alpha(theme.palette.primary.main, 0.1),
-              color: theme.palette.primary.main,
+              position: 'fixed',
+              top: 72,
+              right: 24,
+              zIndex: 9999, 
+              pointerEvents: 'none',
             }}
           >
-            <Iconify icon={settingsIcon} width={18} height={18} />
-          </Box>
-          Configure AI Model Integrations
-        </Box>
-
-        <IconButton
-          onClick={handleClose}
-          size="small"
-          sx={{ color: theme.palette.text.secondary }}
-          aria-label="close"
-        >
-          <Iconify icon={closeIcon} width={20} height={20} />
-        </IconButton>
-      </DialogTitle>
-
-      <DialogContent
-        sx={{
-          p: 0,
-          '&.MuiDialogContent-root': {
-            pt: 3,
-            px: 3,
-            pb: 0,
-          },
-          ...scrollableStyles,
-        }}
-      >
-        {dialogError && (
-          <Alert
-            severity="error"
-            sx={{
-              mb: 3,
-              borderRadius: 1,
-            }}
-          >
-            {dialogError}
-          </Alert>
+            <Alert
+              severity="info"
+              variant="filled"
+              sx={{
+                minWidth: 320,
+                boxShadow:
+                  theme.palette.mode === 'dark'
+                    ? '0px 8px 24px rgba(0, 0, 0, 0.5)'
+                    : '0px 8px 24px rgba(0, 0, 0, 0.2)',
+                '& .MuiAlert-icon': {
+                  animation: 'pulse 2s infinite',
+                },
+                fontSize: '0.8125rem',
+                '@keyframes pulse': {
+                  '0%': { opacity: 0.8 },
+                  '50%': { opacity: 1 },
+                  '100%': { opacity: 0.8 },
+                },
+              }}
+            >
+              {healthCheckInfo}
+            </Alert>
+          </Box>,
+          document.body // Render directly to body
         )}
-
-        <Box sx={{ mb: 3 }}>
-          {/* LLM Configuration Accordion */}
-          <Accordion
-            expanded={expandedAccordion === 'llm'}
-            onChange={handleLlmAccordionChange}
-            sx={{
-              mb: 2,
-              borderRadius: 1,
-              border: '1px solid',
-              borderColor: theme.palette.divider,
-              '&:before': {
-                display: 'none',
-              },
-              '&.Mui-expanded': {
-                boxShadow: theme.customShadows.z8,
-              },
-            }}
-          >
-            <AccordionSummary
-              expandIcon={<Iconify icon={expandMoreIcon} />}
-              sx={{
-                px: 2.5,
-                py: 1.5,
-                minHeight: 64,
-                '&.Mui-expanded': {
-                  minHeight: 64,
-                },
-                '& .MuiAccordionSummary-content': {
-                  margin: '12px 0',
-                  '&.Mui-expanded': {
-                    margin: '12px 0',
-                  },
-                },
-              }}
-            >
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                <Box
-                  sx={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    width: 40,
-                    height: 40,
-                    borderRadius: '8px',
-                    bgcolor: alpha(llmColor, 0.1),
-                    color: llmColor,
-                  }}
-                >
-                  <Iconify icon={llmIcon} width={20} height={20} />
-                </Box>
-                <Box>
-                  <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-                    {llmTitle}
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    Configure large language model settings
-                  </Typography>
-                </Box>
-              </Box>
-            </AccordionSummary>
-            <AccordionDetails sx={{ p: 0, pt: 0 }}>
-              <Box sx={{ px: 2.5, pb: 2.5 }}>
-                <LlmConfigForm
-                  onValidationChange={handleLlmValidationChange}
-                  ref={llmConfigFormRef}
-                />
-              </Box>
-            </AccordionDetails>
-          </Accordion>
-
-          {/* Embedding Configuration Accordion */}
-          <Accordion
-            expanded={expandedAccordion === 'embedding'}
-            onChange={handleEmbeddingAccordionChange}
-            sx={{
-              borderRadius: 1,
-              border: '1px solid',
-              borderColor: theme.palette.divider,
-              '&:before': {
-                display: 'none',
-              },
-              '&.Mui-expanded': {
-                boxShadow: theme.customShadows.z8,
-              },
-            }}
-          >
-            <AccordionSummary
-              expandIcon={<Iconify icon={expandMoreIcon} />}
-              sx={{
-                px: 2.5,
-                py: 1.5,
-                minHeight: 64,
-                '&.Mui-expanded': {
-                  minHeight: 64,
-                },
-                '& .MuiAccordionSummary-content': {
-                  margin: '12px 0',
-                  '&.Mui-expanded': {
-                    margin: '12px 0',
-                  },
-                },
-              }}
-            >
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                <Box
-                  sx={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    width: 40,
-                    height: 40,
-                    borderRadius: '8px',
-                    bgcolor: alpha(embeddingColor, 0.1),
-                    color: embeddingColor,
-                  }}
-                >
-                  <Iconify icon={embeddingIcon} width={20} height={20} />
-                </Box>
-                <Box>
-                  <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-                    {embeddingTitle}
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    Configure embedding model settings for search and retrieval
-                  </Typography>
-                </Box>
-              </Box>
-            </AccordionSummary>
-            <AccordionDetails sx={{ p: 0, pt: 0 }}>
-              <Box sx={{ px: 2.5, pb: 2.5 }}>
-                <EmbeddingConfigForm
-                  onValidationChange={handleEmbeddingValidationChange}
-                  ref={embeddingConfigFormRef}
-                />
-              </Box>
-            </AccordionDetails>
-          </Accordion>
-        </Box>
-      </DialogContent>
-
-      <DialogActions
-        sx={{
-          p: 2.5,
-          borderTop: '1px solid',
-          borderColor: theme.palette.divider,
-          bgcolor: alpha(theme.palette.background.default, 0.5),
-        }}
-      >
-        <Button
-          variant="text"
-          onClick={handleClose}
-          sx={{
-            color: theme.palette.text.secondary,
-            fontWeight: 500,
-            '&:hover': {
-              backgroundColor: alpha(theme.palette.divider, 0.8),
-            },
-          }}
-        >
-          Cancel
-        </Button>
-        <Button
-          variant="contained"
-          onClick={handleSaveClick}
-          disabled={!isValid || isSaving}
-          sx={{
-            bgcolor: theme.palette.primary.main,
-            boxShadow: 'none',
-            fontWeight: 500,
-            '&:hover': {
-              bgcolor: theme.palette.primary.dark,
-              boxShadow: 'none',
-            },
-            px: 3,
-          }}
-        >
-          {isSaving ? 'Saving...' : 'Save Configurations'}
-        </Button>
-      </DialogActions>
-    </Dialog>
+    </>
   );
 };
 
