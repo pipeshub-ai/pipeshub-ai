@@ -25,6 +25,7 @@ class EmbeddingProvider(Enum):
     SENTENCE_TRANSFOMERS = "sentenceTransformers"
     GEMINI = "gemini"
     COHERE = "cohere"
+    OLLAMA = "ollama"
     DEFAULT = "default"
 
 class AzureOpenAILLM(Enum):

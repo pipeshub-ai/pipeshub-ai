@@ -28,6 +28,7 @@ from app.core.embedding_service import (
     EmbeddingFactory,
     GeminiEmbeddingConfig,
     HuggingFaceEmbeddingConfig,
+    OllamaEmbeddingConfig,
     OpenAICompatibleEmbeddingConfig,
     OpenAIEmbeddingConfig,
     SentenceTransformersEmbeddingConfig,
@@ -207,7 +208,7 @@ class RetrievalService:
         embedding_configs: Optional[List[Dict[str, Any]]] = None
     ) -> Optional[Union[str, AzureEmbeddingConfig, OpenAIEmbeddingConfig,
                        HuggingFaceEmbeddingConfig, SentenceTransformersEmbeddingConfig,
-                       GeminiEmbeddingConfig, CohereEmbeddingConfig]]:
+                       GeminiEmbeddingConfig, CohereEmbeddingConfig, OllamaEmbeddingConfig]]:
         """
         Get embedding model configuration from provided configs or fetch from config service.
 
@@ -263,6 +264,12 @@ class RetrievalService:
                       api_key=config['configuration']['apiKey'],
                       organization_id=config['configuration'].get('organizationId', None),
                       endpoint=config['configuration']['endpoint'],
+                    )
+                elif provider == EmbeddingProvider.OLLAMA.value:
+                    embedding_model = OllamaEmbeddingConfig(
+                      model=config['configuration']['model'],
+                      api_key=config['configuration'].get('apiKey', ''),
+                      base_url=config['configuration'].get('endpoint', os.getenv("OLLAMA_API_URL", "http://localhost:11434"))
                     )
                 elif provider == EmbeddingProvider.DEFAULT.value:
                     embedding_model = DEFAULT_EMBEDDING_MODEL

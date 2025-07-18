@@ -40,6 +40,10 @@ class GeminiEmbeddingConfig(BaseEmbeddingConfig):
     title: Optional[str] = None
     google_api_endpoint: Optional[str] = None
 
+class OllamaEmbeddingConfig(BaseEmbeddingConfig):
+    """Ollama embedding models"""
+    base_url: str
+
 class CohereEmbeddingConfig(BaseEmbeddingConfig):
     """Cohere embedding models"""
 
@@ -49,7 +53,7 @@ class EmbeddingFactory:
     @staticmethod
     def create_embedding_model(config: Union[AzureEmbeddingConfig, OpenAIEmbeddingConfig,
                                             HuggingFaceEmbeddingConfig, SentenceTransformersEmbeddingConfig,
-                                            GeminiEmbeddingConfig, CohereEmbeddingConfig, OpenAICompatibleEmbeddingConfig, None]) -> BaseEmbeddingConfig:
+                                            GeminiEmbeddingConfig, CohereEmbeddingConfig, OpenAICompatibleEmbeddingConfig, OllamaEmbeddingConfig, None]) -> BaseEmbeddingConfig:
         if isinstance(config, AzureEmbeddingConfig):
             from langchain_openai.embeddings import AzureOpenAIEmbeddings
 
@@ -120,11 +124,21 @@ class EmbeddingFactory:
             )
 
         elif isinstance(config, OpenAICompatibleEmbeddingConfig):
+            from langchain_openai.embeddings import OpenAIEmbeddings
+
             return OpenAIEmbeddings(
                 model=config.model,
                 api_key=config.api_key,
                 organization=config.organization_id,
                 base_url=config.endpoint
+            )
+
+        elif isinstance(config, OllamaEmbeddingConfig):
+            from langchain_ollama import OllamaEmbeddings
+
+            return OllamaEmbeddings(
+                model=config.model,
+                base_url=config.base_url
             )
 
         raise ValueError(f"Unsupported embedding config type: {type(config)}")

@@ -166,6 +166,16 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
     modelPlaceholder: 'e.g., all-MiniLM-L6-v2',
     fields: ['model'],
   },
+  {
+    id: 'ollama',
+    label: 'Ollama',
+    description: 'Connect to your local Ollama instance.',
+    modelPlaceholder: 'e.g., mxbai-embed-large',
+    fields: [
+      { name: 'model', required: true },    
+      { name: 'endpoint', required: false, defaultValue: 'http://host.docker.internal:11434' }, // Optional endpoint
+    ],
+  },
 ] as const;
 
 // STORAGE PROVIDERS
