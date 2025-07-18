@@ -500,7 +500,6 @@ class IndexingPipeline:
                 elif provider == EmbeddingProvider.OLLAMA.value:
                     embedding_model = OllamaEmbeddingConfig(
                         model=config['configuration']['model'],
-                        api_key=config['configuration'].get('apiKey', ''),
                         base_url=config['configuration'].get('endpoint', os.getenv("OLLAMA_API_URL", "http://localhost:11434"))
                     )
                 elif provider == EmbeddingProvider.DEFAULT.value:
