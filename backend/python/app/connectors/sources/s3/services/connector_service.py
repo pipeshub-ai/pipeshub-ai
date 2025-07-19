@@ -10,7 +10,14 @@ from app.connectors.core.interfaces.data_service.data_service import IDataServic
 from app.connectors.core.interfaces.error.error import IErrorHandlingService
 from app.connectors.core.interfaces.event_service.event_service import IEventService
 from app.connectors.enums.enums import ConnectorType
-from app.connectors.sources.s3.const.const import AWS_S3_API_VERSION
+from app.connectors.sources.s3.const.const import (
+    AWS_S3_API_VERSION,
+    OPERATION_GET_BUCKET_METADATA,
+    OPERATION_GET_OBJECT_CONTENT,
+    OPERATION_LIST_BUCKET_OBJECTS,
+    OPERATION_LIST_BUCKETS,
+    OPERATION_SEARCH_OBJECTS,
+)
 
 
 class S3ConnectorService(BaseConnectorService):
@@ -30,8 +37,6 @@ class S3ConnectorService(BaseConnectorService):
             logger, connector_type, config, auth_service,
             data_service, error_service, event_service
         )
-        self.auth_service = auth_service
-        self.data_service = data_service
 
     async def test_connection(self) -> bool:
         """Test S3 connection using aioboto3"""
@@ -79,11 +84,11 @@ class S3ConnectorService(BaseConnectorService):
             "aws_region": self.auth_service.get_region_name() if hasattr(self.auth_service, 'get_region_name') else None,
             "api_version": AWS_S3_API_VERSION,
             "supported_operations": [
-                "list_buckets",
-                "list_bucket_objects",
-                "get_bucket_metadata",
-                "get_object_content",
-                "search_objects"
+                OPERATION_LIST_BUCKETS,
+                OPERATION_LIST_BUCKET_OBJECTS,
+                OPERATION_GET_BUCKET_METADATA,
+                OPERATION_GET_OBJECT_CONTENT,
+                OPERATION_SEARCH_OBJECTS
             ],
         }
 

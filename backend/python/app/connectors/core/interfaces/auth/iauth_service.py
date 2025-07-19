@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 
 class AuthenticationType(Enum):
@@ -39,5 +39,10 @@ class IAuthenticationService(ABC):
     @abstractmethod
     def get_auth_headers(self) -> Dict[str, str]:
         """Get authentication headers for API calls"""
+        pass
+
+    @abstractmethod
+    def get_service(self) -> Optional[object]:
+        """Get the underlying service instance (e.g., aioboto3.Session for AWS)"""
         pass
 

@@ -9,7 +9,7 @@ REGION_NAME = "region_name"
 AWS_SESSION_TOKEN = "aws_session_token"
 
 # Default Regions
-DEFAULT_REGION = "us-east-1"
+US_EAST_REGION = "us-east-1"
 AP_SOUTH_REGION = "ap-south-1"
 
 # AWS S3 Scopes

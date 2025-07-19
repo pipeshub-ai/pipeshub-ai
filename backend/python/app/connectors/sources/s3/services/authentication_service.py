@@ -113,9 +113,9 @@ class S3AuthenticationService(BaseAuthenticationService):
             if not self.session:
                 return False
 
-            # Test by listing S3 buckets using aioboto3
-            async with self.session.client('s3') as s3_client:
-                await s3_client.list_buckets()
+            # Use STS GetCallerIdentity for a lightweight validation check
+            async with self.session.client('sts') as sts_client:
+                await sts_client.get_caller_identity()
                 return True
 
         except Exception as e:
@@ -159,7 +159,7 @@ class S3AuthenticationService(BaseAuthenticationService):
             self.logger.error(f"❌ Failed to disconnect S3 authentication service: {str(e)}")
             return False
 
-    def get_service(self):
+    def get_service(self) -> Optional[aioboto3.Session]:
         """Get the current aioboto3 session instance"""
         return self.session
 
@@ -185,6 +185,6 @@ class S3AuthenticationService(BaseAuthenticationService):
                 "region_name": self._region_name,
             }
             if self._session_token:
-                credentials["session_token"] = self._session_token
+                credentials[AWS_SESSION_TOKEN] = self._session_token
             return credentials
         return {}

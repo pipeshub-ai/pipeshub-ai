@@ -1,6 +1,6 @@
 import logging
 from abc import ABC
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from app.connectors.core.interfaces.auth.iauth_service import IAuthenticationService
 from app.connectors.core.interfaces.connector.iconnector_config import ConnectorConfig
@@ -60,3 +60,7 @@ class BaseAuthenticationService(IAuthenticationService, ABC):
         if self._token:
             return {"Authorization": f"Bearer {self._token}"}
         return {}
+
+    def get_service(self) -> Optional[object]:
+        """Get the underlying service instance (to be implemented by subclasses)"""
+        return None

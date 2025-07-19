@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+import aioboto3
 from botocore.exceptions import ClientError
 
 from app.connectors.core.base.data_service.data_service import BaseDataService
@@ -36,7 +37,7 @@ class S3DataService(BaseDataService):
         super().__init__(logger, auth_service)
         self.auth_service = auth_service
 
-    def _get_session(self):
+    def _get_session(self) -> Optional[aioboto3.Session]:
         """Get the current session from auth service"""
         return self.auth_service.get_service()
 
@@ -54,7 +55,6 @@ class S3DataService(BaseDataService):
             async with session.client('s3') as s3_client:
                 try:
                     response = await s3_client.list_buckets()
-                    self.logger.info(f"🔍 Response: {response}")
                     buckets = []
                     for bucket in response.get('Buckets', []):
                         bucket_info = {
@@ -122,7 +122,6 @@ class S3DataService(BaseDataService):
                         "mfa_delete": versioning_response.get('MfaDelete', 'Disabled'),
                         "encryption": encryption_response.get('ServerSideEncryptionConfiguration'),
                         "has_policy": bool(policy_response.get('Policy')),
-                        "creation_date": None  # Would need to get from list_buckets
                     }
 
                     self.logger.info(f"✅ Retrieved metadata for bucket: {item_id} using aioboto3")
