@@ -47,6 +47,7 @@ class ConnectorType(Enum):
     CLICKHOUSE = "clickhouse"
     SNOWFLAKE = "snowflake"
     DATABRICKS = "databricks"
+    S3 = "s3"
     # Add more as needed
 
 
