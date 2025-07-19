@@ -6,9 +6,6 @@ from typing import Any, Dict, List, Optional, Type
 from app.connectors.core.base.auth.authentication_service import (
     BaseAuthenticationService,
 )
-from app.connectors.core.base.batch_service.batch_service import (
-    BaseBatchOperationsService,
-)
 from app.connectors.core.base.data_service.data_service import (
     BaseDataProcessor,
     BaseDataService,
@@ -86,11 +83,10 @@ class UniversalConnectorFactory(IConnectorFactory):
     def _initialize_default_services(self) -> None:
         """Initialize default service implementations"""
         # These would be replaced with actual implementations
-        self.default_auth_service = BaseAuthenticationService(self.logger)
+        # Note: Default services are not used in practice, they're just placeholders
+        # The actual services are created with proper config in create_connector
         self.default_error_service = BaseErrorHandlingService(self.logger)
         self.default_event_service = BaseEventService(self.logger)
-        self.default_data_service = BaseDataService(self.logger, self.default_auth_service)
-        self.default_batch_service = BaseBatchOperationsService(self.logger, self.default_data_service)
         self.default_webhook_service = BaseWebhookService(self.logger)
         self.default_sync_service = BaseSyncService(self.logger)
         self.default_data_processor = BaseDataProcessor(self.logger)
