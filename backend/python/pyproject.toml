@@ -79,7 +79,8 @@ dependencies = [
    "langchain-cohere==0.4.4",
    "ruff==0.11.9",
    "litellm==1.72.4",
-   "aiokafka==0.12.0"
+   "aiokafka==0.12.0",
+   "slack-sdk==3.27.1"
 ]
 
 [tool.setuptools.packages.find]

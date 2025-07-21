@@ -12,6 +12,9 @@ export const configPaths = {
       },
       config: '/services/connectors/googleWorkspace/oauth/config',
     },
+    slack: {
+      credentials: '/services/connectors/slack/credentials',
+    },
   },
   smtp: '/services/smtp',
   auth: {

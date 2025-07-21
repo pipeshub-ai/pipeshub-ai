@@ -57,6 +57,16 @@ from app.connectors.sources.google.google_drive.drive_webhook_handler import (
     EnterpriseDriveWebhookHandler,
     IndividualDriveWebhookHandler,
 )
+from app.connectors.sources.slack.core.slack_token_handler import SlackTokenHandler
+from app.connectors.sources.slack.handlers.slack_change_handler import (
+    SlackChangeHandler,
+)
+from app.connectors.sources.slack.handlers.slack_sync_service import (
+    SlackSyncEnterpriseService,
+)
+from app.connectors.sources.slack.handlers.slack_webhook_handler import (
+    IndividualSlackWebhookHandler,
+)
 from app.connectors.utils.rate_limiter import GoogleAPIRateLimiter
 from app.core.celery_app import CeleryApp
 from app.core.signed_url import SignedUrlConfig, SignedUrlHandler
@@ -164,6 +174,7 @@ async def initialize_individual_account_services_fn(org_id, container) -> None:
                 drive_sync_service=container.drive_sync_service(),
                 gmail_sync_service=container.gmail_sync_service(),
                 arango_service=await container.arango_service(),
+                slack_sync_service = None
             )
         )
 
@@ -350,6 +361,7 @@ async def initialize_enterprise_account_services_fn(org_id, container) -> None:
                 drive_sync_service=container.drive_sync_service(),
                 gmail_sync_service=container.gmail_sync_service(),
                 arango_service=await container.arango_service(),
+                slack_sync_service = None
             )
         )
         sync_tasks = container.sync_tasks()
@@ -574,6 +586,120 @@ async def refresh_google_workspace_user_credentials(org_id, arango_service, logg
         await asyncio.sleep(300)
         logger.debug("🔄 Checking refresh status of credentials for user")
 
+async def initialize_slack_account_services_fn(org_id,container) -> None:
+    """Initialize services for an slack account."""
+    try:
+        logger = container.logger()
+        await container.arango_service()
+
+        # Initialize Slack webhook handler
+        container.slack_webhook_handler.override(
+            providers.Singleton(
+                IndividualSlackWebhookHandler,
+                logger=logger,
+                config=container.config_service,
+                arango_service=await container.arango_service(),
+                change_handler=await container.slack_change_handler()
+            )
+        )
+        slack_webhook_handler = container.slack_webhook_handler()
+        assert isinstance(slack_webhook_handler, IndividualSlackWebhookHandler)
+
+        # Initialize Slack sync service
+        container.slack_sync_service.override(
+            providers.Singleton(
+                SlackSyncEnterpriseService,
+                logger=logger,
+                config=container.config_service,
+                arango_service=await container.arango_service(),
+                kafka_service=container.kafka_service,
+                celery_app=container.celery_app
+            )
+        )
+        slack_sync_service = container.slack_sync_service()
+        assert isinstance(slack_sync_service, SlackSyncEnterpriseService)
+
+         # Initialize webhook handler with org_id
+        if not await slack_webhook_handler.initialize(org_id=org_id):
+            logger.error("Failed to initialize Slack webhook handler")
+            return False
+        logger.info("✅ Slack webhook handler initialized")
+
+        # Initialize Slack sync service
+        if not await container.slack_sync_service().initialize(org_id):
+            logger.error("Failed to initialize Slack sync service")
+            return False
+        logger.info("✅ Slack sync service initialized")
+
+        # container.slack_sync_tasks.override(
+        #     providers.Singleton(
+        #         SlackSyncTasks,
+        #         logger=logger,
+        #         celery_app=container.celery_app,
+        #         arango_service=await container.arango_service(),
+        #         slack_sync_service=container.slack_sync_service()
+        #     )
+        # )
+        # slack_sync_tasks = container.slack_sync_tasks()
+        # assert isinstance(slack_sync_tasks, SlackSyncTasks)
+
+        container.sync_tasks.override(
+            providers.Singleton(
+                SyncTasks,
+                logger=logger,
+                celery_app=container.celery_app,
+                drive_sync_service=None,  # No Google services
+                gmail_sync_service=None,
+                arango_service=await container.arango_service(),
+                slack_sync_service=container.slack_sync_service()  # Pass Slack service
+            )
+        )
+        sync_tasks = container.sync_tasks()
+        assert isinstance(sync_tasks,SyncTasks)
+
+        container.sync_kafka_consumer.override(
+            providers.Singleton(
+                SyncKafkaRouteConsumer,
+                logger=logger,
+                config_service=container.config_service,
+                arango_service=await container.arango_service(),
+                sync_tasks=container.sync_tasks(),
+            )
+        )
+        sync_kafka_consumer = container.sync_kafka_consumer()
+        assert isinstance(sync_kafka_consumer, SyncKafkaRouteConsumer)
+
+        # Pre-fetch service account credentials for this org
+        # org_apps = await arango_service.get_org_apps(org_id)
+        # for app in org_apps:
+        #     if app["appGroup"] == AppGroups.SLACK.value:
+        #         logger.info("Refreshing Slack Workspace user credentials")
+        #         asyncio.create_task(refresh_slack_workspace_user_credentials(org_id, arango_service,logger, container))
+        #         break
+
+        # Start the sync Kafka consumer
+        await sync_kafka_consumer.start()
+        logger.info("✅ Sync Kafka consumer initialized")
+
+    except Exception as e:
+        logger.error(
+            f"❌ Failed to initialize services for slack account: {str(e)}"
+        )
+        raise
+
+    container.wire(
+        modules=[
+            "app.core.celery_app",
+            "app.connectors.api.router",
+            "app.connectors.api.middleware",
+            "app.core.signed_url",
+            "app.connectors.sources.slack.handlers",
+            "app.connectors.sources.slack.core",
+            "app.connectors.sources.google.common.sync_tasks",
+        ]
+    )
+
+    logger.info("✅ Successfully initialized services for slack account")
 
 class AppContainer(containers.DeclarativeContainer):
     """Dependency injection container for the application."""
@@ -637,6 +763,12 @@ class AppContainer(containers.DeclarativeContainer):
         arango_service=arango_service,
     )
 
+    slack_token_handler = providers.Singleton(
+        SlackTokenHandler,
+        logger=logger,
+        config_service=config_service,
+    )
+
     # Change Handlers
     drive_change_handler = providers.Singleton(
         DriveChangeHandler,
@@ -650,6 +782,14 @@ class AppContainer(containers.DeclarativeContainer):
         logger=logger,
         config_service=config_service,
         arango_service=arango_service,
+    )
+
+    slack_change_handler = providers.Singleton(
+        SlackChangeHandler,
+        logger=logger,
+        config_service=config_service,
+        arango_service=arango_service,
+        kafka_service=kafka_service
     )
 
     # Celery and Tasks
@@ -679,6 +819,9 @@ class AppContainer(containers.DeclarativeContainer):
     sync_tasks = providers.Dependency()
     google_admin_service = providers.Dependency()
     admin_webhook_handler = providers.Dependency()
+    slack_webhook_handler = providers.Dependency()
+    slack_sync_service  = providers.Dependency()
+    slack_sync_tasks = providers.Dependency()
 
     google_docs_parser = providers.Dependency()
     google_sheets_parser = providers.Dependency()
@@ -930,4 +1073,3 @@ async def initialize_container(container) -> bool:
     except Exception as e:
         logger.error(f"❌ Container initialization failed: {str(e)}")
         raise
-

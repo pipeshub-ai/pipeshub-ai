@@ -3,6 +3,7 @@ import type { Icon as IconifyIcon } from '@iconify/react';
 import { useRef, useState } from 'react';
 import closeIcon from '@iconify-icons/eva/close-outline';
 import googleIcon from '@iconify-icons/eva/google-outline';
+import slackIcon from '@iconify-icons/mdi/slack';
 
 import {
   Box,
@@ -21,6 +22,7 @@ import { Iconify } from 'src/components/iconify';
 import GoogleWorkspaceConfigForm from './google-workspace-config-individual-form';
 
 import type { GoogleWorkspaceConfigFormRef } from './google-workspace-config-individual-form';
+import SlackConfigForm, { SlackConfigFormRef } from './slack-config-form';
 
 // Method configurations
 interface ConnectorConfigType {
@@ -36,6 +38,11 @@ const CONNECTOR_CONFIG: ConnectorConfigType = {
     icon: googleIcon,
     title: 'Google Workspace',
     color: '#4285F4',
+  },
+  slack: {
+    icon: slackIcon,
+    title: 'Slack',
+    color: '#ECB22E',
   },
 };
 
@@ -63,6 +70,7 @@ const ConfigureConnectorDialog = ({
   const [isValid, setIsValid] = useState(false);
 
   const googleWorkspaceFormRef = useRef<GoogleWorkspaceConfigFormRef>(null);
+  const slackFormRef = useRef<SlackConfigFormRef>(null);
 
   // Get connector config if available
   const connectorConfig = connectorType ? CONNECTOR_CONFIG[connectorType] : null;
@@ -80,6 +88,9 @@ const ConfigureConnectorDialog = ({
     switch (connectorType) {
       case 'googleWorkspace':
         currentRef = googleWorkspaceFormRef;
+        break;
+      case 'slack':
+        currentRef = slackFormRef;
         break;
       default:
         currentRef = null;
@@ -106,6 +117,12 @@ const ConfigureConnectorDialog = ({
       onClose={onClose}
       maxWidth="md"
       fullWidth
+      BackdropProps={{
+        sx: {
+          backdropFilter: 'blur(1px)',
+          backgroundColor: alpha(theme.palette.common.black, 0.3),
+        },
+      }}
       PaperProps={{
         sx: {
           borderRadius: 1,
@@ -175,6 +192,14 @@ const ConfigureConnectorDialog = ({
                   onValidationChange={handleValidationChange}
                   onSaveSuccess={handleFormSaveSuccess}
                   ref={googleWorkspaceFormRef}
+                  isEnabled={isEnabled || false}
+                />
+              )}
+              {connectorType === 'slack' && (
+                <SlackConfigForm
+                  onValidationChange={handleValidationChange}
+                  onSaveSuccess={handleFormSaveSuccess}
+                  ref={slackFormRef}
                   isEnabled={isEnabled || false}
                 />
               )}

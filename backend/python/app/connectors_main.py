@@ -16,6 +16,7 @@ from app.setups.connector_setup import (
     initialize_container,
     initialize_enterprise_account_services_fn,
     initialize_individual_account_services_fn,
+    initialize_slack_account_services_fn,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -34,6 +35,8 @@ async def get_initialized_container() -> AppContainer:
                 "app.connectors.api.router",
                 "app.connectors.api.middleware",
                 "app.core.signed_url",
+                "app.connectors.sources.slack.handlers",
+                "app.connectors.sources.slack.core",
             ]
         )
         get_initialized_container.initialized = True
@@ -87,6 +90,7 @@ async def resume_sync_services(app_container: AppContainer) -> None:
 
             drive_sync_service = None
             gmail_sync_service = None
+            slack_sync_service = None
 
             for app in enabled_apps:
                 if app["name"] == Connectors.GOOGLE_CALENDAR.value:
@@ -102,6 +106,12 @@ async def resume_sync_services(app_container: AppContainer) -> None:
                     gmail_sync_service = app_container.gmail_sync_service()
                     await gmail_sync_service.initialize(org_id)
                     logger.info("Gmail Service initialized for org %s", org_id)
+
+                if app["name"] == Connectors.SLACK.value:
+                    await initialize_slack_account_services_fn(org_id, app_container)
+                    slack_sync_service = app_container.slack_sync_service()
+                    await slack_sync_service.initialize(org_id)
+                    logger.info("Slack Service initialized for org %s", org_id)
 
             if drive_sync_service is not None:
                 try:
@@ -130,6 +140,31 @@ async def resume_sync_services(app_container: AppContainer) -> None:
                         org_id,
                         str(e),
                     )
+
+            # --- SLACK SYNC STATE LOGIC ---
+            if slack_sync_service is not None:
+                # Check Slack workspace sync state
+                slack_state = None
+                try:
+                    slack_state_obj = await arango_service.get_workspace_sync_state(org_id)
+                    slack_state = (slack_state_obj or {}).get("syncState", "NOT_STARTED")
+                except Exception as e:
+                    logger.error(f"Error fetching Slack sync state for org {org_id}: {str(e)}")
+
+                if slack_state in ["IN_PROGRESS", "PAUSED", "FAILED"]:
+                    logger.info(f"Resuming Slack sync for org {org_id} (state: {slack_state})")
+                    try:
+                        await slack_sync_service.resume(org_id)
+                        logger.info(f"✅ Resumed Slack sync for org {org_id}")
+                    except Exception as e:
+                        logger.error(f"❌ Error resuming Slack sync for org {org_id}: {str(e)}")
+                elif slack_state == "COMPLETED":
+                    logger.info(f"Slack sync already completed for org {org_id}, performing resume action")
+                    try:
+                        await slack_sync_service.perform_initial_sync(org_id, action="resume")
+                        logger.info(f"✅ Performed resume action for Slack sync in org {org_id}")
+                    except Exception as e:
+                        logger.error(f"❌ Error performing resume action for Slack sync in org {org_id}: {str(e)}")
 
 
             logger.info("✅ Sync services resumed for org %s", org_id)

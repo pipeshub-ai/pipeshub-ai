@@ -14,6 +14,7 @@ import {
   GOOGLE_WORKSPACE_CONFIG_PATH,
   GOOGLE_WORKSPACE_CREDENTIALS_PATH,
   GOOGLE_WORKSPACE_INDIVIDUAL_CREDENTIALS_PATH,
+  SLACK_CREDENTIALS_PATH,
 } from '../consts/constants';
 import { generateFetchConfigToken } from '../utils/generateToken';
 
@@ -284,6 +285,60 @@ export const setRefreshTokenCredentials = async (
           refresh_token_expiry_time,
         }),
       },
+    };
+
+  const cmCommand = new ConfigurationManagerServiceCommand(
+    configurationManagerCommandOptions,
+  );
+  const response = await cmCommand.execute();
+  return response;
+};
+
+// ----------------------------- slack apis ------------------------
+
+export const getSlackCredentials = async (
+  req: AuthenticatedUserRequest,
+  url: string,
+  scopedJwtSecret: string,
+): Promise<ConfigurationManagerResponse> => {
+  if (!req.user) {
+    throw new NotFoundError('User not found');
+  }
+  const configurationManagerCommandOptions: ConfigurationManagerCommandOptions =
+    {
+      uri: `${url}/${SLACK_CREDENTIALS_PATH}`,
+      method: HttpMethod.GET,
+      headers: {
+        Authorization: `Bearer ${await generateFetchConfigToken(req.user, scopedJwtSecret)}`,
+        'Content-Type': 'application/json',
+      },
+    };
+
+  const cmCommand = new ConfigurationManagerServiceCommand(
+    configurationManagerCommandOptions,
+  );
+  const response = await cmCommand.execute();
+  console.log("Slack token response",response);
+  return response;
+};
+
+export const setSlackCredentials = async (
+  req: AuthenticatedUserRequest,
+  url: string,
+  scopedJwtSecret: string,
+): Promise<ConfigurationManagerResponse> => {
+  if (!req.user) {
+    throw new NotFoundError('User Not Found');
+  }
+  const configurationManagerCommandOptions: ConfigurationManagerCommandOptions =
+    {
+      uri: `${url}/${SLACK_CREDENTIALS_PATH}`,
+      method: HttpMethod.POST,
+      headers: {
+        Authorization: `Bearer ${await generateFetchConfigToken(req.user, scopedJwtSecret)}`,
+        'Content-Type': 'application/json',
+      },
+      body: req.body,
     };
 
   const cmCommand = new ConfigurationManagerServiceCommand(
