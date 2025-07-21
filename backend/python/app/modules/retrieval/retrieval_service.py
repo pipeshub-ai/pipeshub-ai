@@ -101,8 +101,9 @@ class RetrievalService:
                         config_node_constants.AI_MODELS.value
                     )
                     dense_embeddings = None
-                    for config in ai_models["embedding"]:
-                      dense_embeddings = get_embedding_model(config["provider"], config)
+                    if ai_models["embedding"]:
+                        config = ai_models["embedding"][0]
+                        dense_embeddings = get_embedding_model(config["provider"], config)
 
             except Exception as e:
                 self.logger.error(f"Error creating embedding model: {str(e)}")
