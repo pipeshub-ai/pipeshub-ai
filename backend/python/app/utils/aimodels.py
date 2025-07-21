@@ -46,6 +46,7 @@ def get_embedding_model(provider: str, config: Dict[str, Any]) -> Embeddings:
         return OpenAIEmbeddings(
             model=configuration["model"],
             api_key=configuration["apiKey"],
+            organization=configuration.get("organizationId"),
         )
     elif provider == EmbeddingProvider.HUGGING_FACE.value:
         from langchain_community.embeddings import HuggingFaceEmbeddings
