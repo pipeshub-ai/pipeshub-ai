@@ -185,4 +185,4 @@ def get_generator_model(provider: str, config: Dict[str, Any]) -> BaseChatModel:
                 base_url=configuration["endpoint"],
             )
 
-    raise ValueError(f"Unsupported config type: {type(config)}")
+    raise ValueError(f"Unsupported provider type: {provider}")
