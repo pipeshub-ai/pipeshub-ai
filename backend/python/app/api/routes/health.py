@@ -55,7 +55,8 @@ async def initialize_embedding_model(request: Request, embedding_configs: list[d
         dense_embeddings = get_default_embedding_model()
     else:
 
-        for config in embedding_configs:
+        if embedding_configs:
+            config = embedding_configs[0] # Use the first configuration
             dense_embeddings = get_embedding_model(config["provider"], config)
 
     if dense_embeddings is None:
