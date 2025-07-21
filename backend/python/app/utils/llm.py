@@ -12,11 +12,8 @@ async def get_llm(config_service: ConfigurationService, llm_configs = None) -> B
     if not llm_configs:
         raise ValueError("No LLM configurations found")
 
-    print(llm_configs, "llm_configs")
     for config in llm_configs:
-        print(config, "config")
         llm = get_generator_model(config["provider"], config)
-        print(llm, "llm")
         if llm:
             return llm
 

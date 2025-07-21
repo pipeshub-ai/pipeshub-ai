@@ -89,18 +89,6 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
     },
   },
   {
-    id: 'openAICompatible',
-    label: 'OpenAI API Compatible',
-    description: 'Enter your OpenAI-compatible API credentials to get started.',
-    modelPlaceholder: 'e.g., deepseek-ai/DeepSeek-V3',
-    fields: ['endpoint', 'apiKey', 'model'],
-    customFields: {
-      endpoint: {
-        placeholder: 'e.g., https://api.together.xyz/v1/',
-      },
-    },
-  },
-  {
     id: 'ollama',
     label: 'Ollama',
     description: 'Connect to your local Ollama instance.',
@@ -110,6 +98,65 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
       { name: 'apiKey', required: false },     // API key is optional for Ollama
       { name: 'endpoint', required: false, defaultValue: 'http://host.docker.internal:11434', placeholder: 'e.g.http://localhost:11434'}, // Optional endpoint
     ],
+  },
+  {
+    id: 'xai',
+    label: 'XAI',
+    description: 'Enter your XAI API credentials to get started.',
+    modelPlaceholder: 'e.g. grok-3-latest',
+    fields: ['apiKey', 'model'],
+  },
+  {
+    id: 'mistral',
+    label: 'Mistral',
+    description: 'Enter your Mistral API credentials to get started.',
+    modelPlaceholder: 'e.g. mistral-large-latest',
+    fields: ['apiKey', 'model'],
+  },
+  {
+    id: 'together',
+    label: 'Together',
+    description: 'Enter your Together API credentials to get started.',
+    modelPlaceholder: 'e.g., deepseek-ai/DeepSeek-V3',
+    fields: ['apiKey', 'model', 'endpoint'],
+    customFields: {
+      endpoint: {
+        placeholder: 'e.g., https://api.together.xyz/v1',
+      },
+    },
+  },
+  {
+    id: 'groq',
+    label: 'Groq',
+    description: 'Enter your Groq API credentials to get started.',
+    modelPlaceholder: 'e.g. meta-llama/llama-4-scout-17b-16e-instruct',
+    fields: ['apiKey', 'model'],
+  },
+  {
+    id: 'fireworks',
+    label: 'Fireworks',
+    description: 'Enter your Fireworks API credentials to get started.',
+    modelPlaceholder: 'e.g. accounts/fireworks/models/kimi-k2-instruct',
+    fields: ['apiKey', 'model'],
+  },
+  {
+    id: 'cohere',
+    label: 'Cohere',
+    description: 'Enter your Cohere API credentials to get started.',
+    modelPlaceholder: 'e.g. command-a-03-2025',
+    fields: ['apiKey', 'model'],
+  },
+  {
+    id: 'openAICompatible',
+    label: 'OpenAI API Compatible',
+    description: 'Enter your OpenAI-compatible API credentials to get started.',
+    modelPlaceholder: 'e.g. deepseek-ai/DeepSeek-V3',
+    fields: ['endpoint', 'apiKey', 'model'],
+    customFields: {
+      endpoint: {
+        placeholder: 'e.g., https://api.together.xyz/v1/',
+      },
+    },
   },
 ] as const;
 

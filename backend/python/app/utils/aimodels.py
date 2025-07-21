@@ -131,7 +131,6 @@ def get_generator_model(provider: str, config: Dict[str, Any]) -> BaseChatModel:
             )
     elif provider == LLMProvider.OPENAI.value:
         from langchain_community.chat_models import ChatOpenAI
-        print("configuration", configuration)
         return ChatOpenAI(
                 model=configuration["model"],
                 temperature=0.2,
@@ -176,6 +175,54 @@ def get_generator_model(provider: str, config: Dict[str, Any]) -> BaseChatModel:
                 temperature=0.2,
                 base_url=configuration.get('endpoint', os.getenv("OLLAMA_API_URL", "http://localhost:11434"))
             )
+    elif provider == LLMProvider.MISTRAL.value:
+        from langchain_mistralai import ChatMistralAI
+        return ChatMistralAI(
+                model=configuration["model"],
+                temperature=0.2,
+                api_key=configuration["apiKey"],
+            )
+    elif provider == LLMProvider.XAI.value:
+        from langchain_xai import ChatXAI
+        return ChatXAI(
+                model=configuration["model"],
+                temperature=0.2,
+                api_key=configuration["apiKey"],
+            )
+
+    elif provider == LLMProvider.TOGETHER.value:
+        from langchain_together import ChatTogether
+
+        return ChatTogether(
+                model=configuration["model"],
+                temperature=0.2,
+                api_key=configuration["apiKey"],
+                base_url=configuration["endpoint"],
+            )
+
+    elif provider == LLMProvider.GROQ.value:
+        from langchain_groq import ChatGroq
+        return ChatGroq(
+                model=configuration["model"],
+                temperature=0.2,
+                api_key=configuration["apiKey"],
+            )
+
+
+    elif provider == LLMProvider.COHERE.value:
+        from langchain_cohere import ChatCohere
+        return ChatCohere(
+                model=configuration["model"],
+                temperature=0.2,
+                cohere_api_key=configuration["apiKey"],
+            )
+    elif provider == LLMProvider.FIREWORKS.value:
+        from langchain_fireworks import ChatFireworks
+        return ChatFireworks(
+                model=configuration["model"],
+                temperature=0.2,
+                api_key=configuration["apiKey"],
+            )
     elif provider == LLMProvider.OPENAI_COMPATIBLE.value:
         from langchain_community.chat_models import ChatOpenAI
 
@@ -185,5 +232,4 @@ def get_generator_model(provider: str, config: Dict[str, Any]) -> BaseChatModel:
                 api_key=configuration["apiKey"],
                 base_url=configuration["endpoint"],
             )
-
     raise ValueError(f"Unsupported provider type: {provider}")

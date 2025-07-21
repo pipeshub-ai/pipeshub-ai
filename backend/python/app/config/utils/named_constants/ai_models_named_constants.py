@@ -12,6 +12,13 @@ class LLMProvider(Enum):
     AWS_BEDROCK = "bedrock"
     OLLAMA = "ollama"
     OPENAI_COMPATIBLE = "openAICompatible"
+    TOGETHER = "together"
+    GROQ = "groq"
+    XAI = "xai"
+    MISTRAL = "mistral"
+    COHERE = "cohere"
+    FIREWORKS = "fireworks"
+
 
 class OCRProvider(Enum):
     AZURE_DI = "azureDI"
