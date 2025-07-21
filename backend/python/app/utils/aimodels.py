@@ -28,7 +28,7 @@ def get_default_embedding_model() -> Embeddings:
     except Exception  as e:
         raise e
 
-async def get_embedding_model(provider: str, config: Dict[str, Any]) -> Embeddings:
+def get_embedding_model(provider: str, config: Dict[str, Any]) -> Embeddings:
     configuration = config['configuration']
     if provider == EmbeddingProvider.AZURE_OPENAI.value:
         from langchain_openai.embeddings import AzureOpenAIEmbeddings
