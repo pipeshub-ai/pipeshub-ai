@@ -37,7 +37,7 @@ async def get_embedding_model(provider: str, config: Dict[str, Any]) -> Embeddin
             model=configuration['model'],
             api_key=configuration['apiKey'],
             api_version=AZURE_EMBEDDING_API_VERSION,
-        azure_endpoint=configuration['endpoint'],
+            azure_endpoint=configuration['endpoint'],
         )
 
     elif provider == EmbeddingProvider.OPENAI.value:
