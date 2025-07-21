@@ -90,6 +90,7 @@ export class DynamicConfigFactory {
       const fieldName = typeof fieldItem === 'string' ? fieldItem : fieldItem.name;
       const customRequired = typeof fieldItem === 'object' ? fieldItem.required : undefined;
       const customDefaultValue = typeof fieldItem === 'object' ? fieldItem.defaultValue : undefined;
+      const customPlaceholder = typeof fieldItem === 'object' ? fieldItem.placeholder : undefined;
 
       const template = FIELD_TEMPLATES[fieldName];
       if (!template) {
@@ -103,6 +104,11 @@ export class DynamicConfigFactory {
       // Apply custom required from field object
       if (customRequired !== undefined) {
         field.required = customRequired;
+      }
+
+      // Apply custom placeholder from field object
+      if (customPlaceholder !== undefined) {
+        field.placeholder = customPlaceholder;
       }
 
       // Apply custom field overrides (can still override required if needed)

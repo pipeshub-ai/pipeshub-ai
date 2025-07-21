@@ -1,4 +1,3 @@
-import os
 from typing import Any, Dict, List
 
 from langchain.schema import Document
@@ -9,24 +8,8 @@ from qdrant_client.http import models
 from qdrant_client.http.models import FieldCondition, Filter, MatchValue
 
 from app.config.configuration_service import config_node_constants
-from app.config.utils.named_constants.ai_models_named_constants import (
-    AZURE_EMBEDDING_API_VERSION,
-    DEFAULT_EMBEDDING_MODEL,
-    EmbeddingProvider,
-)
 from app.config.utils.named_constants.arangodb_constants import (
     CollectionNames,
-)
-from app.core.embedding_service import (
-    AzureEmbeddingConfig,
-    CohereEmbeddingConfig,
-    EmbeddingFactory,
-    GeminiEmbeddingConfig,
-    HuggingFaceEmbeddingConfig,
-    OllamaEmbeddingConfig,
-    OpenAICompatibleEmbeddingConfig,
-    OpenAIEmbeddingConfig,
-    SentenceTransformersEmbeddingConfig,
 )
 from app.exceptions.indexing_exceptions import (
     ChunkingError,
@@ -37,7 +20,7 @@ from app.exceptions.indexing_exceptions import (
     MetadataProcessingError,
     VectorStoreError,
 )
-from app.utils.embeddings import get_default_embedding_model
+from app.utils.aimodels import get_default_embedding_model, get_embedding_model
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -446,82 +429,20 @@ class IndexingPipeline:
                     details={"collection": self.collection_name, "error": str(e)},
                 )
 
-    async def get_embedding_model_instance(self, embedding_configs = None) -> bool:
+    async def get_embedding_model_instance(self) -> bool:
         try:
             self.logger.info("Getting embedding model")
+            dense_embeddings = None
+            ai_models = await self.config_service.get_config(
+                config_node_constants.AI_MODELS.value
+            )
+            embedding_configs = ai_models["embedding"]
             if not embedding_configs:
-                ai_models = await self.config_service.get_config(
-                    config_node_constants.AI_MODELS.value
-                )
-                embedding_configs = ai_models["embedding"]
-            embedding_model = None
-
-            for config in embedding_configs:
-                provider = config["provider"]
-                if provider == EmbeddingProvider.AZURE_OPENAI.value:
-                    embedding_model = AzureEmbeddingConfig(
-                        model=config['configuration']['model'],
-                        api_key=config['configuration']['apiKey'],
-                        azure_endpoint=config['configuration']['endpoint'],
-                        azure_api_version=AZURE_EMBEDDING_API_VERSION,
-                    )
-                elif provider == EmbeddingProvider.OPENAI.value:
-                    embedding_model = OpenAIEmbeddingConfig(
-                        model=config["configuration"]["model"],
-                        api_key=config["configuration"]["apiKey"],
-                    )
-                elif provider == EmbeddingProvider.HUGGING_FACE.value:
-                    embedding_model = HuggingFaceEmbeddingConfig(
-                      model=config['configuration']['model'],
-                      api_key=config['configuration']['apiKey'],
-                    )
-                elif provider == EmbeddingProvider.SENTENCE_TRANSFOMERS.value:
-                    embedding_model = SentenceTransformersEmbeddingConfig(
-                      model=config['configuration']['model'],
-                    )
-
-                elif provider == EmbeddingProvider.GEMINI.value:
-                    embedding_model = GeminiEmbeddingConfig(
-                        model=config['configuration']['model'],
-                        api_key=config['configuration']['apiKey'],
-                    )
-                elif provider == EmbeddingProvider.COHERE.value:
-                    embedding_model = CohereEmbeddingConfig(
-                        model=config['configuration']['model'],
-                        api_key=config['configuration']['apiKey'],
-                    )
-                elif provider == EmbeddingProvider.OPENAI_COMPATIBLE.value:
-                    embedding_model = OpenAICompatibleEmbeddingConfig(
-                        model=config['configuration']['model'],
-                        api_key=config['configuration']['apiKey'],
-                        organization_id=config['configuration'].get('organizationId', None),
-                        endpoint=config['configuration']['endpoint'],
-                    )
-                elif provider == EmbeddingProvider.OLLAMA.value:
-                    embedding_model = OllamaEmbeddingConfig(
-                        model=config['configuration']['model'],
-                        base_url=config['configuration'].get('endpoint', os.getenv("OLLAMA_API_URL", "http://localhost:11434"))
-                    )
-                elif provider == EmbeddingProvider.DEFAULT.value:
-                    embedding_model = DEFAULT_EMBEDDING_MODEL
-
-            try:
-                if not embedding_model or embedding_model == DEFAULT_EMBEDDING_MODEL:
-                    self.logger.info(
-                        "Using default embedding model"
-                    )
-                    embedding_model = DEFAULT_EMBEDDING_MODEL
-                    dense_embeddings = await get_default_embedding_model()
-                else:
-                    dense_embeddings = EmbeddingFactory.create_embedding_model(
-                        embedding_model
-                    )
-            except Exception as e:
-                self.logger.error("Error creating embedding model: %s", str(e))
-                raise IndexingError(
-                    "Failed to create embedding model: " + str(e),
-                    details={"error": str(e)},
-                )
+                dense_embeddings = get_default_embedding_model()
+            else:
+                for config in embedding_configs:
+                    provider = config["provider"]
+                    dense_embeddings = get_embedding_model(provider, config)
 
             # Get the embedding dimensions from the model
             try:
@@ -536,8 +457,17 @@ class IndexingPipeline:
                     details={"error": str(e)},
                 )
 
+            # Get model name safely
+            model_name = None
+            if hasattr(dense_embeddings, "model_name"):
+                model_name = dense_embeddings.model_name
+            elif hasattr(dense_embeddings, "model"):
+                model_name = dense_embeddings.model
+            else:
+                model_name = "unknown"
+
             self.logger.info(
-                f"Using embedding model: {getattr(embedding_model, 'model', embedding_model)}, embedding_size: {embedding_size}"
+                f"Using embedding model: {model_name}, embedding_size: {embedding_size}"
             )
 
             # Initialize collection with correct embedding size

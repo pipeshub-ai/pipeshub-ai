@@ -1,7 +1,6 @@
 import asyncio
-import os
 import time
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 from langchain.chat_models.base import BaseChatModel
 from langchain.embeddings.base import Embeddings
@@ -11,43 +10,22 @@ from qdrant_client.http.models import FieldCondition, Filter, MatchValue
 
 from app.config.configuration_service import config_node_constants
 from app.config.utils.named_constants.ai_models_named_constants import (
-    AZURE_EMBEDDING_API_VERSION,
     DEFAULT_EMBEDDING_MODEL,
-    AzureOpenAILLM,
-    EmbeddingProvider,
-    LLMProvider,
 )
 from app.config.utils.named_constants.arangodb_constants import (
     CollectionNames,
     Connectors,
     RecordTypes,
 )
-from app.core.embedding_service import (
-    AzureEmbeddingConfig,
-    CohereEmbeddingConfig,
-    EmbeddingFactory,
-    GeminiEmbeddingConfig,
-    HuggingFaceEmbeddingConfig,
-    OllamaEmbeddingConfig,
-    OpenAICompatibleEmbeddingConfig,
-    OpenAIEmbeddingConfig,
-    SentenceTransformersEmbeddingConfig,
-)
-from app.core.llm_service import (
-    AnthropicLLMConfig,
-    AwsBedrockLLMConfig,
-    AzureLLMConfig,
-    GeminiLLMConfig,
-    LLMFactory,
-    OllamaConfig,
-    OpenAICompatibleLLMConfig,
-    OpenAILLMConfig,
-)
 from app.exceptions.embedding_exceptions import EmbeddingModelCreationError
 from app.exceptions.fastapi_responses import Status
 from app.exceptions.indexing_exceptions import IndexingError
 from app.modules.retrieval.retrieval_arango import ArangoService
-from app.utils.embeddings import get_default_embedding_model
+from app.utils.aimodels import (
+    get_default_embedding_model,
+    get_embedding_model,
+    get_generator_model,
+)
 
 
 class RetrievalService:
@@ -92,90 +70,39 @@ class RetrievalService:
                 config_node_constants.AI_MODELS.value
             )
             llm_configs = ai_models["llm"]
+
             # For now, we'll use the first available provider that matches our supported types
             # We will add logic to choose a specific provider based on our needs
-            llm_config = None
 
             for config in llm_configs:
                 provider = config["provider"]
-                if provider == LLMProvider.AZURE_OPENAI.value:
-                    llm_config = AzureLLMConfig(
-                        model=config["configuration"]["model"],
-                        temperature=0.2,
-                        api_key=config["configuration"]["apiKey"],
-                        azure_endpoint=config["configuration"]["endpoint"],
-                        azure_api_version=AzureOpenAILLM.AZURE_OPENAI_VERSION.value,
-                        azure_deployment=config["configuration"]["deploymentName"],
-                    )
-                    break
-                elif provider == LLMProvider.OPENAI.value:
-                    llm_config = OpenAILLMConfig(
-                        model=config["configuration"]["model"],
-                        temperature=0.2,
-                        api_key=config["configuration"]["apiKey"],
-                    )
-                    break
-                elif provider == LLMProvider.GEMINI.value:
-                    llm_config = GeminiLLMConfig(
-                        model=config["configuration"]["model"],
-                        temperature=0.2,
-                        api_key=config["configuration"]["apiKey"],
-                    )
-                elif provider == LLMProvider.ANTHROPIC.value:
-                    llm_config = AnthropicLLMConfig(
-                        model=config["configuration"]["model"],
-                        temperature=0.2,
-                        api_key=config["configuration"]["apiKey"],
-                    )
-                elif provider == LLMProvider.AWS_BEDROCK.value:
-                    llm_config = AwsBedrockLLMConfig(
-                        model=config["configuration"]["model"],
-                        temperature=0.2,
-                        region=config["configuration"]["region"],
-                        access_key=config["configuration"]["aws_access_key_id"],
-                        access_secret=config["configuration"]["aws_access_secret_key"],
-                        api_key=config["configuration"]["aws_access_secret_key"],
-                    )
-                elif provider == LLMProvider.OLLAMA.value:
-                    llm_config = OllamaConfig(
-                        model=config['configuration']['model'],
-                        temperature=0.2,
-                        api_key=config['configuration'].get('apiKey', ''),
-                        base_url = config['configuration'].get('endpoint', os.getenv("OLLAMA_API_URL", "http://localhost:11434")) # Set default value directly in getenv
-                    )
-                elif provider == LLMProvider.OPENAI_COMPATIBLE.value:
-                    llm_config = OpenAICompatibleLLMConfig(
-                        model=config['configuration']['model'],
-                        temperature=0.2,
-                        api_key=config['configuration']['apiKey'],
-                        endpoint=config['configuration']['endpoint'],
-                    )
-
-            if not llm_config:
+                self.llm = get_generator_model(provider, config)
+            if not self.llm:
                 raise ValueError("No supported LLM provider found in configuration")
 
-            self.llm = LLMFactory.create_llm(self.logger, llm_config)
             self.logger.info("LLM created successfully")
             return self.llm
         except Exception as e:
             self.logger.error(f"Error getting LLM: {str(e)}")
             return None
 
-    async def get_embedding_model_instance(self, embedding_configs = None) -> Optional[Embeddings]:
+    async def get_embedding_model_instance(self) -> Optional[Embeddings]:
         try:
             self.logger.info("Getting embedding model")
-            embedding_model = await self.get_embedding_model_instance_from_config(embedding_configs)
-
+            embedding_model = await self.get_current_embedding_model_name()
             try:
                 if not embedding_model or embedding_model == DEFAULT_EMBEDDING_MODEL:
                     self.logger.info("Using default embedding model")
                     embedding_model = DEFAULT_EMBEDDING_MODEL
-                    dense_embeddings = await get_default_embedding_model()
+                    dense_embeddings = get_default_embedding_model()
                 else:
                     self.logger.info(f"Using embedding model: {getattr(embedding_model, 'model', embedding_model)}")
-                    dense_embeddings = EmbeddingFactory.create_embedding_model(
-                        embedding_model
+                    ai_models = await self.config_service.get_config(
+                        config_node_constants.AI_MODELS.value
                     )
+                    dense_embeddings = None
+                    for config in ai_models["embedding"]:
+                      dense_embeddings = get_embedding_model(config["provider"], config)
 
             except Exception as e:
                 self.logger.error(f"Error creating embedding model: {str(e)}")
@@ -199,81 +126,6 @@ class RetrievalService:
                 f"Using embedding model: {getattr(embedding_model, 'model', embedding_model)}, embedding_size: {embedding_size}"
             )
             return dense_embeddings
-        except Exception as e:
-            self.logger.error(f"Error getting embedding model: {str(e)}")
-            return None
-
-    async def get_embedding_model_instance_from_config(
-        self,
-        embedding_configs: Optional[List[Dict[str, Any]]] = None
-    ) -> Optional[Union[str, AzureEmbeddingConfig, OpenAIEmbeddingConfig,
-                       HuggingFaceEmbeddingConfig, SentenceTransformersEmbeddingConfig,
-                       GeminiEmbeddingConfig, CohereEmbeddingConfig, OllamaEmbeddingConfig]]:
-        """
-        Get embedding model configuration from provided configs or fetch from config service.
-
-        Args:
-            embedding_configs: Optional list of embedding configurations
-
-        Returns:
-            Either a string for default model, an embedding config object, or None if error occurs
-        """
-        try:
-            if not embedding_configs:
-                ai_models = await self.config_service.get_config(
-                    config_node_constants.AI_MODELS.value
-                )
-                embedding_configs = ai_models["embedding"]
-            embedding_model = None
-            for config in embedding_configs:
-                provider = config["provider"]
-                if provider == EmbeddingProvider.AZURE_OPENAI.value:
-                    embedding_model = AzureEmbeddingConfig(
-                        model=config['configuration']['model'],
-                        api_key=config['configuration']['apiKey'],
-                        azure_endpoint=config['configuration']['endpoint'],
-                        azure_api_version=AZURE_EMBEDDING_API_VERSION,
-                    )
-                elif provider == EmbeddingProvider.OPENAI.value:
-                    embedding_model = OpenAIEmbeddingConfig(
-                        model=config["configuration"]["model"],
-                        api_key=config["configuration"]["apiKey"],
-                    )
-                elif provider == EmbeddingProvider.HUGGING_FACE.value:
-                    embedding_model =   HuggingFaceEmbeddingConfig(
-                      model=config['configuration']['model'],
-                      api_key=config['configuration']['apiKey'],
-                    )
-                elif provider == EmbeddingProvider.SENTENCE_TRANSFOMERS.value:
-                    embedding_model =   SentenceTransformersEmbeddingConfig(
-                      model=config['configuration']['model'],
-                    )
-                elif provider == EmbeddingProvider.GEMINI.value:
-                    embedding_model = GeminiEmbeddingConfig(
-                      model=config['configuration']['model'],
-                      api_key=config['configuration']['apiKey'],
-                    )
-                elif provider == EmbeddingProvider.COHERE.value:
-                    embedding_model = CohereEmbeddingConfig(
-                      model=config['configuration']['model'],
-                      api_key=config['configuration']['apiKey'],
-                    )
-                elif provider == EmbeddingProvider.OPENAI_COMPATIBLE.value:
-                    embedding_model = OpenAICompatibleEmbeddingConfig(
-                      model=config['configuration']['model'],
-                      api_key=config['configuration']['apiKey'],
-                      organization_id=config['configuration'].get('organizationId', None),
-                      endpoint=config['configuration']['endpoint'],
-                    )
-                elif provider == EmbeddingProvider.OLLAMA.value:
-                    embedding_model = OllamaEmbeddingConfig(
-                      model=config['configuration']['model'],
-                      base_url=config['configuration'].get('endpoint', os.getenv("OLLAMA_API_URL", "http://localhost:11434"))
-                    )
-                elif provider == EmbeddingProvider.DEFAULT.value:
-                    embedding_model = DEFAULT_EMBEDDING_MODEL
-
-            return embedding_model
         except Exception as e:
             self.logger.error(f"Error getting embedding model: {str(e)}")
             return None

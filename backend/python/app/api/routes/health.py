@@ -5,6 +5,7 @@ from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import JSONResponse
 from qdrant_client.http import models
 
+from app.utils.aimodels import get_default_embedding_model, get_embedding_model
 from app.utils.llm import get_llm
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -18,7 +19,7 @@ async def llm_health_check(request: Request, llm_configs: list[dict] = Body(...)
     """Health check endpoint to validate user-provided LLM configurations"""
     try:
         app = request.app
-        llm = await get_llm(app.container.logger(), app.container.config_service(), llm_configs)
+        llm = await get_llm(app.container.config_service(), llm_configs)
         # Make a simple test call to the LLM with the provided configurations
         await llm.ainvoke("Test message to verify LLM health.")
 
@@ -49,7 +50,14 @@ async def initialize_embedding_model(request: Request, embedding_configs: list[d
     retrieval_service = await app.container.retrieval_service()
     logger.info("Retrieved retrieval service")
 
-    dense_embeddings = await retrieval_service.get_embedding_model_instance(embedding_configs)
+    if not embedding_configs:
+        logger.info("Using default embedding model")
+        dense_embeddings = get_default_embedding_model()
+    else:
+
+        for config in embedding_configs:
+            dense_embeddings = get_embedding_model(config["provider"], config)
+
     if dense_embeddings is None:
         raise HTTPException(
             status_code=500,
@@ -94,9 +102,16 @@ async def handle_model_change(
     logger
 ) -> None:
     """Handle embedding model changes and collection recreation if needed."""
+    if current_model_name is not None:
+        current_model_name = current_model_name.removeprefix("models/")
+    if new_model_name is not None:
+        new_model_name = new_model_name.removeprefix("models/")
+
     if (current_model_name is not None and
         new_model_name is not None and
         current_model_name.lower() != new_model_name.lower()):
+
+
 
         logger.warning("Detected embedding model change attempt")
 

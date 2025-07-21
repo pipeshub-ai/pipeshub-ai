@@ -398,7 +398,7 @@ async def download_file(
                     await google_sheets_parser.connect_service(
                         user_email, org_id, user_id
                     )
-                    llm = await get_llm(logger, config_service)
+                    llm = await get_llm(config_service)
                     # List and process spreadsheets
                     parsed_result = await google_sheets_parser.parse_spreadsheet(
                         file_id

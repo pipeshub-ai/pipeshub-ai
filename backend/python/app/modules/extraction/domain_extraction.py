@@ -189,7 +189,7 @@ class DomainExtractor:
         Includes reflection logic to attempt recovery from parsing failures.
         """
         self.logger.info("🎯 Extracting domain metadata")
-        self.llm = await get_llm(self.logger, self.config_service)
+        self.llm = await get_llm(self.config_service)
 
         try:
             self.logger.info(f"🎯 Extracting departments for org_id: {org_id}")

@@ -5,6 +5,7 @@ export interface FieldConfig {
   name: FieldTemplateName;
   required?: boolean; // Optional, defaults to template's required value
   defaultValue?: any;
+  placeholder?: string; // Optional placeholder text for the field
 }
 
 export interface ProviderConfig {
@@ -107,13 +108,8 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
     fields: [
       { name: 'model', required: true },    
       { name: 'apiKey', required: false },     // API key is optional for Ollama
-      { name: 'endpoint', required: false, defaultValue: 'http://host.docker.internal:11434' }, // Optional endpoint
+      { name: 'endpoint', required: false, defaultValue: 'http://host.docker.internal:11434', placeholder: 'e.g.http://localhost:11434'}, // Optional endpoint
     ],
-    customFields: {
-      endpoint: {
-        placeholder: 'http://localhost:11434/v1',
-      },
-    },
   },
 ] as const;
 
@@ -173,7 +169,7 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
     modelPlaceholder: 'e.g., mxbai-embed-large',
     fields: [
       { name: 'model', required: true },    
-      { name: 'endpoint', required: false, defaultValue: 'http://host.docker.internal:11434' }, // Optional endpoint
+      { name: 'endpoint', required: false, defaultValue: 'http://host.docker.internal:11434', placeholder: 'e.g. http://localhost:11434'}, // Optional endpoint
     ],
   },
 ] as const;

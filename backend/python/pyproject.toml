@@ -47,13 +47,12 @@ dependencies = [
     "qdrant-client==1.13.1",
     "langchain-experimental==0.3.4",
     "sentence-transformers==3.4.1",
-    "langchain-huggingface==0.1.2",
     "langchain-qdrant==0.2.0",
     "fastembed==0.5.1",
     "spacy<=3.7.5",
     "nltk==3.9.1",
-    "langchain-openai==0.3.6",
-    "langchain-anthropic==0.3.8",
+    "langchain-openai==0.3.28",
+    "langchain-anthropic==0.3.17",
     "docling==2.25.1",
     "etcd3==0.12.0",
     "python-arango==8.1.5",
@@ -69,7 +68,7 @@ dependencies = [
     "Jinja2==3.1.6",
     "cryptography==44.0.1",
     "sentence-transformers==3.4.1",
-   "langchain-google-genai==2.1.2",
+   "langchain-google-genai==2.1.8",
    "langchain-google-vertexai==2.0.18",
    "langchain-ollama==0.3.0",
    "langchain-aws==0.2.18",
@@ -79,7 +78,8 @@ dependencies = [
    "langchain-cohere==0.4.4",
    "ruff==0.11.9",
    "litellm==1.72.4",
-   "aiokafka==0.12.0"
+   "aiokafka==0.12.0",
+   "langchain-huggingface==0.3.0"
 ]
 
 [tool.setuptools.packages.find]

@@ -1034,7 +1034,7 @@ class Processor:
 
         try:
             self.logger.debug("📊 Processing Excel content")
-            llm = await get_llm(self.logger, self.config_service)
+            llm = await get_llm(self.config_service)
             parser = self.parsers[ExtensionTypes.XLSX.value]
             excel_result = parser.parse(excel_binary)
 
@@ -1207,7 +1207,7 @@ class Processor:
             self.logger.debug("📊 Processing CSV content")
             parser = self.parsers[ExtensionTypes.CSV.value]
 
-            llm = await get_llm(self.logger, self.config_service)
+            llm = await get_llm(self.config_service)
 
             # Save temporary file to process CSV
             temp_file_path = f"/tmp/{recordName}_temp.csv"
