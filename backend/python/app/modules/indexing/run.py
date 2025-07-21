@@ -440,7 +440,6 @@ class IndexingPipeline:
             if not embedding_configs:
                 dense_embeddings = get_default_embedding_model()
             else:
-            if embedding_configs:
                 config = embedding_configs[0]
                 provider = config["provider"]
                 dense_embeddings = get_embedding_model(provider, config)

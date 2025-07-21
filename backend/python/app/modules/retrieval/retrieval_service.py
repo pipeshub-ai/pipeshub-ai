@@ -77,6 +77,8 @@ class RetrievalService:
             for config in llm_configs:
                 provider = config["provider"]
                 self.llm = get_generator_model(provider, config)
+                if self.llm:
+                    break
             if not self.llm:
                 raise ValueError("No supported LLM provider found in configuration")
 
