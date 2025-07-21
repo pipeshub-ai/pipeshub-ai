@@ -135,6 +135,7 @@ def get_generator_model(provider: str, config: Dict[str, Any]) -> BaseChatModel:
                 model=configuration["model"],
                 temperature=0.2,
                 api_key=configuration["apiKey"],
+                organization=configuration.get("organizationId"),
             )
     elif provider == LLMProvider.GEMINI.value:
         from langchain_google_genai import ChatGoogleGenerativeAI
