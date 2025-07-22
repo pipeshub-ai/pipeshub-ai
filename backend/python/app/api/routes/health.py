@@ -45,7 +45,8 @@ async def initialize_embedding_model(request: Request, embedding_configs: list[d
     """Initialize the embedding model and return necessary components."""
     app = request.app
     logger = app.container.logger()
-    logger.info("Starting embedding health check", extra={"embedding_configs": embedding_configs})
+    print(embedding_configs, "embedding_configs")
+    logger.info("Starting embedding health check")
 
     retrieval_service = await app.container.retrieval_service()
     logger.info("Retrieved retrieval service")
@@ -58,6 +59,7 @@ async def initialize_embedding_model(request: Request, embedding_configs: list[d
         if embedding_configs:
             config = embedding_configs[0] # Use the first configuration
             dense_embeddings = get_embedding_model(config["provider"], config)
+            print(dense_embeddings, "dense_embeddings")
 
     if dense_embeddings is None:
         raise HTTPException(

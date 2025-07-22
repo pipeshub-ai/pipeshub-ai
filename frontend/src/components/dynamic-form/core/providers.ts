@@ -59,14 +59,14 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
     id: 'openAI',
     label: 'OpenAI API',
     description: 'Enter your OpenAI API credentials to get started.',
-    modelPlaceholder: 'e.g., gpt-4o, gpt-4-turbo, gpt-3.5-turbo',
+    modelPlaceholder: 'e.g., gpt-4o-mini, gpt-4o',
     fields: ['apiKey', 'model'],
   },
   {
     id: 'gemini',
     label: 'Gemini API',
     description: 'Enter your Gemini API credentials to get started.',
-    modelPlaceholder: 'e.g., gemini-2.0-flash',
+    modelPlaceholder: 'e.g., gemini-2.5-flash',
     fields: ['apiKey', 'model'],
   },
   {
@@ -80,7 +80,7 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
     id: 'azureOpenAI',
     label: 'Azure OpenAI Service',
     description: 'You need an active Azure subscription with Azure OpenAI Service enabled.',
-    modelPlaceholder: 'e.g., gpt-4, gpt-35-turbo',
+    modelPlaceholder: 'e.g., gpt-4o-mini, gpt-4o',
     fields: ['endpoint', 'apiKey', 'deploymentName', 'model'],
     customFields: {
       endpoint: {
@@ -94,9 +94,14 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
     description: 'Connect to your local Ollama instance.',
     modelPlaceholder: 'e.g., llama2, codellama, mistral',
     fields: [
-      { name: 'model', required: true },    
-      { name: 'apiKey', required: false },     // API key is optional for Ollama
-      { name: 'endpoint', required: false, defaultValue: 'http://host.docker.internal:11434', placeholder: 'e.g.http://localhost:11434'}, // Optional endpoint
+      { name: 'model', required: true },
+      { name: 'apiKey', required: false }, // API key is optional for Ollama
+      {
+        name: 'endpoint',
+        required: false,
+        defaultValue: 'http://host.docker.internal:11434',
+        placeholder: 'e.g.http://localhost:11434',
+      }, // Optional endpoint
     ],
   },
   {
@@ -215,8 +220,40 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
     description: 'Connect to your local Ollama instance.',
     modelPlaceholder: 'e.g., mxbai-embed-large',
     fields: [
-      { name: 'model', required: true },    
-      { name: 'endpoint', required: false, defaultValue: 'http://host.docker.internal:11434', placeholder: 'e.g. http://localhost:11434'}, // Optional endpoint
+      { name: 'model', required: true },
+      {
+        name: 'endpoint',
+        required: false,
+        defaultValue: 'http://host.docker.internal:11434',
+        placeholder: 'e.g. http://localhost:11434',
+      }, // Optional endpoint
+    ],
+  },
+  {
+    id: 'jinaAI',
+    label: 'Jina AI',
+    description: 'Enter your Jina AI API credentials for embeddings.',
+    modelPlaceholder: 'e.g., jina-embeddings-v3',
+    fields: [
+      { name: 'model', required: true },
+      { name: 'apiKey', required: true },
+    ],
+  },
+  {
+    id: 'mistral',
+    label: 'Mistral',
+    description: 'Enter your Mistral API credentials for embeddings.',
+    modelPlaceholder: 'e.g., mistral-embed',
+    fields: ['apiKey', 'model'],
+  },
+  {
+    id: 'voyage',
+    label: 'Voyage',
+    description: 'Enter your Voyage API credentials for embeddings.',
+    modelPlaceholder: 'e.g., voyage-3.5',
+    fields: [
+      { name: 'model', required: true },
+      { name: 'apiKey', required: true },
     ],
   },
 ] as const;

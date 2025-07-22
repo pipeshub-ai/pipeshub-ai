@@ -51,6 +51,7 @@ dependencies = [
     "langchain-openai==0.3.28",
     "langchain-qdrant==0.2.0",
     "langchain-together==0.3.0",
+    "langchain-voyageai==0.1.6",
     "langchain-xai==0.2.4",
     "langchain==0.3.19",
     "langgraph==0.3.34",
