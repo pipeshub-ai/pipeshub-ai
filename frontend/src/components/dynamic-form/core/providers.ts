@@ -185,7 +185,7 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
     id: 'gemini',
     label: 'Gemini API',
     description: 'Enter your Gemini API credentials for embeddings.',
-    modelPlaceholder: 'e.g., gemini-embedding-exp-03-07',
+    modelPlaceholder: 'e.g., gemini-embedding-001',
     fields: ['apiKey', 'model'],
   },
   {

@@ -45,21 +45,31 @@ async def initialize_embedding_model(request: Request, embedding_configs: list[d
     """Initialize the embedding model and return necessary components."""
     app = request.app
     logger = app.container.logger()
-    print(embedding_configs, "embedding_configs")
-    logger.info("Starting embedding health check")
+
+    logger.info("Starting embedding health check", extra={"embedding_configs": embedding_configs})
 
     retrieval_service = await app.container.retrieval_service()
     logger.info("Retrieved retrieval service")
 
-    if not embedding_configs:
-        logger.info("Using default embedding model")
-        dense_embeddings = get_default_embedding_model()
-    else:
+    try:
+        if not embedding_configs:
+            logger.info("Using default embedding model")
+            dense_embeddings = get_default_embedding_model()
+        else:
 
-        if embedding_configs:
-            config = embedding_configs[0] # Use the first configuration
-            dense_embeddings = get_embedding_model(config["provider"], config)
-            print(dense_embeddings, "dense_embeddings")
+            if embedding_configs:
+                config = embedding_configs[0] # Use the first configuration
+                dense_embeddings = get_embedding_model(config["provider"], config)
+    except Exception as e:
+        logger.error(f"Failed to initialize embedding model: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "status": "not healthy",
+                "error": f"Failed to initialize embedding model: {str(e)}",
+                "timestamp": get_epoch_timestamp_in_ms(),
+            }
+        )
 
     if dense_embeddings is None:
         raise HTTPException(

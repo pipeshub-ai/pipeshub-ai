@@ -64,147 +64,142 @@ def get_default_embedding_model() -> Embeddings:
         raise e
 
 def get_embedding_model(provider: str, config: Dict[str, Any]) -> Embeddings:
-    try:
-        configuration = config['configuration']
+    configuration = config['configuration']
 
-        if provider == EmbeddingProvider.AZURE_OPENAI.value:
-            from langchain_openai.embeddings import AzureOpenAIEmbeddings
+    if provider == EmbeddingProvider.AZURE_OPENAI.value:
+        from langchain_openai.embeddings import AzureOpenAIEmbeddings
 
-            return AzureOpenAIEmbeddings(
-                model=configuration['model'],
-                api_key=configuration['apiKey'],
-                api_version=AZURE_EMBEDDING_API_VERSION,
-                azure_endpoint=configuration['endpoint'],
-            )
+        return AzureOpenAIEmbeddings(
+            model=configuration['model'],
+            api_key=configuration['apiKey'],
+            api_version=AZURE_EMBEDDING_API_VERSION,
+            azure_endpoint=configuration['endpoint'],
+        )
 
-        elif provider == EmbeddingProvider.COHERE.value:
-            from langchain_cohere import CohereEmbeddings
+    elif provider == EmbeddingProvider.COHERE.value:
+        from langchain_cohere import CohereEmbeddings
 
-            return CohereEmbeddings(
-                model=configuration['model'],
-                cohere_api_key=configuration['apiKey'],
-            )
-
-
-        elif provider == EmbeddingProvider.DEFAULT.value:
-            return get_default_embedding_model()
-
-        elif provider == EmbeddingProvider.FIREWORKS.value:
-            from langchain_fireworks import FireworksEmbeddings
-            return FireworksEmbeddings(
-                model=configuration['model'],
-                api_key=configuration['apiKey'],
-                base_url=configuration['endpoint'],
-            )
-
-        elif provider == EmbeddingProvider.GEMINI.value:
-            from langchain_google_genai import GoogleGenerativeAIEmbeddings
-
-            # Add "models/" prefix if it's missing
-            model_name = configuration['model']
-            if not model_name.startswith("models/"):
-                model_name = f"models/{model_name}"
-            return GoogleGenerativeAIEmbeddings(
-                model=model_name,  # Now properly formatted as models/text-embedding-004
-                google_api_key=configuration['apiKey'],
-            )
-
-        elif provider == EmbeddingProvider.HUGGING_FACE.value:
-            from langchain_community.embeddings import HuggingFaceEmbeddings
-
-            model_kwargs = configuration.get('model_kwargs', {}).copy()
-            # Hugging Face embedding models typically don't use API keys in the same way
-            # but we include it in case it's needed for private models
-            if configuration.get('apiKey'):
-                model_kwargs["api_key"] = configuration['apiKey']
-
-            # Set default encoding parameters
-            encode_kwargs = configuration.get('encode_kwargs', {}).copy()
-            if "normalize_embeddings" not in encode_kwargs:
-                encode_kwargs["normalize_embeddings"] = True
-
-            return HuggingFaceEmbeddings(
-                model_name=configuration['model'],
-                model_kwargs=model_kwargs,
-                encode_kwargs=encode_kwargs
-            )
-
-        elif provider == EmbeddingProvider.JINA_AI.value:
-            from langchain_community.embeddings.jina import JinaEmbeddings
-
-            return JinaEmbeddings(
-                model=configuration['model'],
-                jina_api_key=configuration['apiKey'],
-            )
-
-        elif provider == EmbeddingProvider.MISTRAL.value:
-            from langchain_mistralai import MistralAIEmbeddings
-
-            return MistralAIEmbeddings(
-                model=configuration['model'],
-                api_key=configuration['apiKey'],
-            )
+        return CohereEmbeddings(
+            model=configuration['model'],
+            cohere_api_key=configuration['apiKey'],
+        )
 
 
-        elif provider == EmbeddingProvider.OLLAMA.value:
-            from langchain_ollama import OllamaEmbeddings
+    elif provider == EmbeddingProvider.DEFAULT.value:
+        return get_default_embedding_model()
 
-            return OllamaEmbeddings(
-                model=configuration['model'],
-                base_url=configuration['endpoint']
-            )
+    elif provider == EmbeddingProvider.FIREWORKS.value:
+        from langchain_fireworks import FireworksEmbeddings
+        return FireworksEmbeddings(
+            model=configuration['model'],
+            api_key=configuration['apiKey'],
+            base_url=configuration['endpoint'],
+        )
 
-        elif provider == EmbeddingProvider.OPENAI.value:
-            from langchain_openai.embeddings import OpenAIEmbeddings
+    elif provider == EmbeddingProvider.GEMINI.value:
+        from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
-            return OpenAIEmbeddings(
-                model=configuration["model"],
-                api_key=configuration["apiKey"],
-                organization=configuration.get("organizationId"),
-            )
+        # Add "models/" prefix if it's missing
+        model_name = configuration['model']
+        if not model_name.startswith("models/"):
+            model_name = f"models/{model_name}"
+        return GoogleGenerativeAIEmbeddings(
+            model=model_name,  # Now properly formatted as models/text-embedding-004
+            google_api_key=configuration['apiKey'],
+        )
 
-        elif provider == EmbeddingProvider.SENTENCE_TRANSFOMERS.value:
-            from langchain_community.embeddings import SentenceTransformerEmbeddings
+    elif provider == EmbeddingProvider.HUGGING_FACE.value:
+        from langchain_community.embeddings import HuggingFaceEmbeddings
 
-            encode_kwargs = configuration.get('encode_kwargs', {}).copy()
+        model_kwargs = configuration.get('model_kwargs', {}).copy()
+        # Hugging Face embedding models typically don't use API keys in the same way
+        # but we include it in case it's needed for private models
+        if configuration.get('apiKey'):
+            model_kwargs["api_key"] = configuration['apiKey']
 
-            return SentenceTransformerEmbeddings(
-                model_name=configuration['model'],
-                cache_folder=configuration.get('cache_folder', None),
-                encode_kwargs=encode_kwargs
-            )
+        # Set default encoding parameters
+        encode_kwargs = configuration.get('encode_kwargs', {}).copy()
+        if "normalize_embeddings" not in encode_kwargs:
+            encode_kwargs["normalize_embeddings"] = True
 
-        elif provider == EmbeddingProvider.OPENAI_COMPATIBLE.value:
-            from langchain_openai.embeddings import OpenAIEmbeddings
+        return HuggingFaceEmbeddings(
+            model_name=configuration['model'],
+            model_kwargs=model_kwargs,
+            encode_kwargs=encode_kwargs
+        )
 
-            return OpenAIEmbeddings(
-                model=configuration['model'],
-                api_key=configuration['apiKey'],
-                base_url=configuration['endpoint'],
-            )
+    elif provider == EmbeddingProvider.JINA_AI.value:
+        from langchain_community.embeddings.jina import JinaEmbeddings
 
-        elif provider == EmbeddingProvider.TOGETHER.value:
-            from langchain_together import TogetherEmbeddings
+        return JinaEmbeddings(
+            model=configuration['model'],
+            jina_api_key=configuration['apiKey'],
+        )
 
-            return TogetherEmbeddings(
-                model=configuration['model'],
-                api_key=configuration['apiKey'],
-                base_url=configuration['endpoint'],
-            )
+    elif provider == EmbeddingProvider.MISTRAL.value:
+        from langchain_mistralai import MistralAIEmbeddings
 
-        elif provider == EmbeddingProvider.VOYAGE.value:
-            from langchain_voyageai import VoyageAIEmbeddings
+        return MistralAIEmbeddings(
+            model=configuration['model'],
+            api_key=configuration['apiKey'],
+        )
 
-            return VoyageAIEmbeddings(
-                model=configuration['model'],
-                api_key=configuration['apiKey'],
-            )
 
-        raise ValueError(f"Unsupported embedding config type: {provider}")
+    elif provider == EmbeddingProvider.OLLAMA.value:
+        from langchain_ollama import OllamaEmbeddings
 
-    except Exception as e:
-        print(e, "error")
-        raise e
+        return OllamaEmbeddings(
+            model=configuration['model'],
+            base_url=configuration['endpoint']
+        )
+
+    elif provider == EmbeddingProvider.OPENAI.value:
+        from langchain_openai.embeddings import OpenAIEmbeddings
+
+        return OpenAIEmbeddings(
+            model=configuration["model"],
+            api_key=configuration["apiKey"],
+            organization=configuration.get("organizationId"),
+        )
+
+    elif provider == EmbeddingProvider.SENTENCE_TRANSFOMERS.value:
+        from langchain_community.embeddings import SentenceTransformerEmbeddings
+
+        encode_kwargs = configuration.get('encode_kwargs', {}).copy()
+
+        return SentenceTransformerEmbeddings(
+            model_name=configuration['model'],
+            cache_folder=configuration.get('cache_folder', None),
+            encode_kwargs=encode_kwargs
+        )
+
+    elif provider == EmbeddingProvider.OPENAI_COMPATIBLE.value:
+        from langchain_openai.embeddings import OpenAIEmbeddings
+
+        return OpenAIEmbeddings(
+            model=configuration['model'],
+            api_key=configuration['apiKey'],
+            base_url=configuration['endpoint'],
+        )
+
+    elif provider == EmbeddingProvider.TOGETHER.value:
+        from langchain_together import TogetherEmbeddings
+
+        return TogetherEmbeddings(
+            model=configuration['model'],
+            api_key=configuration['apiKey'],
+            base_url=configuration['endpoint'],
+        )
+
+    elif provider == EmbeddingProvider.VOYAGE.value:
+        from langchain_voyageai import VoyageAIEmbeddings
+
+        return VoyageAIEmbeddings(
+            model=configuration['model'],
+            api_key=configuration['apiKey'],
+        )
+
+    raise ValueError(f"Unsupported embedding config type: {provider}")
 
 
 def get_generator_model(provider: str, config: Dict[str, Any]) -> BaseChatModel:
