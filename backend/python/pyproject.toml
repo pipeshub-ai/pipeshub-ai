@@ -64,7 +64,7 @@ dependencies = [
     "openpyxl==3.1.5",
     "pandas==2.2.3",
     "pdf2image==1.17.0",
-    "protobuf==3.20.3",
+    "protobuf==4.25.8",
     "pydantic<3.0.0",
     "PyMuPDF==1.24.14",
     "python-arango==8.1.5",
