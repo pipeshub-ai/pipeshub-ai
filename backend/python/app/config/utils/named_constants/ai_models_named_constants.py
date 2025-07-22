@@ -12,12 +12,12 @@ class LLMProvider(Enum):
     AWS_BEDROCK = "bedrock"
     OLLAMA = "ollama"
     OPENAI_COMPATIBLE = "openAICompatible"
-    TOGETHER = "together"
-    GROQ = "groq"
-    XAI = "xai"
-    MISTRAL = "mistral"
     COHERE = "cohere"
     FIREWORKS = "fireworks"
+    GROQ = "groq"
+    MISTRAL = "mistral"
+    TOGETHER = "together"
+    XAI = "xai"
 
 
 class OCRProvider(Enum):
