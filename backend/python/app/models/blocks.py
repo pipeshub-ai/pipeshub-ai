@@ -244,6 +244,7 @@ class BlockGroup(BaseModel):
     type: GroupType = Field(description="Type of the block group")
     parent_index: Optional[int] = Field(description="Index of the parent block group")
     description: Optional[str] = Field(description="Description of the block group")
+    source_group_id: Optional[str] = Field(description="Source group identifier")
     citation_metadata: Optional[CitationMetadata] = None
     list_metadata: Optional[ListMetadata] = None
     table_metadata: Optional[TableMetadata] = None
