@@ -79,7 +79,7 @@ class DoclingDocToBlocksConverter():
     # }
     #
     # Todo: Handle Bounding Boxes, PPTX, CSV, Excel, Docx, markdown, html etc.
-    def _process_content_in_order(self, doc_dict: dict) -> list:
+    def _process_content_in_order(self, doc_dict: dict) -> BlocksContainer:
         """
         Process document content in proper reading order by following references.
 
