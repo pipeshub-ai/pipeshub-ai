@@ -13,12 +13,12 @@ import type {
   PdfHighlighterCompProps,
 } from 'src/types/pdf-highlighter';
 
+import { Icon } from '@iconify/react';
 import * as pdfjsLib from 'pdfjs-dist';
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { Tip, Popup, Highlight, AreaHighlight, PdfHighlighter } from 'react-pdf-highlighter';
 
-import { Box, CircularProgress, IconButton, Slider, Typography } from '@mui/material';
-import { Icon } from '@iconify/react';
+import { Box, Slider, CircularProgress } from '@mui/material';
 
 import CitationSidebar from './highlighter-sidebar';
 

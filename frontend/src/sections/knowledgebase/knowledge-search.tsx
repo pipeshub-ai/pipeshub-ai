@@ -1,4 +1,6 @@
-import { Icon, IconifyIcon } from '@iconify/react';
+import type { IconifyIcon } from '@iconify/react';
+
+import { Icon } from '@iconify/react';
 import { useNavigate } from 'react-router';
 import jiraIcon from '@iconify-icons/mdi/jira';
 import slackIcon from '@iconify-icons/mdi/slack';
@@ -6,11 +8,9 @@ import slackIcon from '@iconify-icons/mdi/slack';
 import gmailIcon from '@iconify-icons/mdi/gmail';
 import closeIcon from '@iconify-icons/mdi/close';
 import refreshIcon from '@iconify-icons/mdi/refresh';
-import historyIcon from '@iconify-icons/mdi/history';
 import eyeIcon from '@iconify-icons/mdi/eye-outline';
 import magnifyIcon from '@iconify-icons/mdi/magnify';
 import databaseIcon from '@iconify-icons/mdi/database';
-import starIcon from '@iconify-icons/mdi/star-outline';
 import googleDriveIcon from '@iconify-icons/mdi/google-drive';
 import lightBulbIcon from '@iconify-icons/mdi/lightbulb-outline';
 import microsoftTeamsIcon from '@iconify-icons/mdi/microsoft-teams';
@@ -38,9 +38,9 @@ import {
 } from '@mui/material';
 
 import { ORIGIN } from './constants/knowledge-search';
+import {createScrollableContainerStyle} from '../qna/chatbot/utils/styles/scrollbar';
 
 import type { SearchResult, KnowledgeSearchProps } from './types/search-response';
-import {createScrollableContainerStyle} from '../qna/chatbot/utils/styles/scrollbar';
 
 // Helper function to get file icon based on extension
 

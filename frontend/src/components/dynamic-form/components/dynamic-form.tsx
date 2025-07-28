@@ -1,26 +1,29 @@
-import React, { useState, useEffect, forwardRef, useImperativeHandle, useRef } from 'react';
-import infoIcon from '@iconify-icons/mdi/info-outline';
 import closeIcon from '@iconify-icons/mdi/close';
 import pencilIcon from '@iconify-icons/mdi/pencil';
+import infoIcon from '@iconify-icons/mdi/info-outline';
+import React, { useRef, useState, useEffect, forwardRef, useImperativeHandle } from 'react';
 
 import { alpha, useTheme } from '@mui/material/styles';
 import {
   Box,
   Grid,
+  Fade,
   Alert,
   Button,
-  Typography,
-  CircularProgress,
-  Fade,
-  Autocomplete,
   TextField,
+  Typography,
+  Autocomplete,
+  CircularProgress,
 } from '@mui/material';
 
 import { Iconify } from 'src/components/iconify';
+
 import { useAuthContext } from 'src/auth/hooks';
-import { useDynamicForm } from '../hooks/use-dynamic-form';
-import { ConfigType } from '../core/config-registry';
+
 import DynamicField from './dynamic-field';
+import { useDynamicForm } from '../hooks/use-dynamic-form';
+
+import type { ConfigType } from '../core/config-registry';
 
 interface DynamicFormProps {
   // Core configuration
@@ -452,7 +455,7 @@ const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>((props, ref) =>
     if (formContainerRef.current && !isSwitchingProvider && !isLoading) {
       const timer = setTimeout(() => {
         if (formContainerRef.current) {
-          const height = formContainerRef.current.getBoundingClientRect().height;
+          const {height} = formContainerRef.current.getBoundingClientRect();
           if (height > 0) {
             setProviderHeights((prev) => ({
               ...prev,

@@ -8,11 +8,11 @@ import Box from '@mui/material/Box';
 import Stack from '@mui/material/Stack';
 import Drawer from '@mui/material/Drawer';
 import SvgIcon from '@mui/material/SvgIcon';
+import Divider from '@mui/material/Divider';
 import MenuItem from '@mui/material/MenuItem';
-import { alpha, useTheme, styled } from '@mui/material/styles';
 import Typography from '@mui/material/Typography';
 import IconButton from '@mui/material/IconButton';
-import Divider from '@mui/material/Divider';
+import { alpha, styled, useTheme } from '@mui/material/styles';
 
 import { paths } from 'src/routes/paths';
 import { useRouter, usePathname } from 'src/routes/hooks';

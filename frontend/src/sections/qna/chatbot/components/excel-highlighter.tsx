@@ -1,31 +1,36 @@
-import type { BoxProps } from '@mui/material';
 import type { Theme } from '@mui/material/styles';
-import type { CustomCitation, Metadata } from 'src/types/chat-bot';
+import type { CustomCitation } from 'src/types/chat-bot';
 import type {
-  DocumentContent,
   SearchResult,
+  DocumentContent,
 } from 'src/sections/knowledgebase/types/search-response';
 
 import * as XLSX from 'xlsx';
 import { Icon } from '@iconify/react';
-import fullScreenIcon from '@iconify-icons/mdi/fullscreen';
-import fullScreenExitIcon from '@iconify-icons/mdi/fullscreen-exit';
-import citationIcon from '@iconify-icons/mdi/format-quote-close';
-import fileExcelIcon from '@iconify-icons/mdi/file-excel-outline';
 import closeIcon from '@iconify-icons/mdi/close';
 import tableRowIcon from '@iconify-icons/mdi/table-row';
-import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
+import fullScreenIcon from '@iconify-icons/mdi/fullscreen';
+import citationIcon from '@iconify-icons/mdi/format-quote-close';
+import fileExcelIcon from '@iconify-icons/mdi/file-excel-outline';
+import fullScreenExitIcon from '@iconify-icons/mdi/fullscreen-exit';
+import React, { useRef, useMemo, useState, useEffect, useCallback } from 'react';
 
 import {
   Box,
+  Tab,
   List,
+  Tabs,
+  Fade,
   Table,
   Alert,
   alpha,
   styled,
+  Button,
   Tooltip,
   TableRow,
   ListItem,
+  useTheme,
+  Backdrop,
   TableBody,
   TableCell,
   TableHead,
@@ -33,13 +38,8 @@ import {
   IconButton,
   TableContainer,
   CircularProgress,
-  useTheme,
-  Tab,
-  Tabs,
-  Fade,
-  Backdrop,
-  Button,
 } from '@mui/material';
+
 import { createScrollableContainerStyle } from '../utils/styles/scrollbar';
 
 type ExcelViewerProps = {

@@ -27,11 +27,11 @@ import { Iconify } from 'src/components/iconify';
 
 import { useAuthContext } from 'src/auth/hooks';
 
+import OAuthAuthForm from './oauth-auth-form';
 import GoogleAuthForm from './google-auth-form';
 import SmtpConfigForm from './smtp-config-form';
 import AzureAdAuthForm from './azureAd-auth-form';
 import MicrosoftAuthForm from './microsoft-auth-form';
-import OAuthAuthForm from './oauth-auth-form';
 
 // Import configuration forms
 import type { GoogleAuthFormRef } from './google-auth-form';

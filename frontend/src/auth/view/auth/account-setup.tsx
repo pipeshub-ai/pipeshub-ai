@@ -39,7 +39,7 @@ import {
   CircularProgress,
 } from '@mui/material';
 
-import { setEmail } from 'src/store/authSlice';
+import { setEmail } from 'src/store/auth-slice';
 
 import { OrgExists, AccountSetUp } from 'src/auth/context/jwt';
 

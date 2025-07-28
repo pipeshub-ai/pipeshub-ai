@@ -201,6 +201,7 @@ file_record_schema = {
         "type": "object",
         "properties": {
             "orgId": {"type": "string"},
+            "recordGroupId": {"type":"string"},  # kb id
             "name": {"type": "string", "minLength": 1},
             "isFile": {"type": "boolean"},
             "extension": {"type": ["string", "null"]},
@@ -280,15 +281,17 @@ record_group_schema = {
             "externalGroupId": {"type": "string", "minLength": 1},
             "groupType": {
                 "type": "string",
-                "enum": ["SLACK_CHANNEL", "CONFLUENCE_SPACES"],
+                "enum": ["SLACK_CHANNEL", "CONFLUENCE_SPACES","KB"],
             },
             "connectorName": {
                 "type": "string",
-                "enum": ["ONEDRIVE", "DRIVE", "CONFLUENCE", "SLACK"],
+                "enum": ["ONEDRIVE", "DRIVE", "CONFLUENCE", "SLACK","KB"],
             },
+            "createdBy":{"type": ["string", "null"]},
+            "deletedByUserId":{"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
-            "lastSyncTimestampstamp": {"type": "number"},
+            "lastSyncTimestamp": {"type": "number"},
             "isDeletedAtSource": {"type": "boolean", "default": False},
             "deletedAtSourceTimestamp": {"type": "number"},
             "sourceCreatedAtTimestamp": {"type": "number"},
@@ -296,7 +299,7 @@ record_group_schema = {
         },
         "required": [
             "groupName",
-            "externalGroupId",
+            # "externalGroupId",
             "groupType",
             "connectorName",
             "createdAtTimestamp",
@@ -328,11 +331,13 @@ kb_schema = {
             "userId":{"type" : "string"},
             "orgId": {"type": "string"},
             "name": {"type": "string", "default": "Default"},
+            "description" : {"type":"string", "default":""},
+            "isShared" : {"type":"boolean","default":False},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
             "deletedAtTimestamp": {"type": "number"},
             "isDeleted": {"type": "boolean", "default": False},
-            "isArchived": {"type": "boolean", "default": False},
+            "isArchived": {"type": "boolean", "default": False}
         },
         "required": ["orgId"],
         "additionalProperties": False,

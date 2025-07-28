@@ -1,5 +1,3 @@
-import { Icon } from '@iconify/react';
-import closeIcon from '@iconify-icons/mdi/close';
 import { useRef, useState, useEffect, useCallback } from 'react';
 
 import { Box, alpha, Alert, Button, styled, Divider, useTheme, Snackbar } from '@mui/material';
@@ -18,11 +16,11 @@ import TextViewer from '../qna/chatbot/components/text-highlighter';
 import ExcelViewer from '../qna/chatbot/components/excel-highlighter';
 import PdfHighlighterComp from '../qna/chatbot/components/pdf-highlighter';
 import MarkdownViewer from '../qna/chatbot/components/markdown-highlighter';
+import { createScrollableContainerStyle } from '../qna/chatbot/utils/styles/scrollbar';
 import { getConnectorPublicUrl } from '../accountdetails/account-settings/services/utils/services-configuration-service';
 
 import type { Filters } from './types/knowledge-base';
 import type { PipesHub, SearchResult, AggregatedDocument } from './types/search-response';
-import { createScrollableContainerStyle } from '../qna/chatbot/utils/styles/scrollbar';
 
 // Constants for sidebar widths - must match with the sidebar component
 const SIDEBAR_EXPANDED_WIDTH = 320;
@@ -67,6 +65,7 @@ export default function KnowledgeBaseSearch() {
     moduleId: [],
     appSpecificRecordType: [],
     app: [], // Updated to use app instead of connector
+    kb:[] 
   });
   const scrollableStyles = createScrollableContainerStyle(theme);
   const [searchQuery, setSearchQuery] = useState<string>('');

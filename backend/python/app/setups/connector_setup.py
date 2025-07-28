@@ -57,6 +57,11 @@ from app.connectors.sources.google.google_drive.drive_webhook_handler import (
     EnterpriseDriveWebhookHandler,
     IndividualDriveWebhookHandler,
 )
+from app.connectors.sources.localKB.core.arango_service import (
+    KnowledgeBaseArangoService,
+)
+from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
+from app.connectors.sources.localKB.handlers.migration_service import run_kb_migration
 from app.connectors.utils.rate_limiter import GoogleAPIRateLimiter
 from app.core.celery_app import CeleryApp
 from app.core.signed_url import SignedUrlConfig, SignedUrlHandler
@@ -630,6 +635,21 @@ class AppContainer(containers.DeclarativeContainer):
         config=config_service,
     )
 
+    kb_arango_service = providers.Singleton(
+        KnowledgeBaseArangoService,
+        logger=logger,
+        arango_client=arango_client,
+        kafka_service=kafka_service,
+        config=config_service,
+    )
+
+    kb_service = providers.Singleton(
+        KnowledgeBaseService,
+        logger= logger,
+        arango_service= kb_arango_service,
+        kafka_service= kafka_service
+    )
+
     google_token_handler = providers.Singleton(
         GoogleTokenHandler,
         logger=logger,
@@ -690,6 +710,7 @@ class AppContainer(containers.DeclarativeContainer):
         modules=[
             "app.core.celery_app",
             "app.connectors.api.router",
+            "app.connectors.sources.localKB.api.kb_router",
             "app.connectors.sources.google.common.sync_tasks",
             "app.connectors.api.middleware",
             "app.core.signed_url",
@@ -903,6 +924,34 @@ async def health_check(container) -> None:
         raise
 
 
+async def run_knowledge_base_migration(container) -> bool:
+    """
+    Run knowledge base migration from old system to new system
+    This should be called once during system initialization
+    """
+    logger = container.logger()
+
+    try:
+        logger.info("🔍 Checking if Knowledge Base migration is needed...")
+
+        # Run the migration
+        migration_result = await run_kb_migration(container)
+
+        if migration_result['success']:
+            migrated_count = migration_result['migrated_count']
+            if migrated_count > 0:
+                logger.info(f"✅ Knowledge Base migration completed: {migrated_count} KBs migrated")
+            else:
+                logger.info("✅ No Knowledge Base migration needed")
+            return True
+        else:
+            logger.error(f"❌ Knowledge Base migration failed: {migration_result['message']}")
+            return False
+
+    except Exception as e:
+        logger.error(f"❌ Knowledge Base migration error: {str(e)}")
+        return False
+
 async def initialize_container(container) -> bool:
     """Initialize container resources with health checks."""
 
@@ -923,7 +972,22 @@ async def initialize_container(container) -> bool:
         else:
             raise Exception("Failed to initialize ArangoDB service")
 
+        logger.info("Connecting to ArangoDB (KnowledgeBase)")
+        kb_arango_service = await container.kb_arango_service()
+        if kb_arango_service:
+            kb_arango_connected = await kb_arango_service.connect()
+            if not kb_arango_connected:
+                raise Exception("Failed to connect to ArangoDB (KnowledgeBase)")
+            logger.info("✅ Connected to ArangoDB (KnowledgeBase)")
+        else:
+            raise Exception("Failed to initialize ArangoDB service (KnowledgeBase)")
+
         logger.info("✅ Container initialization completed successfully")
+
+        logger.info("🔄 Running Knowledge Base migration...")
+        migration_success = await run_knowledge_base_migration(container)
+        if not migration_success:
+            logger.warning("⚠️ Knowledge Base migration had issues but continuing initialization")
 
         return True
 

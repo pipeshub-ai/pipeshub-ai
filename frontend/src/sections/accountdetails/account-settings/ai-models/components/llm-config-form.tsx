@@ -1,6 +1,11 @@
+import type { DynamicFormRef } from 'src/components/dynamic-form/components/dynamic-form';
+
 import React, { forwardRef } from 'react';
+
 import { Link, Alert } from '@mui/material';
-import DynamicForm, { DynamicFormRef } from 'src/components/dynamic-form/components/dynamic-form';
+
+import DynamicForm from 'src/components/dynamic-form/components/dynamic-form';
+
 import { getLlmConfig, updateLlmConfig } from '../services/universal-config';
 
 interface LlmConfigFormProps {

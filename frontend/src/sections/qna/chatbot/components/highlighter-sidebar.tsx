@@ -1,26 +1,26 @@
 import type { HighlightType, ProcessedCitation } from 'src/types/pdf-highlighter';
 
-import React, { useState, useEffect, useCallback } from 'react';
 import { Icon } from '@iconify/react';
-import citationIcon from '@iconify-icons/mdi/format-quote-close';
-import fileExcelIcon from '@iconify-icons/mdi/file-excel-outline';
+import closeIcon from '@iconify-icons/mdi/close';
+import React, { useState, useEffect } from 'react';
 import tableRowIcon from '@iconify-icons/mdi/table-row';
 import fullScreenIcon from '@iconify-icons/mdi/fullscreen';
+import citationIcon from '@iconify-icons/mdi/format-quote-close';
+import fileExcelIcon from '@iconify-icons/mdi/file-excel-outline';
 import fullScreenExitIcon from '@iconify-icons/mdi/fullscreen-exit';
-import closeIcon from '@iconify-icons/mdi/close';
 
-import { styled, alpha } from '@mui/material/styles';
+import { alpha, styled } from '@mui/material/styles';
 import {
   Box,
   List,
-  ListItem,
-  Typography,
-  Divider,
-  useTheme,
-  IconButton,
   Button,
   Tooltip,
+  ListItem,
+  useTheme,
+  Typography,
+  IconButton,
 } from '@mui/material';
+
 import { createScrollableContainerStyle } from '../utils/styles/scrollbar';
 
 // Updated props interface to include highlightedCitationId

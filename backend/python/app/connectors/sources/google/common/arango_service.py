@@ -28,7 +28,7 @@ class ArangoService(BaseArangoService):
         config: ConfigurationService,
     ) -> None:
         # Call parent class constructor to initialize shared attributes
-        super().__init__(logger, arango_client, config)
+        super().__init__(logger, arango_client, config,kafka_service)
         self.kafka_service = kafka_service
         self.logger = logger
 

@@ -1,9 +1,9 @@
 import type { CustomCitation } from 'src/types/chat-bot';
-import type {
-  DocumentContent,
-  SearchResult,
-} from 'src/sections/knowledgebase/types/search-response';
 import type { Position, HighlightType, ProcessedCitation } from 'src/types/pdf-highlighter';
+import type {
+  SearchResult,
+  DocumentContent,
+} from 'src/sections/knowledgebase/types/search-response';
 
 import { Icon } from '@iconify/react';
 import * as docxPreview from 'docx-preview';

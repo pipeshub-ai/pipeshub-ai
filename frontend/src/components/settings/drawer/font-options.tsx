@@ -1,9 +1,7 @@
 import Box from '@mui/material/Box';
 
-import { CONFIG } from 'src/config-global';
 import { setFont } from 'src/theme/styles';
 
-import { SvgColor } from '../../svg-color';
 import { Block, BlockOption } from './styles';
 
 // ----------------------------------------------------------------------

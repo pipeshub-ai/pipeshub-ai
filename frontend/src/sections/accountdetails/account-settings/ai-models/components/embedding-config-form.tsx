@@ -1,5 +1,9 @@
+import type { DynamicFormRef } from 'src/components/dynamic-form/components/dynamic-form';
+
 import React, { forwardRef } from 'react';
-import DynamicForm, { DynamicFormRef } from 'src/components/dynamic-form/components/dynamic-form';
+
+import DynamicForm from 'src/components/dynamic-form/components/dynamic-form';
+
 import { getEmbeddingConfig, updateEmbeddingConfig } from '../services/universal-config';
 
 interface EmbeddingConfigFormProps {

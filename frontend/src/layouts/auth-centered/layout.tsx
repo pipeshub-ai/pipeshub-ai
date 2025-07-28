@@ -3,7 +3,6 @@ import type { Theme, SxProps, Breakpoint } from '@mui/material/styles';
 import Box from '@mui/material/Box';
 import Alert from '@mui/material/Alert';
 
-import { CONFIG } from 'src/config-global';
 import { stylesMode } from 'src/theme/styles';
 
 import { Main } from './main';

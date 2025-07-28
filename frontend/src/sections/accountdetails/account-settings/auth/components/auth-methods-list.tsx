@@ -16,8 +16,6 @@ import { alpha } from '@mui/material/styles';
 import {
   Box,
   Grid,
-  Fade,
-  Chip,
   Paper,
   Alert,
   Switch,
@@ -31,11 +29,11 @@ import {
 import { Iconify } from 'src/components/iconify';
 
 import {
+  getOAuthConfig,
   getSamlSsoConfig,
   getAzureAuthConfig,
   getGoogleAuthConfig,
   getMicrosoftAuthConfig,
-  getOAuthConfig,
 } from '../utils/auth-configuration-service';
 
 // Authentication method type

@@ -40,7 +40,7 @@ import { useAdmin } from 'src/context/AdminContext';
 import { Iconify } from 'src/components/iconify';
 
 import { removeUser, resendInvite, getAllUsersWithGroups } from '../utils';
-import { setInviteCount, decrementInvitesCount } from '../../../store/userAndGroupsSlice';
+import { setInviteCount, decrementInvitesCount } from '../../../store/user-and-groups-slice';
 
 import type { GroupUser } from '../types/group-details';
 import type { SnackbarState } from '../types/organization-data';

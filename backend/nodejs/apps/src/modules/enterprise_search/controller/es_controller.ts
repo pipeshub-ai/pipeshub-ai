@@ -2699,6 +2699,7 @@ export const search =
         requestId,
         query,
         limit,
+        filters,
         timestamp: new Date().toISOString(),
       });
 

@@ -3,36 +3,34 @@ import type { SnackbarState } from 'src/types/chat-sidebar';
 
 import { Icon } from '@iconify/react';
 import React, { useState } from 'react';
-import magnifyIcon from '@iconify-icons/mdi/magnify';
-import contentCopyIcon from '@iconify-icons/mdi/content-copy';
-import shareIcon from '@iconify-icons/mdi/share-variant-outline';
 import closeIcon from '@iconify-icons/mdi/close';
-import checkCircleIcon from '@iconify-icons/mdi/check-circle-outline';
+import magnifyIcon from '@iconify-icons/mdi/magnify';
+import shareIcon from '@iconify-icons/mdi/share-variant-outline';
 
 import { 
   Box,
+  Fade,
   Paper,
   Alert,
+  alpha,
   Dialog,
   Button,
   Checkbox,
   Snackbar,
   MenuItem,
+  useTheme,
   TextField,
   Typography,
   IconButton,
-  Autocomplete,
   DialogTitle,
+  Autocomplete,
   DialogContent,
   DialogActions,
-  useTheme,
-  alpha,
-  Fade,
-  Tooltip,
   CircularProgress,
 } from '@mui/material';
 
 import axiosInstance from 'src/utils/axios';
+
 import { useUsers } from 'src/context/UserContext';
 
 interface ShareConversationDialogProps {

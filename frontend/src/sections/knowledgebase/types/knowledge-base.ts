@@ -58,6 +58,7 @@ export interface Filters {
   connectors?: string[];
   app?: string[];
   permissions?: string[];
+  kb?:string[];
 }
 
 export interface FilterHeaderProps {
@@ -114,7 +115,6 @@ export interface KnowledgeBaseDetailsProps {
 }
 
 export interface KnowledgeBaseSideBarProps {
-  sx: SxProps<Theme>;
   filters: Filters;
   onFilterChange: (filters: Filters) => void;
   openSidebar: boolean;

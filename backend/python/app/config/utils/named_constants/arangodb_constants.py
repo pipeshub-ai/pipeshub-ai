@@ -32,6 +32,7 @@ class Connectors(Enum):
     GOOGLE_DRIVE = "DRIVE"
     GOOGLE_MAIL = "GMAIL"
     GOOGLE_CALENDAR = "CALENDAR"
+    KNOWLEDGE_BASE = "KB"
 
 class AppGroups(Enum):
     GOOGLE_WORKSPACE = "Google Workspace"
@@ -67,12 +68,15 @@ class CollectionNames(Enum):
     # Records and Record relations
     RECORDS = "records"
     RECORD_RELATIONS = "recordRelations"
+    RECORD_GROUPS = "recordGroups"
 
     # Knowledge base
     KNOWLEDGE_BASE = "knowledgeBase"
     IS_OF_TYPE = "isOfType"
     BELONGS_TO_KNOWLEDGE_BASE = "belongsToKnowledgeBase"
     PERMISSIONS_TO_KNOWLEDGE_BASE = "permissionsToKnowledgeBase"
+    BELONGS_TO_KB = "belongsToKB"
+    PERMISSIONS_TO_KB = "permissionsToKB"
 
     # Drive related
     DRIVES = "drives"

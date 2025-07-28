@@ -1,4 +1,4 @@
-import type { AuthState } from 'src/store/authSlice';
+import type { AuthState } from 'src/store/auth-slice';
 import type { AuthResponse } from 'src/auth/context/jwt';
 
 import { z as zod } from 'zod';
@@ -36,7 +36,7 @@ import { Tab, Tabs, Fade, Grow, useTheme, Snackbar } from '@mui/material';
 
 import { ErrorType, withErrorHandling } from 'src/utils/axios';
 
-import { setEmail } from 'src/store/authSlice';
+import { setEmail } from 'src/store/auth-slice';
 
 import { Iconify } from 'src/components/iconify';
 
@@ -47,10 +47,10 @@ import {
   OrgExists,
   authInitConfig,
   forgotPassword,
+  SignInWithOAuth,
   SignInWithGoogle,
   SignInWithAzureAd,
   SignInWithMicrosoft,
-  SignInWithOAuth,
 } from 'src/auth/context/jwt';
 
 import OtpSignIn from './otp-sign-in';

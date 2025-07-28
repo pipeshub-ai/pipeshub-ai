@@ -1,10 +1,11 @@
-import {
-  EmbeddingFormValues,
+import type {
   LlmFormValues,
+  UrlFormValues,
   SmtpFormValues,
   StorageFormValues,
-  UrlFormValues,
+  EmbeddingFormValues,
 } from 'src/components/dynamic-form';
+
 import axios from 'src/utils/axios';
 
 const API_BASE = '/api/v1/configurationManager';

@@ -5,16 +5,16 @@ import alertCircleIcon from '@iconify-icons/mdi/alert-circle-outline';
 
 import {
   Box,
+  Fade,
+  alpha,
   Dialog,
   Button,
+  useTheme,
   Typography,
   DialogTitle,
   DialogContent,
   DialogActions,
   CircularProgress,
-  useTheme,
-  alpha,
-  Fade,
 } from '@mui/material';
 
 interface DeleteConversationDialogProps {

@@ -48,7 +48,7 @@ export function createStorageRouter(container: Container): Router {
       maxFilesAllowed: 1,
       isMultipleFilesAllowed: false,
       processingType: FileProcessingType.BUFFER,
-      maxFileSize: 1024 * 1024 * 100,
+      maxFileSize: 1024 * 1024 * 1000,
       strictFileUpload: true,
     }).getMiddleware,
     ValidationMiddleware.validate(UploadNewSchema),

@@ -104,6 +104,7 @@ export interface SearchFilters {
   moduleId?: string[];
   appSpecificRecordType?: string[];
   app?: string[];
+  kb?:string[];
 }
 
 export interface KnowledgeSearchProps {

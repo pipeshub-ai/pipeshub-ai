@@ -2,11 +2,15 @@
 // 📁 Complete Updated OnBoarding Stepper with Merged AI Models Configuration
 // ===================================================================
 
-import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
+import type { DynamicFormRef } from 'src/components/dynamic-form/components/dynamic-form';
+import type { ConfigType, LlmFormValues, EmbeddingFormValues } from 'src/components/dynamic-form';
+
+import React, { useRef, useMemo, useState, useEffect, useCallback } from 'react';
 
 import {
   Step,
   Alert,
+  alpha,
   Button,
   Dialog,
   Stepper,
@@ -18,24 +22,25 @@ import {
   DialogContent,
   DialogActions,
   CircularProgress,
-  alpha,
 } from '@mui/material';
 
 import axios from 'src/utils/axios';
+
+import DynamicForm from 'src/components/dynamic-form/components/dynamic-form';
+
 import { createScrollableContainerStyle } from 'src/sections/qna/chatbot/utils/styles/scrollbar';
-import { ConfigType, EmbeddingFormValues, LlmFormValues } from 'src/components/dynamic-form';
-import DynamicForm, { DynamicFormRef } from 'src/components/dynamic-form/components/dynamic-form';
+
 import {
   getLlmConfig,
-  updateLlmConfig,
-  getEmbeddingConfig,
-  updateEmbeddingConfig,
-  getStorageConfig,
-  updateStorageConfig,
   getUrlConfig,
-  updateUrlConfig,
   getSmtpConfig,
+  updateLlmConfig,
+  updateUrlConfig,
+  getStorageConfig,
   updateSmtpConfig,
+  getEmbeddingConfig,
+  updateStorageConfig,
+  updateEmbeddingConfig,
   updateStepperAiModelsConfig, // NEW: Import the merged update function
 } from '../services/config-services';
 

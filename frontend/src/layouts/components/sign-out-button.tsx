@@ -1,15 +1,18 @@
 import type { ButtonProps } from '@mui/material/Button';
 import type { Theme, SxProps } from '@mui/material/styles';
 
-import { useCallback, useState } from 'react';
-import { alpha, useTheme, styled } from '@mui/material/styles';
-import Button from '@mui/material/Button';
-import Box from '@mui/material/Box';
 import { Icon } from '@iconify/react';
+import { useState, useCallback } from 'react';
 import logoutIcon from '@iconify-icons/mdi/logout-variant';
 
+import Box from '@mui/material/Box';
+import Button from '@mui/material/Button';
+import { alpha, styled, useTheme } from '@mui/material/styles';
+
 import { useRouter } from 'src/routes/hooks';
+
 import { toast } from 'src/components/snackbar';
+
 import { useAuthContext } from 'src/auth/hooks';
 import { signOut as jwtSignOut } from 'src/auth/context/jwt/action';
 

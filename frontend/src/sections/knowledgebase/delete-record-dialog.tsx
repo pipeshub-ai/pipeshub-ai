@@ -9,16 +9,17 @@ import {
   Button,
   Dialog,
   Divider,
+  useTheme,
   TextField,
   Typography,
   DialogTitle,
   DialogContent,
   DialogActions,
   CircularProgress,
-  useTheme,
 } from '@mui/material';
 
 import axios from 'src/utils/axios';
+import { KnowledgeBaseAPI } from './services/api';
 
 interface DeleteRecordDialogProps {
   open: boolean;
@@ -52,7 +53,7 @@ const DeleteRecordDialog = ({
     setError(null);
 
     try {
-      await axios.delete(`/api/v1/knowledgeBase/record/${recordId}`);
+      await KnowledgeBaseAPI.deleteRecord(recordId);
       onRecordDeleted();
       onClose();
     } catch (err) {

@@ -51,7 +51,7 @@ import { Iconify } from 'src/components/iconify';
 import { Form, Field } from 'src/components/hook-form';
 
 import { allGroups, createGroup, deleteGroup } from '../utils';
-import { decrementGroupCount, incrementGroupCount } from '../../../store/userAndGroupsSlice';
+import { decrementGroupCount, incrementGroupCount } from '../../../store/user-and-groups-slice';
 
 import type { AppUserGroup, SnackbarState } from '../types/group-details';
 

@@ -1,6 +1,9 @@
 import { z } from 'zod';
-import { ProviderConfig } from './providers';
-import { FIELD_TEMPLATES, FieldTemplate } from './field-templates';
+
+import { FIELD_TEMPLATES } from './field-templates';
+
+import type { ProviderConfig } from './providers';
+import type { FieldTemplate } from './field-templates';
 
 export interface GeneratedProvider {
   id: string;

@@ -5,7 +5,7 @@ import os
 import threading
 import time
 from enum import Enum
-from typing import Any
+from typing import Dict, Union
 
 import dotenv
 from cachetools import LRUCache
@@ -57,7 +57,7 @@ class DefaultEndpoints(Enum):
     QUERY_ENDPOINT = "http://localhost:8000"
     NODEJS_ENDPOINT = "http://localhost:3000"
     FRONTEND_ENDPOINT = "http://localhost:3001"
-
+    STORAGE_ENDPOINT = "http://localhost:3000"
 
 class Routes(Enum):
     """Constants for routes"""
@@ -114,7 +114,7 @@ class RedisConfig(Enum):
 class ConfigurationService:
     """Service to manage configuration using etcd store"""
 
-    def __init__(self, logger):
+    def __init__(self, logger) -> None:
         self.logger = logger
         self.logger.debug("🔧 Initializing ConfigurationService")
 
@@ -172,7 +172,7 @@ class ConfigurationService:
             password=os.getenv("ETCD_PASSWORD", None),
         )
 
-        def serialize(value: Any) -> bytes:
+        def serialize(value: Union[str, int, float, bool, Dict, list, None]) -> bytes:
             self.logger.debug("🔄 Serializing value: %s (type: %s)", value, type(value))
             if value is None:
                 self.logger.debug("⚠️ Serializing None value to empty bytes")
@@ -185,7 +185,7 @@ class ConfigurationService:
             self.logger.debug("✅ Serialized complex value: %s", serialized)
             return serialized
 
-        def deserialize(value: bytes) -> Any:
+        def deserialize(value: bytes) -> Union[str, int, float, bool, dict, list, None]:
             if not value:
                 self.logger.debug("⚠️ Empty bytes, returning None")
                 return None
@@ -217,7 +217,7 @@ class ConfigurationService:
         self.logger.debug("✅ ETCD store created successfully")
         return store
 
-    async def load_default_config(self, overwrite: bool = False):
+    async def load_default_config(self, overwrite: bool = False) -> None:
         """Load default configuration into etcd."""
         self.logger.debug("🔄 Starting to load default configuration")
         self.logger.debug("📂 Reading default_config.json...")
@@ -239,7 +239,7 @@ class ConfigurationService:
 
         self.logger.debug("✅ Default configuration loaded completely")
 
-    async def _store_config_value(self, key: str, value: Any, overwrite: bool) -> bool:
+    async def _store_config_value(self, key: str, value: Union[str, int, float, bool, dict, list], overwrite: bool) -> bool:
         """Helper method to store a single configuration value"""
         try:
             # Check if key exists
@@ -308,7 +308,7 @@ class ConfigurationService:
             self.logger.exception("Detailed error:")
             return False
 
-    def _watch_callback(self, event):
+    def _watch_callback(self, event) -> None:
         """Handle etcd watch events to update cache"""
         try:
             # etcd3 WatchResponse contains events
@@ -319,10 +319,10 @@ class ConfigurationService:
         except Exception as e:
             self.logger.error("❌ Error in watch callback: %s", str(e))
 
-    def _start_watch(self):
+    def _start_watch(self) -> None:
         """Start watching etcd changes in a background thread"""
 
-        def watch_etcd():
+        def watch_etcd() -> None:
             while self.store.client is None:
                 self.logger.debug("🔄 Waiting for ETCD client to be initialized...")
                 time.sleep(3)
@@ -331,7 +331,7 @@ class ConfigurationService:
         self.watch_thread = threading.Thread(target=watch_etcd, daemon=True)
         self.watch_thread.start()
 
-    async def get_config(self, key: str, default: Any = None) -> Any:
+    async def get_config(self, key: str, default: Union[str, int, float, bool, dict, list, None] = None) -> Union[str, int, float, bool, dict, list, None]:
         """Get configuration value with LRU cache"""
         try:
             # Check cache first

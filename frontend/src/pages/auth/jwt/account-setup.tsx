@@ -1,21 +1,21 @@
+import { Icon } from '@iconify/react';
 import { useNavigate } from 'react-router';
 import { useState, useEffect } from 'react';
 import { Helmet } from 'react-helmet-async';
-import { Icon } from '@iconify/react';
-import personIcon from '@iconify-icons/mdi/account-outline';
 import buildingIcon from '@iconify-icons/mdi/domain';
+import personIcon from '@iconify-icons/mdi/account-outline';
 
 import {
+  Box,
   Card,
   Stack,
   alpha,
   Dialog,
+  useTheme,
   Typography,
   DialogTitle,
   CardContent,
   DialogContent,
-  Box,
-  useTheme,
   useMediaQuery,
 } from '@mui/material';
 

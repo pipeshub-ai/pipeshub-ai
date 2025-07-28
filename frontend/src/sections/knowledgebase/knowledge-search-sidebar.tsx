@@ -10,7 +10,8 @@ import magnifyIcon from '@iconify-icons/mdi/magnify';
 import leftIcon from '@iconify-icons/mdi/chevron-left';
 import downIcon from '@iconify-icons/mdi/chevron-down';
 import rightIcon from '@iconify-icons/mdi/chevron-right';
-import React, { useRef, useState, useEffect } from 'react';
+import addIcon from '@iconify-icons/mdi/plus';
+import React, { useRef, useState, useEffect, useCallback } from 'react';
 import viewModuleIcon from '@iconify-icons/mdi/view-module';
 import filterMenuIcon from '@iconify-icons/mdi/filter-menu';
 import googleDriveIcon from '@iconify-icons/mdi/google-drive';
@@ -19,6 +20,9 @@ import filterRemoveIcon from '@iconify-icons/mdi/filter-remove';
 import officeBuildingIcon from '@iconify-icons/mdi/office-building';
 import formatListIcon from '@iconify-icons/mdi/format-list-bulleted';
 import closeCircleIcon from '@iconify-icons/mdi/close-circle-outline';
+import databaseIcon from '@iconify-icons/mdi/database';
+import bookOpenIcon from '@iconify-icons/mdi/book-open-outline';
+import infiniteIcon from '@iconify-icons/mdi/infinity';
 
 import { alpha, styled, useTheme } from '@mui/material/styles';
 import {
@@ -38,26 +42,30 @@ import {
   InputAdornment,
   FormControlLabel,
   CircularProgress,
+  List,
+  ListItem,
+  ListItemText,
+  ListItemIcon,
+  Pagination,
+  Skeleton,
+  Divider,
+  ToggleButton,
+  ToggleButtonGroup,
 } from '@mui/material';
 
-// import { fetchModules, fetchDepartments, fetchRecordCategories } from './utils';
+import { KnowledgeBaseAPI } from './services/api';
 
 import type { Modules } from './types/modules';
 import type { Departments } from './types/departments';
 import type { RecordCategories } from './types/record-categories';
 import type { Filters, KnowledgeSearchSideBarProps } from './types/knowledge-base';
+import type { KnowledgeBase } from './types/kb';
 
 // Connector definitions for app sources
 const apps = [
   { id: 'local', name: 'Local KB', icon: cloudUploadIcon, color: '#34A853' },
   { id: 'drive', name: 'Google Drive', icon: googleDriveIcon, color: '#4285F4' },
   { id: 'gmail', name: 'Gmail', icon: gmailIcon, color: '#EA4335' },
-  // { id: 'slack', name: 'Slack', icon: slackIcon, color: '#4A154B' },
-  // { id: 'jira', name: 'Jira', icon: jiraIcon, color: '#0052CC' },
-  // { id: 'salesforce', name: 'Salesforce', icon: salesforceIcon, color: '#00A1E0' },
-  // { id: 'dropbox', name: 'Dropbox', icon: dropboxIcon, color: '#0061FF' },
-  // { id: 'teams', name: 'Microsoft Teams', icon: microsoftTeamsIcon, color: '#6264A7' },
-  // { id: 'onedrive', name: 'OneDrive', icon: microsoftOnedriveIcon, color: '#0078D4' },
 ];
 
 // Constants
@@ -81,6 +89,7 @@ interface FilterSectionComponentProps {
   expanded?: boolean;
   onToggle?: () => void;
   activeFilters?: string[];
+  children?: React.ReactNode;
 }
 
 // Custom styled components with optimized transitions
@@ -92,7 +101,6 @@ const OpenedDrawer = styled(Drawer, { shouldForwardProp: (prop) => prop !== 'ope
     boxSizing: 'border-box',
     '& .MuiDrawer-paper': {
       width: open ? drawerWidth : closedDrawerWidth,
-      // Reduced transition duration and changed easing
       transition: theme.transitions.create('width', {
         easing: theme.transitions.easing.sharp,
         duration: '0.25s',
@@ -119,14 +127,11 @@ const FilterSection = styled(Paper)(({ theme }) => ({
   borderRadius: theme.shape.borderRadius,
   marginBottom: theme.spacing(1.5),
   overflow: 'hidden',
-  // Removed the transition
   border: `1px solid ${alpha(theme.palette.divider, 0.5)}`,
   boxShadow: 'none',
-  // Add will-change for better GPU acceleration
   willChange: 'transform',
 }));
 
-// Updated to accept the expanded prop properly with a type
 const FilterHeader = styled('div', {
   shouldForwardProp: (prop) => prop !== 'expanded',
 })<FilterHeaderProps>(({ theme, expanded }) => ({
@@ -142,12 +147,11 @@ const FilterHeader = styled('div', {
   '&:hover': {
     backgroundColor: alpha(theme.palette.primary.main, 0.08),
   },
-  // Removed the transition
 }));
 
 const FilterContent = styled(Collapse)(({ theme }) => ({
   padding: theme.spacing(1, 2, 1.5, 2),
-  maxHeight: 260,
+  maxHeight: 400,
   overflow: 'auto',
   '&::-webkit-scrollbar': {
     width: '4px',
@@ -159,7 +163,6 @@ const FilterContent = styled(Collapse)(({ theme }) => ({
     backgroundColor: alpha(theme.palette.text.secondary, 0.2),
     borderRadius: '4px',
   },
-  // Optimized transition with faster duration and sharper easing
   transition: theme.transitions.create(['height'], {
     duration: '0.2s',
     easing: theme.transitions.easing.sharp,
@@ -208,7 +211,6 @@ const FiltersContainer = styled(Box)(({ theme }) => ({
     backgroundColor: alpha(theme.palette.text.secondary, 0.15),
     borderRadius: '10px',
   },
-  // Optimized transition with faster duration
   transition: theme.transitions.create('opacity', {
     duration: '0.2s',
     easing: theme.transitions.easing.sharp,
@@ -221,34 +223,24 @@ const FilterChip = styled(Chip)(({ theme }) => ({
   fontSize: '0.75rem',
   fontWeight: 500,
   borderRadius: '4px',
-
-  // Professional SaaS styling for both modes
-  backgroundColor:
-    theme.palette.mode === 'dark'
-      ? alpha(theme.palette.primary.main, 0.62)
-      : alpha(theme.palette.primary.main, 0.08),
-
+  backgroundColor: theme.palette.mode !== 'dark' ? alpha(theme.palette.primary.main, 0) : '',
   color:
     theme.palette.mode === 'dark'
       ? alpha(theme.palette.primary.lighter, 0.9)
       : theme.palette.primary.main,
-
   border:
     theme.palette.mode === 'dark'
       ? `1px solid ${alpha(theme.palette.primary.main, 0.2)}`
       : `1px solid ${alpha(theme.palette.primary.main, 0.15)}`,
-
   '& .MuiChip-label': {
     px: 1.2,
     py: 0.5,
     letterSpacing: '0.01em',
   },
-
   transition: theme.transitions.create(['background-color', 'box-shadow'], {
     duration: '0.2s',
     easing: theme.transitions.easing.easeInOut,
   }),
-
   '&:hover': {
     backgroundColor:
       theme.palette.mode === 'dark'
@@ -259,7 +251,6 @@ const FilterChip = styled(Chip)(({ theme }) => ({
         ? `0 1px 3px ${alpha(theme.palette.common.black, 0.2)}`
         : 'none',
   },
-
   '& .MuiChip-deleteIcon': {
     color:
       theme.palette.mode === 'dark'
@@ -283,7 +274,6 @@ const ActiveFiltersContainer = styled(Paper)(({ theme }) => ({
   backgroundColor: alpha(theme.palette.background.default, 0.5),
   borderRadius: theme.shape.borderRadius,
   border: `1px solid ${alpha(theme.palette.divider, 0.5)}`,
-  // Removed animation to reduce flickering
 }));
 
 const ClearFiltersButton = styled(Button)(({ theme }) => ({
@@ -307,7 +297,6 @@ const FormControlLabelStyled = styled(FormControlLabel)(({ theme }) => ({
     fontWeight: 400,
   },
   opacity: 1,
-  // Removed the transition
   '&:hover': {
     opacity: 0.9,
   },
@@ -318,11 +307,9 @@ const CollapsedButtonContainer = styled(Box)(({ theme }) => ({
   flexDirection: 'column',
   alignItems: 'center',
   paddingTop: theme.spacing(2),
-  // Removed animation to reduce flickering
 }));
 
 const IconButtonStyled = styled(IconButton)(({ theme }) => ({
-  // Simplified transition with reduced properties
   transition: theme.transitions.create(['background-color'], {
     duration: '0.1s',
     easing: theme.transitions.easing.sharp,
@@ -353,6 +340,64 @@ const SearchInput = styled(TextField)(({ theme }) => ({
   },
 }));
 
+// KB Search Component
+const KBSearchInput = styled(TextField)(({ theme }) => ({
+  marginBottom: theme.spacing(1),
+  '& .MuiOutlinedInput-root': {
+    backgroundColor: alpha(theme.palette.background.default, 0.8),
+    borderRadius: theme.shape.borderRadius,
+    height: 32,
+    '&:hover .MuiOutlinedInput-notchedOutline': {
+      borderColor: alpha(theme.palette.primary.main, 0.3),
+    },
+    '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+      borderColor: theme.palette.primary.main,
+    },
+  },
+  '& .MuiOutlinedInput-input': {
+    padding: theme.spacing(0.5, 1, 0.5, 0.5),
+    fontSize: '0.8rem',
+  },
+}));
+
+const KBListItem = styled(ListItem)(({ theme }) => ({
+  padding: theme.spacing(0.5, 0),
+  cursor: 'pointer',
+  borderRadius: theme.shape.borderRadius,
+  '&:hover': {
+    backgroundColor: alpha(theme.palette.action.hover, 0.5),
+  },
+}));
+
+const LoadMoreButton = styled(Button)(({ theme }) => ({
+  width: '100%',
+  height: 32,
+  fontSize: '0.75rem',
+  fontWeight: 500,
+  textTransform: 'none',
+  borderRadius: theme.shape.borderRadius,
+  border: `1px solid ${alpha(theme.palette.divider, 0.5)}`,
+  color: theme.palette.text.secondary,
+  backgroundColor: 'transparent',
+  '&:hover': {
+    backgroundColor: alpha(theme.palette.primary.main, 0.05),
+    borderColor: theme.palette.primary.main,
+    color: theme.palette.primary.main,
+  },
+  '&:disabled': {
+    opacity: 0.5,
+    cursor: 'not-allowed',
+  },
+}));
+
+const InfiniteScrollTrigger = styled(Box)(({ theme }) => ({
+  height: 20,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  margin: theme.spacing(0.5, 0),
+}));
+
 // Helper function to format labels
 const formatLabel = (label: string): string => {
   if (!label) return '';
@@ -360,6 +405,358 @@ const formatLabel = (label: string): string => {
     .replace(/_/g, ' ')
     .toLowerCase()
     .replace(/\b\w/g, (l: string) => l.toUpperCase());
+};
+
+// Get appropriate icon for KB
+const getKBIcon = (name: string) => {
+  const lowerName = name.toLowerCase();
+
+  if (lowerName.includes('engineering') || lowerName.includes('tech')) {
+    return viewModuleIcon;
+  }
+  if (lowerName.includes('hr') || lowerName.includes('people')) {
+    return officeBuildingIcon;
+  }
+  if (lowerName.includes('api') || lowerName.includes('code')) {
+    return formatListIcon;
+  }
+
+  return bookOpenIcon;
+};
+
+// Intersection Observer Hook for Infinite Scroll
+const useIntersectionObserver = (callback: () => void) => {
+  const targetRef = useRef<HTMLDivElement>(null);
+  const callbackRef = useRef(callback);
+
+  useEffect(() => {
+    callbackRef.current = callback;
+  }, [callback]);
+
+  useEffect(() => {
+    const target = targetRef.current;
+    if (!target) return undefined;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          callbackRef.current();
+        }
+      },
+      {
+        threshold: 0.1,
+        rootMargin: '50px',
+      }
+    );
+
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, []);
+
+  return targetRef;
+};
+
+// Knowledge Base Filter Component
+const KnowledgeBaseFilter: React.FC<{
+  filters: Filters;
+  onFilterChange: (filterType: keyof Filters, value: string) => void;
+  expanded: boolean;
+  onToggle: () => void;
+  knowledgeBasesMap: Map<string, KnowledgeBase>;
+  setKnowledgeBasesMap: (map: Map<string, KnowledgeBase>) => void;
+}> = ({ filters, onFilterChange, expanded, onToggle, knowledgeBasesMap, setKnowledgeBasesMap }) => {
+  const theme = useTheme();
+  const [kbSearch, setKbSearch] = useState('');
+  const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalCount, setTotalCount] = useState(0);
+  const [hasMore, setHasMore] = useState(true);
+  const [paginationMode, setPaginationMode] = useState<'infinite' | 'pagination'>('infinite');
+
+  const loadingRef = useRef(false);
+  const itemsPerPage = 10;
+
+  const loadKnowledgeBases = useCallback(
+    async (searchQuery = '', pageNum = 1, isLoadMore = false) => {
+      if (loadingRef.current) return;
+
+      loadingRef.current = true;
+      if (isLoadMore) {
+        setLoadingMore(true);
+      } else {
+        setLoading(true);
+        if (!isLoadMore) {
+          setKnowledgeBases([]);
+        }
+      }
+
+      try {
+        const params = {
+          page: pageNum,
+          limit: itemsPerPage,
+          search: searchQuery,
+        };
+
+        const data = await KnowledgeBaseAPI.getKnowledgeBases(params);
+
+        if (data.knowledgeBases && data.pagination) {
+          const newKBs = data.knowledgeBases;
+
+          // Update knowledge bases map for name lookup
+          const newMap = new Map(knowledgeBasesMap);
+          newKBs.forEach((kb: KnowledgeBase) => {
+            newMap.set(kb.id, kb);
+          });
+          setKnowledgeBasesMap(newMap);
+
+          if (isLoadMore) {
+            setKnowledgeBases((prev) => [...prev, ...newKBs]);
+          } else {
+            setKnowledgeBases(newKBs);
+          }
+
+          setTotalPages(data.pagination.totalPages);
+          setTotalCount(data.pagination.totalCount);
+          setHasMore(pageNum < data.pagination.totalPages);
+        } else if (Array.isArray(data)) {
+          // Update map
+          const newMap = new Map(knowledgeBasesMap);
+          data.forEach((kb: KnowledgeBase) => {
+            newMap.set(kb.id, kb);
+          });
+          setKnowledgeBasesMap(newMap);
+
+          if (isLoadMore) {
+            setKnowledgeBases((prev) => [...prev, ...data]);
+          } else {
+            setKnowledgeBases(data);
+          }
+          setTotalPages(1);
+          setTotalCount(data.length);
+          setHasMore(false);
+        }
+      } catch (error) {
+        console.error('Failed to fetch knowledge bases:', error);
+        if (!isLoadMore) {
+          setKnowledgeBases([]);
+          setTotalPages(1);
+          setTotalCount(0);
+          setHasMore(false);
+        }
+      } finally {
+        setLoading(false);
+        setLoadingMore(false);
+        loadingRef.current = false;
+      }
+    },
+    [knowledgeBasesMap, setKnowledgeBasesMap]
+  );
+
+  // Debounce search
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setPage(1);
+      setHasMore(true);
+      loadKnowledgeBases(kbSearch, 1, false);
+    }, 300);
+
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line
+  }, [kbSearch]);
+
+  // Load KBs on page change (pagination mode)
+  useEffect(() => {
+    if (paginationMode === 'pagination' && page > 1) {
+      loadKnowledgeBases(kbSearch, page, false);
+    }
+  }, [page, kbSearch, loadKnowledgeBases, paginationMode]);
+
+  // Initial load when expanded
+  useEffect(() => {
+    if (expanded && knowledgeBases.length === 0) {
+      loadKnowledgeBases();
+    }
+  }, [expanded, knowledgeBases.length, loadKnowledgeBases]);
+
+  // Infinite scroll handler
+  const handleLoadMore = useCallback(() => {
+    if (!loadingMore && hasMore && !loading && paginationMode === 'infinite') {
+      const nextPage = Math.floor(knowledgeBases.length / itemsPerPage) + 1;
+      loadKnowledgeBases(kbSearch, nextPage, true);
+    }
+  }, [
+    loadingMore,
+    hasMore,
+    loading,
+    paginationMode,
+    knowledgeBases.length,
+    kbSearch,
+    loadKnowledgeBases,
+  ]);
+
+  const loadMoreRef = useIntersectionObserver(handleLoadMore);
+
+  const handleKbSearchChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    setKbSearch(event.target.value);
+  };
+
+  const handlePageChange = (event: React.ChangeEvent<unknown>, value: number) => {
+    setPage(value);
+  };
+
+  const handleKBToggle = (kbId: string) => {
+    onFilterChange('kb', kbId);
+  };
+
+  const handlePaginationModeChange = (
+    event: React.MouseEvent<HTMLElement>,
+    newMode: 'infinite' | 'pagination' | null
+  ) => {
+    if (newMode !== null) {
+      setPaginationMode(newMode);
+      if (newMode === 'pagination') {
+        // Reset to page 1 and load fresh data
+        setPage(1);
+        loadKnowledgeBases(kbSearch, 1, false);
+      }
+    }
+  };
+
+  const handleLoadMoreClick = () => {
+    if (!loadingMore && hasMore) {
+      handleLoadMore();
+    }
+  };
+
+  const activeKBCount = (filters.kb || []).length;
+
+  return (
+    <FilterSection>
+      <FilterHeader expanded={expanded} onClick={onToggle}>
+        <FilterLabel>
+          <Icon
+            icon={databaseIcon}
+            fontSize="small"
+            style={{
+              color: expanded ? theme.palette.primary.main : alpha(theme.palette.text.primary, 0.7),
+            }}
+          />
+          Knowledge Bases
+          {activeKBCount > 0 && <FilterCount badgeContent={activeKBCount} color="primary" />}
+        </FilterLabel>
+        <Icon
+          icon={expanded ? upIcon : downIcon}
+          fontSize="small"
+          style={{ color: alpha(theme.palette.text.primary, 0.7) }}
+        />
+      </FilterHeader>
+
+      <FilterContent in={expanded}>
+        <KBSearchInput
+          fullWidth
+          size="small"
+          value={kbSearch}
+          onChange={handleKbSearchChange}
+          placeholder="Search knowledge bases..."
+          variant="outlined"
+          InputProps={{
+            startAdornment: (
+              <InputAdornment position="start">
+                <Icon icon={magnifyIcon} fontSize="small" />
+              </InputAdornment>
+            ),
+            endAdornment: kbSearch ? (
+              <InputAdornment position="end">
+                <IconButton size="small" onClick={() => setKbSearch('')} disableRipple>
+                  <Icon icon={closeIcon} fontSize="small" />
+                </IconButton>
+              </InputAdornment>
+            ) : null,
+          }}
+        />
+
+        {/* KB List */}
+        <Box sx={{ minHeight: 200, maxHeight: 280 }}>
+          {loading ? (
+            <Box>
+              {Array.from(new Array(5)).map((_, index) => (
+                <Box key={index} sx={{ display: 'flex', alignItems: 'center', py: 1 }}>
+                  <Skeleton variant="circular" width={20} height={20} sx={{ mr: 1 }} />
+                  <Skeleton variant="text" width="80%" height={20} />
+                </Box>
+              ))}
+            </Box>
+          ) : (
+            <List dense sx={{ py: 0 }}>
+              {knowledgeBases.map((kb) => {
+                const isChecked = (filters.kb || []).includes(kb.id);
+                const kbIcon = getKBIcon(kb.name);
+
+                return (
+                  <KBListItem key={kb.id} onClick={() => handleKBToggle(kb.id)}>
+                    <ListItemIcon sx={{ minWidth: 32 }}>
+                      <FilterCheckbox
+                        checked={isChecked}
+                        size="small"
+                        disableRipple
+                        sx={{ p: 0 }}
+                      />
+                    </ListItemIcon>
+                    <ListItemText
+                      primary={kb.name}
+                      secondary={kb.userRole}
+                      primaryTypographyProps={{
+                        fontSize: '0.8rem',
+                        fontWeight: 500,
+                        noWrap: true,
+                      }}
+                      secondaryTypographyProps={{
+                        fontSize: '0.7rem',
+                        color: 'text.secondary',
+                        noWrap: true,
+                      }}
+                    />
+                  </KBListItem>
+                );
+              })}
+
+              {/* Infinite Scroll Trigger */}
+              {paginationMode === 'infinite' && hasMore && !loading && (
+                <InfiniteScrollTrigger ref={loadMoreRef}>
+                  {loadingMore && <CircularProgress size={16} thickness={4} />}
+                </InfiniteScrollTrigger>
+              )}
+            </List>
+          )}
+
+          {!loading && knowledgeBases.length === 0 && (
+            <Box sx={{ textAlign: 'center', py: 2 }}>
+              <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.8rem' }}>
+                {kbSearch ? 'No knowledge bases found' : 'No knowledge bases available'}
+              </Typography>
+            </Box>
+          )}
+        </Box>
+      </FilterContent>
+      {/* Load More Button (Infinite Scroll Mode) */}
+      {paginationMode === 'infinite' && expanded && hasMore && knowledgeBases.length > 0 && (
+        <Box sx={{ mt: 1 }}>
+          <LoadMoreButton
+            onClick={handleLoadMoreClick}
+            disabled={loadingMore}
+            startIcon={loadingMore ? <CircularProgress size={12} /> : null}
+          >
+            {loadingMore
+              ? 'Loading...'
+              : `Load More (${totalCount - knowledgeBases.length} remaining)`}
+          </LoadMoreButton>
+        </Box>
+      )}
+    </FilterSection>
+  );
 };
 
 export default function KnowledgeSearchSideBar({
@@ -376,15 +773,18 @@ export default function KnowledgeSearchSideBar({
   const [recordCategories, setRecordCategories] = useState<RecordCategories[]>([]);
   const [modules, setModules] = useState<Modules[]>([]);
   const [searchTerm, setSearchTerm] = useState<string>('');
-  // Add a ref to track if a filter operation is in progress
   const isFilterChanging = useRef(false);
   const [expandedSections, setExpandedSections] = useState<{ [key: string]: boolean }>({
     apps: true,
+    kb: false,
     departments: false,
     modules: false,
     categories: false,
   });
   const [loading, setLoading] = useState<boolean>(true);
+
+  // Knowledge base map for name lookup in chips
+  const [knowledgeBasesMap, setKnowledgeBasesMap] = useState<Map<string, KnowledgeBase>>(new Map());
 
   useEffect(() => {
     setOpen(openSidebar);
@@ -394,17 +794,7 @@ export default function KnowledgeSearchSideBar({
     const fetchData = async () => {
       setLoading(true);
       try {
-        // const [deptData, catData, moduleData] = await Promise.all([
-        //   // fetchDepartments(),
-        //   // fetchRecordCategories(),
-        //   // fetchModules(),
-        // ]);
-        // setDepartments();
-        // setRecordCategories();
-        // setModules();
-      } catch (error) {
-        console.error('Error fetching filter data:', error);
-        // Use fallback mock data in case of API error
+        // Mock data since API calls are commented out
         setDepartments([
           {
             _id: 'engineering',
@@ -430,72 +820,12 @@ export default function KnowledgeSearchSideBar({
             createdAt: '',
             updatedAt: '',
           },
-          {
-            _id: 'design',
-            name: 'Design',
-            tag: 'design',
-            origin: 'system',
-            description: '',
-            orgId: '',
-            isDeleted: false,
-            __v: 0,
-            createdAt: '',
-            updatedAt: '',
-          },
-          {
-            _id: 'marketing',
-            name: 'Marketing',
-            tag: 'mktg',
-            origin: 'system',
-            description: '',
-            orgId: '',
-            isDeleted: false,
-            __v: 0,
-            createdAt: '',
-            updatedAt: '',
-          },
-          {
-            _id: 'sales',
-            name: 'Sales',
-            tag: 'sales',
-            origin: 'system',
-            description: '',
-            orgId: '',
-            isDeleted: false,
-            __v: 0,
-            createdAt: '',
-            updatedAt: '',
-          },
         ]);
         setRecordCategories([
           {
             _id: 'technical',
             name: 'Technical Documentation',
             tag: 'tech',
-            origin: 'system',
-            description: '',
-            orgId: '',
-            isDeleted: false,
-            __v: 0,
-            createdAt: '',
-            updatedAt: '',
-          },
-          {
-            _id: 'product',
-            name: 'Product Documentation',
-            tag: 'prod',
-            origin: 'system',
-            description: '',
-            orgId: '',
-            isDeleted: false,
-            __v: 0,
-            createdAt: '',
-            updatedAt: '',
-          },
-          {
-            _id: 'process',
-            name: 'Process Documentation',
-            tag: 'proc',
             origin: 'system',
             description: '',
             orgId: '',
@@ -516,27 +846,9 @@ export default function KnowledgeSearchSideBar({
             updatedAt: '',
             __v: 0,
           },
-          {
-            _id: 'module2',
-            name: 'Authentication',
-            description: '',
-            orgId: '',
-            isDeleted: false,
-            createdAt: '',
-            updatedAt: '',
-            __v: 0,
-          },
-          {
-            _id: 'module3',
-            name: 'Reporting',
-            description: '',
-            orgId: '',
-            isDeleted: false,
-            createdAt: '',
-            updatedAt: '',
-            __v: 0,
-          },
         ]);
+      } catch (error) {
+        console.error('Error fetching filter data:', error);
       } finally {
         setLoading(false);
       }
@@ -556,18 +868,12 @@ export default function KnowledgeSearchSideBar({
   };
 
   const handleFilterChange = (filterType: keyof Filters, value: string) => {
-    // If a filter operation is already in progress, return to prevent flickering
     if (isFilterChanging.current) return;
 
-    // Set the flag to indicate a filter operation is in progress
     isFilterChanging.current = true;
 
-    // Use requestAnimationFrame to batch UI updates
     requestAnimationFrame(() => {
-      // Safely access the current filter array with a fallback to empty array if undefined
       const currentFilterValues = filters[filterType] || [];
-
-      // Create updated filters
       const updatedFilters = {
         ...filters,
         [filterType]: currentFilterValues.includes(value)
@@ -575,23 +881,17 @@ export default function KnowledgeSearchSideBar({
           : [...currentFilterValues, value],
       };
 
-      // Call the onFilterChange with the updated filters
       onFilterChange(updatedFilters);
 
-      // Reset the flag after a short delay
       setTimeout(() => {
         isFilterChanging.current = false;
       }, 50);
     });
   };
 
-  // Handle click on collapsed filter icon
   const handleCollapsedFilterClick = (sectionId: string, filterType: keyof Filters) => {
-    // If drawer is closed, open it
     if (!open) {
       setOpen(true);
-
-      // Expand the section that was clicked
       setExpandedSections({
         ...expandedSections,
         [sectionId]: true,
@@ -599,15 +899,12 @@ export default function KnowledgeSearchSideBar({
     }
   };
 
-  // Get count of active filters
   const getActiveFilterCount = (filterType: keyof Filters): number =>
     (filters[filterType] || []).length;
 
-  // Get total count of active filters
   const getTotalActiveFilterCount = (): number =>
     Object.values(filters).reduce((acc, curr) => acc + (curr || []).length, 0);
 
-  // Get filter item names by IDs
   const getFilterName = (type: keyof Filters, id: string): string => {
     switch (type) {
       case 'department':
@@ -618,14 +915,17 @@ export default function KnowledgeSearchSideBar({
         return recordCategories.find((c) => c._id === id)?.name || id;
       case 'app':
         return apps.find((c) => c.id === id)?.name || id;
+      case 'kb': {
+        // Get KB name from the map, fallback to truncated ID
+        const kb = knowledgeBasesMap.get(id);
+        return kb ? kb.name : `KB: ${id.substring(0, 8)}...`;
+      }
       default:
         return id;
     }
   };
 
-  // Clear a specific filter
   const clearFilter = (type: keyof Filters, value: string) => {
-    // If a filter operation is already in progress, return
     if (isFilterChanging.current) return;
 
     isFilterChanging.current = true;
@@ -643,9 +943,7 @@ export default function KnowledgeSearchSideBar({
     });
   };
 
-  // Clear all filters
   const clearAllFilters = () => {
-    // If a filter operation is already in progress, return
     if (isFilterChanging.current) return;
 
     isFilterChanging.current = true;
@@ -656,6 +954,7 @@ export default function KnowledgeSearchSideBar({
         moduleId: [],
         appSpecificRecordType: [],
         app: [],
+        kb: [],
       });
 
       setTimeout(() => {
@@ -664,10 +963,8 @@ export default function KnowledgeSearchSideBar({
     });
   };
 
-  // Check if there are any active filters
   const hasActiveFilters = getTotalActiveFilterCount() > 0;
 
-  // Filter items based on search term
   const filterItems = <T extends { name: string; id?: string }>(items: T[]): T[] => {
     if (!searchTerm) return items;
     return items.filter(
@@ -677,7 +974,6 @@ export default function KnowledgeSearchSideBar({
     );
   };
 
-  // Generate active filters view
   const renderActiveFilters = () => {
     if (!hasActiveFilters) return null;
 
@@ -699,7 +995,7 @@ export default function KnowledgeSearchSideBar({
             variant="text"
             size="small"
             onClick={clearAllFilters}
-            disableRipple // Disable ripple effect to reduce flickering
+            disableRipple
             startIcon={<Icon icon={closeCircleIcon} fontSize="small" />}
           >
             Clear All
@@ -730,43 +1026,59 @@ export default function KnowledgeSearchSideBar({
           color="primary"
           sx={{ mb: 2 }}
           onClick={() => handleCollapsedFilterClick('apps', 'app')}
-          disableRipple // Disable ripple effect to reduce flickering
+          disableRipple
         >
           <Badge badgeContent={getActiveFilterCount('app')} color="primary">
             <Icon icon={appIcon} />
           </Badge>
         </IconButtonStyled>
       </Tooltip>
+
+      <Tooltip title="Knowledge Bases" placement="right">
+        <IconButtonStyled
+          color="primary"
+          sx={{ mb: 2 }}
+          onClick={() => handleCollapsedFilterClick('kb', 'kb')}
+          disableRipple
+        >
+          <Badge badgeContent={getActiveFilterCount('kb')} color="primary">
+            <Icon icon={databaseIcon} />
+          </Badge>
+        </IconButtonStyled>
+      </Tooltip>
+
       <Tooltip title="Department Filters" placement="right">
         <IconButtonStyled
           color="primary"
           sx={{ mb: 2 }}
           onClick={() => handleCollapsedFilterClick('departments', 'department')}
-          disableRipple // Disable ripple effect to reduce flickering
+          disableRipple
         >
           <Badge badgeContent={getActiveFilterCount('department')} color="primary">
             <Icon icon={officeBuildingIcon} />
           </Badge>
         </IconButtonStyled>
       </Tooltip>
+
       <Tooltip title="Module Filters" placement="right">
         <IconButtonStyled
           color="primary"
           sx={{ mb: 2 }}
           onClick={() => handleCollapsedFilterClick('modules', 'moduleId')}
-          disableRipple // Disable ripple effect to reduce flickering
+          disableRipple
         >
           <Badge badgeContent={getActiveFilterCount('moduleId')} color="primary">
             <Icon icon={viewModuleIcon} />
           </Badge>
         </IconButtonStyled>
       </Tooltip>
+
       <Tooltip title="Category Filters" placement="right">
         <IconButtonStyled
           color="primary"
           sx={{ mb: 2 }}
           onClick={() => handleCollapsedFilterClick('categories', 'appSpecificRecordType')}
-          disableRipple // Disable ripple effect to reduce flickering
+          disableRipple
         >
           <Badge badgeContent={getActiveFilterCount('appSpecificRecordType')} color="primary">
             <Icon icon={formatListIcon} />
@@ -779,7 +1091,7 @@ export default function KnowledgeSearchSideBar({
           <IconButtonStyled
             color="error"
             onClick={clearAllFilters}
-            disableRipple // Disable ripple effect to reduce flickering
+            disableRipple
             sx={{
               mt: 2,
               bgcolor: alpha(theme.palette.error.main, 0.1),
@@ -808,6 +1120,7 @@ export default function KnowledgeSearchSideBar({
     expanded,
     onToggle,
     activeFilters = [],
+    children,
   }: FilterSectionComponentProps) => {
     const isExpanded = expanded !== undefined ? expanded : expandedSections[id];
     const handleToggle = onToggle || (() => toggleSection(id));
@@ -837,53 +1150,55 @@ export default function KnowledgeSearchSideBar({
           />
         </FilterHeader>
         <FilterContent in={isExpanded}>
-          {loading ? (
-            <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}>
-              <CircularProgress size={24} />
-            </Box>
-          ) : (
-            <FormGroup>
-              {filterItems(items).map((item) => {
-                const itemId = typeof item === 'string' ? item : getItemId(item);
-                // eslint-disable-next-line
-                const isChecked = filters[filterType]?.includes(itemId) || false;
+          {children || (
+            <>
+              {loading ? (
+                <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}>
+                  <CircularProgress size={24} />
+                </Box>
+              ) : (
+                <FormGroup>
+                  {filterItems(items).map((item) => {
+                    const itemId = typeof item === 'string' ? item : getItemId(item);
+                    const isChecked = filters[filterType]?.includes(itemId) || false;
 
-                return (
-                  <FormControlLabelStyled
-                    key={itemId}
-                    control={
-                      <FilterCheckbox
-                        checked={isChecked}
-                        // Use onClick instead of onChange for immediate response
-                        onClick={() => handleFilterChange(filterType, itemId)}
-                        size="small"
-                        disableRipple // Disable ripple effect to reduce flickering
-                        sx={{
-                          color: isChecked ? theme.palette.primary.main : undefined,
-                        }}
+                    return (
+                      <FormControlLabelStyled
+                        key={itemId}
+                        control={
+                          <FilterCheckbox
+                            checked={isChecked}
+                            onClick={() => handleFilterChange(filterType, itemId)}
+                            size="small"
+                            disableRipple
+                            sx={{
+                              color: isChecked ? theme.palette.primary.main : undefined,
+                            }}
+                          />
+                        }
+                        label={
+                          renderItemLabel !== null
+                            ? renderItemLabel(item)
+                            : typeof item === 'string'
+                              ? formatLabel(item)
+                              : getItemLabel(item)
+                        }
                       />
-                    }
-                    label={
-                      renderItemLabel !== null
-                        ? renderItemLabel(item)
-                        : typeof item === 'string'
-                          ? formatLabel(item)
-                          : getItemLabel(item)
-                    }
-                  />
-                );
-              })}
+                    );
+                  })}
 
-              {filterItems(items).length === 0 && (
-                <Typography
-                  variant="body2"
-                  color="text.secondary"
-                  sx={{ py: 1, textAlign: 'center' }}
-                >
-                  No matching items
-                </Typography>
+                  {filterItems(items).length === 0 && (
+                    <Typography
+                      variant="body2"
+                      color="text.secondary"
+                      sx={{ py: 1, textAlign: 'center' }}
+                    >
+                      No matching items
+                    </Typography>
+                  )}
+                </FormGroup>
               )}
-            </FormGroup>
+            </>
           )}
         </FilterContent>
       </FilterSection>
@@ -912,7 +1227,7 @@ export default function KnowledgeSearchSideBar({
               <IconButtonStyled
                 onClick={handleDrawerToggle}
                 size="small"
-                disableRipple // Disable ripple effect to reduce flickering
+                disableRipple
                 sx={{ color: theme.palette.text.secondary }}
               >
                 <Icon icon={leftIcon} width={20} height={20} />
@@ -923,7 +1238,7 @@ export default function KnowledgeSearchSideBar({
           <Tooltip title="Expand sidebar" placement="right">
             <IconButtonStyled
               onClick={handleDrawerToggle}
-              disableRipple // Disable ripple effect to reduce flickering
+              disableRipple
               sx={{ mx: 'auto', color: theme.palette.primary.main }}
             >
               <Icon icon={rightIcon} width={20} height={20} />
@@ -951,11 +1266,7 @@ export default function KnowledgeSearchSideBar({
               ),
               endAdornment: searchTerm ? (
                 <InputAdornment position="end">
-                  <IconButton
-                    size="small"
-                    onClick={() => setSearchTerm('')}
-                    disableRipple // Disable ripple effect to reduce flickering
-                  >
+                  <IconButton size="small" onClick={() => setSearchTerm('')} disableRipple>
                     <Icon icon={closeIcon} fontSize="small" />
                   </IconButton>
                 </InputAdornment>
@@ -985,29 +1296,42 @@ export default function KnowledgeSearchSideBar({
             )}
           />
 
-          {/* <FilterSectionComponent
+          {/* Knowledge Base Filter */}
+          <KnowledgeBaseFilter
+            filters={filters}
+            onFilterChange={handleFilterChange}
+            expanded={expandedSections.kb}
+            onToggle={() => toggleSection('kb')}
+            knowledgeBasesMap={knowledgeBasesMap}
+            setKnowledgeBasesMap={setKnowledgeBasesMap}
+          />
+
+          {/* Uncomment these sections when API data is available */}
+          {/*
+          <FilterSectionComponent
             id="departments"
             icon={officeBuildingIcon}
             label="Departments"
             filterType="department"
             items={departments}
-          /> */}
+          />
 
-          {/* <FilterSectionComponent
+          <FilterSectionComponent
             id="modules"
             icon={viewModuleIcon}
             label="Modules"
             filterType="moduleId"
             items={modules}
-          /> */}
+          />
 
-          {/* <FilterSectionComponent
+          <FilterSectionComponent
             id="categories"
             icon={formatListIcon}
             label="Record Categories"
             filterType="appSpecificRecordType"
             items={recordCategories}
-          /> */}
+          />
+          */}
         </FiltersContainer>
       )}
     </OpenedDrawer>

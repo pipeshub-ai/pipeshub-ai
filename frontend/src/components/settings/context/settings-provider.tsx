@@ -1,6 +1,9 @@
-import { useMemo, useCallback, createContext, useEffect } from 'react';
+import { useMemo, useEffect, useCallback, createContext } from 'react';
+
 import { useLocalStorage } from 'src/hooks/use-local-storage';
+
 import { STORAGE_KEY } from '../config-settings';
+
 import type { SettingsState, SettingsContextValue, SettingsProviderProps } from '../types';
 
 // ----------------------------------------------------------------------

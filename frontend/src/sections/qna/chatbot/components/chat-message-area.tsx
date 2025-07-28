@@ -1,13 +1,14 @@
 import type { CustomCitation, FormattedMessage } from 'src/types/chat-bot';
 
-import React, { useMemo, useState, useEffect, useCallback } from 'react';
-import { Box, Fade, Stack, Typography, useTheme, alpha, IconButton, Tooltip } from '@mui/material';
 import { Icon } from '@iconify/react';
 import arrowUpIcon from '@iconify-icons/mdi/arrow-up';
 import arrowDownIcon from '@iconify-icons/mdi/arrow-down';
-import { createScrollableContainerStyle } from '../utils/styles/scrollbar';
+import React, { useMemo, useState, useEffect, useCallback } from 'react';
+
+import { Box, Fade, Stack, alpha, Tooltip, useTheme, Typography, IconButton } from '@mui/material';
 
 import ChatMessage from './chat-message';
+import { createScrollableContainerStyle } from '../utils/styles/scrollbar';
 
 type ChatMessagesAreaProps = {
   messages: FormattedMessage[];

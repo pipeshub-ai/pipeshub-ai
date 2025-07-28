@@ -26,25 +26,25 @@ import {
   List,
   Menu,
   Alert,
+  alpha,
   Button,
   Tooltip,
   ListItem,
   MenuItem,
   Snackbar,
+  useTheme,
   TextField,
   Typography,
   IconButton,
   ListItemButton,
   CircularProgress,
-  useTheme,
-  alpha,
 } from '@mui/material';
 
 import axiosInstance from 'src/utils/axios';
 
 import ArchivedChatsDialog from './dialogs/archieve-chat-dialog';
-import { createScrollableContainerStyle } from '../utils/styles/scrollbar';
 import ShareConversationDialog from './dialogs/share-conversation-dialog';
+import { createScrollableContainerStyle } from '../utils/styles/scrollbar';
 import DeleteConversationDialog from './dialogs/delete-conversation-dialog';
 
 const ChatSidebar = ({

@@ -11,6 +11,7 @@ from app.api.middlewares.auth import authMiddleware
 from app.config.utils.named_constants.arangodb_constants import AccountType, Connectors
 from app.connectors.api.router import router
 from app.connectors.services.entity_kafka_consumer import EntityKafkaRouteConsumer
+from app.connectors.sources.localKB.api.kb_router import kb_router
 from app.setups.connector_setup import (
     AppContainer,
     initialize_container,
@@ -32,6 +33,7 @@ async def get_initialized_container() -> AppContainer:
                 "app.core.celery_app",
                 "app.connectors.sources.google.common.sync_tasks",
                 "app.connectors.api.router",
+                "app.connectors.sources.localKB.api.kb_router",
                 "app.connectors.api.middleware",
                 "app.core.signed_url",
             ]
@@ -285,6 +287,7 @@ async def health_check() -> JSONResponse:
 
 # Include routes
 app.include_router(router)
+app.include_router(kb_router)
 
 
 # Global error handler

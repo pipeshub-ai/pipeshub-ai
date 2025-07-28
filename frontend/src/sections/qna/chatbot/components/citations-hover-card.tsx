@@ -1,13 +1,11 @@
 import type { Record } from 'src/types/chat-message';
-import type { Metadata, CustomCitation } from 'src/types/chat-bot';
+import type { CustomCitation } from 'src/types/chat-bot';
 
 import React from 'react';
 import { Icon } from '@iconify/react';
 import eyeIcon from '@iconify-icons/mdi/eye-outline';
-import fileDocumentIcon from '@iconify-icons/mdi/file-document-outline';
 import linkIcon from '@iconify-icons/mdi/open-in-new';
-import bookmarkIcon from '@iconify-icons/mdi/bookmark-outline';
-import departmentIcon from '@iconify-icons/mdi/domain';
+import fileDocumentIcon from '@iconify-icons/mdi/file-document-outline';
 
 import {
   Box,
@@ -15,15 +13,15 @@ import {
   Card,
   Chip,
   Stack,
-  Button,
-  Divider,
-  Typography,
-  Tooltip,
-  IconButton,
-  useTheme,
   alpha,
+  Button,
   styled,
+  Tooltip,
+  useTheme,
+  Typography,
+  IconButton,
 } from '@mui/material';
+
 import { createScrollableContainerStyle } from '../utils/styles/scrollbar';
 
 // Styled components for consistent design

@@ -127,7 +127,8 @@ class ArangoService:
                     'subcategories2': [subcat2_ids],
                     'subcategories3': [subcat3_ids],
                     'languages': [language_ids],
-                    'topics': [topic_ids]
+                    'topics': [topic_ids],
+                    'kb': [kb_ids]
                 }
         """
         self.logger.info(
@@ -135,6 +136,9 @@ class ArangoService:
         )
 
         try:
+            # Extract KB IDs from filters if present
+            kb_ids = filters.get("kb") if filters else None
+
             # First get counts separately
             query = f"""
             LET userDoc = FIRST(
@@ -163,13 +167,30 @@ class ArangoService:
             )
 
             LET directAndGroupRecords = UNION_DISTINCT(directRecords, groupRecords, orgRecords)
+            """
 
-            LET kbRecords = (
-                FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSIONS_TO_KNOWLEDGE_BASE.value}
-                FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO_KNOWLEDGE_BASE.value}
-                RETURN DISTINCT records
-            )
+            # Add KB records section with optional KB filtering
+            if kb_ids:
+                self.logger.info(f"🔍 Applying KB filtering for KBs: {kb_ids}")
+                query += f"""
+                LET kbRecords = (
+                    FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSIONS_TO_KB.value}
+                    FILTER kb._key IN @kb_ids  // Filter by specific KB IDs
+                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO_KB.value}
+                    RETURN DISTINCT records
+                )
+                """
+            else:
+                # No KB filtering - get all accessible KB records
+                query += f"""
+                LET kbRecords = (
+                    FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSIONS_TO_KB.value}
+                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO_KB.value}
+                    RETURN DISTINCT records
+                )
+                """
 
+            query += """
             LET anyoneRecords = (
                 FOR records IN @@anyone
                 FILTER records.organization == @orgId
@@ -305,6 +326,10 @@ class ArangoService:
                 "@records": CollectionNames.RECORDS.value,
                 "@anyone": CollectionNames.ANYONE.value,
             }
+
+            # Add KB IDs to bind variables if filtering by KB
+            if kb_ids:
+                bind_vars["kb_ids"] = kb_ids
             # Add filter bind variables
             if filters:
                 if filters.get("departments"):
@@ -347,6 +372,10 @@ class ArangoService:
                 stream=True
             )
             result = list(cursor)
+
+            if kb_ids:
+                self.logger.info(f"✅ KB filtering applied - found {len(result[0]) if result and isinstance(result[0], list) else len(result)} records from {len(kb_ids)} KBs")
+
             if result:
                 if isinstance(result[0], dict):
                     return result
@@ -685,3 +714,128 @@ class ArangoService:
                 str(e)
             )
             return []
+
+    async def validate_user_kb_access(
+        self,
+        user_id: str,
+        org_id: str,
+        kb_ids: List[str]
+    ) -> Dict[str, List[str]]:
+        """
+        OPTIMIZED: Validate which KB IDs the user has access to using fast lookups
+        Args:
+            user_id: External user ID
+            org_id: Organization ID
+            kb_ids: List of KB IDs to check access for
+
+        Returns:
+            Dict with 'accessible' and 'inaccessible' KB IDs
+        """
+        try:
+            self.logger.info(f"🚀 Fast KB access validation for user {user_id} on {len(kb_ids)} KBs")
+
+            if not kb_ids:
+                return {"accessible": [], "inaccessible": [], "total_user_kbs": 0}
+
+            user = await self.get_user_by_user_id(user_id=user_id)
+            if not user:
+                self.logger.warning(f"⚠️ User not found: {user_id}")
+                return {
+                    "accessible": [],
+                    "inaccessible": kb_ids,
+                    "error": f"User not found: {user_id}"
+                }
+
+            user_key = user.get('_key')
+
+            validation_query = """
+            // Convert requested KB list to a set for fast lookup
+            LET requested_kb_set = @kb_ids
+            LET user_from = @user_from
+            LET org_id = @org_id
+
+            // Get user's accessible KBs in this org with direct filtering
+            // Using FILTER early to reduce data processing
+            LET user_accessible_kbs = (
+                FOR perm IN @@permissions_to_kb
+                    FILTER perm._from == user_from
+                    FILTER perm.type == "USER"
+                    // Fast role check using IN operator
+                    FILTER perm.role IN ["OWNER", "READER", "FILEORGANIZER", "WRITER", "COMMENTER", "ORGANIZER"]
+                    // Extract KB key directly from _to field (faster than DOCUMENT lookup)
+                    LET kb_key = PARSE_IDENTIFIER(perm._to).key
+                    // Early filter: only check KBs that were requested OR get all for org validation
+                    LET kb_doc = DOCUMENT(CONCAT("recordGroups/", kb_key))
+                    FILTER kb_doc != null
+                    FILTER kb_doc.orgId == org_id
+                    FILTER kb_doc.groupType == "KB"
+                    FILTER kb_doc.connectorName == "KB"
+                    RETURN kb_key
+            )
+
+            // Convert to sets for O(1) lookup complexity
+            LET accessible_set = user_accessible_kbs
+            LET accessible_requested = (
+                FOR kb_id IN requested_kb_set
+                    FILTER kb_id IN accessible_set
+                    RETURN kb_id
+            )
+
+            LET inaccessible_requested = (
+                FOR kb_id IN requested_kb_set
+                    FILTER kb_id NOT IN accessible_set
+                    RETURN kb_id
+            )
+
+            // Return minimal result set
+            RETURN {
+                accessible: accessible_requested,
+                inaccessible: inaccessible_requested,
+                total_user_kbs: LENGTH(accessible_set)
+            }
+            """
+
+            bind_vars = {
+                "user_from": f"users/{user_key}",
+                "org_id": org_id,
+                "kb_ids": kb_ids,
+                "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
+            }
+
+            cursor = self.db.aql.execute(
+                validation_query,
+                bind_vars=bind_vars,
+                count=False,           # Don't count results
+                batch_size=1000,       # Larger batch size for faster transfer
+                cache=True,            # Enable query result caching
+                memory_limit=0,        # No memory limit for faster execution
+                max_runtime=30.0,      # 30 second timeout
+                fail_on_warning=False, # Don't fail on warnings
+                profile=False,         # Disable profiling for speed
+                stream=True            # Stream results for memory efficiency
+            )
+
+            result = next(cursor, {})
+
+            accessible = result.get("accessible", [])
+            inaccessible = result.get("inaccessible", [])
+
+
+            self.logger.info(f"KB validation complete: {len(accessible)}/{len(kb_ids)} accessible")
+
+            if inaccessible:
+                self.logger.warning(f"⚠️ User {user_id} lacks access to {len(inaccessible)} KBs")
+
+            return {
+                "accessible": accessible,
+                "inaccessible": inaccessible,
+                "total_user_kbs": result.get("total_user_kbs", 0)
+            }
+
+        except Exception as e:
+            self.logger.error(f"❌ KB access validation error: {str(e)}")
+            return {
+                "accessible": [],
+                "inaccessible": kb_ids,
+                "error": str(e)
+            }

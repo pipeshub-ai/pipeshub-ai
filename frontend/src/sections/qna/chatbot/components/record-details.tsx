@@ -6,13 +6,12 @@ import type {
 
 import { Icon } from '@iconify/react';
 import React, { useState, useEffect } from 'react';
-import categoryIcon from '@iconify-icons/mdi/shape-outline';
-import loadingIcon from '@iconify-icons/mdi/loading';
-import departmentIcon from '@iconify-icons/mdi/domain';
-import languageIcon from '@iconify-icons/mdi/translate';
 import linkIcon from '@iconify-icons/mdi/open-in-new';
-import filePdfIcon from '@iconify-icons/mdi/file-pdf-box';
+import departmentIcon from '@iconify-icons/mdi/domain';
 import fileIcon from '@iconify-icons/mdi/file-outline';
+import languageIcon from '@iconify-icons/mdi/translate';
+import filePdfIcon from '@iconify-icons/mdi/file-pdf-box';
+import categoryIcon from '@iconify-icons/mdi/shape-outline';
 import topicIcon from '@iconify-icons/mdi/bookmark-outline';
 import fileDocIcon from '@iconify-icons/mdi/file-document-outline';
 
@@ -22,13 +21,12 @@ import {
   Paper,
   alpha,
   Button,
-  Divider,
+  styled,
   Tooltip,
   useTheme,
   Typography,
   IconButton,
   CircularProgress,
-  styled,
 } from '@mui/material';
 
 import axios from 'src/utils/axios';

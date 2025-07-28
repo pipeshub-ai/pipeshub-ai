@@ -1,7 +1,7 @@
 import { configureStore } from '@reduxjs/toolkit';
 
-import authReducer from './authSlice';
-import countReducer from './userAndGroupsSlice';
+import authReducer from './auth-slice';
+import countReducer from './user-and-groups-slice';
 // import notificationsReducer from './notificationsSlice';
 
 const store = configureStore({

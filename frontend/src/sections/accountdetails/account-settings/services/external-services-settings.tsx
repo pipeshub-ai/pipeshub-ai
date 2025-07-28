@@ -2,11 +2,11 @@ import { useState } from 'react';
 import { Icon } from '@iconify/react';
 import redisIcon from '@iconify-icons/logos/redis';
 import storageIcon from '@iconify-icons/mdi/storage';
-import settingsIcon from '@iconify-icons/mdi/settings-outline';
 import kafkaIcon from '@iconify-icons/mdi/apache-kafka';
 import qdrantIcon from '@iconify-icons/logos/qdrant-icon';
 import mongodbIcon from '@iconify-icons/logos/mongodb-icon';
 import arangodbIcon from '@iconify-icons/logos/arangodb-icon';
+import settingsIcon from '@iconify-icons/mdi/settings-outline';
 
 import { alpha, useTheme } from '@mui/material/styles';
 import {
@@ -22,6 +22,7 @@ import {
 } from '@mui/material';
 
 import { Iconify } from 'src/components/iconify';
+
 import ConfigureServiceDialog from './configure-services-dialog';
 
 // Service configuration list

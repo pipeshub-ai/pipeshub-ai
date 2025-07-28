@@ -25,10 +25,10 @@ import Users from './users';
 import Groups from './groups';
 import Invites from './invites';
 import { allGroups, getAllUsersWithGroups } from '../utils';
-import { setCounts, setLoading } from '../../../store/userAndGroupsSlice';
+import { setCounts, setLoading } from '../../../store/user-and-groups-slice';
 
-import type { CountsState } from '../../../store/userAndGroupsSlice';
 import type { GroupUser, AppUserGroup } from '../types/group-details';
+import type { CountsState } from '../../../store/user-and-groups-slice';
 
 interface RootState {
   counts: CountsState;

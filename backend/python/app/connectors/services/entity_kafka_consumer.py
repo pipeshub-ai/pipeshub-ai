@@ -244,8 +244,14 @@ class EntityKafkaRouteConsumer:
 
         return await handler(value["payload"])
 
-    async def _get_or_create_knowledge_base(self, user_key: str, userId: str, orgId: str, name: str = "Default") -> dict:
-        """Get or create a knowledge base for a user"""
+    async def _get_or_create_knowledge_base(
+        self,
+        user_key: str,
+        userId: str,
+        orgId: str,
+        name: str = "Default"
+    ) -> Dict:
+        """Get or create a knowledge base for a user, with root folder and permissions."""
         try:
             if not userId or not orgId:
                 self.logger.error("Both User ID and Organization ID are required to get or create a knowledge base")
@@ -253,43 +259,52 @@ class EntityKafkaRouteConsumer:
 
             # Check if a knowledge base already exists for this user in this organization
             query = f"""
-            FOR kb IN {CollectionNames.KNOWLEDGE_BASE.value}
-                FILTER kb.userId == @userId AND kb.orgId == @orgId AND kb.isDeleted == false
+            FOR kb IN {CollectionNames.RECORD_GROUPS.value}
+                FILTER kb.createdBy == @userId AND kb.orgId == @orgId AND kb.groupType == @kb_type AND kb.connectorName == @kb_connector AND (kb.isDeleted == false OR kb.isDeleted == null)
                 RETURN kb
             """
-            bind_vars = {"userId": userId, "orgId": orgId}
-
-            # Use the correct pattern for your ArangoDB Python driver
+            bind_vars = {
+                "userId": userId,
+                "orgId": orgId,
+                "kb_type": Connectors.KNOWLEDGE_BASE.value,
+                "kb_connector": Connectors.KNOWLEDGE_BASE.value,
+            }
             cursor = self.arango_service.db.aql.execute(query, bind_vars=bind_vars)
             existing_kbs = [doc for doc in cursor]
 
-            if existing_kbs and len(existing_kbs) > 0:
+            if existing_kbs:
                 self.logger.info(f"Found existing knowledge base for user {userId} in organization {orgId}")
                 return existing_kbs[0]
 
-            # Create a new knowledge base
+            # Create a new knowledge base with root folder and permissions in a transaction
             current_timestamp = get_epoch_timestamp_in_ms()
             kb_key = str(uuid4())
+            folder_id = str(uuid4())
+
             kb_data = {
                 "_key": kb_key,
-                "userId": userId,
+                "createdBy": userId,
                 "orgId": orgId,
-                "name": name,
+                "groupName": name,
+                "groupType": Connectors.KNOWLEDGE_BASE.value,
+                "connectorName": Connectors.KNOWLEDGE_BASE.value,
                 "createdAtTimestamp": current_timestamp,
                 "updatedAtTimestamp": current_timestamp,
-                "isDeleted": False,
-                "isArchived": False,
             }
-
-            # Save the knowledge base
-            await self.arango_service.batch_upsert_nodes(
-                [kb_data], CollectionNames.KNOWLEDGE_BASE.value
-            )
-
-            # Create permission edge from user to knowledge base with OWNER role
+            root_folder_data = {
+                "_key": folder_id,
+                "orgId": orgId,
+                "name": name,
+                "isFile": False,
+                "extension": None,
+                "mimeType": "application/vnd.folder",
+                "sizeInBytes": 0,
+                "webUrl": f"/kb/{kb_key}/folder/{folder_id}",
+                "path": f"/{name}"
+            }
             permission_edge = {
                 "_from": f"{CollectionNames.USERS.value}/{user_key}",
-                "_to": f"{CollectionNames.KNOWLEDGE_BASE.value}/{kb_key}",
+                "_to": f"{CollectionNames.RECORD_GROUPS.value}/{kb_key}",
                 "externalPermissionId": "",
                 "type": "USER",
                 "role": "OWNER",
@@ -297,14 +312,28 @@ class EntityKafkaRouteConsumer:
                 "updatedAtTimestamp": current_timestamp,
                 "lastUpdatedTimestampAtSource": current_timestamp,
             }
-
-            await self.arango_service.batch_create_edges(
-                [permission_edge],
-                CollectionNames.PERMISSIONS_TO_KNOWLEDGE_BASE.value,
-            )
+            folder_edge = {
+                "_from": f"{CollectionNames.FILES.value}/{folder_id}",
+                "_to": f"{CollectionNames.RECORD_GROUPS.value}/{kb_key}",
+                "entityType": Connectors.KNOWLEDGE_BASE.value,
+                "createdAtTimestamp": current_timestamp,
+                "updatedAtTimestamp": current_timestamp,
+            }
+            # Insert all in transaction
+            await self.arango_service.batch_upsert_nodes([kb_data], CollectionNames.RECORD_GROUPS.value)
+            await self.arango_service.batch_upsert_nodes([root_folder_data], CollectionNames.FILES.value)
+            await self.arango_service.batch_create_edges([permission_edge], CollectionNames.PERMISSIONS_TO_KB.value)
+            await self.arango_service.batch_create_edges([folder_edge], CollectionNames.BELONGS_TO_KB.value)
 
             self.logger.info(f"Created new knowledge base for user {userId} in organization {orgId}")
-            return kb_data
+            return {
+                "kb_id": kb_key,
+                "name": name,
+                "root_folder_id": folder_id,
+                "created_at": current_timestamp,
+                "updated_at": current_timestamp,
+                "success": True
+            }
 
         except Exception as e:
             self.logger.error(f"Failed to get or create knowledge base: {str(e)}")

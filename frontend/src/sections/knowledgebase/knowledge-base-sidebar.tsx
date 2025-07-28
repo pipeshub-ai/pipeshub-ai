@@ -403,7 +403,6 @@ export default function KnowledgeBaseSideBar({
   onFilterChange,
   openSidebar = true,
   onToggleSidebar,
-  sx = {},
 }: KnowledgeBaseSideBarProps) {
   const theme = useTheme();
   const { pathname } = useLocation();
@@ -543,6 +542,7 @@ export default function KnowledgeBaseSideBar({
       connectors: 0,
       app: 0,
       permissions: 0,
+      kb:0,
     };
 
     // Calculate counts from local filters to prevent UI flicker
@@ -1382,7 +1382,6 @@ export default function KnowledgeBaseSideBar({
       variant="permanent"
       open={open}
       sx={{
-        ...sx,
         transition: theme.transitions.create('width', {
           duration: '0.25s',
           easing: theme.transitions.easing.sharp,

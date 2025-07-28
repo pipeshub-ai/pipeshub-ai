@@ -1,34 +1,37 @@
-import React, { useState, memo, useCallback } from 'react';
-import { Control, Controller, FieldValues } from 'react-hook-form';
-import { alpha, useTheme } from '@mui/material/styles';
+import type { IconifyIcon } from '@iconify/react';
+import type { Control, FieldValues } from 'react-hook-form';
+
+import keyIcon from '@iconify-icons/mdi/key';
+import { Controller } from 'react-hook-form';
+import robotIcon from '@iconify-icons/mdi/robot';
 import eyeIcon from '@iconify-icons/eva/eye-fill';
 import eyeOffIcon from '@iconify-icons/eva/eye-off-fill';
-import keyIcon from '@iconify-icons/mdi/key';
-import robotIcon from '@iconify-icons/mdi/robot';
-import fileUploadIcon from '@iconify-icons/ri/file-upload-fill';
-import uploadCloudIcon from '@iconify-icons/ri/upload-cloud-2-line';
-import checkCircleIcon from '@iconify-icons/mdi/check-circle-outline';
+import React, { memo, useState, useCallback } from 'react';
 import deleteIcon from '@iconify-icons/ri/delete-bin-line';
 import fileTextIcon from '@iconify-icons/ri/file-text-line';
 import infoOutlineIcon from '@iconify-icons/eva/info-outline';
-import { IconifyIcon } from '@iconify/react';
+import fileUploadIcon from '@iconify-icons/ri/file-upload-fill';
+import uploadCloudIcon from '@iconify-icons/ri/upload-cloud-2-line';
+import checkCircleIcon from '@iconify-icons/mdi/check-circle-outline';
+
+import { alpha, useTheme } from '@mui/material/styles';
 import {
+  Box,
+  Fade,
+  Stack,
+  Select,
+  Button,
+  Tooltip,
+  MenuItem,
+  Checkbox,
   TextField,
-  InputAdornment,
   IconButton,
   Typography,
-  Box,
-  Select,
-  MenuItem,
-  FormControl,
   InputLabel,
+  FormControl,
+  InputAdornment,
   FormHelperText,
-  Stack,
-  Button,
-  Fade,
   CircularProgress,
-  Tooltip,
-  Checkbox,
   FormControlLabel,
 } from '@mui/material';
 
@@ -666,7 +669,7 @@ const DynamicField = memo(({
             // Handle number field conversion
             onChange={(e) => {
               if (isNumberField) {
-                const value = e.target.value;
+                const {value} = e.target;
                 field.onChange(value === '' ? undefined : Number(value));
               } else {
                 field.onChange(e);

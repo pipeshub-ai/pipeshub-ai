@@ -19,7 +19,7 @@ import { useRouter } from 'src/routes/hooks';
 
 import { useBoolean } from 'src/hooks/use-boolean';
 
-import { setEmail } from 'src/store/authSlice';
+import { setEmail } from 'src/store/auth-slice';
 
 import { Iconify } from 'src/components/iconify';
 import { Form, Field } from 'src/components/hook-form';

@@ -1,10 +1,10 @@
 import type { Theme } from '@mui/material';
 import type { CustomCitation } from 'src/types/chat-bot';
-import type {
-  DocumentContent,
-  SearchResult,
-} from 'src/sections/knowledgebase/types/search-response';
 import type { Position, HighlightType, ProcessedCitation } from 'src/types/pdf-highlighter';
+import type {
+  SearchResult,
+  DocumentContent,
+} from 'src/sections/knowledgebase/types/search-response';
 
 import DOMPurify from 'dompurify';
 import { Icon } from '@iconify/react';
@@ -12,7 +12,7 @@ import alertCircleIcon from '@iconify-icons/mdi/alert-circle-outline';
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 
 import { styled } from '@mui/material/styles';
-import { Box, Paper, Typography, CircularProgress, useTheme } from '@mui/material';
+import { Box, Paper, useTheme, Typography, CircularProgress } from '@mui/material';
 
 import CitationSidebar from './highlighter-sidebar';
 import { createScrollableContainerStyle } from '../utils/styles/scrollbar';

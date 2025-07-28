@@ -30,6 +30,7 @@ export const enterpriseSearchCreateSchema = z.object({
     filters: z
       .object({
         apps: z.array(z.enum([APP_TYPES.DRIVE, APP_TYPES.GMAIL])).optional(),
+        kb: z.array(z.string().uuid()).optional(),
       })
       .optional(),
   }),
@@ -148,7 +149,10 @@ export const enterpriseSearchSearchSchema = z.object({
     query: z.string().min(1, { message: 'Search query is required' }),
     filters: z
       .object({
-        apps: z.array(z.enum([APP_TYPES.DRIVE, APP_TYPES.GMAIL, APP_TYPES.LOCAL])).optional(),
+        apps: z
+          .array(z.enum([APP_TYPES.DRIVE, APP_TYPES.GMAIL, APP_TYPES.LOCAL]))
+          .optional(),
+        kb: z.array(z.string().uuid()).optional(),
       })
       .optional(),
     limit: z

@@ -242,6 +242,7 @@ class RetrievalService:
 
             filter_groups = filter_groups or {}
 
+            kb_ids = filter_groups.get('kb') if filter_groups else None
             # Convert filter_groups to format expected by get_accessible_records
             arango_filters = {}
             if filter_groups:  # Only process if filter_groups is not empty
@@ -251,7 +252,6 @@ class RetrievalService:
                         key.lower()
                     )  # e.g., 'departments', 'categories', etc.
                     arango_filters[metadata_key] = values
-
 
             init_tasks = [
                 self._get_accessible_records_task(user_id, org_id, filter_groups, arango_service),
@@ -297,6 +297,7 @@ class RetrievalService:
                     if record:
                         result["metadata"]["origin"] = record.get("origin")
                         result["metadata"]["connector"] = record.get("connectorName")
+                        result["metadata"]["kbId"] = record.get("kbId")
                         weburl = record.get("webUrl")
                         if weburl and weburl.startswith("https://mail.google.com/mail?authuser="):
                             weburl = weburl.replace("{user.email}", user["email"])
@@ -328,13 +329,22 @@ class RetrievalService:
                     records.append(record)
 
             if search_results or records:
-                return {
+                response_data = {
                     "searchResults": search_results,
                     "records": records,
                     "status": Status.SUCCESS.value,
                     "status_code": 200,
                     "message": "Query processed successfully. Relevant records retrieved.",
                 }
+
+                # Add KB filtering info to response if KB filtering was applied
+                if kb_ids:
+                    response_data["appliedFilters"] = {
+                        "kb": kb_ids,
+                        "kb_count": len(kb_ids)
+                    }
+
+                return response_data
             else:
                 return {
                     "searchResults": [],

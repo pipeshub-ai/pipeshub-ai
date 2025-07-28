@@ -1,4 +1,5 @@
 import json
+from typing import Dict
 
 from aiokafka import AIOKafkaProducer
 
@@ -45,6 +46,45 @@ class KafkaService:
             except Exception as e:
                 self.logger.error(f"❌ Failed to initialize Kafka producer: {str(e)}")
                 raise
+
+    async def publish_event(self, topic: str, event: Dict) -> bool:
+        """
+        Publish an event to a specified Kafka topic.
+        :param topic: The Kafka topic to publish to
+        :param event: Dictionary containing the event data
+        :return: True if successful, False otherwise
+        """
+        try:
+            # Ensure producer is ready
+            await self._ensure_producer()
+
+            # Convert event to JSON bytes for aiokafka
+            message_value = json.dumps(event).encode('utf-8')
+
+            # Use recordId from payload as key if available, otherwise use timestamp
+            record_id = event.get("payload", {}).get("recordId")
+            message_key = str(record_id).encode('utf-8') if record_id else str(event.get("timestamp", "")).encode('utf-8')
+
+            # Send message and wait for delivery
+            record_metadata = await self.producer.send_and_wait(
+                topic=topic,
+                key=message_key,
+                value=message_value
+            )
+
+            # Log successful delivery
+            self.logger.info(
+                "✅ Event successfully published to %s [%s] at offset %s",
+                record_metadata.topic,
+                record_metadata.partition,
+                record_metadata.offset
+            )
+
+            return True
+
+        except Exception as e:
+            self.logger.error("❌ Failed to publish event to topic %s: %s", topic, str(e))
+            raise
 
     async def send_event_to_kafka(self, event_data) -> bool | None:
         """

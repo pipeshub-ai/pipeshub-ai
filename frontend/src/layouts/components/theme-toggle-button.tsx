@@ -1,11 +1,14 @@
+import type { IconButtonProps } from '@mui/material/IconButton';
+
+import { useState } from 'react';
+import { m, AnimatePresence } from 'framer-motion';
 import sunBoldIcon from '@iconify-icons/solar/sun-bold';
 import moonBoldIcon from '@iconify-icons/solar/moon-bold';
-import type { IconButtonProps } from '@mui/material/IconButton';
-import { m, AnimatePresence } from 'framer-motion';
-import { useState } from 'react';
-import IconButton from '@mui/material/IconButton';
+
 import Tooltip from '@mui/material/Tooltip';
+import IconButton from '@mui/material/IconButton';
 import { useTheme, useColorScheme } from '@mui/material/styles';
+
 import { Iconify } from 'src/components/iconify';
 
 export type ThemeToggleButtonProps = IconButtonProps;

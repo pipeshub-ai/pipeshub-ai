@@ -5,9 +5,9 @@ import { zodResolver } from '@hookform/resolvers/zod';
 
 import {
   Box,
+  Alert,
   Button,
   Dialog,
-  Alert,
   TextField,
   Typography,
   DialogTitle,
@@ -18,8 +18,8 @@ import {
 
 import { 
   getOAuthConfig, 
-  updateOAuthConfig, 
-  type OAuthConfig 
+  type OAuthConfig, 
+  updateOAuthConfig 
 } from '../utils/auth-configuration-service';
 
 // Validation schema for OAuth configuration

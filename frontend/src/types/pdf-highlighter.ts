@@ -1,10 +1,10 @@
 import type { ScaledPosition } from 'react-pdf-highlighter';
 import type {
-  DocumentContent,
   SearchResult,
+  DocumentContent,
 } from 'src/sections/knowledgebase/types/search-response';
 
-import type { Citation, CustomCitation, Metadata } from './chat-bot';
+import type { Citation, CustomCitation } from './chat-bot';
 
 export interface PdfHighlighterCompProps {
   pdfUrl?: string | null;
