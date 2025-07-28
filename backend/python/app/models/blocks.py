@@ -13,11 +13,15 @@ class CommentFormat(str, Enum):
     TXT = "txt"
     BIN = "bin"
     MARKDOWN = "markdown"
+    HTML = "html"
 
 class BlockType(str, Enum):
+    TEXT = "text"
     PARAGRAPH = "paragraph"
     TEXTSECTION = "textsection"
     TABLE = "table"
+    TABLE_ROW = "table_row"
+    TABLE_CELL = "table_cell"
     FILE = "file"
     IMAGE = "image"
     VIDEO = "video"
@@ -41,6 +45,7 @@ class TextFormat(str, Enum):
     CSV = "csv"
     YAML = "yaml"
     BASE64 = "base64"
+    UTF8 = "utf8"
 
 
 class BlockComment(BaseModel):
@@ -56,7 +61,10 @@ class CitationMetadata(BaseModel):
 
     # PDF specific
     page_number: Optional[int] = None
-    bounding_boxes: List[Point]
+    has_more_pages: Optional[bool] = None
+    more_page_numbers: Optional[List[int]] = None
+    bounding_boxes: Optional[List[Point]] = None
+    more_page_bounding_boxes: Optional[List[List[Point]]] = None
 
     # PDF/Word/Text specific
     line_number: Optional[int] = None
@@ -75,7 +83,8 @@ class CitationMetadata(BaseModel):
     slide_number: Optional[int] = None
 
     # Video/Audio specific
-    timestamp: Optional[str] = None  # For video/audio content
+    start_timestamp: Optional[str] = None  # For video/audio content
+    end_timestamp: Optional[str] = None  # For video/audio content
     duration_ms: Optional[int] = None  # For video/audio
 
     @field_validator('bounding_boxes')
@@ -87,13 +96,29 @@ class CitationMetadata(BaseModel):
             raise ValueError(f'bounding_boxes must contain exactly {COORDINATE_COUNT} points')
         return v
 
+class TableCellMetadata(BaseModel):
+    """Metadata specific to table cell blocks"""
+    row_number: Optional[int] = None
+    column_number: Optional[int] = None
+    row_span: Optional[int] = None
+    column_span: Optional[int] = None
+    column_header: Optional[bool] = None
+    row_header: Optional[bool] = None
+
+class TableRowMetadata(BaseModel):
+    """Metadata specific to table row blocks"""
+    row_number: Optional[int] = None
+    row_span: Optional[int] = None
+    is_header: bool = False
+
 class TableMetadata(BaseModel):
     """Metadata specific to table blocks"""
-    rows: Optional[int] = None
-    columns: Optional[int] = None
+    num_of_rows: Optional[int] = None
+    num_of_cols: Optional[int] = None
     has_header: bool = False
     column_names: Optional[List[str]] = None
-    table_caption: Optional[str] = None
+    captions: Optional[List[str]] = Field(default_factory=list)
+    footnotes: Optional[List[str]] = Field(default_factory=list)
 
 class CodeMetadata(BaseModel):
     """Metadata specific to code blocks"""
@@ -133,43 +158,31 @@ class LinkMetadata(BaseModel):
     link_type: Optional[Literal["internal", "external"]] = None
     link_target: Optional[str] = None
 
+class ImageMetadata(BaseModel):
+    """Metadata specific to image blocks"""
+    image_type: Optional[Literal["image", "drawing"]] = None
+    image_format: Optional[str] = None
+    image_size: Optional[Dict[str, int]] = None
+    image_resolution: Optional[Dict[str, int]] = None
+    image_dpi: Optional[int] = None
+    captions: Optional[List[str]] = Field(default_factory=list)
+    footnotes: Optional[List[str]] = Field(default_factory=list)
+    annotations: Optional[List[str]] = Field(default_factory=list)
+
 class Confidence(str, Enum):
     VERY_HIGH = "very_high"
     HIGH = "high"
     MEDIUM = "medium"
     LOW = "low"
 
-class Block(BaseModel):
-    # Core block properties
-    block_id: str
-    block_type: BlockType
-    block_name: Optional[str] = None
-    block_format: TextFormat
-    block_comments: List[BlockComment] = Field(default_factory=list)
-    block_source_creation_date: Optional[datetime] = None
-    block_source_update_date: Optional[datetime] = None
-    block_source_id: Optional[str] = None
-    block_source_name: Optional[str] = None
-    block_source_type: Optional[str] = None
+class GroupType(str, Enum):
+    LIST = "list"
+    TABLE = "table"
+    CODE = "code"
+    MEDIA = "media"
 
 
-    # Content and links
-    data: Optional[Any] = None
-    links: Optional[List[str]] = None
-    weburl: Optional[HttpUrl] = None
-    public_data_link: Optional[HttpUrl] = None
-    public_data_link_expiration_epoch_time_in_ms: Optional[int] = None
-
-    # Block-type specific metadata
-    list_metadata: Optional[ListMetadata] = None
-    table_metadata: Optional[TableMetadata] = None
-    code_metadata: Optional[CodeMetadata] = None
-    media_metadata: Optional[MediaMetadata] = None
-    file_metadata: Optional[FileMetadata] = None
-    link_metadata: Optional[LinkMetadata] = None
-    citation_metadata: Optional[CitationMetadata] = None
-
-    # Semantic metadata
+class SemanticMetadata(BaseModel):
     entities: Optional[List[Dict[str, Any]]] = None
     section_numbers: Optional[List[str]] = None
     summary: Optional[str] = None
@@ -178,13 +191,77 @@ class Block(BaseModel):
     languages: Optional[List[str]] = None
     topics: Optional[List[str]] = None
     record_id: Optional[str] = None
-    page_number: Optional[int] = None
-    sheet_number: Optional[int] = None
-    category: Optional[str] = None
-    sub_category_level_1: Optional[str] = None
-    sub_category_level_2: Optional[str] = None
-    sub_category_level_3: Optional[str] = None
+    category: Optional[List[str]] = Field(default_factory=list)
+    sub_category_level_1: Optional[List[str]] = None
+    sub_category_level_2: Optional[List[str]] = None
+    sub_category_level_3: Optional[List[str]] = None
     confidence: Optional[Confidence] = None
+
+class Block(BaseModel):
+    # Core block properties
+    id: str = Field(description="Unique identifier for the block")
+    index: int = None
+    parent_index: Optional[int] = Field(default=None, description="Index of the parent block group")
+    type: BlockType
+    name: Optional[str] = None
+    format: TextFormat
+    comments: List[BlockComment] = Field(default_factory=list)
+    source_creation_date: Optional[datetime] = None
+    source_update_date: Optional[datetime] = None
+    source_id: Optional[str] = None
+    source_name: Optional[str] = None
+    source_type: Optional[str] = None
+
+    # Content and links
+    data: Optional[Any] = None
+    links: Optional[List[str]] = None
+    weburl: Optional[HttpUrl] = None
+    public_data_link: Optional[HttpUrl] = None
+    public_data_link_expiration_epoch_time_in_ms: Optional[int] = None
+
+    citation_metadata: Optional[CitationMetadata] = None
+    list_metadata: Optional[ListMetadata] = None
+    table_row_metadata: Optional[TableRowMetadata] = None
+    table_cell_metadata: Optional[TableCellMetadata] = None
+    code_metadata: Optional[CodeMetadata] = None
+    media_metadata: Optional[MediaMetadata] = None
+    file_metadata: Optional[FileMetadata] = None
+    link_metadata: Optional[LinkMetadata] = None
+    image_metadata: Optional[ImageMetadata] = None
+    semantic_metadata: Optional[SemanticMetadata] = None
+
+class Blocks(BaseModel):
+    blocks: List[Block] = Field(default_factory=list)
+
+class BlockContainerIndex(BaseModel):
+    block_index: Optional[int] = None
+    block_group_index: Optional[int] = None
+
+class BlockGroup(BaseModel):
+    id: str = Field(description="Unique identifier for the block group")
+    index: int = None
+    name: str = Field(description="Name of the block group")
+    type: GroupType = Field(description="Type of the block group")
+    parent_index: Optional[int] = Field(description="Index of the parent block group")
+    description: Optional[str] = Field(description="Description of the block group")
+    citation_metadata: Optional[CitationMetadata] = None
+    list_metadata: Optional[ListMetadata] = None
+    table_metadata: Optional[TableMetadata] = None
+    table_row_metadata: Optional[TableRowMetadata] = None
+    table_cell_metadata: Optional[TableCellMetadata] = None
+    code_metadata: Optional[CodeMetadata] = None
+    media_metadata: Optional[MediaMetadata] = None
+    file_metadata: Optional[FileMetadata] = None
+    link_metadata: Optional[LinkMetadata] = None
+    semantic_metadata: Optional[SemanticMetadata] = None
+    children: Optional[List[BlockContainerIndex]] = None
+
+class BlockGroups(BaseModel):
+    block_groups: List[BlockGroup] = Field(default_factory=list)
+
+class BlocksContainer(BaseModel):
+    block_groups: List[BlockGroup] = Field(default_factory=list)
+    blocks: List[Block] = Field(default_factory=list)
 
 class RecordType(str, Enum):
     FILE = "FILE"
@@ -229,26 +306,10 @@ class Record(BaseModel):
     # Source information
     weburl: Optional[HttpUrl] = None
 
-
     # Content blocks
-    blocks: List[Block] = Field(default_factory=list, description="List of content blocks in this record")
+    block_containers: BlocksContainer = Field(default_factory=list, description="List of block containers in this record")
 
-    # Semantic information at record level
-    title: Optional[str] = None
-    description: Optional[str] = None
-    summary: Optional[str] = None
-    tags: Optional[List[str]] = Field(default_factory=list)
-    categories: Optional[List[str]] = Field(default_factory=list)
-    keywords: Optional[List[str]] = Field(default_factory=list)
-    entities: Optional[List[Dict[str, Any]]] = Field(default_factory=list)
-    topics: Optional[List[str]] = Field(default_factory=list)
-    departments: Optional[List[str]] = Field(default_factory=list)
-    languages: Optional[List[str]] = Field(default_factory=list)
-    category: Optional[str] = None
-    sub_category_level_1: Optional[str] = None
-    sub_category_level_2: Optional[str] = None
-    sub_category_level_3: Optional[str] = None
-
+    semantic_metadata: Optional[SemanticMetadata] = None
 
     # Relationships
     parent_record_id: Optional[str] = None
@@ -273,7 +334,6 @@ class MailRecord(Record):
     mail_to: Optional[str] = None
     mail_cc: Optional[str] = None
     mail_bcc: Optional[str] = None
-
 
 class WebpageRecord(Record):
     webpage_url: Optional[HttpUrl] = None
