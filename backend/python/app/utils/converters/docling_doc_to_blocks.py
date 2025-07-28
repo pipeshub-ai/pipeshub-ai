@@ -94,7 +94,7 @@ class DoclingDocToBlocksConverter():
         processed_refs = set() # check by block_source_id
 
         def _enrich_metadata(block: Block|BlockGroup, item: dict, doc_dict: dict):
-            page_metadata = doc_dict.get("pages", [])
+            page_metadata = doc_dict.get("pages", {})
             print(f"Page metadata: {json.dumps(page_metadata, indent=4)}")
             print(f"Item: {json.dumps(item, indent=4)}")
             if "prov" in item:
