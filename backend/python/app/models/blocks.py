@@ -307,7 +307,7 @@ class Record(BaseModel):
     weburl: Optional[HttpUrl] = None
 
     # Content blocks
-    block_containers: BlocksContainer = Field(default_factory=list, description="List of block containers in this record")
+    block_containers: BlocksContainer = Field(default_factory=BlocksContainer, description="List of block containers in this record")
 
     semantic_metadata: Optional[SemanticMetadata] = None
 
