@@ -23,7 +23,7 @@ class DoclingPDFProcessor():
     async def load_document(self, doc_name: str, content: bytes) -> None:
         stream = BytesIO(content)
         source = DocumentStream(name=doc_name, stream=stream)
-        conv_res: ConversionResult = self.converter.convert(source)
+        conv_res: ConversionResult = await asyncio.to_thread(self.converter.convert, source)
         if conv_res.status.value != SUCCESS_STATUS:
             raise ValueError(f"Failed to parse PDF: {conv_res.status}")
 
