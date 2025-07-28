@@ -25,7 +25,7 @@ DOCLING_PAGE_BLOCK_TYPE = "pages"
 DOCLING_REF_NODE= "$ref"
 
 class DoclingDocToBlocksConverter():
-    def __init__(self, logger):
+    def __init__(self, logger) -> None:
         self.logger = logger
 
 
@@ -93,7 +93,7 @@ class DoclingDocToBlocksConverter():
         blocks = []
         processed_refs = set() # check by block_source_id
 
-        def _enrich_metadata(block: Block|BlockGroup, item: dict, doc_dict: dict):
+        def _enrich_metadata(block: Block|BlockGroup, item: dict, doc_dict: dict) -> None:
             page_metadata = doc_dict.get("pages", {})
             print(f"Page metadata: {json.dumps(page_metadata, indent=4)}")
             print(f"Item: {json.dumps(item, indent=4)}")

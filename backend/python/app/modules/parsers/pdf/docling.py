@@ -13,7 +13,7 @@ from app.utils.converters.docling_doc_to_blocks import DoclingDocToBlocksConvert
 SUCCESS_STATUS = "success"
 
 class DoclingPDFProcessor():
-    def __init__(self, logger):
+    def __init__(self, logger) -> None:
         self.logger = logger
         self.converter = DocumentConverter(allowed_formats=[
             InputFormat.PDF,
