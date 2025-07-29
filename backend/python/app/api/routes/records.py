@@ -46,8 +46,8 @@ async def get_records(
         container = request.app.container
         logger = container.logger()
 
-        user_id=request.state.user.get("userId"),
-        org_id=request.state.user.get("orgId"),
+        user_id=request.state.user.get("userId")
+        org_id=request.state.user.get("orgId")
 
         logger.info(f"Looking up user by user_id: {user_id}")
         user = await arango_service.get_user_by_user_id(user_id=user_id)

@@ -103,7 +103,6 @@ async def list_user_knowledge_bases(
     kb_service: KnowledgeBaseService = Depends(Provide[AppContainer.kb_service]),
 ) -> Union[ListKnowledgeBaseResponse, Dict[str, Any]]:
     try:
-        print(f"Parameters: page={page}, limit={limit}, search={search}, permissions={permissions}")
         result = await kb_service.list_user_knowledge_bases(
             user_id=user_id,
             org_id=org_id,
@@ -114,7 +113,6 @@ async def list_user_knowledge_bases(
             sort_by=sort_by,
             sort_order=sort_order
         )
-        print(result)
         if isinstance(result, dict) and result.get("success") is False:
             error_code = int(result.get("code", HTTP_INTERNAL_SERVER_ERROR))
             error_reason = result.get("reason", "Unknown error")
@@ -126,10 +124,8 @@ async def list_user_knowledge_bases(
         return result
 
     except HTTPException as he:
-        print(he)
         raise he
     except Exception as e:
-        print(e)
         raise HTTPException(
             status_code=500,
             detail=f"Unexpected error: {str(e)}"

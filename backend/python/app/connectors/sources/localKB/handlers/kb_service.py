@@ -445,7 +445,7 @@ class KnowledgeBaseService :
             self.logger.info(f"🚀 Creating folder '{name}' in KB {kb_id} root")
 
             # Validate user and permissions
-            validation_result = await self._validate_folder_creation(kb_id, user_id)
+            validation_result = await self.arango_service._validate_folder_creation(kb_id, user_id)
             if not validation_result["valid"]:
                 return validation_result
 
@@ -493,7 +493,7 @@ class KnowledgeBaseService :
             self.logger.info(f"🚀 Creating nested folder '{name}' in folder {parent_folder_id}")
 
             # Validate user and permissions
-            validation_result = await self._validate_folder_creation(kb_id, user_id)
+            validation_result = await self.arango_service._validate_folder_creation(kb_id, user_id)
             if not validation_result["valid"]:
                 return validation_result
 

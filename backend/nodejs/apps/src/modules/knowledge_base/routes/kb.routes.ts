@@ -173,7 +173,6 @@ export function createKnowledgeBaseRouter(container: Container): Router {
     '/stats/connector',
     authMiddleware.authenticate,
     metricsMiddleware(container),
-    // ValidationMiddleware.validate(getRecordsSchema),
     getConnectorStats(appConfig),
   );
 
