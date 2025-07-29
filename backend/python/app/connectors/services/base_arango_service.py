@@ -110,6 +110,7 @@ class BaseArangoService:
                     CollectionNames.PERMISSIONS.value,
                     CollectionNames.USER_DRIVE_RELATION.value,
                     CollectionNames.BELONGS_TO.value,
+                    CollectionNames.ANYONE.value
                 ],
                 "document_collections": [
                     CollectionNames.RECORDS.value,
@@ -1223,15 +1224,16 @@ class BaseArangoService:
                             }}
                 )''' if include_kb_records else '[]'
             }
-            // Connector Records Section - Direct connector permissions
+            // Connector Records Section - Direct connector permissions (FIXED: _to == user_from)
             LET connectorRecords = {
                 f'''(
-                    FOR permissionEdge IN @@permissions_to_kb
-                        FILTER permissionEdge._from == user_from
+                    FOR permissionEdge IN @@permissions
+                        FILTER permissionEdge._to == user_from
                         FILTER permissionEdge.type == "USER"
                         {permission_filter}
-                        LET record = DOCUMENT(permissionEdge._to)
+                        LET record = DOCUMENT(permissionEdge._from)
                         FILTER record != null
+                        FILTER record.recordType != "DRIVE"   //remove this when drive is handled
                         FILTER record.isDeleted != true
                         FILTER record.orgId == org_id
                         FILTER record.origin == "CONNECTOR"
@@ -1287,7 +1289,7 @@ class BaseArangoService:
                 }}
             """
 
-            # ===== COUNT QUERY =====
+            # ===== COUNT QUERY (FIXED: _to == user_from for connector records) =====
             count_query = f"""
             LET user_from = @user_from
             LET org_id = @org_id
@@ -1313,11 +1315,11 @@ class BaseArangoService:
             }
             LET connectorCount = {
                 f'''LENGTH(
-                    FOR permissionEdge IN @@permissions_to_kb
-                        FILTER permissionEdge._from == user_from
+                    FOR permissionEdge IN @@permissions
+                        FILTER permissionEdge._to == user_from
                         FILTER permissionEdge.type == "USER"
                         {permission_filter}
-                        LET record = DOCUMENT(permissionEdge._to)
+                        LET record = DOCUMENT(permissionEdge._from)
                         FILTER record != null
                         FILTER record.isDeleted != true
                         FILTER record.orgId == org_id
@@ -1329,7 +1331,7 @@ class BaseArangoService:
             RETURN kbCount + connectorCount
             """
 
-            # ===== FILTERS QUERY =====
+            # ===== FILTERS QUERY (FIXED: _to == user_from for connector records) =====
             filters_query = f"""
             LET user_from = @user_from
             LET org_id = @org_id
@@ -1357,10 +1359,10 @@ class BaseArangoService:
             }
             LET allConnectorRecords = {
                 '''(
-                    FOR permissionEdge IN @@permissions_to_kb
-                        FILTER permissionEdge._from == user_from
+                    FOR permissionEdge IN @@permissions
+                        FILTER permissionEdge._to == user_from
                         FILTER permissionEdge.type == "USER"
-                        LET record = DOCUMENT(permissionEdge._to)
+                        LET record = DOCUMENT(permissionEdge._from)
                         FILTER record != null
                         FILTER record.isDeleted != true
                         FILTER record.orgId == org_id
@@ -1421,6 +1423,7 @@ class BaseArangoService:
                 "limit": limit,
                 "kb_permissions": final_kb_roles,
                 "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
+                "@permissions": CollectionNames.PERMISSIONS.value,
                 "@belongs_to_kb": CollectionNames.BELONGS_TO_KB.value,
                 "@is_of_type": CollectionNames.IS_OF_TYPE.value,
                 **filter_bind_vars,
@@ -1431,6 +1434,7 @@ class BaseArangoService:
                 "org_id": org_id,
                 "kb_permissions": final_kb_roles,
                 "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
+                "@permissions": CollectionNames.PERMISSIONS.value,
                 "@belongs_to_kb": CollectionNames.BELONGS_TO_KB.value,
                 **filter_bind_vars,
             }
@@ -1439,6 +1443,7 @@ class BaseArangoService:
                 "user_from": f"users/{user_id}",
                 "org_id": org_id,
                 "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
+                "@permissions": CollectionNames.PERMISSIONS.value,
                 "@belongs_to_kb": CollectionNames.BELONGS_TO_KB.value,
             }
 
@@ -2006,33 +2011,87 @@ class BaseArangoService:
             }
 
     async def _delete_drive_specific_edges(self, transaction, record_id: str) -> None:
-        """Delete Google Drive specific edges"""
+        """Delete Google Drive specific edges with optimized queries"""
         drive_edge_collections = self.connector_delete_permissions[Connectors.GOOGLE_DRIVE.value]["edge_collections"]
 
-        for edge_collection in drive_edge_collections:
-            if edge_collection == CollectionNames.USER_DRIVE_RELATION.value:
-                # Handle Drive-specific user relations
-                drive_deletion_query = """
-                FOR edge IN @@edge_collection
-                    FILTER edge._to LIKE CONCAT('drives/', @record_id, '%')
-                    REMOVE edge IN @@edge_collection
-                    RETURN OLD
-                """
-            else:
-                # Standard edge deletion
-                drive_deletion_query = """
-                FOR edge IN @@edge_collection
-                    FILTER edge._from == @record_from OR edge._to == @record_to
-                    REMOVE edge IN @@edge_collection
-                    RETURN OLD
-                """
+        # Define edge deletion strategies - maps collection to query config
+        edge_deletion_strategies = {
+            CollectionNames.USER_DRIVE_RELATION.value: {
+                "filter": "edge._to == CONCAT('drives/', @record_id)",
+                "bind_vars": {"record_id": record_id},
+                "description": "Drive user relations"
+            },
+            CollectionNames.IS_OF_TYPE.value: {
+                "filter": "edge._from == @record_from",
+                "bind_vars": {"record_from": f"records/{record_id}"},
+                "description": "IS_OF_TYPE edges"
+            },
+            CollectionNames.PERMISSIONS.value: {
+                "filter": "edge._from == @record_from",
+                "bind_vars": {"record_from": f"records/{record_id}"},
+                "description": "Permission edges"
+            },
+            CollectionNames.BELONGS_TO.value: {
+                "filter": "edge._from == @record_from",
+                "bind_vars": {"record_from": f"records/{record_id}"},
+                "description": "Belongs to edges"
+            },
+            # Default strategy for bidirectional edges
+            "default": {
+                "filter": "edge._from == @record_from OR edge._to == @record_to",
+                "bind_vars": {
+                    "record_from": f"records/{record_id}",
+                    "record_to": f"records/{record_id}"
+                },
+                "description": "Bidirectional edges"
+            }
+        }
 
-            transaction.aql.execute(drive_deletion_query, bind_vars={
-                "record_from": f"records/{record_id}",
-                "record_to": f"records/{record_id}",
-                "record_id": record_id,
-                "@edge_collection": edge_collection,
-            })
+        # Single query template for all edge collections
+        deletion_query_template = """
+        FOR edge IN @@edge_collection
+            FILTER {filter}
+            REMOVE edge IN @@edge_collection
+            RETURN OLD
+        """
+
+        total_deleted = 0
+
+        for edge_collection in drive_edge_collections:
+            try:
+                # Get strategy for this collection or use default
+                strategy = edge_deletion_strategies.get(edge_collection, edge_deletion_strategies["default"])
+
+                # Build query with specific filter
+                deletion_query = deletion_query_template.format(filter=strategy["filter"])
+
+                # Prepare bind variables
+                bind_vars = {
+                    "@edge_collection": edge_collection,
+                    **strategy["bind_vars"]
+                }
+
+                self.logger.debug(f"🔍 Deleting {strategy['description']} from {edge_collection}")
+                self.logger.debug(f"🔍 Bind vars: {bind_vars}")
+
+                # Execute deletion
+                result = transaction.aql.execute(deletion_query, bind_vars=bind_vars)
+                deleted_count = len(list(result))
+                total_deleted += deleted_count
+
+                if deleted_count > 0:
+                    self.logger.info(f"🗑️ Deleted {deleted_count} {strategy['description']} from {edge_collection}")
+                else:
+                    self.logger.debug(f"📝 No {strategy['description']} found in {edge_collection}")
+
+            except Exception as e:
+                self.logger.error(f"❌ Failed to delete edges from {edge_collection}: {str(e)}")
+                self.logger.error(f"❌ Strategy: {strategy}")
+                self.logger.error(f"❌ Bind vars: {bind_vars}")
+                raise
+
+        self.logger.info(f"✅ Drive edge deletion completed: {total_deleted} total edges deleted for record {record_id}")
+
 
     async def _delete_drive_anyone_permissions(self, transaction, record_id: str) -> None:
         """Delete Drive-specific 'anyone' permissions"""
@@ -2141,33 +2200,90 @@ class BaseArangoService:
             }
 
     async def _delete_gmail_specific_edges(self, transaction, record_id: str) -> None:
-        """Delete Gmail-specific edges including thread relationships"""
+        """Delete Gmail specific edges with optimized queries"""
         gmail_edge_collections = self.connector_delete_permissions[Connectors.GOOGLE_MAIL.value]["edge_collections"]
 
-        for edge_collection in gmail_edge_collections:
-            if edge_collection == CollectionNames.RECORD_RELATIONS.value:
-                # Handle Gmail-specific relationships (SIBLING for threads, ATTACHMENT for attachments)
-                gmail_deletion_query = """
-                FOR edge IN @@edge_collection
-                    FILTER (edge._from == @record_from OR edge._to == @record_to)
-                    AND edge.relationType IN ["SIBLING", "ATTACHMENT"]
-                    REMOVE edge IN @@edge_collection
-                    RETURN OLD
-                """
-            else:
-                # Standard edge deletion
-                gmail_deletion_query = """
-                FOR edge IN @@edge_collection
-                    FILTER edge._from == @record_from OR edge._to == @record_to
-                    REMOVE edge IN @@edge_collection
-                    RETURN OLD
-                """
+        # Define edge deletion strategies - maps collection to query config
+        edge_deletion_strategies = {
+            CollectionNames.IS_OF_TYPE.value: {
+                "filter": "edge._from == @record_from",
+                "bind_vars": {"record_from": f"records/{record_id}"},
+                "description": "IS_OF_TYPE edges"
+            },
+            CollectionNames.RECORD_RELATIONS.value: {
+                "filter": "(edge._from == @record_from OR edge._to == @record_to) AND edge.relationType IN @relation_types",
+                "bind_vars": {
+                    "record_from": f"records/{record_id}",
+                    "record_to": f"records/{record_id}",
+                    "relation_types": ["SIBLING", "ATTACHMENT"]  # Gmail-specific relation types
+                },
+                "description": "Gmail record relations (SIBLING/ATTACHMENT)"
+            },
+            CollectionNames.PERMISSIONS.value: {
+                "filter": "edge._from == @record_from",
+                "bind_vars": {"record_from": f"records/{record_id}"},
+                "description": "Permission edges"
+            },
+            CollectionNames.BELONGS_TO.value: {
+                "filter": "edge._from == @record_from",
+                "bind_vars": {"record_from": f"records/{record_id}"},
+                "description": "Belongs to edges"
+            },
+            # Default strategy for any other collections
+            "default": {
+                "filter": "edge._from == @record_from OR edge._to == @record_to",
+                "bind_vars": {
+                    "record_from": f"records/{record_id}",
+                    "record_to": f"records/{record_id}"
+                },
+                "description": "Bidirectional edges"
+            }
+        }
 
-            transaction.aql.execute(gmail_deletion_query, bind_vars={
-                "record_from": f"records/{record_id}",
-                "record_to": f"records/{record_id}",
-                "@edge_collection": edge_collection,
-            })
+        # Single query template for all edge collections
+        deletion_query_template = """
+        FOR edge IN @@edge_collection
+            FILTER {filter}
+            REMOVE edge IN @@edge_collection
+            RETURN OLD
+        """
+
+        total_deleted = 0
+
+        for edge_collection in gmail_edge_collections:
+            try:
+                # Get strategy for this collection or use default
+                strategy = edge_deletion_strategies.get(edge_collection, edge_deletion_strategies["default"])
+
+                # Build query with specific filter
+                deletion_query = deletion_query_template.format(filter=strategy["filter"])
+
+                # Prepare bind variables
+                bind_vars = {
+                    "@edge_collection": edge_collection,
+                    **strategy["bind_vars"]
+                }
+
+                self.logger.debug(f"🔍 Deleting {strategy['description']} from {edge_collection}")
+                self.logger.debug(f"🔍 Bind vars: {bind_vars}")
+
+                # Execute deletion
+                result = transaction.aql.execute(deletion_query, bind_vars=bind_vars)
+                deleted_count = len(list(result))
+                total_deleted += deleted_count
+
+                if deleted_count > 0:
+                    self.logger.info(f"🗑️ Deleted {deleted_count} {strategy['description']} from {edge_collection}")
+                else:
+                    self.logger.debug(f"📝 No {strategy['description']} found in {edge_collection}")
+
+            except Exception as e:
+                self.logger.error(f"❌ Failed to delete edges from {edge_collection}: {str(e)}")
+                self.logger.error(f"❌ Strategy: {strategy}")
+                self.logger.error(f"❌ Bind vars: {bind_vars}")
+                raise
+
+        self.logger.info(f"✅ Gmail edge deletion completed: {total_deleted} total edges deleted for record {record_id}")
 
     async def _delete_file_record(self, transaction, record_id: str) -> None:
         """Delete file record from files collection"""

@@ -34,6 +34,7 @@ class KnowledgeBaseMigrationService:
         self.NEW_KB_COLLECTION = CollectionNames.RECORD_GROUPS.value
         self.NEW_USER_TO_KB_EDGES = CollectionNames.PERMISSIONS_TO_KB.value
         self.NEW_RECORD_TO_KB_EDGES = CollectionNames.BELONGS_TO_KB.value
+        self.NEW_RECORD_RELATION_EDGES = CollectionNames.RECORD_RELATIONS.value
 
     async def run_migration(self) -> Dict:
         """
@@ -58,6 +59,7 @@ class KnowledgeBaseMigrationService:
                     self.NEW_KB_COLLECTION,
                     self.NEW_USER_TO_KB_EDGES,
                     self.NEW_RECORD_TO_KB_EDGES,
+                    self.NEW_RECORD_RELATION_EDGES,
                     CollectionNames.USERS.value,
                     CollectionNames.RECORDS.value,
                 ]
@@ -391,6 +393,7 @@ class KnowledgeBaseMigrationService:
 
         # Create new edges: record → recordGroup
         record_edges = []
+        parent_child_edges = []
         for record in old_records_for_kb:
             edge = {
                 "_from": f"{CollectionNames.RECORDS.value}/{record['_key']}",
@@ -399,11 +402,24 @@ class KnowledgeBaseMigrationService:
                 "createdAtTimestamp": timestamp,
                 "updatedAtTimestamp": timestamp,
             }
+            parent_child_edge = {
+                    "_from": f"{self.NEW_KB_COLLECTION}/{new_kb_id}",
+                    "_to": f"{CollectionNames.RECORDS.value}/{record['_key']}",
+                    "relationshipType": "PARENT_CHILD",
+                    "createdAtTimestamp": timestamp,
+                    "updatedAtTimestamp": timestamp,
+                }
             record_edges.append(edge)
+            parent_child_edges.append(parent_child_edge)
 
         if record_edges:
             await self.arango_service.batch_create_edges(
                 record_edges, self.NEW_RECORD_TO_KB_EDGES, transaction
+            )
+
+        if parent_child_edges:
+            await self.arango_service.batch_create_edges(
+                parent_child_edges,self.NEW_RECORD_RELATION_EDGES,transaction
             )
 
         self.logger.info(f"📝 Migrated {len(record_edges)} record relationships for KB {old_kb_id}")
