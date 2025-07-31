@@ -21,6 +21,9 @@ from app.connectors.core.interfaces.connector.iconnector_factory import (
 from app.connectors.core.interfaces.connector.iconnector_service import (
     IConnectorService,
 )
+from app.connectors.core.interfaces.rate_limiter.irate_limiter import IRateLimiter
+from app.connectors.core.interfaces.user_service.iuser_service import IUserService
+from app.connectors.core.factory.rate_limiter_factory import RateLimiterFactory
 from app.connectors.enums.enums import ConnectorType
 
 
@@ -31,6 +34,7 @@ class ConnectorRegistry:
         self._connectors: Dict[ConnectorType, Type[IConnectorService]] = {}
         self._auth_services: Dict[ConnectorType, Type[BaseAuthenticationService]] = {}
         self._data_services: Dict[ConnectorType, Type[BaseDataService]] = {}
+        self._user_services: Dict[ConnectorType, Type[IUserService]] = {}
         self._configs: Dict[ConnectorType, ConnectorConfig] = {}
 
     def register_connector(
@@ -40,11 +44,14 @@ class ConnectorRegistry:
         auth_service_class: Type[BaseAuthenticationService],
         data_service_class: Type[BaseDataService],
         config: ConnectorConfig,
+        user_service_class: Optional[Type[IUserService]] = None,
     ) -> None:
         """Register a connector implementation"""
         self._connectors[connector_type] = connector_class
         self._auth_services[connector_type] = auth_service_class
         self._data_services[connector_type] = data_service_class
+        if user_service_class:
+            self._user_services[connector_type] = user_service_class
         self._configs[connector_type] = config
 
     def get_connector_class(self, connector_type: ConnectorType) -> Optional[Type[IConnectorService]]:
@@ -58,6 +65,10 @@ class ConnectorRegistry:
     def get_data_service_class(self, connector_type: ConnectorType) -> Optional[Type[BaseDataService]]:
         """Get data service class for a type"""
         return self._data_services.get(connector_type)
+
+    def get_user_service_class(self, connector_type: ConnectorType) -> Optional[Type[IUserService]]:
+        """Get user service class for a type"""
+        return self._user_services.get(connector_type)
 
     def get_config(self, connector_type: ConnectorType) -> Optional[ConnectorConfig]:
         """Get config for a connector type"""
@@ -78,6 +89,7 @@ class UniversalConnectorFactory(IConnectorFactory):
     def __init__(self, logger: logging.Logger) -> None:
         self.logger = logger
         self.registry = ConnectorRegistry()
+        self.rate_limiter_factory = RateLimiterFactory(logger)
         self._initialize_default_services()
 
     def _initialize_default_services(self) -> None:
@@ -98,12 +110,25 @@ class UniversalConnectorFactory(IConnectorFactory):
         auth_service_class: Type[BaseAuthenticationService],
         data_service_class: Type[BaseDataService],
         config: ConnectorConfig,
+        user_service_class: Optional[Type[IUserService]] = None,
     ) -> None:
         """Register a new connector implementation"""
         self.registry.register_connector(
-            connector_type, connector_class, auth_service_class, data_service_class, config
+            connector_type, connector_class, auth_service_class, data_service_class, config, user_service_class
         )
         self.logger.info(f"Registered connector: {connector_type.value}")
+        if user_service_class:
+            self.logger.info(f"Registered user service for connector: {connector_type.value}")
+
+    def register_rate_limiter(
+        self,
+        connector_type: ConnectorType,
+        rate_limiter_class: Type[IRateLimiter],
+        config: Optional[Dict] = None
+    ) -> None:
+        """Register a rate limiter for a connector type"""
+        self.rate_limiter_factory.register_rate_limiter(connector_type, rate_limiter_class, config)
+        self.logger.info(f"Registered rate limiter for connector type: {connector_type.value}")
 
     def create_connector(self, connector_type: ConnectorType, config: ConnectorConfig) -> IConnectorService:
         """Create a connector instance"""
@@ -115,13 +140,24 @@ class UniversalConnectorFactory(IConnectorFactory):
             connector_class = self.registry.get_connector_class(connector_type)
             auth_service_class = self.registry.get_auth_service_class(connector_type)
             data_service_class = self.registry.get_data_service_class(connector_type)
+            user_service_class = self.registry.get_user_service_class(connector_type)
 
             if not all([connector_class, auth_service_class, data_service_class]):
                 raise ValueError(f"Incomplete registration for connector type {connector_type.value}")
 
+            # Create rate limiter for the connector
+            rate_limiter = self.rate_limiter_factory.create_rate_limiter(connector_type)
+            self.logger.info(f"Created rate limiter for connector type {connector_type.value}")
+
             # Create service instances
             auth_service = auth_service_class(self.logger, config)
             data_service = data_service_class(self.logger, auth_service)
+
+            # Create user service if available
+            user_service = None
+            if user_service_class:
+                user_service = user_service_class(self.logger, rate_limiter, config)
+                self.logger.info(f"Created user service for connector type {connector_type.value}")
 
             # Create connector instance
             connector = connector_class(
@@ -132,6 +168,8 @@ class UniversalConnectorFactory(IConnectorFactory):
                 data_service=data_service,
                 error_service=self.default_error_service,
                 event_service=self.default_event_service,
+                rate_limiter=rate_limiter,
+                user_service=user_service,
             )
 
             self.logger.info(f"Created connector instance for {connector_type.value}")
@@ -203,6 +241,11 @@ class ConnectorBuilder:
         self._custom_services['error_service'] = error_service
         return self
 
+    def with_custom_user_service(self, user_service: IUserService) -> 'ConnectorBuilder':
+        """Set a custom user service"""
+        self._custom_services['user_service'] = user_service
+        return self
+
     def build(self) -> IConnectorService:
         """Build the connector instance"""
         if not self._connector_type:
@@ -226,6 +269,9 @@ class ConnectorBuilder:
 
         if 'error_service' in self._custom_services:
             connector.error_service = self._custom_services['error_service']
+
+        if 'user_service' in self._custom_services:
+            connector.user_service = self._custom_services['user_service']
 
         return connector
 

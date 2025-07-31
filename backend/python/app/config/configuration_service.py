@@ -92,6 +92,7 @@ class KafkaConfig(Enum):
     CLIENT_ID_RECORDS = "record-processor"
     CLIENT_ID_MAIN = "enterprise-search"
     CLIENT_ID_LLM = "llm-configuration"
+    CLIENT_ID_ENTITY = "entity-producer"
 
 
 class CeleryConfig(Enum):
@@ -138,7 +139,7 @@ class ConfigurationService:
         self.logger.debug("📦 Initialized LRU cache with max size 1000")
 
         self.logger.debug("🔧 Creating ETCD store...")
-        self.store = self._create_store()
+        self.store = self._create_store()  # type: ignore
 
         # Start watch in background
         self._start_watch()
@@ -146,7 +147,7 @@ class ConfigurationService:
 
         self.logger.debug("✅ ConfigurationService initialized successfully")
 
-    def _create_store(self) -> Etcd3DistributedKeyValueStore:
+    def _create_store(self):
         self.logger.debug("🔧 Creating ETCD store configuration...")
         self.logger.debug("ETCD URL: %s", os.getenv("ETCD_URL"))
         self.logger.debug("ETCD Timeout: %s", os.getenv("ETCD_TIMEOUT", "5.0"))
@@ -323,10 +324,10 @@ class ConfigurationService:
         """Start watching etcd changes in a background thread"""
 
         def watch_etcd() -> None:
-            while self.store.client is None:
+            while self.store.client is None:  # type: ignore
                 self.logger.debug("🔄 Waiting for ETCD client to be initialized...")
                 time.sleep(3)
-            self.store.client.add_watch_prefix_callback("/", self._watch_callback)
+            self.store.client.add_watch_prefix_callback("/", self._watch_callback)  # type: ignore
 
         self.watch_thread = threading.Thread(target=watch_etcd, daemon=True)
         self.watch_thread.start()
