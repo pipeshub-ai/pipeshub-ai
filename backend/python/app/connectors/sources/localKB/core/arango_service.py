@@ -802,7 +802,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
                         "folders_created": len(folder_map),
                         "created_folders": [
                             {"id": folder_id}
-                            for folder_id in folder_map.items()
+                            for folder_id in folder_map.values()
                         ],
                         "failed_files": creation_result["failed_files"],
                         "created_files_data": creation_result["created_files_data"]
