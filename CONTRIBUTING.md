@@ -70,6 +70,9 @@ docker run -p 6333:6333 -p 6334:6334 -e QDRANT__SERVICE__API_KEY=your_qdrant_sec
 ```
 
 **ETCD Server:**
+
+
+Bash:
 ```bash
 docker run -d --name etcd-server --restart always -p 2379:2379 -p 2380:2380 quay.io/coreos/etcd:v3.5.17 /usr/local/bin/etcd \
   --name etcd0 \
@@ -79,12 +82,26 @@ docker run -d --name etcd-server --restart always -p 2379:2379 -p 2380:2380 quay
   --listen-peer-urls http://0.0.0.0:2380
 ```
 
+Powershell:
+```
+docker run -d --name etcd-server --restart always `
+  -p 2379:2379 -p 2380:2380 `
+  quay.io/coreos/etcd:v3.5.17 /usr/local/bin/etcd `
+  --name etcd0 `
+  --data-dir /etcd-data `
+  --listen-client-urls http://0.0.0.0:2379 `
+  --advertise-client-urls http://0.0.0.0:2379 `
+  --listen-peer-urls http://0.0.0.0:2380
+```
+
 **ArangoDB:** (Password must match with .env)
 ```bash
 docker run -e ARANGO_ROOT_PASSWORD=your_password -p 8529:8529 --name arango --restart always -d arangodb:3.12.4
 ```
 
 **MongoDB:** (Password must match with .env MONGO URI)
+
+Bash:
 ```bash
 docker run -d --name mongodb --restart always -p 27017:27017 \
   -e MONGO_INITDB_ROOT_USERNAME=admin \
@@ -92,7 +109,17 @@ docker run -d --name mongodb --restart always -p 27017:27017 \
   mongo:8.0.6
 ```
 
+Powershell:
+```
+docker run -d --name mongodb --restart always -p 27017:27017 `
+  -e MONGO_INITDB_ROOT_USERNAME=admin `
+  -e MONGO_INITDB_ROOT_PASSWORD=password `
+  mongo:8.0.6
+```
+
 **Zookeeper:**
+
+Bash:
 ```bash
 docker run -d --name zookeeper --restart always -p 2181:2181 \
   -e ZOOKEEPER_CLIENT_PORT=2181 \
@@ -100,7 +127,18 @@ docker run -d --name zookeeper --restart always -p 2181:2181 \
   confluentinc/cp-zookeeper:7.9.0
 ```
 
+Powershell:
+```
+docker run -d --name zookeeper --restart always -p 2181:2181 `
+  -e ZOOKEEPER_CLIENT_PORT=2181 `
+  -e ZOOKEEPER_TICK_TIME=2000 `
+  confluentinc/cp-zookeeper:7.9.0
+```
+
+
 **Apache Kafka:**
+
+Bash:
 ```bash
 docker run -d --name kafka --restart always --link zookeeper:zookeeper -p 9092:9092 \
   -e KAFKA_BROKER_ID=1 \
@@ -109,6 +147,18 @@ docker run -d --name kafka --restart always --link zookeeper:zookeeper -p 9092:9
   -e KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT \
   -e KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT \
   -e KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1 \
+  confluentinc/cp-kafka:7.9.0
+```
+
+Powershell:
+```
+docker run -d --name kafka --restart always --link zookeeper:zookeeper -p 9092:9092 `
+  -e KAFKA_BROKER_ID=1 `
+  -e KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181 `
+  -e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092 `
+  -e KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT `
+  -e KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT `
+  -e KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1 `
   confluentinc/cp-kafka:7.9.0
 ```
 
@@ -135,7 +185,7 @@ pip install -e .
 python -m spacy download en_core_web_sm
 python -c "import nltk; nltk.download('punkt')"
 
-# Run each service in a separate terminal
+# Run each service in a separate terminal: First, cd backend/python and activate the existing virtual environment
 python -m app.connectors_main
 python -m app.indexing_main
 python -m app.query_main
