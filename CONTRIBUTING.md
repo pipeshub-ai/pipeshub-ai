@@ -83,7 +83,7 @@ docker run -d --name etcd-server --restart always -p 2379:2379 -p 2380:2380 quay
 ```
 
 Powershell:
-```
+```powershell
 docker run -d --name etcd-server --restart always `
   -p 2379:2379 -p 2380:2380 `
   quay.io/coreos/etcd:v3.5.17 /usr/local/bin/etcd `
@@ -110,7 +110,7 @@ docker run -d --name mongodb --restart always -p 27017:27017 \
 ```
 
 Powershell:
-```
+```powershell
 docker run -d --name mongodb --restart always -p 27017:27017 `
   -e MONGO_INITDB_ROOT_USERNAME=admin `
   -e MONGO_INITDB_ROOT_PASSWORD=password `
@@ -128,7 +128,7 @@ docker run -d --name zookeeper --restart always -p 2181:2181 \
 ```
 
 Powershell:
-```
+```powershell
 docker run -d --name zookeeper --restart always -p 2181:2181 `
   -e ZOOKEEPER_CLIENT_PORT=2181 `
   -e ZOOKEEPER_TICK_TIME=2000 `
@@ -151,7 +151,7 @@ docker run -d --name kafka --restart always --link zookeeper:zookeeper -p 9092:9
 ```
 
 Powershell:
-```
+```powershell
 docker run -d --name kafka --restart always --link zookeeper:zookeeper -p 9092:9092 `
   -e KAFKA_BROKER_ID=1 `
   -e KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181 `
