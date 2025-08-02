@@ -1,6 +1,5 @@
-import asyncio
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+from typing import AsyncGenerator, List
 
 import httpx
 import uvicorn
@@ -17,6 +16,11 @@ from app.api.routes.records import router as records_router
 from app.api.routes.search import router as search_router
 from app.config.configuration_service import DefaultEndpoints, config_node_constants
 from app.config.utils.named_constants.http_status_code_constants import HttpStatusCode
+from app.services.messaging.kafka.utils.utils import (
+    create_aiconfig_kafka_consumer_config,
+    create_aiconfig_message_handler,
+)
+from app.services.messaging.messaging_factory import MessagingFactory
 from app.setups.query_setup import AppContainer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -40,11 +44,6 @@ async def initialize_container(container: AppContainer) -> bool:
         else:
             raise Exception("Failed to connect to ArangoDB")
 
-        # Initialize Kafka consumer
-        logger.info("Initializing llm config handler")
-        llm_config_handler = await container.llm_config_handler()
-        await llm_config_handler.start()
-        logger.info("✅ Kafka consumer initialized")
         return True
 
     except Exception as e:
@@ -68,6 +67,56 @@ async def get_initialized_container() -> AppContainer:
     return container
 
 
+async def start_kafka_consumers(app_container: AppContainer) -> List:
+    """Start all Kafka consumers at application level"""
+    logger = app_container.logger()
+    consumers = []
+
+    try:
+       # 1. Create AI Config Consumer
+        logger.info("🚀 Starting AI Config Kafka Consumer...")
+        aiconfig_kafka_config = await create_aiconfig_kafka_consumer_config(app_container)
+        aiconfig_kafka_consumer = MessagingFactory.create_consumer(
+            broker_type="kafka",
+            logger=logger,
+            config=aiconfig_kafka_config
+        )
+        aiconfig_message_handler = await create_aiconfig_message_handler(app_container)
+        await aiconfig_kafka_consumer.start(aiconfig_message_handler)
+        consumers.append(("aiconfig", aiconfig_kafka_consumer))
+        logger.info("✅ AI Config Kafka consumer started")
+
+        logger.info(f"✅ All {len(consumers)} Kafka consumers started successfully")
+        return consumers
+
+    except Exception as e:
+        logger.error(f"❌ Error starting Kafka consumers: {str(e)}")
+        # Cleanup any started consumers
+        for name, consumer in consumers:
+            try:
+                await consumer.stop()
+                logger.info(f"Stopped {name} consumer during cleanup")
+            except Exception as cleanup_error:
+                logger.error(f"Error stopping {name} consumer during cleanup: {cleanup_error}")
+        raise
+
+
+async def stop_kafka_consumers(container) -> None:
+    """Stop all Kafka consumers"""
+
+    logger = container.logger()
+    consumers = getattr(container, 'kafka_consumers', [])
+    for name, consumer in consumers:
+        try:
+            await consumer.stop()
+            logger.info(f"✅ {name.title()} Kafka consumer stopped")
+        except Exception as e:
+            logger.error(f"❌ Error stopping {name} consumer: {str(e)}")
+
+    # Clear the consumers list
+    if hasattr(container, 'kafka_consumers'):
+        container.kafka_consumers = []
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context manager for FastAPI"""
@@ -80,8 +129,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger = app.container.logger()
     logger.debug("🚀 Starting retrieval application")
 
-    consumer = await container.llm_config_handler()
-    consume_task = asyncio.create_task(consumer.consume_messages())
+    # Start all Kafka consumers centrally
+    try:
+        consumers = await start_kafka_consumers(app_container)
+        app_container.kafka_consumers = consumers
+        logger.info("✅ All Kafka consumers started successfully")
+    except Exception as e:
+        logger.error(f"❌ Failed to start Kafka consumers: {str(e)}")
+        raise
 
     arango_service = await app_container.arango_service()
 
@@ -97,14 +152,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
     # Shutdown
     logger.info("🔄 Shutting down application")
-    consumer.stop()
-    # Cancel the consume task
-    consume_task.cancel()
+
+    # Stop all Kafka consumers
     try:
-        await consume_task
-    except asyncio.CancelledError:
-        logger.info("Kafka consumer task cancelled")
-        logger.debug("🔄 Shutting down retrieval application")
+        await stop_kafka_consumers(app_container)
+        logger.info("✅ All Kafka consumers stopped")
+    except Exception as e:
+        logger.error(f"❌ Error stopping Kafka consumers: {str(e)}")
 
 
 # Create FastAPI app with lifespan

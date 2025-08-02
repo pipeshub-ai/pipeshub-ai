@@ -1,25 +1,64 @@
 import asyncio
 import json
+import logging
 from typing import Dict, Optional
 
+from redis import asyncio as aioredis  # type: ignore
+
 from app.config.configuration_service import ConfigurationService
+from app.services.key_value.interface.key_value import IKeyValueService
 
 
-class BaseRedisService:
+class RedisService(IKeyValueService):
     """Service for handling Redis operations"""
 
-    def __init__(self, logger, redis_client, config: ConfigurationService) -> None:
+    def __init__(self, logger: logging.Logger, redis_client, config: ConfigurationService) -> None:
         self.logger = logger
         self.config = config
         self.redis_client = redis_client
         self.prefix = "drive_sync:"  # Namespace for our keys
         self._state_lock = asyncio.Lock()
 
+    @classmethod
+    async def create(cls, logger: logging.Logger, config_service: ConfigurationService) -> 'RedisService':
+        """
+        Factory method to create and initialize a RedisService instance.
+        Args:
+            logger: Logger instance
+            config_service: ConfigurationService instance
+        Returns:
+            RedisService: Initialized RedisService instance
+        """
+        try:
+            # Get Redis configuration
+            redis_config = await config_service.get_config("redis")
+            redis_url = f"redis://{redis_config['host']}:{redis_config['port']}/{redis_config.get('db', 0)}"
+
+            # Create Redis client
+            redis_client = await aioredis.from_url(redis_url, encoding="utf-8", decode_responses=True)
+
+            # Create service instance
+            service = cls(logger, redis_client, config_service)
+
+            # Test connection
+            connected = await service.connect()
+            if not connected:
+                raise Exception("Failed to connect to Redis")
+
+            return service
+
+        except Exception as e:
+            logger.error(f"Failed to create RedisService: {str(e)}")
+            raise
+
     async def connect(self) -> bool:
         """Connect to Redis"""
         try:
             if self.redis_client is None:
                 return False
+            # Test connection by pinging
+            await self.redis_client.ping()
+            self.logger.info("✅ Successfully connected to Redis")
             return True
         except Exception as e:
             self.logger.error(f"Failed to connect to Redis: {str(e)}")
@@ -30,6 +69,7 @@ class BaseRedisService:
         if self.redis_client:
             await self.redis_client.close()
             self.redis_client = None
+            self.logger.info("✅ Disconnected from Redis")
 
     async def set(self, key: str, value: str, expire: int = 86400) -> bool:
         """Set a key with optional expiration (default 24 hours)"""

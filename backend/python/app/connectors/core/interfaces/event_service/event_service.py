@@ -19,3 +19,8 @@ class IEventService(ABC):
     async def unsubscribe_from_events(self, subscription_id: str) -> bool:
         """Unsubscribe from events"""
         pass
+
+    @abstractmethod
+    async def process_event(self, event_type: str, payload: Dict[str, Any]) -> bool:
+        """Handle connector-specific events"""
+        pass

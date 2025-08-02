@@ -20,7 +20,6 @@ from app.config.utils.named_constants.arangodb_constants import (
 )
 from app.config.utils.named_constants.http_status_code_constants import HttpStatusCode
 from app.core.ai_arango_service import ArangoService
-from app.core.redis_scheduler import RedisScheduler
 from app.events.events import EventProcessor
 from app.events.processor import Processor
 from app.modules.extraction.domain_extraction import DomainExtractor
@@ -35,7 +34,7 @@ from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 from app.modules.parsers.markdown.mdx_parser import MDXParser
 from app.modules.parsers.pptx.ppt_parser import PPTParser
 from app.modules.parsers.pptx.pptx_parser import PPTXParser
-from app.services.kafka_consumer import KafkaConsumerManager
+from app.services.scheduler.redis_scheduler.redis_scheduler import RedisScheduler
 from app.utils.logger import create_logger
 
 load_dotenv(override=True)
@@ -149,6 +148,7 @@ class AppContainer(containers.DeclarativeContainer):
         config_service=config_service,
     )
 
+
     # Parsers
     async def _create_parsers(logger) -> dict:
         """Async factory for Parsers"""
@@ -223,38 +223,22 @@ class AppContainer(containers.DeclarativeContainer):
         )
         redis_url = f"redis://{redis_config['host']}:{redis_config['port']}/{RedisConfig.REDIS_DB.value}"
 
-        redis_scheduler = RedisScheduler(redis_url=redis_url, logger=logger, delay_hours=1)
+        redis_scheduler = RedisScheduler(
+            redis_url=redis_url,
+            logger=logger,
+            delay_hours=1
+        )
         return redis_scheduler
 
     redis_scheduler = providers.Resource(
         _create_redis_scheduler, logger=logger, config_service=config_service
     )
 
-    # Kafka consumer with async initialization
-    async def _create_kafka_consumer(logger, config_service, event_processor, redis_scheduler) -> KafkaConsumerManager:
-        """Async factory for KafkaConsumerManager"""
-        consumer = KafkaConsumerManager(
-            logger=logger,
-            config_service=config_service,
-            event_processor=event_processor,
-            redis_scheduler=redis_scheduler,
-        )
-        # Add any necessary async initialization
-        return consumer
-
-    kafka_consumer = providers.Resource(
-        _create_kafka_consumer,
-        logger=logger,
-        config_service=config_service,
-        event_processor=event_processor,
-        redis_scheduler=redis_scheduler,
-    )
-
     # Wire everything up
     wiring_config = containers.WiringConfiguration(
         modules=[
             "app.indexing_main",
-            "app.services.kafka_consumer",
+            # "app.services.kafka_consumer",
             "app.modules.extraction.domain_extraction",
         ]
     )
@@ -483,12 +467,6 @@ async def initialize_container(container: AppContainer) -> bool:
             logger.info("✅ Connected to ArangoDB")
         else:
             raise Exception("Failed to connect to ArangoDB")
-
-        # Initialize Kafka consumer
-        logger.info("Initializing Kafka consumer")
-        consumer = await container.kafka_consumer()
-        await consumer.start()
-        logger.info("✅ Kafka consumer initialized")
 
         await health_check(container)
         logger.info("✅ All health checks completed successfully")

@@ -29,7 +29,7 @@ from googleapiclient.http import MediaIoBaseDownload
 from jose import JWTError
 from pydantic import BaseModel, ValidationError
 
-from app.config.configuration_service import config_node_constants
+from app.config.configuration_service import ConfigurationService, config_node_constants
 from app.config.utils.named_constants.arangodb_constants import (
     AccountType,
     CollectionNames,
@@ -45,7 +45,10 @@ from app.connectors.api.middleware import WebhookAuthVerifier
 from app.connectors.sources.google.admin.admin_webhook_handler import (
     AdminWebhookHandler,
 )
-from app.connectors.sources.google.common.google_token_handler import CredentialKeys
+from app.connectors.sources.google.common.google_token_handler import (
+    CredentialKeys,
+    GoogleTokenHandler,
+)
 from app.connectors.sources.google.common.scopes import (
     GOOGLE_CONNECTOR_ENTERPRISE_SCOPES,
     GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES,
@@ -305,15 +308,18 @@ async def download_file(
     connector: str,
     token: str,
     signed_url_handler=Depends(Provide[AppContainer.signed_url_handler]),
+    arango_service: ArangoService = Depends(Provide[AppContainer.arango_service]),
+    google_token_handler: GoogleTokenHandler = Depends(Provide[AppContainer.google_token_handler]),
+    config_service: ConfigurationService = Depends(Provide[AppContainer.config_service])
 ) -> Optional[dict | StreamingResponse]:
     try:
-        try:
-            config_service = request.app.state.config_service
-            google_token_handler = request.app.state.google_token_handler
-            arango_service = request.app.state.arango_service
-        except Exception as e:
-            logger.error(f"Error getting dependencies: {str(e)}")
-            raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error getting dependencies")
+        # try:
+        #     config_service = request.app.state.config_service
+        #     google_token_handler = request.app.state.google_token_handler
+        #     arango_service = request.app.state.arango_service
+        # except Exception as e:
+        #     logger.error(f"Error getting dependencies: {str(e)}")
+        #     raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error getting dependencies")
 
         logger.info(f"Downloading file {record_id} with connector {connector}")
         # Verify signed URL using the handler
@@ -709,15 +715,18 @@ async def stream_record(
     request: Request,
     record_id: str,
     convertTo: Optional[str] = None,
+    arango_service: ArangoService = Depends(Provide[AppContainer.arango_service]),
+    google_token_handler: GoogleTokenHandler = Depends(Provide[AppContainer.google_token_handler]),
+    config_service: ConfigurationService = Depends(Provide[AppContainer.config_service])
 ) -> Optional[dict | StreamingResponse]:
     try:
-        try:
-            config_service = request.app.state.config_service
-            google_token_handler = request.app.state.google_token_handler
-            arango_service = request.app.state.arango_service
-        except Exception as e:
-            logger.error(f"Error getting dependencies: {str(e)}")
-            raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error getting dependencies")
+        # try:
+        #     config_service = request.app.state.config_service
+        #     google_token_handler = request.app.state.google_token_handler
+        #     arango_service = request.app.state.arango_service
+        # except Exception as e:
+        #     logger.error(f"Error getting dependencies: {str(e)}")
+        #     raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error getting dependencies")
         try:
             logger.info(f"Stream Record Start: {time.time()}")
             auth_header = request.headers.get("Authorization")
