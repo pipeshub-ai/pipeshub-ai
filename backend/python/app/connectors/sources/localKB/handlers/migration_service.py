@@ -5,19 +5,21 @@ Migrates from old knowledgeBase collection to new recordGroups system
 
 import asyncio
 import uuid
+from logging import Logger
 from typing import Dict, List, Optional
+
+from arango.graph import Graph
 
 from app.config.utils.named_constants.arangodb_constants import (
     CollectionNames,
     Connectors,
 )
-from arango.graph import Graph
 from app.connectors.sources.localKB.core.arango_service import (
     KnowledgeBaseArangoService,
 )
 from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from logging import Logger
+
 
 class KnowledgeBaseMigrationService:
     """Service to handle migration from old KB system to new recordGroups system"""
@@ -217,7 +219,7 @@ class KnowledgeBaseMigrationService:
         except Exception as e:
             self.logger.error(f"❌ Failed to analyze old system: {str(e)}")
             raise
-    
+
     async def _migrate_data(self, migration_data: Dict) -> Dict:
         """Migrate data from old to new system (same as original migration logic)"""
         if not migration_data["old_kbs"]:
@@ -246,7 +248,6 @@ class KnowledgeBaseMigrationService:
         )
 
         migration_results = []
-        migration_successful = False
 
         try:
             # Step 2: Migrate each old KB to new system
@@ -281,7 +282,6 @@ class KnowledgeBaseMigrationService:
             # Step 3: Commit transaction ONLY if all migrations succeeded
             await asyncio.to_thread(lambda: transaction.commit_transaction())
             self.logger.info("✅ Migration transaction committed successfully")
-            migration_successful = True
             return {
                 "success": True,
                 "message": "Migration completed successfully",
@@ -495,104 +495,12 @@ class KnowledgeBaseMigrationService:
 
         return user_key
 
-    # async def _rename_graph(self) -> None:
-    #     """Rename fileAccessGraph to knowledgeBaseGraph"""
-    #     try:
-    #         old_graph = self.db.graph(self.OLD_GRAPH_NAME)
-    #         old_edge_definitions = old_graph.edge_definitions()
-
-    #         # Create new graph with same edge definitions
-    #         new_graph = self.db.create_graph(self.NEW_GRAPH_NAME)
-    #         for edge_def in old_edge_definitions:
-    #             try:
-    #                 new_graph.create_edge_definition(**edge_def)
-    #             except Exception as e:
-    #                 self.logger.warning(f"⚠️ Failed to copy edge definition {edge_def['edge_collection']}: {str(e)}")
-
-    #         # Delete old graph
-    #         self.db.delete_graph(self.OLD_GRAPH_NAME)
-    #         self.logger.info(f"✅ Renamed graph: {self.OLD_GRAPH_NAME} → {self.NEW_GRAPH_NAME}")
-
-    #     except Exception as e:
-    #         self.logger.error(f"❌ Failed to rename graph: {str(e)}")
-    #         raise
-
-    # async def _remove_old_edge_definitions(self) -> None:
-    #     """Remove old KB edge definitions from the graph"""
-    #     try:
-    #         if not self.db.has_graph(self.NEW_GRAPH_NAME):
-    #             return
-
-    #         graph = self.db.graph(self.NEW_GRAPH_NAME)
-    #         old_edge_collections = [self.OLD_USER_TO_KB_EDGES, self.OLD_KB_TO_RECORD_EDGES]
-
-    #         for edge_collection in old_edge_collections:
-    #             try:
-    #                 # Check if edge definition exists in graph
-    #                 existing_definitions = {ed['edge_collection']: ed for ed in graph.edge_definitions()}
-                    
-    #                 if edge_collection in existing_definitions:
-    #                     graph.delete_edge_definition(edge_collection, purge=False)
-    #                     self.logger.info(f"🗑️ Removed old edge definition: {edge_collection}")
-    #                 else:
-    #                     self.logger.debug(f"📝 Edge definition not found in graph: {edge_collection}")
-                        
-    #             except Exception as e:
-    #                 self.logger.warning(f"⚠️ Failed to remove edge definition {edge_collection}: {str(e)}")
-
-    #     except Exception as e:
-    #         self.logger.error(f"❌ Failed to remove old edge definitions: {str(e)}")
-    
-    async def _update_existing_edge_definition(self, graph: Graph, edge_collection: str, new_edge_def: Dict) -> None:
-        """Update an existing edge definition with new vertex collections"""
-        try:
-            self.logger.info(f"🔄 Updating edge definition: {edge_collection}")
-            
-            # Check if the edge collection exists
-            if not self.db.has_collection(edge_collection):
-                self.logger.warning(f"⚠️ Edge collection {edge_collection} does not exist, skipping update")
-                return
-
-            # Get current definition
-            existing_definitions = {ed['edge_collection']: ed for ed in graph.edge_definitions()}
-            current_def = existing_definitions.get(edge_collection)
-            
-            if not current_def:
-                self.logger.warning(f"⚠️ Current definition not found for {edge_collection}")
-                return
-
-            # Compare vertex collections
-            current_from = set(current_def.get('from_vertex_collections', []))
-            current_to = set(current_def.get('to_vertex_collections', []))
-            
-            new_from = set(new_edge_def['from_vertex_collections'])
-            new_to = set(new_edge_def['to_vertex_collections'])
-
-            # Check if update is needed
-            if current_from == new_from and current_to == new_to:
-                self.logger.debug(f"📝 No update needed for {edge_collection}")
-                return
-
-            self.logger.info(f"🔄 Updating vertices for {edge_collection}")
-            self.logger.info(f"   From: {current_from} → {new_from}")
-            self.logger.info(f"   To: {current_to} → {new_to}")
-
-            # Remove old edge definition and create new one
-            graph.delete_edge_definition(edge_collection, purge=False)
-            graph.create_edge_definition(**new_edge_def)
-            
-            self.logger.info(f"✅ Updated edge definition: {edge_collection}")
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to update edge definition {edge_collection}: {str(e)}")
-            raise
-
     async def _create_new_edge_definition(self, graph: Graph, edge_def: Dict) -> None:
         """Create a new edge definition"""
         try:
             edge_collection = edge_def["edge_collection"]
             self.logger.info(f"🆕 Creating new edge definition: {edge_collection}")
-            
+
             # Check if edge collection exists
             if not self.db.has_collection(edge_collection):
                 self.logger.warning(f"⚠️ Edge collection {edge_collection} does not exist, skipping creation")
@@ -609,7 +517,7 @@ class KnowledgeBaseMigrationService:
         """Create a complete new graph with all required edge definitions"""
         try:
             self.logger.info(f"🆕 Creating complete new graph: {self.NEW_GRAPH_NAME}")
-            
+
             graph = self.db.create_graph(self.NEW_GRAPH_NAME)
             edge_definitions = EDGE_DEFINITIONS
 
@@ -617,7 +525,7 @@ class KnowledgeBaseMigrationService:
             for edge_def in edge_definitions:
                 try:
                     edge_collection = edge_def["edge_collection"]
-                    
+
                     # Check if edge collection exists before creating edge definition
                     if self.db.has_collection(edge_collection):
                         graph.create_edge_definition(**edge_def)
@@ -625,7 +533,7 @@ class KnowledgeBaseMigrationService:
                         self.logger.info(f"✅ Created edge definition for {edge_collection}")
                     else:
                         self.logger.warning(f"⚠️ Skipping edge definition for non-existent collection: {edge_collection}")
-                        
+
                 except Exception as e:
                     self.logger.error(f"❌ Failed to create edge definition for {edge_def['edge_collection']}: {str(e)}")
                     # Continue with other edge definitions
@@ -640,7 +548,7 @@ class KnowledgeBaseMigrationService:
         """Update an existing edge definition with new vertex collections"""
         try:
             self.logger.info(f"🔄 Updating edge definition: {edge_collection}")
-            
+
             # Check if the edge collection exists
             if not self.db.has_collection(edge_collection):
                 self.logger.warning(f"⚠️ Edge collection {edge_collection} does not exist, skipping update")
@@ -649,7 +557,7 @@ class KnowledgeBaseMigrationService:
             # Get current definition
             existing_definitions = {ed['edge_collection']: ed for ed in graph.edge_definitions()}
             current_def = existing_definitions.get(edge_collection)
-            
+
             if not current_def:
                 self.logger.warning(f"⚠️ Current definition not found for {edge_collection}")
                 return
@@ -657,7 +565,7 @@ class KnowledgeBaseMigrationService:
             # Compare vertex collections
             current_from = set(current_def.get('from_vertex_collections', []))
             current_to = set(current_def.get('to_vertex_collections', []))
-            
+
             new_from = set(new_edge_def['from_vertex_collections'])
             new_to = set(new_edge_def['to_vertex_collections'])
 
@@ -673,7 +581,7 @@ class KnowledgeBaseMigrationService:
             # Remove old edge definition and create new one
             graph.delete_edge_definition(edge_collection, purge=False)
             graph.create_edge_definition(**new_edge_def)
-            
+
             self.logger.info(f"✅ Updated edge definition: {edge_collection}")
 
         except Exception as e:
@@ -699,7 +607,7 @@ class KnowledgeBaseMigrationService:
             # Process each new edge definition
             for edge_def in new_edge_definitions:
                 edge_collection = edge_def["edge_collection"]
-                
+
                 try:
                     if edge_collection in existing_definitions:
                         # Update existing edge definition
@@ -707,7 +615,7 @@ class KnowledgeBaseMigrationService:
                     else:
                         # Create new edge definition
                         await self._create_new_edge_definition(graph, edge_def)
-                        
+
                 except Exception as e:
                     self.logger.error(f"❌ Failed to process edge definition {edge_collection}: {str(e)}")
                     # Continue with other edge definitions
@@ -727,7 +635,7 @@ class KnowledgeBaseMigrationService:
             if self.db.has_graph(self.OLD_GRAPH_NAME):
                 self.db.delete_graph(self.OLD_GRAPH_NAME)
                 self.logger.info(f"🗑️ Deleted old graph: {self.OLD_GRAPH_NAME}")
-            
+
             # Step 2: Create the new graph with the correct definitions if it's not already there.
             if not self.db.has_graph(self.NEW_GRAPH_NAME):
                 await self._create_complete_new_graph()
@@ -766,10 +674,10 @@ class KnowledgeBaseMigrationService:
                 await asyncio.to_thread(lambda: cleanup_transaction.commit_transaction())
                 self.logger.info("✅ Old data deleted successfully")
 
-            except Exception as e:
+            except Exception:
                 await asyncio.to_thread(lambda: cleanup_transaction.abort_transaction())
                 raise
-            
+
             # Step 2: Drop the now-empty collections (non-transactional)
             self.logger.info("🗑️ Dropping empty old collections")
             collections_to_drop = [

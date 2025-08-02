@@ -24,7 +24,6 @@ from app.schema.arango.documents import (
     app_schema,
     department_schema,
     file_record_schema,
-    kb_schema,
     mail_record_schema,
     orgs_schema,
     record_group_schema,
@@ -186,11 +185,11 @@ class BaseArangoService:
     async def _create_graph(self) -> None:
         """Create the knowledge base graph with all required edge definitions"""
         graph_name = CollectionNames.KNOWLEDGE_GRAPH.value
-        
+
         try:
             self.logger.info("🚀 Creating knowledge base graph...")
             graph = self.db.create_graph(graph_name)
-            
+
             # Create all edge definitions
             created_count = 0
             for edge_def in EDGE_DEFINITIONS:
@@ -211,7 +210,7 @@ class BaseArangoService:
         except Exception as e:
             self.logger.error(f"❌ Failed to create knowledge base graph: {str(e)}")
             raise
-    
+
     async def connect(self) -> bool:
         """Connect to ArangoDB and initialize collections"""
         try:
@@ -264,14 +263,14 @@ class BaseArangoService:
             try:
                 # Initialize all collections (both nodes and edges)
                 await self._initialize_new_collections()
-    
+
                 # Initialize or update the file access graph
                 if not self.db.has_graph(CollectionNames.FILE_ACCESS_GRAPH.value) and not self.db.has_graph(CollectionNames.KNOWLEDGE_GRAPH.value):
                     # No graph exists, create new graph (Knowledge Graph)
                     await self._create_graph()
                 else:
-                    self.logger.info(f"Knowledge base graph already exists - skipping creation")
-                
+                    self.logger.info("Knowledge base graph already exists - skipping creation")
+
                 # Initialize departments
                 try:
                     await self._initialize_departments()

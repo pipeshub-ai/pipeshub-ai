@@ -199,9 +199,9 @@ export default function KnowledgeBaseComponent() {
     }
 
     if (currentKB && stableRoute.view !== 'dashboard') {
-      searchTimeoutRef.current = setTimeout(() => {
+      searchTimeoutRef.current = setTimeout(async () => {
         if (!loadingRef.current) {
-          loadKBContents(currentKB.id, stableRoute.folderId);
+          await loadKBContents(currentKB.id, stableRoute.folderId);
         }
       }, 300);
     }
@@ -279,11 +279,15 @@ export default function KnowledgeBaseComponent() {
   ]);
 
   useEffect(() => {
+    const loadContents = async () => {
     if (isViewInitiallyLoading.current) return;
 
     if (currentKB && viewMode === 'list' && !searchQuery) {
-      loadKBContents(currentKB.id, stableRoute.folderId);
-    }
+        await loadKBContents(currentKB.id, stableRoute.folderId);
+      }
+    };
+
+    loadContents();
   }, [page, rowsPerPage, viewMode, currentKB, loadKBContents, searchQuery, stableRoute.folderId]); // Removed dependencies that cause duplicate calls
 
   const loadKBPermissions = useCallback(async (kbId: string) => {
@@ -312,9 +316,9 @@ export default function KnowledgeBaseComponent() {
       setSearchQuery('');
       isViewInitiallyLoading.current = true;
 
-      setTimeout(() => {
+      setTimeout(async () => {
         if (!loadingRef.current) {
-          loadKBContents(kb.id);
+          await loadKBContents(kb.id);
         }
       }, 50);
     },
@@ -337,9 +341,9 @@ export default function KnowledgeBaseComponent() {
       setSearchQuery('');
       isViewInitiallyLoading.current = true;
 
-      setTimeout(() => {
+      setTimeout(async () => {
         if (!loadingRef.current) {
-          loadKBContents(currentKB.id, folder.id);
+          await loadKBContents(currentKB.id, folder.id);
         }
       }, 50);
     },
@@ -371,16 +375,16 @@ export default function KnowledgeBaseComponent() {
 
       if (parent.type === 'kb') {
         navigate({ view: 'knowledge-base', kbId: parent.id });
-        setTimeout(() => {
+        setTimeout(async () => {
           if (!loadingRef.current) {
-            loadKBContents(parent.id);
+            await loadKBContents(parent.id);
           }
         }, 50);
       } else {
         navigate({ view: 'folder', kbId: currentKB!.id, folderId: parent.id });
-        setTimeout(() => {
+        setTimeout(async () => {
           if (!loadingRef.current) {
-            loadKBContents(currentKB!.id, parent.id);
+            await loadKBContents(currentKB!.id, parent.id);
           }
         }, 50);
       }
@@ -409,8 +413,8 @@ export default function KnowledgeBaseComponent() {
             setItems([]);
             setSearchQuery('');
 
-            setTimeout(() => {
-              loadKBContents(stableRoute.kbId!);
+            setTimeout(async () => {
+              await loadKBContents(stableRoute.kbId!);
             }, 50);
           } catch (err: any) {
             setError('Knowledge base not found');
@@ -430,8 +434,8 @@ export default function KnowledgeBaseComponent() {
             setItems([]);
             setSearchQuery('');
 
-            setTimeout(() => {
-              loadKBContents(stableRoute.kbId!, stableRoute.folderId);
+            setTimeout(async () => {
+              await loadKBContents(stableRoute.kbId!, stableRoute.folderId);
             }, 50);
           } catch (err: any) {
             setError('Folder not found');
@@ -513,7 +517,7 @@ export default function KnowledgeBaseComponent() {
       setSuccess('Successfully uploaded file(s)');
       setUploadDialog(false);
 
-      loadKBContents(currentKB.id, stableRoute.folderId, true, true);
+      await loadKBContents(currentKB.id, stableRoute.folderId, true, true);
     } catch (err: any) {
       setError(err.message || 'Upload failed');
     } finally {
@@ -614,9 +618,9 @@ export default function KnowledgeBaseComponent() {
         setSearchQuery('');
         isViewInitiallyLoading.current = true;
 
-        setTimeout(() => {
+        setTimeout(async () => {
           if (!loadingRef.current) {
-            loadKBContents(kb.id);
+            await loadKBContents(kb.id);
           }
         }, 50);
       } else if (index > 0) {
@@ -630,9 +634,9 @@ export default function KnowledgeBaseComponent() {
         setSearchQuery('');
         isViewInitiallyLoading.current = true;
 
-        setTimeout(() => {
+        setTimeout(async () => {
           if (!loadingRef.current) {
-            loadKBContents(currentKB!.id, target.id);
+            await loadKBContents(currentKB!.id, target.id);
           }
         }, 50);
       }
@@ -649,23 +653,23 @@ export default function KnowledgeBaseComponent() {
       if (newView === 'list' && currentKB) {
         isViewInitiallyLoading.current = true;
         setPage(0);
-        setTimeout(() => {
+        setTimeout(async () => {
           if (!loadingRef.current) {
-            loadKBContents(currentKB.id, stableRoute.folderId);
+            await loadKBContents(currentKB.id, stableRoute.folderId);
           }
         }, 50);
       }
     }
   };
 
-  const handleRefresh = useCallback(() => {
+  const handleRefresh = useCallback(async () => {
     if (!currentKB) return;
 
     // Clear the last load params to force a fresh reload
     lastLoadParams.current = '';
 
     // Force reload with current parameters
-    loadKBContents(currentKB.id, stableRoute.folderId, true, true);
+    await loadKBContents(currentKB.id, stableRoute.folderId, true, true);
   }, [stableRoute.folderId, loadKBContents, currentKB]);
 
   const handleRetryIndexing = async (recordId: string) => {
@@ -682,7 +686,7 @@ export default function KnowledgeBaseComponent() {
       }
       handleMenuClose();
 
-      loadKBContents(currentKB.id, stableRoute.folderId, true, true);
+      await loadKBContents(currentKB.id, stableRoute.folderId, true, true);
     } catch (err: any) {
       console.error('Failed to reindexing document', err);
     }
