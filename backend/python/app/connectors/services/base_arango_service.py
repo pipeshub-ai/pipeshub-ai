@@ -40,6 +40,7 @@ from app.schema.arango.edges import (
     user_app_relation_schema,
     user_drive_relation_schema,
 )
+from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Collection definitions with their schemas
@@ -65,7 +66,6 @@ NODE_COLLECTIONS = [
     (CollectionNames.SUBCATEGORIES2.value, None),
     (CollectionNames.SUBCATEGORIES3.value, None),
     (CollectionNames.BLOCKS.value, None),
-    (CollectionNames.KNOWLEDGE_BASE.value, kb_schema),
     (CollectionNames.RECORD_GROUPS.value, record_group_schema)
 ]
 
@@ -83,9 +83,6 @@ EDGE_COLLECTIONS = [
     (CollectionNames.BELONGS_TO_LANGUAGE.value, basic_edge_schema),
     (CollectionNames.BELONGS_TO_TOPIC.value, basic_edge_schema),
     (CollectionNames.INTER_CATEGORY_RELATIONS.value, basic_edge_schema),
-    (CollectionNames.BELONGS_TO_KNOWLEDGE_BASE.value, belongs_to_schema),
-    (CollectionNames.PERMISSIONS_TO_KNOWLEDGE_BASE.value, permissions_schema),
-    (CollectionNames.BELONGS_TO_KB.value, belongs_to_schema),
     (CollectionNames.PERMISSIONS_TO_KB.value, permissions_schema),
 ]
 
@@ -136,7 +133,7 @@ class BaseArangoService:
                 "edge_collections": [
                     CollectionNames.IS_OF_TYPE.value,
                     CollectionNames.RECORD_RELATIONS.value,
-                    CollectionNames.BELONGS_TO_KB.value,
+                    CollectionNames.BELONGS_TO.value,
                     CollectionNames.PERMISSIONS_TO_KB.value,
                 ],
                 "document_collections": [
@@ -153,6 +150,68 @@ class BaseArangoService:
             for collection_name, _ in NODE_COLLECTIONS + EDGE_COLLECTIONS
         }
 
+    async def _initialize_new_collections(self) -> None:
+        """Initialize all collections (both nodes and edges)"""
+        try:
+            self.logger.info("🚀 Initializing collections...")
+            # Initialize all collections (both nodes and edges)
+            for collection_name, schema in NODE_COLLECTIONS + EDGE_COLLECTIONS:
+                is_edge = (collection_name, schema) in EDGE_COLLECTIONS
+
+                collection = self._collections[collection_name] = (
+                    self.db.collection(collection_name)
+                    if self.db.has_collection(collection_name)
+                    else self.db.create_collection(
+                        collection_name,
+                        edge=is_edge,
+                        schema=schema
+                    )
+                )
+
+                # Update schema if collection exists and has a schema
+                if self.db.has_collection(collection_name) and schema:
+                    try:
+                        self.logger.info(f"Updating schema for collection {collection_name}")
+                        collection.configure(schema=schema)
+                    except Exception as e:
+                        self.logger.warning(
+                            f"Failed to update schema for {collection_name}: {str(e)}"
+                        )
+            self.logger.info("✅ Collections initialized successfully")
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to initialize collections: {str(e)}")
+            raise
+
+    async def _create_graph(self) -> None:
+        """Create the knowledge base graph with all required edge definitions"""
+        graph_name = CollectionNames.KNOWLEDGE_GRAPH.value
+        
+        try:
+            self.logger.info("🚀 Creating knowledge base graph...")
+            graph = self.db.create_graph(graph_name)
+            
+            # Create all edge definitions
+            created_count = 0
+            for edge_def in EDGE_DEFINITIONS:
+                try:
+                    # Check if edge collection exists before creating edge definition
+                    if self.db.has_collection(edge_def["edge_collection"]):
+                        graph.create_edge_definition(**edge_def)
+                        created_count += 1
+                        self.logger.info(f"✅ Created edge definition for {edge_def['edge_collection']}")
+                    else:
+                        self.logger.warning(f"⚠️ Skipping edge definition for non-existent collection: {edge_def['edge_collection']}")
+                except Exception as e:
+                    self.logger.error(f"❌ Failed to create edge definition for {edge_def['edge_collection']}: {str(e)}")
+                    # Continue with other edge definitions
+
+            self.logger.info(f"✅ Knowledge base graph created successfully with {created_count} edge definitions")
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to create knowledge base graph: {str(e)}")
+            raise
+    
     async def connect(self) -> bool:
         """Connect to ArangoDB and initialize collections"""
         try:
@@ -204,143 +263,15 @@ class BaseArangoService:
             # Initialize collections with schema update handling
             try:
                 # Initialize all collections (both nodes and edges)
-                for collection_name, schema in NODE_COLLECTIONS + EDGE_COLLECTIONS:
-                    is_edge = (collection_name, schema) in EDGE_COLLECTIONS
-
-                    collection = self._collections[collection_name] = (
-                        self.db.collection(collection_name)
-                        if self.db.has_collection(collection_name)
-                        else self.db.create_collection(
-                            collection_name,
-                            edge=is_edge,
-                            schema=schema
-                        )
-                    )
-
-                    # Update schema if collection exists and has a schema
-                    if self.db.has_collection(collection_name) and schema:
-                        try:
-                            self.logger.info(f"Updating schema for collection {collection_name}")
-                            collection.configure(schema=schema)
-                        except Exception as e:
-                            self.logger.warning(
-                                f"Failed to update schema for {collection_name}: {str(e)}"
-                            )
-
-                # Create the permissions graph if it doesn't exist
-                if not self.db.has_graph(CollectionNames.FILE_ACCESS_GRAPH.value):
-                    self.logger.info("🚀 Creating file access graph...")
-                    graph = self.db.create_graph(CollectionNames.FILE_ACCESS_GRAPH.value)
-
-                    # Define edge definitions
-                    edge_definitions = [
-                        {
-                            "edge_collection": CollectionNames.PERMISSIONS.value,
-                            "from_vertex_collections": [CollectionNames.RECORDS.value],
-                            "to_vertex_collections": [
-                                CollectionNames.USERS.value,
-                                CollectionNames.GROUPS.value,
-                                CollectionNames.ORGS.value,
-                            ],
-                        },
-                        {
-                            "edge_collection": CollectionNames.BELONGS_TO.value,
-                            "from_vertex_collections": [CollectionNames.USERS.value],
-                            "to_vertex_collections": [
-                                CollectionNames.GROUPS.value,
-                                CollectionNames.ORGS.value,
-                            ],
-                        },
-                        {
-                            "edge_collection": CollectionNames.ORG_DEPARTMENT_RELATION.value,
-                            "from_vertex_collections": [CollectionNames.ORGS.value],
-                            "to_vertex_collections": [CollectionNames.DEPARTMENTS.value],
-                        },
-                        {
-                            "edge_collection": CollectionNames.BELONGS_TO_DEPARTMENT.value,
-                            "from_vertex_collections": [CollectionNames.RECORDS.value],
-                            "to_vertex_collections": [CollectionNames.DEPARTMENTS.value],
-                        },
-                        {
-                            "edge_collection": CollectionNames.BELONGS_TO_CATEGORY.value,
-                            "from_vertex_collections": [CollectionNames.RECORDS.value],
-                            "to_vertex_collections": [
-                                CollectionNames.CATEGORIES.value,
-                                CollectionNames.SUBCATEGORIES1.value,
-                                CollectionNames.SUBCATEGORIES2.value,
-                                CollectionNames.SUBCATEGORIES3.value,
-                            ],
-                        },
-                        {
-                            "edge_collection": CollectionNames.BELONGS_TO_TOPIC.value,
-                            "from_vertex_collections": [CollectionNames.RECORDS.value],
-                            "to_vertex_collections": [CollectionNames.TOPICS.value],
-                        },
-                        {
-                            "edge_collection": CollectionNames.BELONGS_TO_LANGUAGE.value,
-                            "from_vertex_collections": [CollectionNames.RECORDS.value],
-                            "to_vertex_collections": [CollectionNames.LANGUAGES.value],
-                        },
-                        {
-                            "edge_collection": CollectionNames.INTER_CATEGORY_RELATIONS.value,
-                            "from_vertex_collections": [CollectionNames.CATEGORIES.value, CollectionNames.SUBCATEGORIES1.value, CollectionNames.SUBCATEGORIES2.value, CollectionNames.SUBCATEGORIES3.value],
-                            "to_vertex_collections": [CollectionNames.CATEGORIES.value, CollectionNames.SUBCATEGORIES1.value, CollectionNames.SUBCATEGORIES2.value, CollectionNames.SUBCATEGORIES3.value],
-                        },
-                        {
-                            "edge_collection": CollectionNames.BELONGS_TO_KNOWLEDGE_BASE.value,   # record belongs to KB
-                            "from_vertex_collections": [CollectionNames.RECORDS.value,CollectionNames.FILES.value],
-                            "to_vertex_collections": [CollectionNames.KNOWLEDGE_BASE.value],
-                        },
-                        {
-                            "edge_collection": CollectionNames.PERMISSIONS_TO_KNOWLEDGE_BASE.value,   # user KB permission
-                            "from_vertex_collections": [CollectionNames.USERS.value],
-                            "to_vertex_collections": [CollectionNames.KNOWLEDGE_BASE.value],
-                        },
-                        {
-                            "edge_collection": CollectionNames.BELONGS_TO_KB.value,
-                            "from_vertex_collections": [CollectionNames.RECORDS.value],
-                            "to_vertex_collections": [CollectionNames.RECORD_GROUPS.value],
-                        },
-                        {
-                            "edge_collection": CollectionNames.PERMISSIONS_TO_KB.value,
-                            "from_vertex_collections": [CollectionNames.USERS.value],
-                            "to_vertex_collections": [CollectionNames.RECORD_GROUPS.value],
-                        },
-                        {
-                            "edge_collection": CollectionNames.IS_OF_TYPE.value,
-                            "from_vertex_collections": [CollectionNames.RECORDS.value],
-                            "to_vertex_collections": [CollectionNames.FILES.value],
-                        },
-                        {
-                            "edge_collection": CollectionNames.RECORD_RELATIONS.value,
-                            "from_vertex_collections": [CollectionNames.RECORDS.value, CollectionNames.FILES.value,CollectionNames.KNOWLEDGE_BASE.value],
-                            "to_vertex_collections": [CollectionNames.RECORDS.value, CollectionNames.FILES.value],
-                        },
-                        {
-                            "edge_collection": CollectionNames.USER_DRIVE_RELATION.value,
-                            "from_vertex_collections": [CollectionNames.USERS.value],
-                            "to_vertex_collections": [CollectionNames.DRIVES.value],
-                        },
-                        {
-                            "edge_collection": CollectionNames.USER_APP_RELATION.value,
-                            "from_vertex_collections": [CollectionNames.USERS.value],
-                            "to_vertex_collections": [CollectionNames.APPS.value],
-                        },
-                        {
-                            "edge_collection": CollectionNames.ORG_APP_RELATION.value,
-                            "from_vertex_collections": [CollectionNames.ORGS.value],
-                            "to_vertex_collections": [CollectionNames.APPS.value],
-                        },
-                    ]
-
-                    # Create all edge definitions
-                    for edge_def in edge_definitions:
-                        graph.create_edge_definition(**edge_def)
-
-                    self.logger.info("✅ File access graph created successfully")
-
-                self.logger.info("✅ Collections initialized successfully")
-
+                await self._initialize_new_collections()
+    
+                # Initialize or update the file access graph
+                if not self.db.has_graph(CollectionNames.FILE_ACCESS_GRAPH.value) and not self.db.has_graph(CollectionNames.KNOWLEDGE_GRAPH.value):
+                    # No graph exists, create new graph (Knowledge Graph)
+                    await self._create_graph()
+                else:
+                    self.logger.info(f"Knowledge base graph already exists - skipping creation")
+                
                 # Initialize departments
                 try:
                     await self._initialize_departments()
@@ -527,7 +458,7 @@ class BaseArangoService:
                     FILTER kbEdge.role IN ["OWNER", "READER", "FILEORGANIZER", "WRITER", "COMMENTER", "ORGANIZER"]
                     LET kb = DOCUMENT(kbEdge._to)
                     FILTER kb != null AND kb.orgId == org_id
-                    FOR belongsEdge IN @@belongs_to_kb
+                    FOR belongsEdge IN @@belongs_to
                         FILTER belongsEdge._to == kb._id
                         LET record = DOCUMENT(belongsEdge._from)
                         FILTER record != null
@@ -765,7 +696,7 @@ class BaseArangoService:
                 "user_from": f"users/{user_key}",
                 "@records": CollectionNames.RECORDS.value,
                 "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
-                "@belongs_to_kb": CollectionNames.BELONGS_TO_KB.value,
+                "@belongs_to": CollectionNames.BELONGS_TO.value,
                 "@permissions": CollectionNames.PERMISSIONS.value,
             })
 
@@ -816,7 +747,7 @@ class BaseArangoService:
             )
             LET recordDoc = DOCUMENT(CONCAT(@records, '/', @recordId))
             LET kb = FIRST(
-                FOR k IN 1..1 OUTBOUND recordDoc._id @@belongs_to_kb
+                FOR k IN 1..1 OUTBOUND recordDoc._id @@belongs_to
                 RETURN k
             )
             LET directAccess = (
@@ -895,7 +826,7 @@ class BaseArangoService:
                 "records": CollectionNames.RECORDS.value,
                 "files": CollectionNames.FILES.value,
                 "@anyone": CollectionNames.ANYONE.value,
-                "@belongs_to_kb": CollectionNames.BELONGS_TO_KB.value,
+                "@belongs_to": CollectionNames.BELONGS_TO.value,
                 "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
                 "@record_relations": CollectionNames.RECORD_RELATIONS.value,
             }
@@ -1142,7 +1073,7 @@ class BaseArangoService:
         source: str,
     ) -> Tuple[List[Dict], int, Dict]:
         """
-        List all records the user can access directly via belongs_to_kb edges.
+        List all records the user can access directly via belongs_to edges.
         Returns (records, total_count, available_filters)
         """
         try:
@@ -1196,7 +1127,7 @@ class BaseArangoService:
             main_query = f"""
             LET user_from = @user_from
             LET org_id = @org_id
-            // KB Records Section - Get records DIRECTLY from belongs_to_kb edges (not through folders)
+            // KB Records Section - Get records DIRECTLY from belongs_to edges (not through folders)
             LET kbRecords = {
                 f'''(
                     FOR kbEdge IN @@permissions_to_kb
@@ -1206,7 +1137,7 @@ class BaseArangoService:
                         LET kb = DOCUMENT(kbEdge._to)
                         FILTER kb != null AND kb.orgId == org_id
                         // Get records that belong directly to the KB
-                        FOR belongsEdge IN @@belongs_to_kb
+                        FOR belongsEdge IN @@belongs_to
                             FILTER belongsEdge._to == kb._id
                             LET record = DOCUMENT(belongsEdge._from)
                             FILTER record != null
@@ -1301,7 +1232,7 @@ class BaseArangoService:
                         FILTER kbEdge.role IN @kb_permissions
                         LET kb = DOCUMENT(kbEdge._to)
                         FILTER kb != null AND kb.orgId == org_id
-                        FOR belongsEdge IN @@belongs_to_kb
+                        FOR belongsEdge IN @@belongs_to
                             FILTER belongsEdge._to == kb._id
                             LET record = DOCUMENT(belongsEdge._from)
                             FILTER record != null
@@ -1343,7 +1274,7 @@ class BaseArangoService:
                         FILTER kbEdge.role IN ["OWNER", "READER", "FILEORGANIZER", "WRITER", "COMMENTER", "ORGANIZER"]
                         LET kb = DOCUMENT(kbEdge._to)
                         FILTER kb != null AND kb.orgId == org_id
-                        FOR belongsEdge IN @@belongs_to_kb
+                        FOR belongsEdge IN @@belongs_to
                             FILTER belongsEdge._to == kb._id
                             LET record = DOCUMENT(belongsEdge._from)
                             FILTER record != null
@@ -1424,7 +1355,7 @@ class BaseArangoService:
                 "kb_permissions": final_kb_roles,
                 "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
                 "@permissions": CollectionNames.PERMISSIONS.value,
-                "@belongs_to_kb": CollectionNames.BELONGS_TO_KB.value,
+                "@belongs_to": CollectionNames.BELONGS_TO.value,
                 "@is_of_type": CollectionNames.IS_OF_TYPE.value,
                 **filter_bind_vars,
             }
@@ -1435,7 +1366,7 @@ class BaseArangoService:
                 "kb_permissions": final_kb_roles,
                 "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
                 "@permissions": CollectionNames.PERMISSIONS.value,
-                "@belongs_to_kb": CollectionNames.BELONGS_TO_KB.value,
+                "@belongs_to": CollectionNames.BELONGS_TO.value,
                 **filter_bind_vars,
             }
 
@@ -1444,7 +1375,7 @@ class BaseArangoService:
                 "org_id": org_id,
                 "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
                 "@permissions": CollectionNames.PERMISSIONS.value,
-                "@belongs_to_kb": CollectionNames.BELONGS_TO_KB.value,
+                "@belongs_to": CollectionNames.BELONGS_TO.value,
             }
 
             # Execute queries
@@ -1821,9 +1752,9 @@ class BaseArangoService:
 
             kb_query = """
             LET record_from = CONCAT('records/', @record_id)
-            // Find KB via belongs_to_kb edge
+            // Find KB via belongs_to edge
             LET kb_edge = FIRST(
-                FOR btk_edge IN @@belongs_to_kb
+                FOR btk_edge IN @@belongs_to
                     FILTER btk_edge._from == record_from
                     RETURN btk_edge
             )
@@ -1837,7 +1768,7 @@ class BaseArangoService:
 
             cursor = self.db.aql.execute(kb_query, bind_vars={
                 "record_id": record_id,
-                "@belongs_to_kb": CollectionNames.BELONGS_TO_KB.value,
+                "@belongs_to": CollectionNames.BELONGS_TO.value,
             })
 
             result = next(cursor, None)

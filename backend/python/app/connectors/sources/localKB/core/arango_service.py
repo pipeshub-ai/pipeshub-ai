@@ -423,7 +423,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
         # Create edges
         for edge in edges_to_create:
             collection = (
-                CollectionNames.BELONGS_TO_KB.value
+                CollectionNames.BELONGS_TO.value
                 if edge.get("entityType") == Connectors.KNOWLEDGE_BASE.value
                 else CollectionNames.RECORD_RELATIONS.value
             )
@@ -675,7 +675,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
         if is_of_type_edges:
             await self.batch_create_edges(is_of_type_edges, CollectionNames.IS_OF_TYPE.value, transaction)
         if belongs_to_kb_edges:
-            await self.batch_create_edges(belongs_to_kb_edges, CollectionNames.BELONGS_TO_KB.value, transaction)
+            await self.batch_create_edges(belongs_to_kb_edges, CollectionNames.BELONGS_TO.value, transaction)
 
         # Step 6: Store skipped files for reporting (optional)
         if hasattr(self, '_current_upload_skipped_files'):
@@ -752,7 +752,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
                     CollectionNames.RECORDS.value,
                     CollectionNames.RECORD_RELATIONS.value,
                     CollectionNames.IS_OF_TYPE.value,
-                    CollectionNames.BELONGS_TO_KB.value,
+                    CollectionNames.BELONGS_TO.value,
                 ]
             )
 
@@ -996,12 +996,10 @@ class KnowledgeBaseArangoService(BaseArangoService):
     async def create_knowledge_base(
         self,
         kb_data:Dict,
-        # root_folder_data:Dict,
         permission_edge:Dict,
-        # folder_edge:Dict,
         transaction:Optional[TransactionDatabase]=None
     )-> Dict:
-        """Create knowledge base with root folder and permissions"""
+        """Create knowledge base with permissions"""
         try:
             kb_name = kb_data.get('groupName', 'Unknown')
             self.logger.info(f"🚀 Creating knowledge base: '{kb_name}' in ArangoDB")
@@ -1011,21 +1009,11 @@ class KnowledgeBaseArangoService(BaseArangoService):
                 [kb_data], CollectionNames.RECORD_GROUPS.value,transaction=transaction
             )
 
-            #  root folder creation
-            # await self.batch_upsert_nodes(
-            #     [root_folder_data], CollectionNames.FILES.value,transaction=transaction
-            # )
-
             # user KB permission edge
             await self.batch_create_edges(
                 [permission_edge],
                 CollectionNames.PERMISSIONS_TO_KB.value,transaction=transaction
             )
-
-            # await self.batch_create_edges(
-            #     [folder_edge],
-            #     CollectionNames.BELONGS_TO_KB.value,transaction=transaction
-            # )
 
             self.logger.info(f"✅ Knowledge base created successfully: {kb_data['_key']}")
             return {
@@ -1156,7 +1144,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
                 "kb_id": kb_id,
                 "user_from": f"users/{user_id}",
                 "@recordGroups_collection": CollectionNames.RECORD_GROUPS.value,
-                "@kb_to_folder_edges": CollectionNames.BELONGS_TO_KB.value,
+                "@kb_to_folder_edges": CollectionNames.BELONGS_TO.value,
                 "@permissions_collection": CollectionNames.PERMISSIONS_TO_KB.value,
             })
             result = next(cursor, None)
@@ -1317,7 +1305,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
                 "skip": skip,
                 "limit": limit,
                 "@permissions_collection": CollectionNames.PERMISSIONS_TO_KB.value,
-                "@belongs_to_kb": CollectionNames.BELONGS_TO_KB.value,
+                "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
             }
 
             # Add search term if provided
@@ -1553,7 +1541,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
                 transaction = self.db.begin_transaction(
                     write=[
                         CollectionNames.FILES.value,
-                        CollectionNames.BELONGS_TO_KB.value,
+                        CollectionNames.BELONGS_TO.value,
                         CollectionNames.RECORD_RELATIONS.value,
                     ]
                 )
@@ -1620,7 +1608,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
                     "createdAtTimestamp": timestamp,
                     "updatedAtTimestamp": timestamp,
                 }
-                edges_to_create.append((kb_relationship_edge, CollectionNames.BELONGS_TO_KB.value))
+                edges_to_create.append((kb_relationship_edge, CollectionNames.BELONGS_TO.value))
 
                 # Create parent-child relationship
                 if parent_folder_id:
@@ -1803,7 +1791,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
                 "kb_to": f"recordGroups/{kb_id}",
                 "entity_type": Connectors.KNOWLEDGE_BASE.value,
                 "@files_collection": CollectionNames.FILES.value,
-                "@belongs_to_collection": CollectionNames.BELONGS_TO_KB.value,
+                "@belongs_to_collection": CollectionNames.BELONGS_TO.value,
             })
 
             result = next(cursor, False)
@@ -1852,7 +1840,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
             cursor = db.aql.execute(query, bind_vars={
                 "record_from": f"records/{record_id}",
                 "kb_to": f"recordGroups/{kb_id}",
-                "@belongs_to_kb": CollectionNames.BELONGS_TO_KB.value,
+                "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
             })
             result = next(cursor, None)
             return result is not None
@@ -1996,7 +1984,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
                 cursor = transaction.aql.execute(context_query, bind_vars={
                     "record_id": record_id,
                     "user_key": user_key,
-                    "@belongs_to_kb": CollectionNames.BELONGS_TO_KB.value,
+                    "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
                     "@record_relations": CollectionNames.RECORD_RELATIONS.value,
                     "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
                     "@is_of_type": CollectionNames.IS_OF_TYPE.value,
@@ -2235,7 +2223,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
                             CollectionNames.FILES.value,
                             CollectionNames.RECORD_RELATIONS.value,
                             CollectionNames.IS_OF_TYPE.value,
-                            CollectionNames.BELONGS_TO_KB.value,
+                            CollectionNames.BELONGS_TO.value,
                         ]
                     )
                     self.logger.info("🔄 Transaction created for bulk record deletion")
@@ -2309,7 +2297,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
                     "record_ids": record_ids,
                     "kb_id": kb_id,
                     "folder_id": folder_id,
-                    "@belongs_to_kb": CollectionNames.BELONGS_TO_KB.value,
+                    "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
                     "@record_relations": CollectionNames.RECORD_RELATIONS.value,
                     "@is_of_type": CollectionNames.IS_OF_TYPE.value,
                 })
@@ -2396,7 +2384,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
                         "record_ids": valid_record_ids,
                         "@record_relations": CollectionNames.RECORD_RELATIONS.value,
                         "@is_of_type": CollectionNames.IS_OF_TYPE.value,
-                        "@belongs_to_kb": CollectionNames.BELONGS_TO_KB.value,
+                        "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
                     })
                     self.logger.info(f"✅ Deleted edges for {len(valid_record_ids)} records")
 
@@ -3170,7 +3158,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
                 "limit": limit,
                 "kb_permissions": final_kb_roles,
                 "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
-                "@belongs_to_kb": CollectionNames.BELONGS_TO_KB.value,
+                "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
                 "@is_of_type": CollectionNames.IS_OF_TYPE.value,
                 **filter_bind_vars,
             }
@@ -3180,7 +3168,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
                 "org_id": org_id,
                 "kb_permissions": final_kb_roles,
                 "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
-                "@belongs_to_kb": CollectionNames.BELONGS_TO_KB.value,
+                "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
                 **filter_bind_vars,
             }
 
@@ -3188,7 +3176,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
                 "user_from": f"users/{user_id}",
                 "org_id": org_id,
                 "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
-                "@belongs_to_kb": CollectionNames.BELONGS_TO_KB.value,
+                "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
             }
 
             # Execute queries
@@ -3482,7 +3470,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
                 "user_permission": user_permission,
                 "skip": skip,
                 "limit": limit,
-                "@belongs_to_kb": CollectionNames.BELONGS_TO_KB.value,
+                "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
                 "@record_relations": CollectionNames.RECORD_RELATIONS.value,
                 "@is_of_type": CollectionNames.IS_OF_TYPE.value,
                 **filter_bind_vars,
@@ -3491,7 +3479,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
             count_bind_vars = {
                 "kb_id": kb_id,
                 "org_id": org_id,
-                "@belongs_to_kb": CollectionNames.BELONGS_TO_KB.value,
+                "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
                 "@record_relations": CollectionNames.RECORD_RELATIONS.value,
                 **filter_bind_vars,
             }
@@ -3500,7 +3488,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
                 "kb_id": kb_id,
                 "org_id": org_id,
                 "user_permission": user_permission,
-                "@belongs_to_kb": CollectionNames.BELONGS_TO_KB.value,
+                "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
                 "@record_relations": CollectionNames.RECORD_RELATIONS.value,
             }
 
@@ -4037,7 +4025,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
                             CollectionNames.FILES.value,
                             CollectionNames.RECORDS.value,
                             CollectionNames.RECORD_RELATIONS.value,
-                            CollectionNames.BELONGS_TO_KB.value,
+                            CollectionNames.BELONGS_TO.value,
                             CollectionNames.IS_OF_TYPE.value,
                             CollectionNames.PERMISSIONS_TO_KB.value,
                         ]
@@ -4094,7 +4082,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
                 cursor = transaction.aql.execute(inventory_query, bind_vars={
                     "kb_id": kb_id,
                     "@files_collection": CollectionNames.FILES.value,
-                    "@belongs_to_kb": CollectionNames.BELONGS_TO_KB.value,
+                    "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
                     "@is_of_type": CollectionNames.IS_OF_TYPE.value,
                 })
 
@@ -4133,7 +4121,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
                     "kb_id": kb_id,
                     "all_folders": inventory["folders"],
                     "all_records": all_record_keys,
-                    "@belongs_to_kb": CollectionNames.BELONGS_TO_KB.value,
+                    "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
                     "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
                     "@is_of_type": CollectionNames.IS_OF_TYPE.value,
                     "@record_relations": CollectionNames.RECORD_RELATIONS.value,
@@ -4247,7 +4235,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
                             CollectionNames.FILES.value,
                             CollectionNames.RECORDS.value,
                             CollectionNames.RECORD_RELATIONS.value,
-                            CollectionNames.BELONGS_TO_KB.value,
+                            CollectionNames.BELONGS_TO.value,
                             CollectionNames.IS_OF_TYPE.value,
                         ]
                     )
@@ -4409,7 +4397,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
                     transaction.aql.execute(belongs_to_kb_delete, bind_vars={
                         "all_records": all_record_keys,
                         "all_folders": inventory["all_folders"],
-                        "@belongs_to_kb": CollectionNames.BELONGS_TO_KB.value,
+                        "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
                     })
                     self.logger.info("✅ Deleted belongs_to_kb edges")
 

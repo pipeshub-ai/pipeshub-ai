@@ -119,7 +119,8 @@ class CollectionNames(Enum):
 
     # Graphs
     FILE_ACCESS_GRAPH = "fileAccessGraph"
-
+    KNOWLEDGE_GRAPH = "knowledgeGraph"
+    
     APPS = "apps"
     ORG_APP_RELATION = "orgAppRelation"
     USER_APP_RELATION = "userAppRelation"

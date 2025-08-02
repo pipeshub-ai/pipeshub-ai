@@ -66,7 +66,7 @@ class KnowledgeBaseService :
                         CollectionNames.RECORDS.value,
                         CollectionNames.FILES.value,
                         CollectionNames.IS_OF_TYPE.value,
-                        CollectionNames.BELONGS_TO_KB.value,
+                        CollectionNames.BELONGS_TO.value,
                         CollectionNames.PERMISSIONS_TO_KB.value,
                     ]
                 )
