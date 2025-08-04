@@ -20,7 +20,7 @@ class SignedUrlConfig(BaseModel):
     url_prefix: str = "/api/v1/index"
 
     @classmethod
-    async def create(cls, configuration_service: ConfigurationService):
+    async def create(cls, configuration_service: ConfigurationService) -> "SignedUrlConfig":
         """Async factory method to create config using configuration service"""
         try:
             # Assuming there's a config node for JWT settings
@@ -36,7 +36,7 @@ class SignedUrlConfig(BaseModel):
         except Exception:
             raise
 
-    def __init__(self, **data):
+    def __init__(self, **data) -> None:
         super().__init__(**data)
         if not self.private_key:
             raise ValueError(
@@ -63,7 +63,7 @@ class SignedUrlHandler:
         logger,
         config: SignedUrlConfig,
         configuration_service: ConfigurationService,
-    ):
+    ) -> None:
         self.logger = logger
         self.signed_url_config = config
         self.config_service = configuration_service

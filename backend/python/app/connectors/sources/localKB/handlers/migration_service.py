@@ -51,7 +51,23 @@ class KnowledgeBaseMigrationService:
             self.logger.info("🚀 Starting Knowledge Base migration from old to new system")
 
             # Step 1: Validate migration preconditions
-            await self._validate_migration_preconditions()
+            migration_preconditions = await self._validate_migration_preconditions()
+            if not migration_preconditions["success"]:
+                return migration_preconditions
+
+            # Check if migration is actually needed
+            if not migration_preconditions.get("migration_needed", True):
+                self.logger.info("✅ No migration needed - old KB collection not found")
+                return {
+                    "success": True,
+                    "message": "No migration needed - old KB collection not found",
+                    "migrated_count": 0,
+                    "failed_count": 0,
+                    "details": {
+                        "successful": [],
+                        "failed": []
+                    }
+                }
 
             # Step 2: Get all old knowledge bases and their relationships
             migration_data = await self._analyze_old_system()
@@ -85,9 +101,15 @@ class KnowledgeBaseMigrationService:
             return {
                 "success": False,
                 "message": f"Migration failed: {str(e)}",
+                "migrated_count": 0,
+                "failed_count": 0,
+                "details": {
+                    "successful": [],
+                    "failed": []
+                }
             }
 
-    async def _validate_migration_preconditions(self) -> None:
+    async def _validate_migration_preconditions(self) -> Dict:
         """Validate that migration can proceed safely"""
         self.logger.info("🔍 Validating migration preconditions")
 
@@ -97,7 +119,18 @@ class KnowledgeBaseMigrationService:
 
         if self.OLD_KB_COLLECTION not in collection_names:
             self.logger.info(f"✅ Old KB collection '{self.OLD_KB_COLLECTION}' not found - no migration needed")
-            return
+            return {
+                "success": True,
+                "message": f"Old KB collection '{self.OLD_KB_COLLECTION}' not found - no migration needed",
+                "old_kb_collection_exists": False,
+                "migration_needed": False,
+                "migrated_count": 0,
+                "failed_count": 0,
+                "details": {
+                    "successful": [],
+                    "failed": []
+                }
+            }
 
         # Check if new collections exist
         required_new_collections = [
@@ -113,6 +146,18 @@ class KnowledgeBaseMigrationService:
             raise Exception(f"Required new collections missing: {missing_collections}")
 
         self.logger.info("✅ Migration preconditions validated")
+        return {
+            "success": True,
+            "message": "Migration preconditions validated",
+            "old_kb_collection_exists": True,
+            "migration_needed": True,
+            "migrated_count": 0,
+            "failed_count": 0,
+            "details": {
+                "successful": [],
+                "failed": []
+            }
+        }
 
     async def _analyze_old_system(self) -> Dict:
         """Analyze the old system to understand what needs to be migrated"""
@@ -765,7 +810,10 @@ async def run_kb_migration(container) -> Dict:
         result = await migration_service.run_migration()
 
         if result['success']:
-            logger.info(f"✅ KB Migration completed successfully: {result['migrated_count']} KBs migrated")
+            if result['migrated_count'] == 0 and "no migration needed" in result['message'].lower():
+                logger.info(f"✅ KB Migration: {result['message']}")
+            else:
+                logger.info(f"✅ KB Migration completed successfully: {result['migrated_count']} KBs migrated")
         else:
             logger.error(f"❌ KB Migration failed: {result['message']}")
 

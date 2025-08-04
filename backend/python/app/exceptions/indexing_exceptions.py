@@ -1,7 +1,7 @@
 class IndexingError(Exception):
     """Base exception for indexing-related errors"""
 
-    def __init__(self, message: str, record_id: str = None, details: dict = None):
+    def __init__(self, message: str, record_id: str = None, details: dict = None) -> None:
         self.message = message
         self.record_id = record_id
         self.details = details or {}
@@ -16,7 +16,7 @@ class DocumentProcessingError(IndexingError):
         message: str = "Failed to process document",
         doc_id: str = None,
         details: dict = None,
-    ):
+    ) -> None:
         super().__init__(message, doc_id, details)
         self.doc_id = doc_id
 
@@ -53,7 +53,7 @@ class EmbeddingDeletionError(IndexingError):
         message: str = "Failed to delete embeddings",
         record_id: str = None,
         details: dict = None,
-    ):
+    ) -> None:
         super().__init__(message, record_id, details)
         self.record_id = record_id
 

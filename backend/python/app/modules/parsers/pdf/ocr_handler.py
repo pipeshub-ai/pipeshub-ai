@@ -9,7 +9,7 @@ from app.config.utils.named_constants.ai_models_named_constants import OCRProvid
 class OCRStrategy(ABC):
     """Abstract base class for OCR strategies"""
 
-    def __init__(self, logger):
+    def __init__(self, logger) -> None:
         self.logger = logger
 
     @abstractmethod
@@ -42,7 +42,10 @@ class OCRStrategy(ABC):
             significant_images = 0
             MIN_IMAGE_WIDTH = 500  # Minimum width in pixels for a significant image
             MIN_IMAGE_HEIGHT = 500  # Minimum height in pixels for a significant image
-
+            RGB = 3
+            LOW_DENSITY_THRESHOLD = 0.01
+            MIN_TEXT_LENGTH = 100
+            MIN_SIGNIFICANT_IMAGES = 2
             for img_index, img in enumerate(images):
                 # img tuple contains: (xref, smask, width, height, bpc, colorspace, ...)
                 width, height = img[2], img[3]
@@ -58,16 +61,16 @@ class OCRStrategy(ABC):
                     significant_images += 1
 
             # Multiple criteria for OCR need
-            has_minimal_text = len(text) < 100  # Less than 100 characters
+            has_minimal_text = len(text) < MIN_TEXT_LENGTH  # Less than 100 characters
             has_significant_images = (
-                significant_images > 2
+                significant_images > MIN_SIGNIFICANT_IMAGES
             )  # Contains substantial images
             text_density = (
                 sum((w[2] - w[0]) * (w[3] - w[1]) for w in words) / page_area
                 if words
                 else 0
             )
-            low_density = text_density < 0.01
+            low_density = text_density < LOW_DENSITY_THRESHOLD
 
             self.logger.debug(
                 f"📊 OCR metrics - Text length: {len(text)}, "
@@ -81,7 +84,7 @@ class OCRStrategy(ABC):
                 try:
                     # Create pixmap from image
                     pix = fitz.Pixmap(page.parent, xref)
-                    if pix.n - pix.alpha > 3:  # CMYK: convert to RGB
+                    if pix.n - pix.alpha > RGB:  # CMYK: convert to RGB
                         pix = fitz.Pixmap(fitz.csRGB, pix)
 
                     self.logger.debug(
@@ -109,7 +112,7 @@ class OCRStrategy(ABC):
 class OCRHandler:
     """Factory and facade for OCR processing"""
 
-    def __init__(self, logger, strategy_type: str, **kwargs):
+    def __init__(self, logger, strategy_type: str, **kwargs) -> None:
         """
         Initialize OCR handler with specified strategy
 

@@ -1,7 +1,8 @@
 from datetime import datetime, timezone
 
+MAX_TIMESTAMP_LENGTH = 13
 
-def get_epoch_timestamp_in_ms():
+def get_epoch_timestamp_in_ms() -> int:
     now = datetime.now(timezone.utc).timestamp()
     return int(now * 1000)
 
@@ -14,7 +15,7 @@ def parse_timestamp(timestamp_str: str) -> int:
     timestamp = int(dt.timestamp())
 
     # Check if timestamp is already in milliseconds (13 digits)
-    if len(str(timestamp)) >= 13:
+    if len(str(timestamp)) >= MAX_TIMESTAMP_LENGTH:
         return timestamp
 
     # Convert seconds to milliseconds

@@ -1833,7 +1833,8 @@ async def reindex_single_record(
         result = await arango_service.reindex_single_record(
             record_id=record_id,
             user_id=user_id,
-            org_id=org_id
+            org_id=org_id,
+            request=request
         )
 
         if result["success"]:

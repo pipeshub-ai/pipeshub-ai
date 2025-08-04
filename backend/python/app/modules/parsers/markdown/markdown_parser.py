@@ -2,14 +2,15 @@ from io import BytesIO
 
 import markdown
 from docling.datamodel.base_models import DocumentStream
+from docling.datamodel.document import DoclingDocument
 from docling.document_converter import DocumentConverter
 
 
 class MarkdownParser:
-    def __init__(self):
+    def __init__(self) -> None:
         self.converter = DocumentConverter()
 
-    def parse_string(self, md_content: str):
+    def parse_string(self, md_content: str) -> DoclingDocument:
         """
         Parse Markdown content from a string.
 
@@ -41,7 +42,7 @@ class MarkdownParser:
 
         return result.document
 
-    def parse_file(self, file_path: str):
+    def parse_file(self, file_path: str) -> DoclingDocument:
         """
         Parse Markdown content from a file.
 

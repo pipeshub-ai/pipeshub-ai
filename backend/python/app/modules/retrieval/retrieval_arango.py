@@ -176,7 +176,7 @@ class ArangoService:
                 LET kbRecords = (
                     FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSIONS_TO_KB.value}
                     FILTER kb._key IN @kb_ids  // Filter by specific KB IDs
-                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO_KB.value}
+                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
                     RETURN DISTINCT records
                 )
                 """
@@ -185,7 +185,7 @@ class ArangoService:
                 query += f"""
                 LET kbRecords = (
                     FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSIONS_TO_KB.value}
-                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO_KB.value}
+                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
                     RETURN DISTINCT records
                 )
                 """
@@ -462,7 +462,7 @@ class ArangoService:
 
             LET kbAccess = (
                 FOR kb, kbEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSIONS_TO_KNOWLEDGE_BASE.value}
-                FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO_KNOWLEDGE_BASE.value}
+                FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
                 FILTER records._key == @recordId
                 RETURN {{
                     type: 'KNOWLEDGE_BASE',

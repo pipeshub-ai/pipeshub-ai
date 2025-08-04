@@ -1851,6 +1851,10 @@ export const reindexRecord =
               user_id: userId,
               org_id: orgId,
             },
+            headers: {
+              Authorization: req.headers.authorization,
+              'Content-Type': 'application/json',
+            },
           },
         );
 

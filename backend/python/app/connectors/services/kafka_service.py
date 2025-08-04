@@ -37,6 +37,9 @@ class KafkaService:
                 producer_config = {
                     "bootstrap_servers": brokers,  # aiokafka uses bootstrap_servers
                     "client_id": kafka_config.get("client_id", "file-processor"),
+                    "request_timeout_ms": 30000,
+                    "retry_backoff_ms": 100,
+                    "enable_idempotence": True
                 }
 
                 self.producer = AIOKafkaProducer(**producer_config)
@@ -94,7 +97,10 @@ class KafkaService:
         try:
             # Ensure producer is ready
             await self._ensure_producer()
-
+            if not isinstance(self.producer, AIOKafkaProducer):
+                raise TypeError(
+                    f"Producer is of incorrect type: {type(self.producer).__name__}. Expected AIOKafkaProducer."
+                )
             # Standardize event format
             formatted_event = {
                 "eventType": event_data.get("eventType", EventTypes.NEW_RECORD.value),

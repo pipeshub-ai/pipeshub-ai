@@ -23,7 +23,7 @@ logging.basicConfig(
 )
 
 
-def create_logger(service_name):
+def create_logger(service_name: str) -> logging.Logger:
     """
     Create a logger for a specific service with file and console handlers
     """

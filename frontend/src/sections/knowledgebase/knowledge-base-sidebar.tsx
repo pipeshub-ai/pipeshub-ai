@@ -203,52 +203,46 @@ const FilterChip = styled(Chip)(({ theme }) => ({
   fontSize: '0.75rem',
   fontWeight: 500,
   borderRadius: '4px',
-  
-  // Professional SaaS styling for both modes
-  backgroundColor: theme.palette.mode === 'dark'
-    ? alpha(theme.palette.primary.main, 0.62) 
-    : alpha(theme.palette.primary.main, 0.08),
-  
-  color: theme.palette.mode === 'dark'
-    ? alpha(theme.palette.primary.lighter, 0.9) 
-    : theme.palette.primary.main,
-    
-  border: theme.palette.mode === 'dark'
-    ? `1px solid ${alpha(theme.palette.primary.main, 0.2)}`
-    : `1px solid ${alpha(theme.palette.primary.main, 0.15)}`,
-    
+  backgroundColor: theme.palette.mode !== 'dark' ? alpha(theme.palette.primary.main, 0) : '',
+  color:
+    theme.palette.mode === 'dark'
+      ? alpha(theme.palette.primary.lighter, 0.9)
+      : theme.palette.primary.main,
+  border:
+    theme.palette.mode === 'dark'
+      ? `1px solid ${alpha(theme.palette.primary.main, 0.2)}`
+      : `1px solid ${alpha(theme.palette.primary.main, 0.15)}`,
   '& .MuiChip-label': {
     px: 1.2,
     py: 0.5,
     letterSpacing: '0.01em',
   },
-  
   transition: theme.transitions.create(['background-color', 'box-shadow'], {
     duration: '0.2s',
     easing: theme.transitions.easing.easeInOut,
   }),
-  
   '&:hover': {
-    backgroundColor: theme.palette.mode === 'dark'
-      ? alpha(theme.palette.primary.main, 0.2)
-      : alpha(theme.palette.primary.main, 0.12),
-    boxShadow: theme.palette.mode === 'dark'
-      ? `0 1px 3px ${alpha(theme.palette.common.black, 0.2)}`
-      : 'none',
+    backgroundColor:
+      theme.palette.mode === 'dark'
+        ? alpha(theme.palette.primary.main, 0.2)
+        : alpha(theme.palette.primary.main, 0.12),
+    boxShadow:
+      theme.palette.mode === 'dark'
+        ? `0 1px 3px ${alpha(theme.palette.common.black, 0.2)}`
+        : 'none',
   },
-  
   '& .MuiChip-deleteIcon': {
-    color: theme.palette.mode === 'dark'
-      ? alpha(theme.palette.primary.light, 1)
-      : alpha(theme.palette.primary.main, 0.7),
+    color:
+      theme.palette.mode === 'dark'
+        ? alpha(theme.palette.primary.light, 1)
+        : alpha(theme.palette.primary.main, 0.7),
     width: 16,
     height: 16,
     marginRight: theme.spacing(0.5),
     '&:hover': {
-      color: theme.palette.mode === 'dark'
-        ? theme.palette.primary.light
-        : theme.palette.primary.main,
-    }
+      color:
+        theme.palette.mode === 'dark' ? theme.palette.primary.light : theme.palette.primary.main,
+    },
   },
 }));
 
@@ -376,7 +370,7 @@ const statusIcons: Record<string, React.ComponentProps<typeof IconifyIcon>['icon
 // Helper function to format labels
 const formatLabel = (label: string): string => {
   if (!label) return '';
-  if(label ==='AUTO_INDEX_OFF')  return 'Maual Sync'
+  if (label === 'AUTO_INDEX_OFF') return 'Maual Sync';
   return label
     .replace(/_/g, ' ')
     .toLowerCase()
@@ -542,7 +536,7 @@ export default function KnowledgeBaseSideBar({
       connectors: 0,
       app: 0,
       permissions: 0,
-      kb:0,
+      kb: 0,
     };
 
     // Calculate counts from local filters to prevent UI flicker

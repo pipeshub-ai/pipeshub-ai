@@ -323,7 +323,7 @@ class EntityKafkaRouteConsumer:
             await self.arango_service.batch_upsert_nodes([kb_data], CollectionNames.RECORD_GROUPS.value)
             await self.arango_service.batch_upsert_nodes([root_folder_data], CollectionNames.FILES.value)
             await self.arango_service.batch_create_edges([permission_edge], CollectionNames.PERMISSIONS_TO_KB.value)
-            await self.arango_service.batch_create_edges([folder_edge], CollectionNames.BELONGS_TO_KB.value)
+            await self.arango_service.batch_create_edges([folder_edge], CollectionNames.BELONGS_TO.value)
 
             self.logger.info(f"Created new knowledge base for user {userId} in organization {orgId}")
             return {

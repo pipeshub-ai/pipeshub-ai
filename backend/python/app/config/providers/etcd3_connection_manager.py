@@ -42,7 +42,7 @@ class Etcd3ConnectionManager:
         retry_policy: Policy for connection retries
     """
 
-    def __init__(self, config: ConnectionConfig):
+    def __init__(self, config: ConnectionConfig) -> None:
         """
         Initialize the connection manager.
 

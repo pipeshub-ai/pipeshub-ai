@@ -16,7 +16,7 @@ class ArangoService:
 
     def __init__(
         self, logger, arango_client: ArangoClient, config: ConfigurationService
-    ):
+    ) -> None:
         self.logger = logger
         self.logger.info("🚀 Initializing ArangoService")
         self.config_service = config
@@ -73,7 +73,7 @@ class ArangoService:
 
             return False
 
-    async def disconnect(self):
+    async def disconnect(self) -> bool | None:
         """Disconnect from ArangoDB"""
         try:
             self.logger.info("🚀 Disconnecting from ArangoDB")
@@ -262,7 +262,7 @@ class ArangoService:
         nodes: List[Dict],
         collection: str,
         transaction: Optional[TransactionDatabase] = None,
-    ):
+    ) -> bool | None:
         """Batch upsert multiple nodes using Python-Arango SDK methods"""
         try:
             self.logger.info("🚀 Batch upserting nodes: %s", collection)
@@ -300,7 +300,7 @@ class ArangoService:
         edges: List[Dict],
         collection: str,
         transaction: Optional[TransactionDatabase] = None,
-    ):
+    ) -> bool | None:
         """Batch create PARENT_CHILD relationships"""
         try:
             self.logger.info("🚀 Batch creating edges: %s", collection)
@@ -432,7 +432,7 @@ class ArangoService:
                 raise
             return []
 
-    async def copy_document_relationships(self, source_key: str, target_key: str):
+    async def copy_document_relationships(self, source_key: str, target_key: str) -> None:
         """
         Copy all relationships (edges) from source document to target document.
         This includes departments, categories, subcategories, languages, and topics.

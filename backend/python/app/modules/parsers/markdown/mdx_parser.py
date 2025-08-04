@@ -4,7 +4,7 @@ import re
 class MDXParser:
     """Parser for MDX files to convert them to regular Markdown"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         # Tags to preserve with special handling
         self.allowed_tags = ['CodeGroup', 'Info', 'AccordionGroup', 'Accordion']
 
@@ -30,7 +30,7 @@ class MDXParser:
             )
 
             # Step 2: Handle allowed block JSX tags
-            def handle_allowed_tags(match):
+            def handle_allowed_tags(match) -> str:
                 tag = match.group("tag")
                 inner = match.group("content").strip()
                 if tag == "Info":

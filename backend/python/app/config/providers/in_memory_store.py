@@ -20,7 +20,7 @@ class KeyData(Generic[T]):
         expiry: Optional expiration timestamp
     """
 
-    def __init__(self, value: T, ttl: Optional[int] = None):
+    def __init__(self, value: T, ttl: Optional[int] = None) -> None:
         logger.debug("🔧 Creating KeyData instance")
         logger.debug("📋 Value: %s (type: %s)", value, type(value))
         logger.debug("📋 TTL: %s seconds", ttl if ttl else "None")
@@ -61,7 +61,7 @@ class InMemoryKeyValueStore(DistributedKeyValueStore[T], Generic[T]):
         lock: Thread-safe lock for concurrent access
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize an empty in-memory store."""
         logger.debug("🔧 Initializing InMemoryKeyValueStore")
         self.store: Dict[str, KeyData[T]] = {}
@@ -74,7 +74,7 @@ class InMemoryKeyValueStore(DistributedKeyValueStore[T], Generic[T]):
         asyncio.create_task(self._cleanup_loop())
         logger.debug("✅ InMemoryKeyValueStore initialized")
 
-    async def _cleanup_loop(self):
+    async def _cleanup_loop(self) -> None:
         """Background task to clean up expired keys."""
         logger.debug("🔄 Starting cleanup loop")
         while self._running:
@@ -232,7 +232,7 @@ class InMemoryKeyValueStore(DistributedKeyValueStore[T], Generic[T]):
         key: str,
         callback: Callable[[Optional[T]], None],
         error_callback: Optional[Callable[[Exception], None]] = None,
-    ) -> Any:
+    ) -> int:
         """
         Watch a key for changes and execute callbacks when changes occur.
 
@@ -259,7 +259,7 @@ class InMemoryKeyValueStore(DistributedKeyValueStore[T], Generic[T]):
             )
         return watch_id
 
-    def cancel_watch(self, key: str, watch_id: Any) -> None:
+    def cancel_watch(self, key: str, watch_id: int) -> None:
         """
         Cancel a watch operation.
 

@@ -3,9 +3,12 @@
 # pylint: disable=E1101, W0718
 import asyncio
 import uuid
-from typing import Dict, List, Tuple
+from io import BytesIO
+from typing import Dict, List, Optional, Tuple
 
-from arango import ArangoClient, Optional
+import aiohttp
+from arango import ArangoClient
+from fastapi import Request
 
 from app.config.configuration_service import (
     ConfigurationService,
@@ -19,6 +22,7 @@ from app.config.utils.named_constants.arangodb_constants import (
     OriginTypes,
     RecordTypes,
 )
+from app.config.utils.named_constants.http_status_code_constants import HttpStatusCode
 from app.connectors.services.kafka_service import KafkaService
 from app.schema.arango.documents import (
     app_schema,
@@ -1465,7 +1469,7 @@ class BaseArangoService:
             self.logger.error(f"❌ Failed to validate knowledge base permission for user {user_id}: {str(e)}")
             raise
 
-    async def reindex_single_record(self, record_id: str, user_id: str, org_id: str) -> Dict:
+    async def reindex_single_record(self, record_id: str, user_id: str, org_id: str, request: Request) -> Dict:
         """
         Reindex a single record with permission checks and event publishing
         """
@@ -1516,11 +1520,11 @@ class BaseArangoService:
                     }
 
                 user_role = await self.get_user_kb_permission(kb_context["kb_id"], user_key)
-                if user_role not in ["OWNER", "WRITER"]:
+                if user_role not in ["OWNER", "WRITER", "READER"]:
                     return {
                         "success": False,
                         "code": 403,
-                        "reason": f"Insufficient KB permissions. User role: {user_role}. Required: OWNER, WRITER"
+                        "reason": f"Insufficient KB permissions. User role: {user_role}. Required: OWNER, WRITER, READER"
                     }
 
                 connector_type = Connectors.KNOWLEDGE_BASE.value
@@ -1532,11 +1536,11 @@ class BaseArangoService:
                 elif connector_name == Connectors.GOOGLE_MAIL.value:
                     user_role = await self._check_gmail_permissions(record_id, user_key)
 
-                if not user_role or user_role not in ["OWNER", "WRITER"]:
+                if not user_role or user_role not in ["OWNER", "WRITER","READER"]:
                     return {
                         "success": False,
                         "code": 403,
-                        "reason": f"Insufficient permissions. User role: {user_role}. Required: OWNER, WRITER"
+                        "reason": f"Insufficient permissions. User role: {user_role}. Required: OWNER, WRITER, READER"
                     }
 
                 connector_type = connector_name
@@ -1548,11 +1552,12 @@ class BaseArangoService:
                 }
 
             # Get file record for event payload
-            file_record = await self.get_document(record_id, CollectionNames.FILES.value)
+            file_record = await self.get_document(record_id, CollectionNames.FILES.value) if record.get("recordType") == "FILE" else await self.get_document(record_id, CollectionNames.MAILS.value)
 
+            self.logger.info(f"📋 File record: {file_record}")
             # Create and publish reindex event
             try:
-                payload = await self._create_reindex_event_payload(record, file_record)
+                payload = await self._create_reindex_event_payload(record, file_record,user_id,request)
                 await self._publish_record_event("newRecord",payload)
 
                 self.logger.info(f"✅ Published reindex event for record {record_id}")
@@ -2681,7 +2686,93 @@ class BaseArangoService:
             self.logger.error(f"❌ Failed to create deleted record event payload: {str(e)}")
             return {}
 
-    async def _create_reindex_event_payload(self, record: Dict, file_record: Optional[Dict]) -> Dict:
+    async def _download_from_signed_url(
+        self, signed_url: str, request: Request
+    ) -> bytes:
+        """
+        Download file from signed URL with exponential backoff retry
+
+        Args:
+            signed_url: The signed URL to download from
+            record_id: Record ID for logging
+        Returns:
+            bytes: The downloaded file content
+        """
+        chunk_size = 1024 * 1024 * 3  # 3MB chunks
+        max_retries = 3
+        base_delay = 1  # Start with 1 second delay
+
+        timeout = aiohttp.ClientTimeout(
+            total=1200,  # 20 minutes total
+            connect=120,  # 2 minutes for initial connection
+            sock_read=1200,  # 20 minutes per chunk read
+        )
+        self.logger.info(f"Downloading file from signed URL: {signed_url}")
+        for attempt in range(max_retries):
+            delay = base_delay * (2**attempt)  # Exponential backoff
+            file_buffer = BytesIO()
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    try:
+                        async with session.get(signed_url, headers=request.headers) as response:
+                            if response.status != HttpStatusCode.SUCCESS.value:
+                                raise aiohttp.ClientError(
+                                    f"Failed to download file: {response.status}"
+                                )
+                            self.logger.info(f"Response {response}")
+
+                            content_length = response.headers.get("Content-Length")
+                            if content_length:
+                                self.logger.info(
+                                    f"Expected file size: {int(content_length) / (1024*1024):.2f} MB"
+                                )
+
+                            last_logged_size = 0
+                            total_size = 0
+                            log_interval = chunk_size
+
+                            self.logger.info("Starting chunked download...")
+                            try:
+                                async for chunk in response.content.iter_chunked(
+                                    chunk_size
+                                ):
+                                    file_buffer.write(chunk)
+                                    total_size += len(chunk)
+                                    if total_size - last_logged_size >= log_interval:
+                                        self.logger.debug(
+                                            f"Total size so far: {total_size / (1024*1024):.2f} MB"
+                                        )
+                                        last_logged_size = total_size
+                            except IOError as io_err:
+                                raise aiohttp.ClientError(
+                                    f"IO error during chunk download: {str(io_err)}"
+                                )
+
+                            file_content = file_buffer.getvalue()
+                            self.logger.info(
+                                f"✅ Download complete. Total size: {total_size / (1024*1024):.2f} MB"
+                            )
+                            return file_content
+
+                    except aiohttp.ServerDisconnectedError as sde:
+                        raise aiohttp.ClientError(f"Server disconnected: {str(sde)}")
+                    except aiohttp.ClientConnectorError as cce:
+                        raise aiohttp.ClientError(f"Connection error: {str(cce)}")
+
+            except (aiohttp.ClientError, asyncio.TimeoutError, IOError) as e:
+                error_type = type(e).__name__
+                self.logger.warning(
+                    f"Download attempt {attempt + 1} failed with {error_type}: {str(e)}. "
+                    f"Retrying in {delay} seconds..."
+                )
+
+                await asyncio.sleep(delay)
+
+            finally:
+                if not file_buffer.closed:
+                    file_buffer.close()
+
+    async def _create_reindex_event_payload(self, record: Dict, file_record: Optional[Dict], user_id: Optional[str] = None, request: Optional[Request] = None) -> Dict:
         """Create reindex event payload"""
         try:
             # Get extension and mimeType from file record
@@ -2694,9 +2785,30 @@ class BaseArangoService:
             endpoints = await self.config.get_config(
                     config_node_constants.ENDPOINTS.value
                 )
-            storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
+            signed_url_route = ""
+            file_content = ""
+            if record.get("origin") == OriginTypes.UPLOAD.value:
+                storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
+                signed_url_route = f"{storage_url}/api/v1/document/internal/{record['externalRecordId']}/download"
+            else:
+                connector_url = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
+                signed_url_route = f"{connector_url}/api/v1/{record['orgId']}/{user_id}/{record['connectorName'].lower()}/record/{record['_key']}/signedUrl"
 
-            signed_url_route = f"{storage_url}/api/v1/document/internal/{record['externalRecordId']}/download"
+                if record.get("recordType") == "MAIL":
+                    url = f"{connector_url}/api/v1/stream/record/{record['_key']}"
+                    file_content_bytes = await self._download_from_signed_url(url,request)
+                    mime_type = "text/gmail_content"
+                    # Convert bytes to string for JSON serialization
+                    try:
+                        # For mail content, decode as UTF-8 text
+                        file_content = file_content_bytes.decode('utf-8', errors='replace')
+                    except Exception as decode_error:
+                        self.logger.warning(f"Failed to decode file content as UTF-8: {str(decode_error)}")
+                        # Fallback: encode as base64 string for binary content
+                        import base64
+                        file_content = base64.b64encode(file_content_bytes).decode('utf-8')
+
+
 
             return {
                 "orgId": record.get("orgId"),
@@ -2708,6 +2820,7 @@ class BaseArangoService:
                 "origin": record.get("origin", ""),
                 "extension": extension,
                 "mimeType": mime_type,
+                "body": file_content,
                 "createdAtTimestamp": str(record.get("createdAtTimestamp", get_epoch_timestamp_in_ms())),
                 "updatedAtTimestamp": str(get_epoch_timestamp_in_ms()),
                 "sourceCreatedAtTimestamp": str(record.get("sourceCreatedAtTimestamp", record.get("createdAtTimestamp", get_epoch_timestamp_in_ms())))

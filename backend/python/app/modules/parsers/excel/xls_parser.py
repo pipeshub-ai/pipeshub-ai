@@ -6,7 +6,7 @@ import tempfile
 class XLSParser:
     """Parser for Microsoft Excel .xls files"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         pass
 
     def convert_xls_to_xlsx(self, binary: bytes) -> bytes:

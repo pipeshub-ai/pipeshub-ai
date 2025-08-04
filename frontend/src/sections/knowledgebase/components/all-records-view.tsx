@@ -1051,8 +1051,8 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
         // Get file extension for dynamic tooltips
         const fileExt = params.row.fileRecord?.extension || '';
         const recordPermission = params.row.permission;
+        const canReindex = recordPermission?.role === 'OWNER' || recordPermission?.role === 'WRITER' || recordPermission?.role === 'READER';
         const canModify = recordPermission?.role === 'OWNER' || recordPermission?.role === 'WRITER';
-
         // Get descriptive action based on file type
         const getDownloadLabel = () => {
           if (fileExt.toLowerCase().includes('pdf')) return 'Download PDF';
@@ -1083,7 +1083,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
               onClick: () => handleDownload(params.row.externalRecordId!, params.row.recordName),
             },
             // Only show reindex options for OWNER and WRITER of this specific record
-            ...(canModify &&
+            ...(canReindex &&
             (params.row.indexingStatus === 'FAILED' || params.row.indexingStatus === 'NOT_STARTED')
               ? [
                   {
@@ -1095,7 +1095,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
                 ]
               : []),
             // Only show manual indexing for OWNER and WRITER of this specific record
-            ...(canModify && params.row.indexingStatus === 'AUTO_INDEX_OFF'
+            ...(canReindex && params.row.indexingStatus === 'AUTO_INDEX_OFF'
               ? [
                   {
                     label: 'Start Manual Indexing',

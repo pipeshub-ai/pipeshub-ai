@@ -15,7 +15,7 @@ async def get_config_service(request: Request) -> ConfigurationService:
 
 # Authentication logic
 @inject
-async def isJwtTokenValid(request: Request):
+async def isJwtTokenValid(request: Request) -> dict:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -50,7 +50,7 @@ async def isJwtTokenValid(request: Request):
 
 
 # Dependency for injecting authentication
-async def authMiddleware(request: Request):
+async def authMiddleware(request: Request) -> Request:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Not authenticated",

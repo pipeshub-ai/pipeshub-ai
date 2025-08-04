@@ -1,5 +1,6 @@
 import json
 import os
+import io
 from datetime import datetime
 
 from app.config.configuration_service import config_node_constants
@@ -1209,67 +1210,68 @@ class Processor:
 
             llm = await get_llm(self.config_service)
 
-            # Save temporary file to process CSV
-            temp_file_path = f"/tmp/{recordName}_temp.csv"
-            try:
-                with open(temp_file_path, "wb") as f:
-                    f.write(csv_binary)
+            # Try different encodings to decode binary data
+            encodings = ["utf-8", "latin1", "cp1252", "iso-8859-1"]
+            csv_result = None
 
-                # Try different encodings
-                encodings = ["utf-8", "latin1", "cp1252", "iso-8859-1"]
-                csv_result = None
-
-                for encoding in encodings:
-                    try:
-                        self.logger.debug(
-                            f"Attempting to read CSV with {encoding} encoding"
-                        )
-                        csv_result = parser.read_file(temp_file_path, encoding=encoding)
-                        self.logger.debug(
-                            f"Successfully read CSV with {encoding} encoding"
-                        )
-                        break
-                    except UnicodeDecodeError:
-                        continue
-
-                if csv_result is None:
-                    raise ValueError(
-                        "Unable to decode CSV file with any supported encoding"
+            for encoding in encodings:
+                try:
+                    self.logger.debug(
+                        f"Attempting to decode CSV with {encoding} encoding"
                     )
-
-                self.logger.debug("📑 CSV result processed")
-
-                # Extract domain metadata from CSV content
-                self.logger.info("🎯 Extracting domain metadata")
-                if csv_result:
-                    # Convert CSV data to text for metadata extraction
-                    csv_text = "\n".join(
-                        [
-                            " ".join(str(value) for value in row.values())
-                            for row in csv_result
-                        ]
+                    # Decode binary data to string
+                    csv_text = csv_binary.decode(encoding)
+                    
+                    # Create string stream from decoded text
+                    csv_stream = io.StringIO(csv_text)
+                    
+                    # Use the parser's read_stream method directly
+                    csv_result = parser.read_stream(csv_stream)
+                    
+                    self.logger.debug(
+                        f"Successfully processed CSV with {encoding} encoding"
                     )
+                    break
+                except UnicodeDecodeError:
+                    self.logger.debug(f"Failed to decode with {encoding} encoding")
+                    continue
+                except Exception as e:
+                    self.logger.debug(f"Failed to process CSV with {encoding} encoding: {str(e)}")
+                    continue
 
-                    try:
-                        self.logger.info("🎯 Extracting metadata from CSV content")
-                        metadata = await self.domain_extractor.extract_metadata(
-                            csv_text, orgId
-                        )
-                        record = await self.domain_extractor.save_metadata_to_db(
-                            orgId, recordId, metadata, virtual_record_id
-                        )
-                        file = await self.arango_service.get_document(
-                            recordId, CollectionNames.FILES.value
-                        )
-                        domain_metadata = {**record, **file}
-                    except Exception as e:
-                        self.logger.error(f"❌ Error extracting metadata: {str(e)}")
-                        domain_metadata = None
+            if csv_result is None:
+                raise ValueError(
+                    "Unable to decode and process CSV file with any supported encoding"
+                )
 
-            finally:
-                # Clean up temporary file
-                if os.path.exists(temp_file_path):
-                    os.remove(temp_file_path)
+            self.logger.debug("📑 CSV result processed")
+
+            # Extract domain metadata from CSV content
+            self.logger.info("🎯 Extracting domain metadata")
+            if csv_result:
+                # Convert CSV data to text for metadata extraction
+                csv_text = "\n".join(
+                    [
+                        " ".join(str(value) for value in row.values())
+                        for row in csv_result
+                    ]
+                )
+
+                try:
+                    self.logger.info("🎯 Extracting metadata from CSV content")
+                    metadata = await self.domain_extractor.extract_metadata(
+                        csv_text, orgId
+                    )
+                    record = await self.domain_extractor.save_metadata_to_db(
+                        orgId, recordId, metadata, virtual_record_id
+                    )
+                    file = await self.arango_service.get_document(
+                        recordId, CollectionNames.FILES.value
+                    )
+                    domain_metadata = {**record, **file}
+                except Exception as e:
+                    self.logger.error(f"❌ Error extracting metadata: {str(e)}")
+                    domain_metadata = None
 
             # Format content for output
             formatted_content = ""
@@ -1278,7 +1280,7 @@ class Processor:
 
             # Process rows for formatting
             self.logger.debug("📝 Processing rows")
-            batch_size = 10  # Define a suitable batch size
+            batch_size = 20  # Define a suitable batch size
             for i in range(0, len(csv_result), batch_size):
                 batch = csv_result[i : i + batch_size]
                 row_texts = await parser.get_rows_text(llm, batch)
