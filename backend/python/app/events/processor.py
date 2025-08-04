@@ -1,6 +1,5 @@
-import json
-import os
 import io
+import json
 from datetime import datetime
 
 from app.config.configuration_service import config_node_constants
@@ -1221,13 +1220,13 @@ class Processor:
                     )
                     # Decode binary data to string
                     csv_text = csv_binary.decode(encoding)
-                    
+
                     # Create string stream from decoded text
                     csv_stream = io.StringIO(csv_text)
-                    
+
                     # Use the parser's read_stream method directly
                     csv_result = parser.read_stream(csv_stream)
-                    
+
                     self.logger.debug(
                         f"Successfully processed CSV with {encoding} encoding"
                     )
