@@ -19,13 +19,7 @@ class Health:
         self.config_service = config_service
         self.logger = logger
 
-    @staticmethod
-    async def health_check(container) -> None:
-        """Health check endpoint that also verifies connector service health"""
-        pass
-
     # system health check
-    @staticmethod
     async def system_health_check(self) -> None:
         """ System health check"""
         await self.health_check_etcd()
@@ -35,7 +29,6 @@ class Health:
         await self.health_check_qdrant()
 
     # etcd health check
-    @staticmethod
     async def health_check_etcd(self) -> None:
         """Check the health of etcd via HTTP request."""
         self.logger.info("🔍 Starting etcd health check...")
@@ -70,7 +63,6 @@ class Health:
             raise
 
     # arango health check
-    @staticmethod
     async def health_check_arango(self) -> None:
         """Check the health of ArangoDB using ArangoClient."""
         self.logger.info("🔍 Starting ArangoDB health check...")
@@ -101,7 +93,6 @@ class Health:
             raise Exception(error_msg)
 
     # kafka health check
-    @staticmethod
     async def health_check_kafka(self) -> None:
         """Check the health of Kafka by attempting to create a connection."""
         self.logger.info("🔍 Starting Kafka health check...")
@@ -156,7 +147,6 @@ class Health:
                     self.logger.warning(f"Error stopping health check consumer: {e}")
 
     # redis health check
-    @staticmethod
     async def health_check_redis(self) -> None:
         """Check the health of Redis by attempting to connect and ping."""
         self.logger.info("🔍 Starting Redis health check...")
@@ -184,7 +174,6 @@ class Health:
             raise
 
     # qdrant health check
-    @staticmethod
     async def health_check_qdrant(self) -> None:
         """Check the health of Qdrant via HTTP request."""
         self.logger.info("🔍 Starting Qdrant health check...")

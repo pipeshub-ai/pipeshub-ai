@@ -1,17 +1,12 @@
 import asyncio
-import os
 from datetime import datetime, timedelta, timezone
 
-import aiohttp
 import google.oauth2.credentials
-from aiokafka import AIOKafkaConsumer
 from arango import ArangoClient
 from dependency_injector import containers, providers
 from google.oauth2 import service_account
-from qdrant_client import QdrantClient
 from redis import asyncio as aioredis
 from redis.asyncio import Redis
-from redis.exceptions import RedisError
 
 from app.config.configuration_service import (
     ConfigurationService,
@@ -19,7 +14,6 @@ from app.config.configuration_service import (
     config_node_constants,
 )
 from app.config.utils.named_constants.arangodb_constants import AppGroups
-from app.config.utils.named_constants.http_status_code_constants import HttpStatusCode
 from app.connectors.services.kafka_service import KafkaService
 from app.connectors.services.sync_kafka_consumer import SyncKafkaRouteConsumer
 from app.connectors.sources.google.admin.admin_webhook_handler import (
@@ -754,12 +748,8 @@ async def initialize_container(container) -> bool:
     logger.info("🚀 Initializing application resources")
     try:
         logger.info("Running health checks for all services...")
-        try : 
-            await Health.system_health_check(container)
-            logger.info("✅ All health checks completed successfully")
-        except Exception as  e:
-            logger.error(f"❌ Health check failed: {str(e)}")
-            raise
+        await Health.system_health_check(container)
+        logger.info("✅ All health checks completed successfully")
 
         logger.info("Connecting to ArangoDB")
         arango_service = await container.arango_service()

@@ -276,13 +276,9 @@ async def initialize_container(container: AppContainer) -> bool:
         consumer = await container.kafka_consumer()
         await consumer.start()
         logger.info("✅ Kafka consumer initialized")
-
-        try :
-            await Health.system_health_check(container)
-            logger.info("✅ All health checks completed successfully")
-        except Exception as  e:
-            logger.error(f"❌ Health check failed: {str(e)}")
-            raise
+        logger.info("Running health checks for indexing services...")
+        await Health.system_health_check(container)
+        logger.info("✅ All health checks completed successfully")
 
         return True
 
