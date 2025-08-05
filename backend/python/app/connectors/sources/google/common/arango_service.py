@@ -985,7 +985,6 @@ class ArangoService(BaseArangoService):
                 CollectionNames.BELONGS_TO.value,
                 CollectionNames.BELONGS_TO_DEPARTMENT.value,
                 CollectionNames.BELONGS_TO_CATEGORY.value,
-                CollectionNames.BELONGS_TO_KNOWLEDGE_BASE.value,
                 CollectionNames.BELONGS_TO_LANGUAGE.value,
                 CollectionNames.BELONGS_TO_TOPIC.value,
                 CollectionNames.IS_OF_TYPE.value,
