@@ -311,9 +311,13 @@ export default function KnowledgeBaseComponent() {
       setNavigationPath([{ id: kb.id, name: kb.name, type: 'kb' }]);
       navigate({ view: 'knowledge-base', kbId: kb.id });
 
+      // Reset state
       setItems([]);
       setPage(0);
       setSearchQuery('');
+      setError(null);
+      setCurrentUserPermission(null);
+      setPermissions([]);
       isViewInitiallyLoading.current = true;
 
       setTimeout(async () => {
@@ -336,9 +340,11 @@ export default function KnowledgeBaseComponent() {
       setNavigationPath(newPath);
       navigate({ view: 'folder', kbId: currentKB.id, folderId: folder.id });
 
+      // Reset state
       setItems([]);
       setPage(0);
       setSearchQuery('');
+      setError(null);
       isViewInitiallyLoading.current = true;
 
       setTimeout(async () => {
@@ -355,8 +361,13 @@ export default function KnowledgeBaseComponent() {
     setCurrentKB(null);
     setNavigationPath([]);
     navigate({ view: 'dashboard' });
+    
+    // Reset all state
     setItems([]);
     setSearchQuery('');
+    setError(null);
+    setCurrentUserPermission(null);
+    setPermissions([]);
     isViewInitiallyLoading.current = true;
   }, [navigate]);
 
@@ -368,9 +379,11 @@ export default function KnowledgeBaseComponent() {
       setNavigationPath(newPath);
       const parent = newPath[newPath.length - 1];
 
+      // Reset state
       setItems([]);
       setPage(0);
       setSearchQuery('');
+      setError(null);
       isViewInitiallyLoading.current = true;
 
       if (parent.type === 'kb') {
@@ -403,15 +416,35 @@ export default function KnowledgeBaseComponent() {
       lastLoadParams.current = routeId;
       isViewInitiallyLoading.current = true;
 
-      if (stableRoute.view === 'knowledge-base' && stableRoute.kbId) {
+      // Reset state for all route changes
+      setItems([]);
+      setSearchQuery('');
+      setPage(0);
+      setError(null);
+
+      if (stableRoute.view === 'dashboard') {
+        // Reset to dashboard state
+        currentKBRef.current = null;
+        setCurrentKB(null);
+        setNavigationPath([]);
+        setCurrentUserPermission(null);
+        setPermissions([]);
+      } else if (stableRoute.view === 'all-records') {
+        // Handle all-records view - no specific KB needed
+        currentKBRef.current = null;
+        setCurrentKB(null);
+        setNavigationPath([]);
+        setCurrentUserPermission(null);
+        setPermissions([]);
+      } else if (stableRoute.view === 'knowledge-base' && stableRoute.kbId) {
         if (currentKBRef.current?.id !== stableRoute.kbId) {
           try {
             const kb = await KnowledgeBaseAPI.getKnowledgeBase(stableRoute.kbId);
             currentKBRef.current = kb;
             setCurrentKB(kb);
             setNavigationPath([{ id: kb.id, name: kb.name, type: 'kb' }]);
-            setItems([]);
-            setSearchQuery('');
+            setCurrentUserPermission(null);
+            setPermissions([]);
 
             setTimeout(async () => {
               await loadKBContents(stableRoute.kbId!);
@@ -431,8 +464,8 @@ export default function KnowledgeBaseComponent() {
               { id: kb.id, name: kb.name, type: 'kb' },
               { id: stableRoute.folderId, name: 'Folder', type: 'folder' },
             ]);
-            setItems([]);
-            setSearchQuery('');
+            setCurrentUserPermission(null);
+            setPermissions([]);
 
             setTimeout(async () => {
               await loadKBContents(stableRoute.kbId!, stableRoute.folderId);
@@ -453,6 +486,7 @@ export default function KnowledgeBaseComponent() {
     stableRoute.folderId,
     loadKBContents,
     navigate,
+    stableRoute
   ]);
 
   const handleCreateFolder = async (name: string) => {
@@ -613,9 +647,13 @@ export default function KnowledgeBaseComponent() {
         setNavigationPath([kb]);
         navigate({ view: 'knowledge-base', kbId: kb.id });
 
+        // Reset state
         setItems([]);
         setPage(0);
         setSearchQuery('');
+        setError(null);
+        setCurrentUserPermission(null);
+        setPermissions([]);
         isViewInitiallyLoading.current = true;
 
         setTimeout(async () => {
@@ -629,9 +667,11 @@ export default function KnowledgeBaseComponent() {
         const target = newPath[index];
         navigate({ view: 'folder', kbId: currentKB!.id, folderId: target.id });
 
+        // Reset state
         setItems([]);
         setPage(0);
         setSearchQuery('');
+        setError(null);
         isViewInitiallyLoading.current = true;
 
         setTimeout(async () => {
@@ -908,6 +948,7 @@ export default function KnowledgeBaseComponent() {
       <ContentArea>
         {stableRoute.view === 'all-records' ? (
           <AllRecordsView
+            key="all-records"
             onNavigateBack={navigateToDashboard}
             onNavigateToRecord={(recordId) => {
               window.open(`/record/${recordId}`, '_blank', 'noopener,noreferrer');
@@ -915,6 +956,7 @@ export default function KnowledgeBaseComponent() {
           />
         ) : stableRoute.view === 'dashboard' ? (
           <DashboardComponent
+            key="dashboard"
             theme={theme}
             navigateToKB={navigateToKB}
             CompactCard={CompactCard}
@@ -922,36 +964,38 @@ export default function KnowledgeBaseComponent() {
             navigate={navigate}
           />
         ) : (
-          renderKBDetail({
-            navigationPath,
-            navigateToDashboard,
-            navigateToPathIndex,
-            theme,
-            viewMode,
-            handleViewChange,
-            navigateBack,
-            CompactCard,
-            items,
-            pageLoading,
-            navigateToFolder,
-            handleMenuOpen,
-            totalCount,
-            hasMore,
-            loadingMore,
-            handleLoadMore,
-            currentKB,
-            loadKBContents,
-            stableRoute,
-            currentUserPermission,
-            setCreateFolderDialog,
-            setUploadDialog,
-            openPermissionsDialog,
-            handleRefresh,
-            setPage,
-            setRowsPerPage,
-            rowsPerPage,
-            page,
-          })
+          <Box key={`kb-${stableRoute.kbId}-${stableRoute.folderId || 'root'}`}>
+            {renderKBDetail({
+              navigationPath,
+              navigateToDashboard,
+              navigateToPathIndex,
+              theme,
+              viewMode,
+              handleViewChange,
+              navigateBack,
+              CompactCard,
+              items,
+              pageLoading,
+              navigateToFolder,
+              handleMenuOpen,
+              totalCount,
+              hasMore,
+              loadingMore,
+              handleLoadMore,
+              currentKB,
+              loadKBContents,
+              stableRoute,
+              currentUserPermission,
+              setCreateFolderDialog,
+              setUploadDialog,
+              openPermissionsDialog,
+              handleRefresh,
+              setPage,
+              setRowsPerPage,
+              rowsPerPage,
+              page,
+            })}
+          </Box>
         )}
       </ContentArea>
 
