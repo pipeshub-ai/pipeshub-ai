@@ -6,6 +6,9 @@ export interface RouteParams {
   folderId?: string;
 }
 
+// Custom event for programmatic navigation
+const LOCATION_CHANGE_EVENT = 'locationchange';
+
 export const useRouter = () => {
   const [route, setRoute] = useState<RouteParams>({ view: 'dashboard' });
   const [isInitialized, setIsInitialized] = useState(false);
@@ -24,7 +27,7 @@ export const useRouter = () => {
     return { view: 'dashboard' } as RouteParams;
   }, []);
 
-  // Function to update route from URL
+  // Function to update route from URL - single source of truth
   const updateRouteFromURL = useCallback(() => {
     const newRoute = parseURLParams();
     setRoute(newRoute);
@@ -38,53 +41,39 @@ export const useRouter = () => {
     updateRouteFromURL();
   }, [updateRouteFromURL]);
 
-  // Listen for browser back/forward and URL changes
+  // Listen for navigation events
   useEffect(() => {
-    const handlePopState = () => {
+    const handleLocationChange = () => {
       updateRouteFromURL();
     };
 
-    // Listen for popstate (browser back/forward)
-    window.addEventListener('popstate', handlePopState);
-
-    // Listen for URL changes (for cases where URL is changed programmatically)
-    const originalPushState = window.history.pushState;
-    const originalReplaceState = window.history.replaceState;
-
-    window.history.pushState = function (...args) {
-      originalPushState.apply(window.history, args);
-      // Small delay to ensure URL is updated
-      setTimeout(() => {
-        updateRouteFromURL();
-      }, 0);
-    };
-
-    window.history.replaceState = function (...args) {
-      originalReplaceState.apply(window.history, args);
-      // Small delay to ensure URL is updated
-      setTimeout(() => {
-        updateRouteFromURL();
-      }, 0);
-    };
+    // Listen for browser back/forward navigation
+    window.addEventListener('popstate', handleLocationChange);
+    
+    // Listen for custom programmatic navigation events
+    window.addEventListener(LOCATION_CHANGE_EVENT, handleLocationChange);
 
     return () => {
-      window.removeEventListener('popstate', handlePopState);
-      window.history.pushState = originalPushState;
-      window.history.replaceState = originalReplaceState;
+      window.removeEventListener('popstate', handleLocationChange);
+      window.removeEventListener(LOCATION_CHANGE_EVENT, handleLocationChange);
     };
   }, [updateRouteFromURL]);
 
+  // Navigate function - URL is single source of truth
   const navigate = useCallback((newRoute: RouteParams) => {
-    setRoute(newRoute);
-
-    // Update browser URL
+    // Build new URL with updated query parameters
     const searchParams = new URLSearchParams();
     searchParams.set('view', newRoute.view);
     if (newRoute.kbId) searchParams.set('kbId', newRoute.kbId);
     if (newRoute.folderId) searchParams.set('folderId', newRoute.folderId);
 
     const newUrl = `${window.location.pathname}?${searchParams.toString()}`;
+    
+    // Update browser URL without triggering page reload
     window.history.pushState(null, '', newUrl);
+    
+    // Dispatch custom event to notify our hook of the programmatic change
+    window.dispatchEvent(new Event(LOCATION_CHANGE_EVENT));
   }, []);
 
   const navigateBack = useCallback(() => {
