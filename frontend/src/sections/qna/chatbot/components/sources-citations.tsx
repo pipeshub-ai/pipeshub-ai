@@ -204,8 +204,8 @@ const FileCard = React.memo(
     <Paper
       elevation={0}
       sx={{
-        p: 2,
-        mb: 1,
+        p: 1.25,
+        mb: 0.75,
         bgcolor:
           theme.palette.mode === 'dark' ? 'rgba(255, 255, 255, 0.03)' : 'rgba(0, 0, 0, 0.02)',
         borderRadius: 2,
@@ -227,13 +227,13 @@ const FileCard = React.memo(
     >
       <Box
         sx={{
-          pl: 1.5,
+          pl: 1,
           borderLeft: `3px solid ${theme.palette.success.main}`,
           borderRadius: '2px',
         }}
       >
         {/* Main Content Area */}
-        <Stack direction="row" spacing={2} alignItems="flex-start">
+        <Stack direction="row" spacing={1.5} alignItems="flex-start">
           {/* File Icon */}
           <Box
             sx={{
@@ -241,13 +241,13 @@ const FileCard = React.memo(
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              mt: 0.25,
+              mt: 0.125,
             }}
           >
             <Icon
               icon={getFileIcon(file.extension)}
-              width={50}
-              height={50}
+              width={40}
+              height={40}
               style={{ borderRadius: '4px' }}
             />
           </Box>
@@ -257,10 +257,10 @@ const FileCard = React.memo(
             <Typography
               variant="body2"
               sx={{
-                fontSize: '14px',
+                fontSize: '13px',
                 fontWeight: 600,
                 color: 'text.primary',
-                mb: 0.75,
+                mb: 0.5,
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
@@ -271,7 +271,7 @@ const FileCard = React.memo(
               {file.recordName}
             </Typography>
 
-            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.5 }}>
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
               <Typography
                 variant="caption"
                 sx={{
@@ -313,28 +313,22 @@ const FileCard = React.memo(
 
           {/* Connector Icon */}
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexShrink: 0 }}>
-            <Icon
-              icon={
-                file.connector
-                  ? CONNECTOR_ICONS[file.connector as keyof typeof CONNECTOR_ICONS] || databaseIcon
-                  : databaseIcon
-              }
-              width={16}
+            <Icon 
+              icon={file.connector ? CONNECTOR_ICONS[file.connector as keyof typeof CONNECTOR_ICONS] || databaseIcon : databaseIcon} 
+              width={16} 
               height={16}
               style={{
-                color: file.connector
-                  ? getConnectorColor(file.connector)
-                  : theme.palette.text.secondary,
+                color: file.connector ? getConnectorColor(file.connector) : theme.palette.text.secondary
               }}
             />
-            <Typography
-              variant="caption"
-              sx={{
-                color: 'text.secondary',
-                fontSize: '11px',
+            <Typography 
+              variant="caption" 
+              sx={{ 
+                color: 'text.secondary', 
+                fontSize: '11px', 
                 fontWeight: 500,
                 textTransform: 'uppercase',
-                letterSpacing: '0.3px',
+                letterSpacing: '0.3px'
               }}
             >
               {file.connector || 'UPLOAD'}
@@ -343,7 +337,7 @@ const FileCard = React.memo(
         </Stack>
 
         {/* Action Buttons - Moved below and made responsive */}
-        <Box sx={{ mt: 1, display: 'flex', flexWrap: 'wrap', gap: 1, justifyContent: 'flex-end' }}>
+        <Box sx={{ mt: 0.75, display: 'flex', flexWrap: 'wrap', gap: 0.75, justifyContent: 'flex-end' }}>
           {file.webUrl && (
             <Button
               size="small"
@@ -355,12 +349,12 @@ const FileCard = React.memo(
               }}
               sx={{
                 textTransform: 'none',
-                fontSize: '12px',
+                fontSize: '11px',
                 fontWeight: 500,
                 borderRadius: 1.5,
-                px: 1.5,
-                py: 0.5,
-                minHeight: 28,
+                px: 1.25,
+                py: 0.375,
+                minHeight: 26,
               }}
             >
               Open
@@ -378,12 +372,12 @@ const FileCard = React.memo(
               }}
               sx={{
                 textTransform: 'none',
-                fontSize: '12px',
+                fontSize: '11px',
                 fontWeight: 500,
                 borderRadius: 1.5,
-                px: 1.5,
-                py: 0.5,
-                minHeight: 28,
+                px: 1.25,
+                py: 0.375,
+                minHeight: 26,
               }}
             >
               View Citations
@@ -400,12 +394,12 @@ const FileCard = React.memo(
             }}
             sx={{
               textTransform: 'none',
-              fontSize: '12px',
+              fontSize: '11px',
               fontWeight: 500,
               borderRadius: 1.5,
-              px: 1.5,
-              py: 0.5,
-              minHeight: 28,
+              px: 1.25,
+              py: 0.375,
+              minHeight: 26,
             }}
           >
             Details
