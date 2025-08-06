@@ -68,7 +68,7 @@ async def stream_llm_response(
     words_in_chunk = 0
     try:
         llm.with_structured_output(AnswerWithMetadata)
-    except NotImplementedError as e:
+    except Exception as e:
         print(f"LLM provider or api does not support structured output: {e}")
 
     try:
