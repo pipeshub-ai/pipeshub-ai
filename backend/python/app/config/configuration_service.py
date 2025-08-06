@@ -49,11 +49,11 @@ class ConfigurationService:
 
         self.logger.debug("✅ ConfigurationService initialized successfully")
 
-    async def get_config(self, key: str, default: Union[str, int, float, bool, dict, list, None] = None) -> Union[str, int, float, bool, dict, list, None]:
+    async def get_config(self, key: str, default: Union[str, int, float, bool, dict, list, None] = None, use_cache: bool = True) -> Union[str, int, float, bool, dict, list, None]:
         """Get configuration value with LRU cache"""
         try:
             # Check cache first
-            if key in self.cache:
+            if use_cache and key in self.cache:
                 self.logger.debug("📦 Cache hit for key: %s", key)
                 return self.cache[key]
 
