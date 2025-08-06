@@ -17,10 +17,10 @@ from app.api.routes.records import router as records_router
 from app.api.routes.search import router as search_router
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
-from app.setups.query_setup import QueryAppContainer
+from app.containers.query import QueryAppContainer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
-container = QueryAppContainer()
+container = QueryAppContainer.init("query_service")
 
 
 async def initialize_container(container: QueryAppContainer) -> bool:

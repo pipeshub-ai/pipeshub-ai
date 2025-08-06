@@ -11,11 +11,11 @@ from app.config.constants.arangodb import (
     AccountType,
     CollectionNames,
 )
+from app.containers.query import QueryAppContainer
 from app.modules.qna.prompt_templates import qna_prompt
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_arango import ArangoService
 from app.modules.retrieval.retrieval_service import RetrievalService
-from app.setups.query_setup import QueryAppContainer
 from app.utils.citations import process_citations
 from app.utils.query_decompose import QueryDecompositionExpansionService
 from app.utils.query_transform import (

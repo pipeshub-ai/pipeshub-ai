@@ -2,18 +2,11 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 
 import google.oauth2.credentials
-from arango import ArangoClient
 from dependency_injector import containers, providers
 from google.oauth2 import service_account
-from redis import asyncio as aioredis
-from redis.asyncio import Redis
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import AppGroups
-from app.config.constants.service import (
-    RedisConfig,
-    config_node_constants,
-)
 from app.config.providers.etcd.etcd3_encrypted_store import Etcd3EncryptedKeyValueStore
 from app.connectors.services.kafka_service import KafkaService
 from app.connectors.services.sync_kafka_consumer import SyncKafkaRouteConsumer
@@ -58,6 +51,7 @@ from app.connectors.sources.localKB.core.arango_service import (
 from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
 from app.connectors.sources.localKB.handlers.migration_service import run_kb_migration
 from app.connectors.utils.rate_limiter import GoogleAPIRateLimiter
+from app.containers.container import BaseAppContainer
 from app.core.celery_app import CeleryApp
 from app.core.signed_url import SignedUrlConfig, SignedUrlHandler
 from app.health.health import Health
@@ -576,45 +570,23 @@ async def refresh_google_workspace_user_credentials(org_id, arango_service, logg
         logger.debug("🔄 Checking refresh status of credentials for user")
 
 
-class ConnectorAppContainer(containers.DeclarativeContainer):
-    """Dependency injection container for the application."""
+class ConnectorAppContainer(BaseAppContainer):
+    """Dependency injection container for the connector application."""
 
-    # Add locks for cache access
-    service_creds_lock = providers.Singleton(asyncio.Lock)
-    user_creds_lock = providers.Singleton(asyncio.Lock)
-
-    # Initialize logger correctly as a singleton provider
+    # Override logger with service-specific name
     logger = providers.Singleton(create_logger, "connector_service")
 
-    # Log when container is initialized
-    logger().info("🚀 Initializing ConnectorAppContainer")
-
-    # Core services that don't depend on account type
     key_value_store = providers.Singleton(Etcd3EncryptedKeyValueStore, logger=logger)
+
+    # Override config_service to use the service-specific logger
     config_service = providers.Singleton(ConfigurationService, logger=logger, key_value_store=key_value_store)
 
-    async def _create_arango_client(config_service: ConfigurationService) -> ArangoClient:
-        """Async method to initialize ArangoClient."""
-        arangodb_config = await config_service.get_config(
-            config_node_constants.ARANGODB.value
-        )
-        hosts = arangodb_config["url"]
-        return ArangoClient(hosts=hosts)
-
-    async def _create_redis_client(config_service: ConfigurationService) -> Redis:
-        """Async method to initialize RedisClient."""
-        redis_config = await config_service.get_config(
-            config_node_constants.REDIS.value
-        )
-        url = f"redis://{redis_config['host']}:{redis_config['port']}/{RedisConfig.REDIS_DB.value}"
-        return await aioredis.from_url(url, encoding="utf-8", decode_responses=True)
-
-    # Core Resources
+    # Override arango_client and redis_client to use the service-specific config_service
     arango_client = providers.Resource(
-        _create_arango_client, config_service=config_service
+        BaseAppContainer._create_arango_client, config_service=config_service
     )
     redis_client = providers.Resource(
-        _create_redis_client, config_service=config_service
+        BaseAppContainer._create_redis_client, config_service=config_service
     )
 
     # Core Services
@@ -701,7 +673,8 @@ class ConnectorAppContainer(containers.DeclarativeContainer):
     google_slides_parser = providers.Dependency()
     parser_user_service = providers.Dependency()
     sync_kafka_consumer = providers.Dependency()
-    # Wire everything up
+
+    # Connector-specific wiring configuration
     wiring_config = containers.WiringConfiguration(
         modules=[
             "app.core.celery_app",

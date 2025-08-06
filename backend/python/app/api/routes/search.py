@@ -7,9 +7,9 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.config.configuration_service import ConfigurationService
+from app.containers.query import QueryAppContainer
 from app.modules.retrieval.retrieval_arango import ArangoService
 from app.modules.retrieval.retrieval_service import RetrievalService
-from app.setups.query_setup import QueryAppContainer
 from app.utils.query_transform import setup_query_transformation
 
 router = APIRouter()

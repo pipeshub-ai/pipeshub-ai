@@ -4,8 +4,8 @@ from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
+from app.containers.query import QueryAppContainer
 from app.modules.retrieval.retrieval_arango import ArangoService
-from app.setups.query_setup import QueryAppContainer
 
 router = APIRouter()
 

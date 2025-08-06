@@ -11,10 +11,10 @@ from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
 )
+from app.config.constants.service import KafkaConfig, config_node_constants
 
 # Import required services
-from app.config.constants.service import KafkaConfig, config_node_constants
-from app.setups.connector_setup import (
+from app.containers.connector import (
     initialize_enterprise_account_services_fn,
     initialize_individual_account_services_fn,
 )

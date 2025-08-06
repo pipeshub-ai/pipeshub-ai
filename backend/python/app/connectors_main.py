@@ -12,7 +12,7 @@ from app.config.constants.arangodb import AccountType, Connectors
 from app.connectors.api.router import router
 from app.connectors.services.entity_kafka_consumer import EntityKafkaRouteConsumer
 from app.connectors.sources.localKB.api.kb_router import kb_router
-from app.setups.connector_setup import (
+from app.containers.connector import (
     ConnectorAppContainer,
     initialize_container,
     initialize_enterprise_account_services_fn,
@@ -20,7 +20,7 @@ from app.setups.connector_setup import (
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
-container = ConnectorAppContainer()
+container = ConnectorAppContainer.init("connector_service")
 
 async def get_initialized_container() -> ConnectorAppContainer:
     """Dependency provider for initialized container"""

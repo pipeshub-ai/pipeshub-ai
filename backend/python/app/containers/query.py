@@ -1,4 +1,3 @@
-from arango import ArangoClient
 from dependency_injector import containers, providers
 from qdrant_client import QdrantClient
 
@@ -8,6 +7,7 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.service import config_node_constants
 from app.config.providers.etcd.etcd3_encrypted_store import Etcd3EncryptedKeyValueStore
+from app.containers.container import BaseAppContainer
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_arango import ArangoService
 from app.modules.retrieval.retrieval_service import RetrievalService
@@ -15,32 +15,23 @@ from app.services.ai_config_handler import RetrievalAiConfigHandler
 from app.utils.logger import create_logger
 
 
-class QueryAppContainer(containers.DeclarativeContainer):
-    """Dependency injection container for the application."""
+class QueryAppContainer(BaseAppContainer):
+    """Dependency injection container for the query application."""
 
-    # Log when container is initialized
+    # Override logger with service-specific name
     logger = providers.Singleton(create_logger, "query_service")
 
-    logger().info("🚀 Initializing AppContainer")
     key_value_store = providers.Singleton(Etcd3EncryptedKeyValueStore, logger=logger)
+
+    # Override config_service to use the service-specific logger
     config_service = providers.Singleton(ConfigurationService, logger=logger, key_value_store=key_value_store)
-    logger().info("🚀 Initializing QueryAppContainer")
 
-    async def _fetch_arango_host(config_service: ConfigurationService) -> str:
-        """Fetch ArangoDB host URL from etcd asynchronously."""
-        arango_config = await config_service.get_config(
-            config_node_constants.ARANGODB.value
-        )
-        return arango_config["url"]
-
-    async def _create_arango_client(config_service: ConfigurationService) -> ArangoClient:
-        """Async factory method to initialize ArangoClient."""
-        # TODO: Remove this QueryAppContainer usage
-        hosts = await QueryAppContainer._fetch_arango_host(config_service)
-        return ArangoClient(hosts=hosts)
-
+    # Override arango_client and redis_client to use the service-specific config_service
     arango_client = providers.Resource(
-        _create_arango_client, config_service=config_service
+        BaseAppContainer._create_arango_client, config_service=config_service
+    )
+    redis_client = providers.Resource(
+        BaseAppContainer._create_redis_client, config_service=config_service
     )
 
     # First create an async factory for the connected ArangoService
@@ -118,4 +109,14 @@ class QueryAppContainer(containers.DeclarativeContainer):
     reranker_service = providers.Singleton(
         RerankerService,
         model_name="BAAI/bge-reranker-base",  # Choose model based on speed/accuracy needs
+    )
+
+    # Query-specific wiring configuration
+    wiring_config = containers.WiringConfiguration(
+        modules=[
+            "app.api.routes.search",
+            "app.api.routes.chatbot",
+            "app.modules.retrieval.retrieval_service",
+            "app.modules.retrieval.retrieval_arango",
+        ]
     )

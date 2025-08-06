@@ -56,11 +56,11 @@ from app.connectors.sources.google.gmail.gmail_webhook_handler import (
 from app.connectors.sources.google.google_drive.drive_webhook_handler import (
     AbstractDriveWebhookHandler,
 )
+from app.containers.connector import ConnectorAppContainer
 from app.core.ai_arango_service import ArangoService
 from app.modules.parsers.google_files.google_docs_parser import GoogleDocsParser
 from app.modules.parsers.google_files.google_sheets_parser import GoogleSheetsParser
 from app.modules.parsers.google_files.google_slides_parser import GoogleSlidesParser
-from app.setups.connector_setup import ConnectorAppContainer
 from app.utils.llm import get_llm
 from app.utils.logger import create_logger
 

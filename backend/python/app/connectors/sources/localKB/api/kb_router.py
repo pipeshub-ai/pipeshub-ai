@@ -35,7 +35,7 @@ from app.connectors.sources.localKB.api.models import (
     UploadRecordsinKBResponse,
 )
 from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
-from app.setups.connector_setup import ConnectorAppContainer
+from app.containers.connector import ConnectorAppContainer
 
 # Constants for HTTP status codes
 HTTP_MIN_STATUS = 100
