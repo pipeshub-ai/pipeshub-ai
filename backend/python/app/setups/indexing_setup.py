@@ -9,7 +9,6 @@ from app.config.constants.arangodb import (
     ExtensionTypes,
     QdrantCollectionNames,
 )
-from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import (
     RedisConfig,
     config_node_constants,

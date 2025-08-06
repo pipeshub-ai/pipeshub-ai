@@ -10,13 +10,11 @@ from redis.asyncio import Redis
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import AppGroups
-from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import (
     RedisConfig,
     config_node_constants,
 )
 from app.config.providers.etcd.etcd3_encrypted_store import Etcd3EncryptedKeyValueStore
-from app.config.constants.arangodb import AppGroups
 from app.connectors.services.kafka_service import KafkaService
 from app.connectors.services.sync_kafka_consumer import SyncKafkaRouteConsumer
 from app.connectors.sources.google.admin.admin_webhook_handler import (

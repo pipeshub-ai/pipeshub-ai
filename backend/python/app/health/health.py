@@ -5,11 +5,8 @@ from aiokafka import AIOKafkaConsumer  #type: ignore
 from qdrant_client import QdrantClient  #type: ignore
 from redis.asyncio import Redis, RedisError  #type: ignore
 
-from app.config.configuration_service import (
-    RedisConfig,
-    config_node_constants,
-)
-from app.config.utils.named_constants.http_status_code_constants import HttpStatusCode
+from app.config.constants.http_status_code import HttpStatusCode
+from app.config.constants.service import RedisConfig, config_node_constants
 
 
 class Health:

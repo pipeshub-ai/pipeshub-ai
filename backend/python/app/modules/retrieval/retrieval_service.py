@@ -8,13 +8,8 @@ from langchain_qdrant import FastEmbedSparse, QdrantVectorStore, RetrievalMode
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import FieldCondition, Filter, MatchValue
 
-<<<<<<< Updated upstream
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import (
-=======
-from app.config.configuration_service import ConfigurationService, config_node_constants
-from app.config.utils.named_constants.ai_models_named_constants import (
->>>>>>> Stashed changes
     DEFAULT_EMBEDDING_MODEL,
 )
 from app.config.constants.arangodb import (
