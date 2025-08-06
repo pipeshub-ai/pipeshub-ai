@@ -150,9 +150,6 @@ class QueryDecompositionExpansionService:
     def _parse_decomposition_response(self, response: str) -> Dict[str, Any]:
         """Parse the LLM response to extract the JSON structure with confidence scores"""
         try:
-            self.logger.info(f"Parsing decomposition response: {response}")
-            self.logger.info(f"Parsing decomposition response: {response.content}")
-
             # Handle different response formats
             if hasattr(response, "content"):
                 if '</think>' in response.content:
@@ -185,7 +182,6 @@ class QueryDecompositionExpansionService:
 
             # Parse the JSON
             parsed_json = json.loads(json_str)
-
             # Validate and normalize the structure
             if not isinstance(parsed_json, dict):
                 raise ValueError("Response is not a JSON object")
