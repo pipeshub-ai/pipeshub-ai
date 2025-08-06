@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from app.config.configuration_service import ConfigurationService
 from app.modules.retrieval.retrieval_arango import ArangoService
 from app.modules.retrieval.retrieval_service import RetrievalService
-from app.setups.query_setup import AppContainer
+from app.setups.query_setup import QueryAppContainer
 from app.utils.query_transform import setup_query_transformation
 
 router = APIRouter()
@@ -35,19 +35,19 @@ class SearchRequest(BaseModel):
 
 
 async def get_retrieval_service(request: Request) -> RetrievalService:
-    container: AppContainer = request.app.container
+    container: QueryAppContainer = request.app.container
     retrieval_service = await container.retrieval_service()
     return retrieval_service
 
 
 async def get_arango_service(request: Request) -> ArangoService:
-    container: AppContainer = request.app.container
+    container: QueryAppContainer = request.app.container
     arango_service = await container.arango_service()
     return arango_service
 
 
 async def get_config_service(request: Request) -> ConfigurationService:
-    container: AppContainer = request.app.container
+    container: QueryAppContainer = request.app.container
     config_service = container.config_service()
     return config_service
 

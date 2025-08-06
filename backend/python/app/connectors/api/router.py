@@ -60,7 +60,7 @@ from app.core.ai_arango_service import ArangoService
 from app.modules.parsers.google_files.google_docs_parser import GoogleDocsParser
 from app.modules.parsers.google_files.google_sheets_parser import GoogleSheetsParser
 from app.modules.parsers.google_files.google_slides_parser import GoogleSlidesParser
-from app.setups.connector_setup import AppContainer
+from app.setups.connector_setup import ConnectorAppContainer
 from app.utils.llm import get_llm
 from app.utils.logger import create_logger
 
@@ -74,13 +74,13 @@ class ReindexFailedRequest(BaseModel):
 
 
 async def get_arango_service(request: Request) -> ArangoService:
-    container: AppContainer = request.app.container
+    container: ConnectorAppContainer = request.app.container
     arango_service = await container.arango_service()
     return arango_service
 
 async def get_drive_webhook_handler(request: Request) -> Optional[AbstractDriveWebhookHandler]:
     try:
-        container: AppContainer = request.app.container
+        container: ConnectorAppContainer = request.app.container
         drive_webhook_handler = container.drive_webhook_handler()
         return drive_webhook_handler
     except Exception as e:
@@ -139,7 +139,7 @@ async def handle_drive_webhook(request: Request, background_tasks: BackgroundTas
 
 async def get_gmail_webhook_handler(request: Request) -> Optional[AbstractGmailWebhookHandler]:
     try:
-        container: AppContainer = request.app.container
+        container: ConnectorAppContainer = request.app.container
         gmail_webhook_handler = container.gmail_webhook_handler()
         return gmail_webhook_handler
     except Exception as e:
@@ -218,7 +218,7 @@ async def get_signed_url(
     user_id: str,
     connector: str,
     record_id: str,
-    signed_url_handler=Depends(Provide[AppContainer.signed_url_handler]),
+    signed_url_handler=Depends(Provide[ConnectorAppContainer.signed_url_handler]),
 ) -> dict:
     """Get signed URL for a record"""
     try:
@@ -240,7 +240,7 @@ async def get_signed_url(
 
 async def get_google_docs_parser(request: Request) -> Optional[GoogleDocsParser]:
     try:
-        container: AppContainer = request.app.container
+        container: ConnectorAppContainer = request.app.container
         google_docs_parser = container.google_docs_parser()
         return google_docs_parser
     except Exception as e:
@@ -250,7 +250,7 @@ async def get_google_docs_parser(request: Request) -> Optional[GoogleDocsParser]
 
 async def get_google_sheets_parser(request: Request) -> Optional[GoogleSheetsParser]:
     try:
-        container: AppContainer = request.app.container
+        container: ConnectorAppContainer = request.app.container
         google_sheets_parser = container.google_sheets_parser()
         return google_sheets_parser
     except Exception as e:
@@ -260,7 +260,7 @@ async def get_google_sheets_parser(request: Request) -> Optional[GoogleSheetsPar
 
 async def get_google_slides_parser(request: Request) -> Optional[GoogleSlidesParser]:
     try:
-        container: AppContainer = request.app.container
+        container: ConnectorAppContainer = request.app.container
         google_slides_parser = container.google_slides_parser()
         return google_slides_parser
     except Exception as e:
@@ -271,7 +271,7 @@ async def get_google_slides_parser(request: Request) -> Optional[GoogleSlidesPar
 @router.delete("/api/v1/delete/record/{record_id}")
 @inject
 async def handle_record_deletion(
-    record_id: str, arango_service=Depends(Provide[AppContainer.arango_service])
+    record_id: str, arango_service=Depends(Provide[ConnectorAppContainer.arango_service])
 ) -> Optional[dict]:
     try:
         response = await arango_service.delete_records_and_relations(
@@ -304,7 +304,7 @@ async def download_file(
     record_id: str,
     connector: str,
     token: str,
-    signed_url_handler=Depends(Provide[AppContainer.signed_url_handler]),
+    signed_url_handler=Depends(Provide[ConnectorAppContainer.signed_url_handler]),
 ) -> Optional[dict | StreamingResponse]:
     try:
         try:
@@ -1389,7 +1389,7 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)) -> S
 
 async def get_admin_webhook_handler(request: Request) -> Optional[AdminWebhookHandler]:
     try:
-        container: AppContainer = request.app.container
+        container: ConnectorAppContainer = request.app.container
         admin_webhook_handler = container.admin_webhook_handler()
         return admin_webhook_handler
     except Exception as e:

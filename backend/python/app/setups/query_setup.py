@@ -15,7 +15,7 @@ from app.services.ai_config_handler import RetrievalAiConfigHandler
 from app.utils.logger import create_logger
 
 
-class AppContainer(containers.DeclarativeContainer):
+class QueryAppContainer(containers.DeclarativeContainer):
     """Dependency injection container for the application."""
 
     # Log when container is initialized
@@ -24,6 +24,7 @@ class AppContainer(containers.DeclarativeContainer):
     logger().info("🚀 Initializing AppContainer")
     key_value_store = providers.Singleton(Etcd3EncryptedKeyValueStore, logger=logger)
     config_service = providers.Singleton(ConfigurationService, logger=logger, key_value_store=key_value_store)
+    logger().info("🚀 Initializing QueryAppContainer")
 
     async def _fetch_arango_host(config_service: ConfigurationService) -> str:
         """Fetch ArangoDB host URL from etcd asynchronously."""
@@ -34,7 +35,8 @@ class AppContainer(containers.DeclarativeContainer):
 
     async def _create_arango_client(config_service: ConfigurationService) -> ArangoClient:
         """Async factory method to initialize ArangoClient."""
-        hosts = await AppContainer._fetch_arango_host(config_service)
+        # TODO: Remove this QueryAppContainer usage
+        hosts = await QueryAppContainer._fetch_arango_host(config_service)
         return ArangoClient(hosts=hosts)
 
     arango_client = providers.Resource(
