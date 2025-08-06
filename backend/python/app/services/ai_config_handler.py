@@ -97,7 +97,7 @@ class RetrievalAiConfigHandler:
         try:
             self.logger.info("📥 Processing LLM configured event")
 
-            await self.retrieval_service.get_llm_instance()
+            await self.retrieval_service.get_llm_instance(use_cache=False)
 
             self.logger.info(
                 "✅ Successfully updated LLM configuration in all services"
@@ -112,7 +112,7 @@ class RetrievalAiConfigHandler:
         try:
             self.logger.info("📥 Processing embedding model configured event")
 
-            await self.retrieval_service.get_embedding_model_instance()
+            await self.retrieval_service.get_embedding_model_instance(use_cache=False)
             self.logger.info("✅ Successfully updated embedding model in all services")
             return True
         except Exception as e:

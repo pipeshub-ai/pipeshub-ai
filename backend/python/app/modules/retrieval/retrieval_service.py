@@ -8,8 +8,13 @@ from langchain_qdrant import FastEmbedSparse, QdrantVectorStore, RetrievalMode
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import FieldCondition, Filter, MatchValue
 
+<<<<<<< Updated upstream
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import (
+=======
+from app.config.configuration_service import ConfigurationService, config_node_constants
+from app.config.utils.named_constants.ai_models_named_constants import (
+>>>>>>> Stashed changes
     DEFAULT_EMBEDDING_MODEL,
 )
 from app.config.constants.arangodb import (
@@ -64,11 +69,12 @@ class RetrievalService:
         self.logger.info(f"Retrieval service initialized with collection name: {self.collection_name}")
         self.vector_store = None
 
-    async def get_llm_instance(self) -> Optional[BaseChatModel]:
+    async def get_llm_instance(self, use_cache: bool = True) -> Optional[BaseChatModel]:
         try:
             self.logger.info("Getting LLM")
             ai_models = await self.config_service.get_config(
-                config_node_constants.AI_MODELS.value
+                config_node_constants.AI_MODELS.value,
+                use_cache=use_cache
             )
             llm_configs = ai_models["llm"]
 
@@ -89,10 +95,10 @@ class RetrievalService:
             self.logger.error(f"Error getting LLM: {str(e)}")
             return None
 
-    async def get_embedding_model_instance(self) -> Optional[Embeddings]:
+    async def get_embedding_model_instance(self, use_cache: bool = True) -> Optional[Embeddings]:
         try:
             self.logger.info("Getting embedding model")
-            embedding_model = await self.get_current_embedding_model_name()
+            embedding_model = await self.get_current_embedding_model_name(use_cache)
             try:
                 if not embedding_model or embedding_model == DEFAULT_EMBEDDING_MODEL:
                     self.logger.info("Using default embedding model")
@@ -134,12 +140,13 @@ class RetrievalService:
             self.logger.error(f"Error getting embedding model: {str(e)}")
             return None
 
-    async def get_current_embedding_model_name(self) -> Optional[str]:
+    async def get_current_embedding_model_name(self, use_cache: bool = True) -> Optional[str]:
         """Get the current embedding model name from configuration or instance."""
         try:
             # First try to get from AI_MODELS config
             ai_models = await self.config_service.get_config(
-                config_node_constants.AI_MODELS.value
+                config_node_constants.AI_MODELS.value,
+                use_cache=use_cache
             )
             if ai_models and "embedding" in ai_models and ai_models["embedding"]:
                 for config in ai_models["embedding"]:
@@ -173,7 +180,7 @@ class RetrievalService:
         """
         try:
             # Get current model name from config
-            model_name = await self.get_current_embedding_model_name()
+            model_name = await self.get_current_embedding_model_name(use_cache=False)
 
             # Check if using BGE model before adding the prefix
             if model_name and "bge" in model_name.lower():
