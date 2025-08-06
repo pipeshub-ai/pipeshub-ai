@@ -13,6 +13,7 @@ export interface LlmFormValues extends BaseFormValues {
   awsAccessKeyId?: string;
   awsAccessSecretKey?: string;
   region?: string;
+  provider?: string;
 }
 
 export interface EmbeddingFormValues extends BaseFormValues {
