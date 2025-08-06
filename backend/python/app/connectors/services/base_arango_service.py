@@ -1254,6 +1254,7 @@ class BaseArangoService:
                         FILTER permissionEdge.type == "USER"
                         {permission_filter}
                         LET record = DOCUMENT(permissionEdge._from)
+                        FILTER record.recordType != "DRIVE"
                         FILTER record != null
                         FILTER record.isDeleted != true
                         FILTER record.orgId == org_id
@@ -1297,6 +1298,7 @@ class BaseArangoService:
                         FILTER permissionEdge._to == user_from
                         FILTER permissionEdge.type == "USER"
                         LET record = DOCUMENT(permissionEdge._from)
+                        FILTER record.recordType != "DRIVE"
                         FILTER record != null
                         FILTER record.isDeleted != true
                         FILTER record.orgId == org_id
