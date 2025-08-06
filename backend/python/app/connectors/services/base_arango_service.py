@@ -468,7 +468,7 @@ class BaseArangoService:
                         FILTER record.isDeleted != true
                         FILTER record.orgId == org_id
                         FILTER record.origin == "UPLOAD"
-                        FILTER record.recordType != "DRIVE"
+                        FILTER record.recordType != @drive_record_type
                         RETURN {
                             record: record,
                             kb_id: kb._key,
@@ -484,7 +484,7 @@ class BaseArangoService:
                     FILTER record.isDeleted != true
                     FILTER record.orgId == org_id
                     FILTER record.origin == "CONNECTOR"
-                    FILTER record.recordType != "DRIVE"
+                    FILTER record.recordType != @drive_record_type
                     RETURN record
             )
             // Combine all accessible records
@@ -701,6 +701,7 @@ class BaseArangoService:
                 "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
                 "@permissions": CollectionNames.PERMISSIONS.value,
+                "drive_record_type": RecordTypes.DRIVE.value,
             })
 
             result = next(cursor, None)
@@ -1167,7 +1168,7 @@ class BaseArangoService:
                         {permission_filter}
                         LET record = DOCUMENT(permissionEdge._from)
                         FILTER record != null
-                        FILTER record.recordType != "DRIVE"   //remove this when drive is handled
+                        FILTER record.recordType != @drive_record_type
                         FILTER record.isDeleted != true
                         FILTER record.orgId == org_id
                         FILTER record.origin == "CONNECTOR"
@@ -1254,7 +1255,7 @@ class BaseArangoService:
                         FILTER permissionEdge.type == "USER"
                         {permission_filter}
                         LET record = DOCUMENT(permissionEdge._from)
-                        FILTER record.recordType != "DRIVE"
+                        FILTER record.recordType != @drive_record_type
                         FILTER record != null
                         FILTER record.isDeleted != true
                         FILTER record.orgId == org_id
@@ -1298,7 +1299,7 @@ class BaseArangoService:
                         FILTER permissionEdge._to == user_from
                         FILTER permissionEdge.type == "USER"
                         LET record = DOCUMENT(permissionEdge._from)
-                        FILTER record.recordType != "DRIVE"
+                        FILTER record.recordType != @drive_record_type
                         FILTER record != null
                         FILTER record.isDeleted != true
                         FILTER record.orgId == org_id
@@ -1362,6 +1363,7 @@ class BaseArangoService:
                 "@permissions": CollectionNames.PERMISSIONS.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
                 "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                "drive_record_type": RecordTypes.DRIVE.value,
                 **filter_bind_vars,
             }
 
@@ -1372,6 +1374,7 @@ class BaseArangoService:
                 "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
                 "@permissions": CollectionNames.PERMISSIONS.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
+                "drive_record_type": RecordTypes.DRIVE.value,
                 **filter_bind_vars,
             }
 
@@ -1381,6 +1384,7 @@ class BaseArangoService:
                 "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
                 "@permissions": CollectionNames.PERMISSIONS.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
+                "drive_record_type": RecordTypes.DRIVE.value,
             }
 
             # Execute queries

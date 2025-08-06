@@ -83,6 +83,8 @@ interface Record {
   recordType: string;
   indexingStatus: string;
   origin: string;
+  connectorName: string;
+  webUrl: string;
   externalRecordId?: string;
   fileRecord?: {
     extension?: string;
@@ -858,7 +860,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
       headerAlign: 'center',
       renderCell: (params) => {
         // Show KB name if origin is UPLOAD and KB info is available
-        if (params.value === 'UPLOAD' && params.row.kb?.name) {
+        if (params.value === 'CONNECTOR') {
           return (
             <Typography
               variant="caption"
@@ -867,7 +869,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
                 color: theme.palette.primary.main,
               }}
             >
-              {params.row.kb.name}
+              {params.row.connectorName}
             </Typography>
           );
         }
@@ -879,7 +881,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
               fontWeight: 500,
             }}
           >
-            {params.value}
+            KNOWLEDGE BASE
           </Typography>
         );
       },
