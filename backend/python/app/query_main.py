@@ -15,8 +15,8 @@ from app.api.routes.chatbot import router as chatbot_router
 from app.api.routes.health import router as health_router
 from app.api.routes.records import router as records_router
 from app.api.routes.search import router as search_router
-from app.config.configuration_service import DefaultEndpoints, config_node_constants
-from app.config.utils.named_constants.http_status_code_constants import HttpStatusCode
+from app.config.constants.http_status_code import HttpStatusCode
+from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.setups.query_setup import AppContainer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 

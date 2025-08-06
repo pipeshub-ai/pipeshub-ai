@@ -2,15 +2,15 @@ import io
 import json
 from datetime import datetime
 
-from app.config.configuration_service import config_node_constants
-from app.config.utils.named_constants.ai_models_named_constants import (
+from app.config.constants.ai_models import (
     AzureDocIntelligenceModel,
     OCRProvider,
 )
-from app.config.utils.named_constants.arangodb_constants import (
+from app.config.constants.arangodb import (
     CollectionNames,
     ExtensionTypes,
 )
+from app.config.constants.service import config_node_constants
 from app.modules.parsers.pdf.ocr_handler import OCRHandler
 from app.utils.llm import get_llm
 from app.utils.time_conversion import get_epoch_timestamp_in_ms

@@ -3,20 +3,18 @@ import json
 from abc import ABC, abstractmethod
 from typing import Dict, Set
 
-from app.config.configuration_service import (
-    ConfigurationService,
-    WebhookConfig,
-)
-from app.config.utils.named_constants.arangodb_constants import CollectionNames
+from app.config.configuration_service import ConfigurationService
+from app.config.constants.arangodb import CollectionNames
+from app.config.constants.service import WebhookConfig
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class AbstractDriveWebhookHandler(ABC):
     def __init__(
-        self, logger, config: ConfigurationService, arango_service, change_handler
+        self, logger, config_service: ConfigurationService, arango_service, change_handler
     ) -> None:
         self.logger = logger
-        self.config_service = config
+        self.config_service = config_service
         self.arango_service = arango_service
         self.change_handler = change_handler
 
@@ -65,12 +63,12 @@ class IndividualDriveWebhookHandler(AbstractDriveWebhookHandler):
     def __init__(
         self,
         logger,
-        config: ConfigurationService,
+        config_service: ConfigurationService,
         drive_user_service,
         arango_service,
         change_handler,
     ) -> None:
-        super().__init__(logger, config, arango_service, change_handler)
+        super().__init__(logger, config_service, arango_service, change_handler)
         self.logger = logger
         self.drive_user_service = drive_user_service
         self.arango_service = arango_service
@@ -189,12 +187,12 @@ class EnterpriseDriveWebhookHandler(AbstractDriveWebhookHandler):
     def __init__(
         self,
         logger,
-        config: ConfigurationService,
+        config_service: ConfigurationService,
         drive_admin_service,
         arango_service,
         change_handler,
     ) -> None:
-        super().__init__(logger, config, arango_service, change_handler)
+        super().__init__(logger, config_service, arango_service, change_handler)
         self.logger = logger
         self.drive_admin_service = drive_admin_service
         self.pending_notifications: Set[str] = set()

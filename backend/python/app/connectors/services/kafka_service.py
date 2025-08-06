@@ -3,14 +3,15 @@ from typing import Dict
 
 from aiokafka import AIOKafkaProducer
 
-from app.config.configuration_service import ConfigurationService, config_node_constants
-from app.config.utils.named_constants.arangodb_constants import EventTypes
+from app.config.configuration_service import ConfigurationService
+from app.config.constants.arangodb import EventTypes
+from app.config.constants.service import config_node_constants
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class KafkaService:
-    def __init__(self, config: ConfigurationService, logger) -> None:
-        self.config_service = config
+    def __init__(self, config_service: ConfigurationService, logger) -> None:
+        self.config_service = config_service
         self.producer = None
         self.logger = logger
 

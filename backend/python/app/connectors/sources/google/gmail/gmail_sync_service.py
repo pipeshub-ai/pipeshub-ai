@@ -7,12 +7,8 @@ from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import Dict, Optional
 
-from app.config.configuration_service import (
-    ConfigurationService,
-    DefaultEndpoints,
-    config_node_constants,
-)
-from app.config.utils.named_constants.arangodb_constants import (
+from app.config.configuration_service import ConfigurationService
+from app.config.constants.arangodb import (
     AccountType,
     CollectionNames,
     Connectors,
@@ -21,6 +17,7 @@ from app.config.utils.named_constants.arangodb_constants import (
     RecordRelations,
     RecordTypes,
 )
+from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.services.kafka_service import KafkaService
 from app.connectors.sources.google.admin.google_admin_service import GoogleAdminService
 from app.connectors.sources.google.common.arango_service import ArangoService
@@ -45,14 +42,14 @@ class BaseGmailSyncService(ABC):
     def __init__(
         self,
         logger,
-        config: ConfigurationService,
+        config_service: ConfigurationService,
         arango_service: ArangoService,
         change_handler,
         kafka_service: KafkaService,
         celery_app,
     ) -> None:
         self.logger = logger
-        self.config_service = config
+        self.config_service = config_service
         self.arango_service = arango_service
         self.kafka_service = kafka_service
         self.celery_app = celery_app
@@ -865,7 +862,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
     def __init__(
         self,
         logger,
-        config: ConfigurationService,
+        config_service: ConfigurationService,
         gmail_admin_service: GoogleAdminService,
         arango_service: ArangoService,
         change_handler,
@@ -873,7 +870,7 @@ class GmailSyncEnterpriseService(BaseGmailSyncService):
         celery_app,
     ) -> None:
         super().__init__(
-            logger, config, arango_service, change_handler, kafka_service, celery_app
+            logger, config_service, arango_service, change_handler, kafka_service, celery_app
         )
         self.gmail_admin_service = gmail_admin_service
 
@@ -1993,7 +1990,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
     def __init__(
         self,
         logger,
-        config: ConfigurationService,
+        config_service: ConfigurationService,
         gmail_user_service: GmailUserService,
         arango_service: ArangoService,
         change_handler,
@@ -2001,7 +1998,7 @@ class GmailSyncIndividualService(BaseGmailSyncService):
         celery_app,
     ) -> None:
         super().__init__(
-            logger, config, arango_service, change_handler, kafka_service, celery_app
+            logger, config_service, arango_service, change_handler, kafka_service, celery_app
         )
         self.gmail_user_service = gmail_user_service
 

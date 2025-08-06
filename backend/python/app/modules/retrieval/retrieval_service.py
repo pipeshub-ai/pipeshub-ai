@@ -8,15 +8,16 @@ from langchain_qdrant import FastEmbedSparse, QdrantVectorStore, RetrievalMode
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import FieldCondition, Filter, MatchValue
 
-from app.config.configuration_service import config_node_constants
-from app.config.utils.named_constants.ai_models_named_constants import (
+from app.config.configuration_service import ConfigurationService
+from app.config.constants.ai_models import (
     DEFAULT_EMBEDDING_MODEL,
 )
-from app.config.utils.named_constants.arangodb_constants import (
+from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
     RecordTypes,
 )
+from app.config.constants.service import config_node_constants
 from app.exceptions.embedding_exceptions import EmbeddingModelCreationError
 from app.exceptions.fastapi_responses import Status
 from app.exceptions.indexing_exceptions import IndexingError
@@ -32,7 +33,7 @@ class RetrievalService:
     def __init__(
         self,
         logger,
-        config_service,
+        config_service: ConfigurationService,
         collection_name: str,
         qdrant_client: QdrantClient,
     ) -> None:

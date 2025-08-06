@@ -29,8 +29,7 @@ from googleapiclient.http import MediaIoBaseDownload
 from jose import JWTError
 from pydantic import BaseModel, ValidationError
 
-from app.config.configuration_service import config_node_constants
-from app.config.utils.named_constants.arangodb_constants import (
+from app.config.constants.arangodb import (
     AccountType,
     CollectionNames,
     Connectors,
@@ -38,9 +37,10 @@ from app.config.utils.named_constants.arangodb_constants import (
     RecordRelations,
     RecordTypes,
 )
-from app.config.utils.named_constants.http_status_code_constants import (
+from app.config.constants.http_status_code import (
     HttpStatusCode,
 )
+from app.config.constants.service import config_node_constants
 from app.connectors.api.middleware import WebhookAuthVerifier
 from app.connectors.sources.google.admin.admin_webhook_handler import (
     AdminWebhookHandler,

@@ -6,11 +6,8 @@ from fastapi import HTTPException
 from jose import JWTError
 from pydantic import BaseModel, ValidationError
 
-from app.config.configuration_service import (
-    ConfigurationService,
-    DefaultEndpoints,
-    config_node_constants,
-)
+from app.config.configuration_service import ConfigurationService
+from app.config.constants.service import DefaultEndpoints, config_node_constants
 
 
 class SignedUrlConfig(BaseModel):
@@ -20,11 +17,11 @@ class SignedUrlConfig(BaseModel):
     url_prefix: str = "/api/v1/index"
 
     @classmethod
-    async def create(cls, configuration_service: ConfigurationService) -> "SignedUrlConfig":
+    async def create(cls, config_service: ConfigurationService) -> "SignedUrlConfig":
         """Async factory method to create config using configuration service"""
         try:
             # Assuming there's a config node for JWT settings
-            secret_keys = await configuration_service.get_config(
+            secret_keys = await config_service.get_config(
                 config_node_constants.SECRET_KEYS.value
             )
             private_key = secret_keys.get("scopedJwtSecret")
@@ -62,11 +59,11 @@ class SignedUrlHandler:
         self,
         logger,
         config: SignedUrlConfig,
-        configuration_service: ConfigurationService,
+        config_service: ConfigurationService,
     ) -> None:
         self.logger = logger
         self.signed_url_config = config
-        self.config_service = configuration_service
+        self.config_service = config_service
         self._validate_config()
 
     def _validate_config(self) -> None:

@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.middlewares.auth import authMiddleware
-from app.config.utils.named_constants.arangodb_constants import AccountType, Connectors
+from app.config.constants.arangodb import AccountType, Connectors
 from app.connectors.api.router import router
 from app.connectors.services.entity_kafka_consumer import EntityKafkaRouteConsumer
 from app.connectors.sources.localKB.api.kb_router import kb_router
@@ -194,7 +194,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("🔄 Shutting down application")
 
     # Stop main consumer
-    consumer.stop()
+    await consumer.stop()
     # Cancel the consume task
     consume_task.cancel()
     try:

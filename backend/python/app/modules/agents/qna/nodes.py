@@ -3,7 +3,7 @@ import asyncio
 
 from langgraph.types import StreamWriter
 
-from app.config.utils.named_constants.arangodb_constants import (
+from app.config.constants.arangodb import (
     AccountType,
     CollectionNames,
 )

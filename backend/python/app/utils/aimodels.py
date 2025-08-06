@@ -6,7 +6,7 @@ from typing import Any, Dict
 from langchain.chat_models.base import BaseChatModel
 from langchain_core.embeddings.embeddings import Embeddings
 
-from app.config.utils.named_constants.ai_models_named_constants import (
+from app.config.constants.ai_models import (
     AZURE_EMBEDDING_API_VERSION,
     DEFAULT_EMBEDDING_MODEL,
     AzureOpenAILLM,

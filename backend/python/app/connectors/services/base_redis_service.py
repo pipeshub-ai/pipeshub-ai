@@ -8,9 +8,9 @@ from app.config.configuration_service import ConfigurationService
 class BaseRedisService:
     """Service for handling Redis operations"""
 
-    def __init__(self, logger, redis_client, config: ConfigurationService) -> None:
+    def __init__(self, logger, redis_client, config_service: ConfigurationService) -> None:
         self.logger = logger
-        self.config = config
+        self.config_service = config_service
         self.redis_client = redis_client
         self.prefix = "drive_sync:"  # Namespace for our keys
         self._state_lock = asyncio.Lock()

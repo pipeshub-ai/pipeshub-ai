@@ -131,13 +131,13 @@ record_schema = {
             "externalRevisionId": {"type": ["string", "null"]},
             "recordType": {
                 "type": "string",
-                "enum": ["FILE", "DRIVE", "WEBPAGE", "MESSAGE", "MAIL", "OTHERS"],
+                "enum": ["FILE", "DRIVE", "WEBPAGE", "MESSAGE", "MAIL", "NOTION_DATABASE", "WEBPAGE_COMMENTS","OTHERS"],
             },
             "version": {"type": "number", "default": 0},
             "origin": {"type": "string", "enum": ["UPLOAD", "CONNECTOR"]},
             "connectorName": {
                 "type": "string",
-                "enum": ["ONEDRIVE", "DRIVE", "CONFLUENCE", "GMAIL", "SLACK"],
+                "enum": ["ONEDRIVE", "DRIVE", "CONFLUENCE", "GMAIL", "SLACK", "NOTION"],
             },
             "webUrl": {"type": ["string", "null"]},
             # Arango collection entry
@@ -281,11 +281,11 @@ record_group_schema = {
             "externalGroupId": {"type": "string", "minLength": 1},
             "groupType": {
                 "type": "string",
-                "enum": ["SLACK_CHANNEL", "CONFLUENCE_SPACES","KB"],
+                "enum": ["SLACK_CHANNEL", "CONFLUENCE_SPACES","KB", "NOTION_WORKSPACE", "DRIVE"],
             },
             "connectorName": {
                 "type": "string",
-                "enum": ["ONEDRIVE", "DRIVE", "CONFLUENCE", "SLACK","KB"],
+                "enum": ["ONEDRIVE", "DRIVE", "CONFLUENCE", "SLACK","KB", "NOTION"],
             },
             "createdBy":{"type": ["string", "null"]},
             "deletedByUserId":{"type": ["string", "null"]},

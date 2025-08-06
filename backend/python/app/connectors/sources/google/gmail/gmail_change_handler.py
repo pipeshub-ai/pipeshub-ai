@@ -1,7 +1,7 @@
 import uuid
 
-from app.config.configuration_service import DefaultEndpoints, config_node_constants
-from app.config.utils.named_constants.arangodb_constants import (
+from app.config.configuration_service import ConfigurationService
+from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
     EventTypes,
@@ -9,11 +9,12 @@ from app.config.utils.named_constants.arangodb_constants import (
     RecordRelations,
     RecordTypes,
 )
+from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class GmailChangeHandler:
-    def __init__(self, config_service, arango_service, logger) -> None:
+    def __init__(self, config_service: ConfigurationService, arango_service, logger) -> None:
         self.config_service = config_service
         self.arango_service = arango_service
         self.logger = logger

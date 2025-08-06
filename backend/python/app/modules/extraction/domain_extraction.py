@@ -18,17 +18,17 @@ from tenacity import (
     wait_exponential,
 )
 
-from app.config.configuration_service import (
+from app.config.constants.arangodb import (
+    CollectionNames,
+    DepartmentNames,
+)
+from app.config.constants.http_status_code import HttpStatusCode
+from app.config.constants.service import (
     DefaultEndpoints,
     Routes,
     TokenScopes,
     config_node_constants,
 )
-from app.config.utils.named_constants.arangodb_constants import (
-    CollectionNames,
-    DepartmentNames,
-)
-from app.config.utils.named_constants.http_status_code_constants import HttpStatusCode
 from app.modules.extraction.prompt_template import prompt
 from app.utils.llm import get_llm
 from app.utils.time_conversion import get_epoch_timestamp_in_ms

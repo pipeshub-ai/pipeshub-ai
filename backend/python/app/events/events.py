@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import aiohttp
 
-from app.config.utils.named_constants.arangodb_constants import (
+from app.config.constants.arangodb import (
     CollectionNames,
     EventTypes,
     ExtensionTypes,
@@ -14,7 +14,7 @@ from app.config.utils.named_constants.arangodb_constants import (
     ProgressStatus,
     RecordTypes,
 )
-from app.config.utils.named_constants.http_status_code_constants import HttpStatusCode
+from app.config.constants.http_status_code import HttpStatusCode
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 

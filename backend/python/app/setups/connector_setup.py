@@ -13,13 +13,14 @@ from redis import asyncio as aioredis
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
-from app.config.configuration_service import (
-    ConfigurationService,
+from app.config.configuration_service import ConfigurationService
+from app.config.constants.arangodb import AppGroups
+from app.config.constants.http_status_code import HttpStatusCode
+from app.config.constants.service import (
     RedisConfig,
     config_node_constants,
 )
-from app.config.utils.named_constants.arangodb_constants import AppGroups
-from app.config.utils.named_constants.http_status_code_constants import HttpStatusCode
+from app.config.providers.etcd.etcd3_encrypted_store import Etcd3EncryptedKeyValueStore
 from app.connectors.services.kafka_service import KafkaService
 from app.connectors.services.sync_kafka_consumer import SyncKafkaRouteConsumer
 from app.connectors.sources.google.admin.admin_webhook_handler import (
@@ -83,7 +84,7 @@ async def initialize_individual_account_services_fn(org_id, container) -> None:
             providers.Singleton(
                 DriveUserService,
                 logger=logger,
-                config=container.config_service,
+                config_service=container.config_service,
                 rate_limiter=container.rate_limiter,
                 google_token_handler=await container.google_token_handler(),
             )
@@ -95,7 +96,7 @@ async def initialize_individual_account_services_fn(org_id, container) -> None:
             providers.Singleton(
                 GmailUserService,
                 logger=logger,
-                config=container.config_service,
+                config_service=container.config_service,
                 rate_limiter=container.rate_limiter,
                 google_token_handler=await container.google_token_handler(),
             )
@@ -108,7 +109,7 @@ async def initialize_individual_account_services_fn(org_id, container) -> None:
             providers.Singleton(
                 IndividualDriveWebhookHandler,
                 logger=logger,
-                config=container.config_service,
+                config_service=container.config_service,
                 drive_user_service=container.drive_service(),
                 arango_service=await container.arango_service(),
                 change_handler=await container.drive_change_handler(),
@@ -121,7 +122,7 @@ async def initialize_individual_account_services_fn(org_id, container) -> None:
             providers.Singleton(
                 IndividualGmailWebhookHandler,
                 logger=logger,
-                config=container.config_service,
+                config_service=container.config_service,
                 gmail_user_service=container.gmail_service(),
                 arango_service=await container.arango_service(),
                 change_handler=await container.gmail_change_handler(),
@@ -135,7 +136,7 @@ async def initialize_individual_account_services_fn(org_id, container) -> None:
             providers.Singleton(
                 DriveSyncIndividualService,
                 logger=logger,
-                config=container.config_service,
+                config_service=container.config_service,
                 drive_user_service=container.drive_service(),
                 arango_service=await container.arango_service(),
                 change_handler=await container.drive_change_handler(),
@@ -150,7 +151,7 @@ async def initialize_individual_account_services_fn(org_id, container) -> None:
             providers.Singleton(
                 GmailSyncIndividualService,
                 logger=logger,
-                config=container.config_service,
+                config_service=container.config_service,
                 gmail_user_service=container.gmail_service(),
                 arango_service=await container.arango_service(),
                 change_handler=await container.gmail_change_handler(),
@@ -179,7 +180,7 @@ async def initialize_individual_account_services_fn(org_id, container) -> None:
             providers.Singleton(
                 ParserUserService,
                 logger=logger,
-                config=container.config_service,
+                config_service=container.config_service,
                 rate_limiter=container.rate_limiter,
                 google_token_handler=await container.google_token_handler(),
             )
@@ -272,7 +273,7 @@ async def initialize_enterprise_account_services_fn(org_id, container) -> None:
             providers.Singleton(
                 GoogleAdminService,
                 logger=logger,
-                config=container.config_service,
+                config_service=container.config_service,
                 rate_limiter=container.rate_limiter,
                 google_token_handler=await container.google_token_handler(),
                 arango_service=await container.arango_service(),
@@ -282,7 +283,7 @@ async def initialize_enterprise_account_services_fn(org_id, container) -> None:
             providers.Singleton(
                 GoogleAdminService,
                 logger=logger,
-                config=container.config_service,
+                config_service=container.config_service,
                 rate_limiter=container.rate_limiter,
                 google_token_handler=await container.google_token_handler(),
                 arango_service=await container.arango_service(),
@@ -294,7 +295,7 @@ async def initialize_enterprise_account_services_fn(org_id, container) -> None:
             providers.Singleton(
                 EnterpriseDriveWebhookHandler,
                 logger=logger,
-                config=container.config_service,
+                config_service=container.config_service,
                 drive_admin_service=container.drive_service(),
                 arango_service=await container.arango_service(),
                 change_handler=await container.drive_change_handler(),
@@ -307,7 +308,7 @@ async def initialize_enterprise_account_services_fn(org_id, container) -> None:
             providers.Singleton(
                 EnterpriseGmailWebhookHandler,
                 logger=logger,
-                config=container.config_service,
+                config_service=container.config_service,
                 gmail_admin_service=container.gmail_service(),
                 arango_service=await container.arango_service(),
                 change_handler=await container.gmail_change_handler(),
@@ -321,7 +322,7 @@ async def initialize_enterprise_account_services_fn(org_id, container) -> None:
             providers.Singleton(
                 DriveSyncEnterpriseService,
                 logger=logger,
-                config=container.config_service,
+                config_service=container.config_service,
                 drive_admin_service=container.drive_service(),
                 arango_service=await container.arango_service(),
                 change_handler=await container.drive_change_handler(),
@@ -336,7 +337,7 @@ async def initialize_enterprise_account_services_fn(org_id, container) -> None:
             providers.Singleton(
                 GmailSyncEnterpriseService,
                 logger=logger,
-                config=container.config_service,
+                config_service=container.config_service,
                 gmail_admin_service=container.gmail_service(),
                 arango_service=await container.arango_service(),
                 change_handler=await container.gmail_change_handler(),
@@ -364,7 +365,7 @@ async def initialize_enterprise_account_services_fn(org_id, container) -> None:
             providers.Singleton(
                 GoogleAdminService,
                 logger=logger,
-                config=container.config_service,
+                config_service=container.config_service,
                 rate_limiter=container.rate_limiter,
                 google_token_handler=await container.google_token_handler(),
                 arango_service=await container.arango_service(),
@@ -595,9 +596,10 @@ class AppContainer(containers.DeclarativeContainer):
     logger().info("🔧 Environment: dev")
 
     # Core services that don't depend on account type
-    config_service = providers.Singleton(ConfigurationService, logger=logger)
+    key_value_store = providers.Singleton(Etcd3EncryptedKeyValueStore, logger=logger)
+    config_service = providers.Singleton(ConfigurationService, logger=logger, key_value_store=key_value_store)
 
-    async def _create_arango_client(config_service) -> ArangoClient:
+    async def _create_arango_client(config_service: ConfigurationService) -> ArangoClient:
         """Async method to initialize ArangoClient."""
         arangodb_config = await config_service.get_config(
             config_node_constants.ARANGODB.value
@@ -605,7 +607,7 @@ class AppContainer(containers.DeclarativeContainer):
         hosts = arangodb_config["url"]
         return ArangoClient(hosts=hosts)
 
-    async def _create_redis_client(config_service) -> Redis:
+    async def _create_redis_client(config_service: ConfigurationService) -> Redis:
         """Async method to initialize RedisClient."""
         redis_config = await config_service.get_config(
             config_node_constants.REDIS.value
@@ -624,7 +626,7 @@ class AppContainer(containers.DeclarativeContainer):
     # Core Services
     rate_limiter = providers.Singleton(GoogleAPIRateLimiter)
     kafka_service = providers.Singleton(
-        KafkaService, logger=logger, config=config_service
+        KafkaService, logger=logger, config_service=config_service
     )
 
     arango_service = providers.Singleton(
@@ -632,7 +634,7 @@ class AppContainer(containers.DeclarativeContainer):
         logger=logger,
         arango_client=arango_client,
         kafka_service=kafka_service,
-        config=config_service,
+        config_service=config_service,
     )
 
     kb_arango_service = providers.Singleton(
@@ -640,7 +642,7 @@ class AppContainer(containers.DeclarativeContainer):
         logger=logger,
         arango_client=arango_client,
         kafka_service=kafka_service,
-        config=config_service,
+        config_service=config_service,
     )
 
     kb_service = providers.Singleton(
@@ -679,13 +681,13 @@ class AppContainer(containers.DeclarativeContainer):
 
     # Signed URL Handler
     signed_url_config = providers.Resource(
-        SignedUrlConfig.create, configuration_service=config_service
+        SignedUrlConfig.create, config_service=config_service
     )
     signed_url_handler = providers.Singleton(
         SignedUrlHandler,
         logger=logger,
         config=signed_url_config,
-        configuration_service=config_service,
+        config_service=config_service,
     )
 
     # Services that will be initialized based on account type

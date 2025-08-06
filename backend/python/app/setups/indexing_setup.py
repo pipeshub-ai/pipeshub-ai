@@ -9,16 +9,17 @@ from qdrant_client import QdrantClient
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
-from app.config.configuration_service import (
-    ConfigurationService,
-    RedisConfig,
-    config_node_constants,
-)
-from app.config.utils.named_constants.arangodb_constants import (
+from app.config.configuration_service import ConfigurationService
+from app.config.constants.arangodb import (
     ExtensionTypes,
     QdrantCollectionNames,
 )
-from app.config.utils.named_constants.http_status_code_constants import HttpStatusCode
+from app.config.constants.http_status_code import HttpStatusCode
+from app.config.constants.service import (
+    RedisConfig,
+    config_node_constants,
+)
+from app.config.providers.etcd.etcd3_encrypted_store import Etcd3EncryptedKeyValueStore
 from app.core.ai_arango_service import ArangoService
 from app.core.redis_scheduler import RedisScheduler
 from app.events.events import EventProcessor
@@ -50,16 +51,17 @@ class AppContainer(containers.DeclarativeContainer):
     logger().info("🚀 Initializing AppContainer")
 
     # Core services that don't depend on account type
-    config_service = providers.Singleton(ConfigurationService, logger=logger)
+    key_value_store = providers.Singleton(Etcd3EncryptedKeyValueStore, logger=logger)
+    config_service = providers.Singleton(ConfigurationService, logger=logger, key_value_store=key_value_store)
 
-    async def _fetch_arango_host(config_service) -> str:
+    async def _fetch_arango_host(config_service: ConfigurationService) -> str:
         """Fetch ArangoDB host URL from etcd asynchronously."""
         arango_config = await config_service.get_config(
             config_node_constants.ARANGODB.value
         )
         return arango_config["url"]
 
-    async def _create_arango_client(config_service) -> ArangoClient:
+    async def _create_arango_client(config_service: ConfigurationService) -> ArangoClient:
         """Async factory method to initialize ArangoClient."""
         hosts = await AppContainer._fetch_arango_host(config_service)
         return ArangoClient(hosts=hosts)
@@ -69,9 +71,9 @@ class AppContainer(containers.DeclarativeContainer):
     )
 
     # First create an async factory for the connected ArangoService
-    async def _create_arango_service(logger, arango_client, config) -> ArangoService:
+    async def _create_arango_service(logger, arango_client, config_service: ConfigurationService) -> ArangoService:
         """Async factory to create and connect ArangoService"""
-        service = ArangoService(logger, arango_client, config)
+        service = ArangoService(logger, arango_client, config_service)
         await service.connect()
         return service
 
@@ -79,7 +81,7 @@ class AppContainer(containers.DeclarativeContainer):
         _create_arango_service,
         logger=logger,
         arango_client=arango_client,
-        config=config_service,
+        config_service=config_service,
     )
 
     # Vector search service
@@ -116,7 +118,7 @@ class AppContainer(containers.DeclarativeContainer):
     )
 
     # Indexing pipeline
-    async def _create_indexing_pipeline(logger, config_service, arango_service, qdrant_client) -> IndexingPipeline:
+    async def _create_indexing_pipeline(logger, config_service: ConfigurationService, arango_service, qdrant_client) -> IndexingPipeline:
         """Async factory for IndexingPipeline"""
         pipeline = IndexingPipeline(
             logger=logger,
@@ -136,7 +138,7 @@ class AppContainer(containers.DeclarativeContainer):
     )
 
     # Domain extraction service - depends on arango_service
-    async def _create_domain_extractor(logger, arango_service, config_service) -> DomainExtractor:
+    async def _create_domain_extractor(logger, arango_service, config_service: ConfigurationService) -> DomainExtractor:
         """Async factory for DomainExtractor"""
         extractor = DomainExtractor(logger, arango_service, config_service)
         # Add any necessary async initialization
@@ -171,7 +173,7 @@ class AppContainer(containers.DeclarativeContainer):
     # Processor - depends on domain_extractor, indexing_pipeline, and arango_service
     async def _create_processor(
         logger,
-        config_service,
+        config_service: ConfigurationService,
         domain_extractor,
         indexing_pipeline,
         arango_service,
@@ -216,7 +218,7 @@ class AppContainer(containers.DeclarativeContainer):
     )
 
     # Redis scheduler
-    async def _create_redis_scheduler(logger, config_service) -> RedisScheduler:
+    async def _create_redis_scheduler(logger, config_service: ConfigurationService) -> RedisScheduler:
         """Async factory for RedisScheduler"""
         redis_config = await config_service.get_config(
             config_node_constants.REDIS.value
@@ -231,7 +233,7 @@ class AppContainer(containers.DeclarativeContainer):
     )
 
     # Kafka consumer with async initialization
-    async def _create_kafka_consumer(logger, config_service, event_processor, redis_scheduler) -> KafkaConsumerManager:
+    async def _create_kafka_consumer(logger, config_service: ConfigurationService, event_processor, redis_scheduler) -> KafkaConsumerManager:
         """Async factory for KafkaConsumerManager"""
         consumer = KafkaConsumerManager(
             logger=logger,
@@ -300,7 +302,7 @@ async def health_check_arango(container) -> None:
     logger = container.logger()
     logger.info("🔍 Starting ArangoDB health check...")
     try:
-        # Get the config_service instance first, then call get_config
+        # Get the key_value_store instance first, then call get_key
         config_service = container.config_service()
         arangodb_config = await config_service.get_config(
             config_node_constants.ARANGODB.value
@@ -333,7 +335,8 @@ async def health_check_kafka(container) -> None:
     logger.info("🔍 Starting Kafka health check...")
     consumer = None
     try:
-        kafka_config = await container.config_service().get_config(
+        config_service = container.config_service()
+        kafka_config = await config_service.get_config(
             config_node_constants.KAFKA.value
         )
         brokers = kafka_config["brokers"]
@@ -387,7 +390,8 @@ async def health_check_redis(container) -> None:
     logger = container.logger()
     logger.info("🔍 Starting Redis health check...")
     try:
-        redis_config = await container.config_service().get_config(
+        config_service = container.config_service()
+        redis_config = await config_service.get_config(
             config_node_constants.REDIS.value
         )
         redis_url = f"redis://{redis_config['host']}:{redis_config['port']}/{RedisConfig.REDIS_DB.value}"
@@ -415,7 +419,8 @@ async def health_check_qdrant(container) -> None:
     logger = container.logger()
     logger.info("🔍 Starting Qdrant health check...")
     try:
-        qdrant_config = await container.config_service().get_config(
+        config_service = container.config_service()
+        qdrant_config = await config_service.get_config(
             config_node_constants.QDRANT.value
         )
         host = qdrant_config["host"]

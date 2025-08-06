@@ -10,19 +10,16 @@ import aiohttp
 from arango import ArangoClient
 from fastapi import Request
 
-from app.config.configuration_service import (
-    ConfigurationService,
-    DefaultEndpoints,
-    config_node_constants,
-)
-from app.config.utils.named_constants.arangodb_constants import (
+from app.config.configuration_service import ConfigurationService
+from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
     DepartmentNames,
     OriginTypes,
     RecordTypes,
 )
-from app.config.utils.named_constants.http_status_code_constants import HttpStatusCode
+from app.config.constants.http_status_code import HttpStatusCode
+from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.services.kafka_service import KafkaService
 from app.schema.arango.documents import (
     app_schema,
@@ -93,10 +90,10 @@ class BaseArangoService:
     """Base ArangoDB service class for interacting with the database"""
 
     def __init__(
-        self, logger, arango_client: ArangoClient, config: ConfigurationService, kafka_service: KafkaService,
+        self, logger, arango_client: ArangoClient, config_service: ConfigurationService, kafka_service: KafkaService,
     ) -> None:
         self.logger = logger
-        self.config = config
+        self.config_service = config_service
         self.client = arango_client
         self.kafka_service = kafka_service
         self.db = None
@@ -219,7 +216,7 @@ class BaseArangoService:
         """Connect to ArangoDB and initialize collections"""
         try:
             self.logger.info("🚀 Connecting to ArangoDB...")
-            arangodb_config = await self.config.get_config(
+            arangodb_config = await self.config_service.get_config(
                 config_node_constants.ARANGODB.value
             )
             arango_url = arangodb_config["url"]
@@ -2782,7 +2779,7 @@ class BaseArangoService:
                 extension = file_record.get("extension", "")
                 mime_type = file_record.get("mimeType", "")
 
-            endpoints = await self.config.get_config(
+            endpoints = await self.config_service.get_config(
                     config_node_constants.ENDPOINTS.value
                 )
             signed_url_route = ""

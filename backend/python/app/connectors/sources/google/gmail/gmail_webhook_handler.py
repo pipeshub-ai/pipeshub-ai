@@ -4,15 +4,15 @@ from abc import ABC, abstractmethod
 from typing import Dict, Optional
 
 from app.config.configuration_service import ConfigurationService
-from app.config.utils.named_constants.arangodb_constants import CollectionNames
+from app.config.constants.arangodb import CollectionNames
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class AbstractGmailWebhookHandler(ABC):
     def __init__(
-        self, logger, config: ConfigurationService, arango_service, change_handler
+        self, logger, config_service: ConfigurationService, arango_service, change_handler
     ) -> None:
-        self.config_service = config
+        self.config_service = config_service
         self.logger = logger
         self.arango_service = arango_service
         self.change_handler = change_handler
@@ -144,12 +144,12 @@ class IndividualGmailWebhookHandler(AbstractGmailWebhookHandler):
     def __init__(
         self,
         logger,
-        config: ConfigurationService,
+        config_service: ConfigurationService,
         gmail_user_service,
         arango_service,
         change_handler,
     ) -> None:
-        super().__init__(logger, config, arango_service, change_handler)
+        super().__init__(logger, config_service, arango_service, change_handler)
         self.gmail_user_service = gmail_user_service
 
     async def _process_notification_data(
@@ -266,12 +266,12 @@ class EnterpriseGmailWebhookHandler(AbstractGmailWebhookHandler):
     def __init__(
         self,
         logger,
-        config: ConfigurationService,
+        config_service: ConfigurationService,
         gmail_admin_service,
         arango_service,
         change_handler,
     ) -> None:
-        super().__init__(logger, config, arango_service, change_handler)
+        super().__init__(logger, config_service, arango_service, change_handler)
         self.gmail_admin_service = gmail_admin_service
 
     async def _process_notification_data(

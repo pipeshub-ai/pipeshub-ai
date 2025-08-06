@@ -6,13 +6,14 @@ from uuid import uuid4
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from dependency_injector.wiring import inject
 
-# Import required services
-from app.config.configuration_service import KafkaConfig, config_node_constants
-from app.config.utils.named_constants.arangodb_constants import (
+from app.config.constants.arangodb import (
     AccountType,
     CollectionNames,
     Connectors,
 )
+
+# Import required services
+from app.config.constants.service import KafkaConfig, config_node_constants
 from app.setups.connector_setup import (
     initialize_enterprise_account_services_fn,
     initialize_individual_account_services_fn,

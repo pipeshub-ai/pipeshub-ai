@@ -8,19 +8,19 @@ from aiokafka import AIOKafkaConsumer
 from jose import jwt
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from app.config.configuration_service import (
-    ConfigurationService,
-    KafkaConfig,
-    config_node_constants,
-)
-from app.config.utils.named_constants.arangodb_constants import (
+from app.config.configuration_service import ConfigurationService
+from app.config.constants.arangodb import (
     CollectionNames,
     EventTypes,
     ExtensionTypes,
     MimeTypes,
     ProgressStatus,
 )
-from app.config.utils.named_constants.http_status_code_constants import HttpStatusCode
+from app.config.constants.http_status_code import HttpStatusCode
+from app.config.constants.service import (
+    KafkaConfig,
+    config_node_constants,
+)
 from app.exceptions.indexing_exceptions import IndexingError
 
 # Concurrency control settings
@@ -302,7 +302,7 @@ class KafkaConsumerManager:
                     }
                     token = await self.generate_jwt(payload)
                     self.logger.debug(f"Generated JWT token for message {message_id}")
-
+                    self.logger.debug(f"Signed URL route: {payload_data['signedUrlRoute']}")
                     response = await make_api_call(
                         payload_data["signedUrlRoute"], token
                     )

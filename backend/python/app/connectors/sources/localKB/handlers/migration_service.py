@@ -8,9 +8,7 @@ import uuid
 from logging import Logger
 from typing import Dict, List, Optional
 
-from arango.graph import Graph
-
-from app.config.utils.named_constants.arangodb_constants import (
+from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
 )
@@ -540,7 +538,7 @@ class KnowledgeBaseMigrationService:
 
         return user_key
 
-    async def _create_new_edge_definition(self, graph: Graph, edge_def: Dict) -> None:
+    async def _create_new_edge_definition(self, graph: object, edge_def: Dict) -> None:
         """Create a new edge definition"""
         try:
             edge_collection = edge_def["edge_collection"]
@@ -589,7 +587,7 @@ class KnowledgeBaseMigrationService:
             self.logger.error(f"❌ Failed to create complete new graph: {str(e)}")
             raise
 
-    async def _update_existing_edge_definition(self, graph: Graph, edge_collection: str, new_edge_def: Dict) -> None:
+    async def _update_existing_edge_definition(self, graph: object, edge_collection: str, new_edge_def: Dict) -> None:
         """Update an existing edge definition with new vertex collections"""
         try:
             self.logger.info(f"🔄 Updating edge definition: {edge_collection}")

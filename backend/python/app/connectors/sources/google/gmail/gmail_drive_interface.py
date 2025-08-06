@@ -1,7 +1,7 @@
 from typing import Dict, Optional
 
 from app.config.configuration_service import ConfigurationService
-from app.config.utils.named_constants.arangodb_constants import AccountType
+from app.config.constants.arangodb import AccountType
 from app.connectors.sources.google.google_drive.drive_user_service import (
     DriveUserService,
 )
@@ -15,7 +15,7 @@ class GmailDriveInterface:
     def __init__(
         self,
         logger,
-        config: ConfigurationService,
+        config_service: ConfigurationService,
         rate_limiter: GoogleAPIRateLimiter,
         google_token_handler,
         drive_service=None,
@@ -23,7 +23,7 @@ class GmailDriveInterface:
         admin_service=None,
     ) -> None:
         self.logger = logger
-        self.config_service = config
+        self.config_service = config_service
         self.rate_limiter = rate_limiter
         self.drive_service = drive_service
         self.google_token_handler = google_token_handler
@@ -83,7 +83,7 @@ class GmailDriveInterface:
                 if not isinstance(self.drive_service, DriveUserService):
                     self.drive_service = DriveUserService(
                         logger=self.logger,
-                        config=self.config_service,
+                        config_service=self.config_service,
                         rate_limiter=self.rate_limiter,
                         google_token_handler=self.google_token_handler,
                         credentials=self.credentials,

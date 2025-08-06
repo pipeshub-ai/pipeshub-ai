@@ -23,14 +23,14 @@ class ParserUserService:
     def __init__(
         self,
         logger,
-        config: ConfigurationService,
+        config_service: ConfigurationService,
         rate_limiter: GoogleAPIRateLimiter,
         google_token_handler,
         credentials=None,
     ) -> None:
         try:
             self.logger = logger
-            self.config_service = config
+            self.config_service = config_service
             self.rate_limiter = rate_limiter
             self.google_token_handler = google_token_handler
             self.google_limiter = self.rate_limiter.google_limiter

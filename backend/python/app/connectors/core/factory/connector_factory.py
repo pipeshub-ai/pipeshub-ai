@@ -127,7 +127,7 @@ class UniversalConnectorFactory(IConnectorFactory):
             connector = connector_class(
                 logger=self.logger,
                 connector_type=connector_type,
-                config=config,
+                config_service=config,
                 auth_service=auth_service,
                 data_service=data_service,
                 error_service=self.default_error_service,

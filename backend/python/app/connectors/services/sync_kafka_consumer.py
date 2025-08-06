@@ -5,12 +5,13 @@ from typing import Dict, List
 from aiokafka import AIOKafkaConsumer
 from dependency_injector.wiring import inject
 
-from app.config.configuration_service import KafkaConfig, config_node_constants
-from app.config.utils.named_constants.arangodb_constants import Connectors
+from app.config.configuration_service import ConfigurationService
+from app.config.constants.arangodb import Connectors
+from app.config.constants.service import KafkaConfig, config_node_constants
 
 
 class SyncKafkaRouteConsumer:
-    def __init__(self, logger, config_service, arango_service, sync_tasks) -> None:
+    def __init__(self, logger, config_service: ConfigurationService, arango_service, sync_tasks) -> None:
         self.logger = logger
         self.consumer = None
         self.running = False

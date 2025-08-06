@@ -6,12 +6,8 @@ from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import Dict, Optional
 
-from app.config.configuration_service import (
-    ConfigurationService,
-    DefaultEndpoints,
-    config_node_constants,
-)
-from app.config.utils.named_constants.arangodb_constants import (
+from app.config.configuration_service import ConfigurationService
+from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
     EventTypes,
@@ -19,6 +15,7 @@ from app.config.utils.named_constants.arangodb_constants import (
     ProgressStatus,
     RecordRelations,
 )
+from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.services.kafka_service import KafkaService
 from app.connectors.sources.google.admin.google_admin_service import GoogleAdminService
 from app.connectors.sources.google.common.arango_service import ArangoService
@@ -47,14 +44,14 @@ class BaseDriveSyncService(ABC):
     def __init__(
         self,
         logger,
-        config: ConfigurationService,
+        config_service: ConfigurationService,
         arango_service: ArangoService,
         change_handler,
         kafka_service: KafkaService,
         celery_app,
     ) -> None:
         self.logger = logger
-        self.config_service = config
+        self.config_service = config_service
         self.arango_service = arango_service
         self.change_handler = change_handler
         self.kafka_service = kafka_service
@@ -620,7 +617,7 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
     def __init__(
         self,
         logger,
-        config: ConfigurationService,
+        config_service: ConfigurationService,
         drive_admin_service: GoogleAdminService,
         arango_service: ArangoService,
         change_handler,
@@ -628,7 +625,7 @@ class DriveSyncEnterpriseService(BaseDriveSyncService):
         celery_app,
     ) -> None:
         super().__init__(
-            logger, config, arango_service, change_handler, kafka_service, celery_app
+            logger, config_service, arango_service, change_handler, kafka_service, celery_app
         )
         self.drive_admin_service = drive_admin_service
         self._active_user_service = None
@@ -1617,7 +1614,7 @@ class DriveSyncIndividualService(BaseDriveSyncService):
     def __init__(
         self,
         logger,
-        config: ConfigurationService,
+        config_service: ConfigurationService,
         drive_user_service: DriveUserService,
         arango_service: ArangoService,
         change_handler,
@@ -1625,7 +1622,7 @@ class DriveSyncIndividualService(BaseDriveSyncService):
         celery_app,
     ) -> None:
         super().__init__(
-            logger, config, arango_service, change_handler, kafka_service, celery_app
+            logger, config_service, arango_service, change_handler, kafka_service, celery_app
         )
         self.drive_user_service = drive_user_service
 

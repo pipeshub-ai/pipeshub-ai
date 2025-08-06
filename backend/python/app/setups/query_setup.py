@@ -2,8 +2,12 @@ from arango import ArangoClient
 from dependency_injector import containers, providers
 from qdrant_client import QdrantClient
 
-from app.config.configuration_service import ConfigurationService, config_node_constants
-from app.config.utils.named_constants.arangodb_constants import QdrantCollectionNames
+from app.config.configuration_service import ConfigurationService
+from app.config.constants.arangodb import (
+    QdrantCollectionNames,
+)
+from app.config.constants.service import config_node_constants
+from app.config.providers.etcd.etcd3_encrypted_store import Etcd3EncryptedKeyValueStore
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_arango import ArangoService
 from app.modules.retrieval.retrieval_service import RetrievalService
@@ -18,18 +22,17 @@ class AppContainer(containers.DeclarativeContainer):
     logger = providers.Singleton(create_logger, "query_service")
 
     logger().info("🚀 Initializing AppContainer")
+    key_value_store = providers.Singleton(Etcd3EncryptedKeyValueStore, logger=logger)
+    config_service = providers.Singleton(ConfigurationService, logger=logger, key_value_store=key_value_store)
 
-    # Initialize ConfigurationService first
-    config_service = providers.Singleton(ConfigurationService, logger=logger)
-
-    async def _fetch_arango_host(config_service) -> str:
+    async def _fetch_arango_host(config_service: ConfigurationService) -> str:
         """Fetch ArangoDB host URL from etcd asynchronously."""
         arango_config = await config_service.get_config(
             config_node_constants.ARANGODB.value
         )
         return arango_config["url"]
 
-    async def _create_arango_client(config_service) -> ArangoClient:
+    async def _create_arango_client(config_service: ConfigurationService) -> ArangoClient:
         """Async factory method to initialize ArangoClient."""
         hosts = await AppContainer._fetch_arango_host(config_service)
         return ArangoClient(hosts=hosts)
@@ -39,9 +42,9 @@ class AppContainer(containers.DeclarativeContainer):
     )
 
     # First create an async factory for the connected ArangoService
-    async def _create_arango_service(logger, arango_client, config) -> ArangoService:
+    async def _create_arango_service(logger, arango_client, config_service: ConfigurationService) -> ArangoService:
         """Async factory to create and connect ArangoService"""
-        service = ArangoService(logger, arango_client, config)
+        service = ArangoService(logger, arango_client, config_service)
         await service.connect()
         return service
 
@@ -49,7 +52,7 @@ class AppContainer(containers.DeclarativeContainer):
         _create_arango_service,
         logger=logger,
         arango_client=arango_client,
-        config=config_service,
+        config_service=config_service,
     )
 
     # Vector search service
@@ -86,7 +89,7 @@ class AppContainer(containers.DeclarativeContainer):
     )
 
     # Vector search service
-    async def _create_retrieval_service(config_service, logger, qdrant_client) -> RetrievalService:
+    async def _create_retrieval_service(config_service: ConfigurationService, logger, qdrant_client) -> RetrievalService:
         """Async factory for RetrievalService"""
         service = RetrievalService(
             logger=logger,

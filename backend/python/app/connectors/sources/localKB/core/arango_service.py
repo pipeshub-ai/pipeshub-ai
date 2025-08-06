@@ -6,14 +6,14 @@ from typing import Dict, List, Optional, Tuple
 from arango import ArangoClient
 from arango.database import TransactionDatabase
 
-from app.config.configuration_service import (
-    ConfigurationService,
-    DefaultEndpoints,
-    config_node_constants,
-)
-from app.config.utils.named_constants.arangodb_constants import (
+from app.config.configuration_service import ConfigurationService
+from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
+)
+from app.config.constants.service import (
+    DefaultEndpoints,
+    config_node_constants,
 )
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.connectors.services.kafka_service import KafkaService
@@ -28,12 +28,12 @@ class KnowledgeBaseArangoService(BaseArangoService):
         logger,
         arango_client: ArangoClient,
         kafka_service: KafkaService,
-        config: ConfigurationService,
+        config_service: ConfigurationService,
     ) -> None:
         # Call parent class constructor to initialize shared attributes
-        super().__init__(logger, arango_client, config,kafka_service)
+        super().__init__(logger, arango_client, config_service,kafka_service)
         self.kafka_service = kafka_service
-        self.config = config
+        self.config_service = config_service
         self.logger = logger
 
 
@@ -91,7 +91,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
 
             # Get storage endpoint
             try:
-                endpoints = await self.config.get_config(
+                endpoints = await self.key_value_store.get_key(
                     config_node_constants.ENDPOINTS.value
                 )
                 self.logger.info(f"This the the endpoint {endpoints}")
@@ -142,7 +142,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
     ) -> Dict:
         """Create update record event payload matching Node.js format"""
         try:
-            endpoints = await self.config.get_config(
+            endpoints = await self.key_value_store.get_key(
                     config_node_constants.ENDPOINTS.value
                 )
             storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)

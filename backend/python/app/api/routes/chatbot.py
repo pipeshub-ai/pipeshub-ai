@@ -6,11 +6,11 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from jinja2 import Template
 from pydantic import BaseModel
 
-from app.config.configuration_service import ConfigurationService
-from app.config.utils.named_constants.arangodb_constants import (
+from app.config.constants.arangodb import (
     AccountType,
     CollectionNames,
 )
+from app.config.key_value_store import KeyValueStore
 from app.modules.qna.prompt_templates import qna_prompt
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_arango import ArangoService
@@ -48,10 +48,10 @@ async def get_arango_service(request: Request) -> ArangoService:
     return arango_service
 
 
-async def get_config_service(request: Request) -> ConfigurationService:
+async def get_key_value_store(request: Request) -> KeyValueStore:
     container: AppContainer = request.app.container
-    config_service = container.config_service()
-    return config_service
+    key_value_store = container.key_value_store()
+    return key_value_store
 
 
 async def get_reranker_service(request: Request) -> RerankerService:

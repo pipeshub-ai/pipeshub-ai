@@ -1,6 +1,7 @@
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional
+from uuid import uuid4
 
 from pydantic import BaseModel, Field, HttpUrl, field_validator
 
@@ -35,7 +36,7 @@ class BlockType(str, Enum):
     DIVIDER = "divider"
 
 
-class TextFormat(str, Enum):
+class DataFormat(str, Enum):
     TXT = "txt"
     BIN = "bin"
     MARKDOWN = "markdown"
@@ -50,7 +51,7 @@ class TextFormat(str, Enum):
 
 class BlockComment(BaseModel):
     text: str
-    format: TextFormat
+    format: DataFormat
     thread_id: Optional[str] = None
     attachment_record_ids: Optional[List[str]] = None
 
@@ -199,12 +200,12 @@ class SemanticMetadata(BaseModel):
 
 class Block(BaseModel):
     # Core block properties
-    id: str = Field(description="Unique identifier for the block")
+    id: str = Field(default_factory=lambda: str(uuid4()))
     index: int = None
     parent_index: Optional[int] = Field(default=None, description="Index of the parent block group")
     type: BlockType
     name: Optional[str] = None
-    format: TextFormat
+    format: DataFormat = None
     comments: List[BlockComment] = Field(default_factory=list)
     source_creation_date: Optional[datetime] = None
     source_update_date: Optional[datetime] = None
@@ -238,7 +239,7 @@ class BlockContainerIndex(BaseModel):
     block_group_index: Optional[int] = None
 
 class BlockGroup(BaseModel):
-    id: str = Field(description="Unique identifier for the block group")
+    id: str = Field(default_factory=lambda: str(uuid4()))
     index: int = None
     name: str = Field(description="Name of the block group")
     type: GroupType = Field(description="Type of the block group")
@@ -306,7 +307,7 @@ class Record(BaseModel):
 
     # Source information
     weburl: Optional[HttpUrl] = None
-
+    mime_type: Optional[str] = None
     # Content blocks
     block_containers: BlocksContainer = Field(default_factory=BlocksContainer, description="List of block containers in this record")
 

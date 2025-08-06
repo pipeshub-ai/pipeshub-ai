@@ -2,7 +2,7 @@ import asyncio
 import uuid
 from typing import Dict, List, Optional, Union
 
-from app.config.utils.named_constants.arangodb_constants import (
+from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
 )

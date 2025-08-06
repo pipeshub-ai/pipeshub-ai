@@ -1,8 +1,8 @@
 import traceback
 from typing import Dict
 
-from app.config.configuration_service import DefaultEndpoints, config_node_constants
-from app.config.utils.named_constants.arangodb_constants import (
+from app.config.configuration_service import ConfigurationService
+from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
     EventTypes,
@@ -10,12 +10,13 @@ from app.config.utils.named_constants.arangodb_constants import (
     RecordRelations,
     RecordTypes,
 )
+from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.sources.google.google_drive.file_processor import process_drive_file
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 
 
 class DriveChangeHandler:
-    def __init__(self, logger, config_service, arango_service) -> None:
+    def __init__(self, logger, config_service: ConfigurationService, arango_service) -> None:
         self.logger = logger
         self.config_service = config_service
         self.arango_service = arango_service

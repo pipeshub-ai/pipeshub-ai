@@ -4,12 +4,13 @@ from typing import Dict, List
 
 from aiokafka import AIOKafkaConsumer
 
-from app.config.configuration_service import KafkaConfig, config_node_constants
+from app.config.configuration_service import ConfigurationService
+from app.config.constants.service import KafkaConfig, config_node_constants
 from app.modules.retrieval.retrieval_service import RetrievalService
 
 
 class RetrievalAiConfigHandler:
-    def __init__(self, logger, config_service, retrieval_service: RetrievalService) -> None:
+    def __init__(self, logger, config_service: ConfigurationService, retrieval_service: RetrievalService) -> None:
         """Initialize the LLM config handler with required services
 
         Args:
