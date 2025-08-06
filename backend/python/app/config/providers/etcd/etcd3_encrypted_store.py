@@ -237,13 +237,7 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
         return await self.store.watch_key(key, callback, error_callback)
 
     async def list_keys_in_directory(self, directory: str) -> List[str]:
-        client = await self._get_client()
-        try:
-            # Ensure directory ends with '/' for proper prefix matching
-            prefix = directory if directory.endswith("/") else f"{directory}/"
-            return [key.decode("utf-8") for key, _ in await client.get_prefix(prefix)]
-        except Exception as e:
-            raise ConnectionError(f"Failed to list keys in directory: {str(e)}")
+        return await self.store.list_keys_in_directory(directory)
 
     async def cancel_watch(self, key: str, watch_id: str) -> None:
         return await self.store.cancel_watch(key, watch_id)
