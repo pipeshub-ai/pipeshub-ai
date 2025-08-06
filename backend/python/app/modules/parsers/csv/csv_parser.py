@@ -191,7 +191,8 @@ class CSVParser:
             )
 
             response = await self._call_llm(llm, messages)
-
+            if '</think>' in response.content:
+                response.content = response.content.split('</think>')[-1]
             # Try to extract JSON array from response
             try:
                 processed_texts.extend(json.loads(response.content))

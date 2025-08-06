@@ -1,7 +1,7 @@
 import hashlib
 import json
 import os
-from typing import Any, Callable, Dict, Generic, List, Optional, TypeVar, Union
+from typing import Callable, Dict, Generic, List, Optional, TypeVar, Union
 
 import dotenv
 
@@ -27,7 +27,7 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
     def __init__(
         self,
         logger,
-    ):
+    ) -> None:
         self.logger = logger
 
         self.logger.debug("🔧 Initializing Etcd3EncryptedKeyValueStore")
@@ -233,7 +233,7 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
         key: str,
         callback: Callable[[Optional[T]], None],
         error_callback: Optional[Callable[[Exception], None]] = None,
-    ) -> Any:
+    ) -> None:
         return await self.store.watch_key(key, callback, error_callback)
 
     async def list_keys_in_directory(self, directory: str) -> List[str]:
@@ -244,6 +244,9 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
             return [key.decode("utf-8") for key, _ in await client.get_prefix(prefix)]
         except Exception as e:
             raise ConnectionError(f"Failed to list keys in directory: {str(e)}")
+
+    async def cancel_watch(self, key: str, watch_id: str) -> None:
+        return await self.store.cancel_watch(key, watch_id)
 
     async def close(self) -> None:
         """Clean up resources and close connection."""

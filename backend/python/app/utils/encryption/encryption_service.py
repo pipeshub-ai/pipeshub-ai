@@ -1,35 +1,36 @@
 import logging
 import os
+from logging import Logger
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
 # Custom error classes matching the Node.js implementation
 class EncryptionError(Exception):
-    def __init__(self, message, detail=None):
+    def __init__(self, message, detail=None) -> None:
         super().__init__(f"{message}: {detail}" if detail else message)
 
 
 class DecryptionError(Exception):
-    def __init__(self, message, detail=None):
+    def __init__(self, message, detail=None) -> None:
         super().__init__(f"{message}: {detail}" if detail else message)
 
 
 class InvalidKeyFormatError(Exception):
-    def __init__(self, message):
+    def __init__(self, message) -> None:
         super().__init__(message)
 
 
 class EncryptionService:
     _instance = None
 
-    def __init__(self, algorithm: str, secret_key: str, logger):
+    def __init__(self, algorithm: str, secret_key: str, logger: Logger) -> None:
         # In this example, algorithm should be "aes-256-gcm"
         self.algorithm = algorithm
         self.secret_key = secret_key  # this is a hex string
         self.logger = logger
     @classmethod
-    def get_instance(cls, algorithm: str, secret_key: str, logger):
+    def get_instance(cls, algorithm: str, secret_key: str, logger: Logger) -> "EncryptionService":
         if cls._instance is None:
             cls._instance = EncryptionService(algorithm, secret_key, logger)
         return cls._instance
@@ -57,7 +58,8 @@ class EncryptionService:
         try:
             # For AES-256-GCM, expect format "iv:ciphertext:authTag"
             parts = encrypted_text.split(":")
-            if len(parts) != 3:
+            PARTS_LENGTH = 3
+            if len(parts) != PARTS_LENGTH:
                 raise InvalidKeyFormatError(
                     "Invalid encrypted text format; expected format iv:ciphertext:authTag"
                 )

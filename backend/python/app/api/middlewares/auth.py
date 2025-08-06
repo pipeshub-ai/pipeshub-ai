@@ -4,14 +4,14 @@ from dependency_injector.wiring import inject
 from fastapi import HTTPException, Request, status
 from jose import JWTError, jwt
 
+from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
-from app.config.key_value_store import KeyValueStore
 
 
-async def get_key_value_store(request: Request) -> KeyValueStore:
+async def get_config_service(request: Request) -> ConfigurationService:
     container = request.app.container
-    key_value_store = container.key_value_store()
-    return key_value_store
+    config_service = container.config_service()
+    return config_service
 
 
 # Authentication logic
@@ -25,8 +25,8 @@ async def isJwtTokenValid(request: Request) -> dict:
     try:
         logger = request.app.container.logger()
         logger.debug("🚀 Starting authentication")
-        key_value_store = await get_key_value_store(request)
-        secret_keys = await key_value_store.get_key(
+        config_service = await get_config_service(request)
+        secret_keys = await config_service.get_config(
             config_node_constants.SECRET_KEYS.value
         )
         jwt_secret = secret_keys.get("jwtSecret")

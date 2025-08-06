@@ -119,6 +119,13 @@ class KeyValueStore(ABC, Generic[T]):
         pass
 
     @abstractmethod
+    async def cancel_watch(self, key: str, watch_id: str) -> None:
+        """
+        Cancel a watch for a key.
+        """
+        pass
+
+    @abstractmethod
     async def list_keys_in_directory(self, directory: str) -> List[str]:
         """
         List all keys under a specific directory prefix.

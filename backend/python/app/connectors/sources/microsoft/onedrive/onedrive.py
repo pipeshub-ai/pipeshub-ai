@@ -3,9 +3,11 @@ import asyncio
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from logging import Logger
 from typing import Any, Callable, Dict, List, Optional
 
 from aiolimiter import AsyncLimiter
+from azure.identity.aio import ClientSecretCredential
 from kiota_abstractions.base_request_configuration import RequestConfiguration
 from kiota_abstractions.method import Method
 from kiota_abstractions.request_information import RequestInformation
@@ -24,6 +26,7 @@ from msgraph.generated.users.users_request_builder import UsersRequestBuilder
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors, OriginTypes, RecordTypes
+from app.config.constants.http_status_code import HttpStatusCode
 from app.config.providers.in_memory_store import InMemoryKeyValueStore
 from app.connectors.sources.microsoft.onedrive.arango_service import ArangoService
 from app.connectors.sources.microsoft.onedrive.data_source_entities_processor import (
@@ -47,7 +50,7 @@ class DeltaGetResponse(BaseDeltaFunctionResponse, Parsable):
     value: Optional[List[DriveItem]] = None
 
     @staticmethod
-    def create_from_discriminator_value(parse_node: ParseNode):
+    def create_from_discriminator_value(parse_node: ParseNode) -> "DeltaGetResponse":
         """
         Creates a new instance of the appropriate class based on discriminator value
         param parse_node: The parse node to use to read the discriminator value and create the object
@@ -57,7 +60,7 @@ class DeltaGetResponse(BaseDeltaFunctionResponse, Parsable):
             raise TypeError("parse_node cannot be null.")
         return DeltaGetResponse()
 
-    def get_field_deserializers(self,) -> Dict[str, Callable[[ParseNode], None]]:
+    def get_field_deserializers(self) -> Dict[str, Callable[[ParseNode], None]]:
         """
         The deserialization information for the current model
         Returns: Dict[str, Callable[[ParseNode], None]]
@@ -75,7 +78,7 @@ class DeltaGetResponse(BaseDeltaFunctionResponse, Parsable):
         fields.update(super_fields)
         return fields
 
-    def serialize(self, writer: SerializationWriter) -> None:
+    def serialize(self, writer: SerializationWriter) -> None:  # type: ignore
         """
         Serializes information the current object
         param writer: Serialization writer to use to serialize this model
@@ -88,7 +91,7 @@ class DeltaGetResponse(BaseDeltaFunctionResponse, Parsable):
         writer.write_collection_of_object_values("value", self.value)
 
 class OneDriveClient:
-    def __init__(self, client: GraphServiceClient, logger, max_requests_per_second: int = 10):
+    def __init__(self, client: GraphServiceClient, logger: Logger, max_requests_per_second: int = 10) -> None:
         """
         Initializes the OneDriveSync instance with a rate limiter.
 
@@ -299,13 +302,13 @@ class OneDriveClient:
             self.logger.error(f"Error fetching files for User ID {user_id}: {ex}")
             raise ex
 
-    async def _make_request(self, request_func: callable):
+    async def _make_request(self, request_func: Callable) -> None:
             """Make a request with rate limit handling and retries."""
             try:
                 async with self.rate_limiter:
                     return await request_func()
             except ODataError as e:
-                if e.error.code == 429:
+                if e.error.code == HttpStatusCode.TOO_MANY_REQUESTS.value:
                     int(e.response.headers.get('Retry-After', 30))
                     # raise RateLimitExceeded(retry_after)
                 raise e
@@ -675,7 +678,7 @@ class OneDriveClient:
 
 
 class OneDriveAdminClient:
-    def __init__(self, client: GraphServiceClient, logger, max_requests_per_second: int = 10):
+    def __init__(self, client: GraphServiceClient, logger, max_requests_per_second: int = 10) -> None:
         """
         Initializes the OneDriveSync instance with a rate limiter.
 
@@ -794,12 +797,10 @@ class OneDriveAdminClient:
             raise ex
 
 class OneDriveConnector:
-    def __init__(self, logger, data_entities_processor: DataSourceEntitiesProcessor):
+    def __init__(self, logger, data_entities_processor: DataSourceEntitiesProcessor) -> None:
         # self.config_service = config_service
         # self.arango_service = arango_service
         # self.kafka_service = kafka_service
-        from azure.identity.aio import ClientSecretCredential
-
         self.logger = logger
         self.data_entities_processor = data_entities_processor
         credential = ClientSecretCredential(
@@ -940,7 +941,7 @@ class OneDriveConnector:
         }
         self.sync_state_service.upsert(user_id, state_data)
 
-    async def run(self):
+    async def run(self) -> None:
         print("Running OneDrive Connector")
         print("Getting all users")
         # Todo: Get all users from our platform

@@ -216,9 +216,12 @@ class DomainExtractor:
             messages = [HumanMessage(content=formatted_prompt)]
             # Use retry wrapper for LLM call
             response = await self._call_llm(messages)
-
+            # Remove any thinking tags if present
+            if '</think>' in response.content:
+                response.content = response.content.split('</think>')[-1]
             # Clean the response content
             response_text = response.content.strip()
+
             if response_text.startswith("```json"):
                 response_text = response_text.replace("```json", "", 1)
             if response_text.endswith("```"):
@@ -264,6 +267,8 @@ class DomainExtractor:
 
                     # Use retry wrapper for reflection LLM call
                     reflection_response = await self._call_llm(reflection_messages)
+                    if '</think>' in reflection_response.content:
+                        reflection_response.content = reflection_response.content.split('</think>')[-1]
                     reflection_text = reflection_response.content.strip()
 
                     # Clean the reflection response

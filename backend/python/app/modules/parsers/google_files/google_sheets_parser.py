@@ -426,7 +426,8 @@ class GoogleSheetsParser:
                     {"role": "user", "content": formatted_prompt},
                 ]
                 response = await self._call_llm(messages)
-
+                if '</think>' in response.content:
+                    response.content = response.content.split('</think>')[-1]
                 try:
                     new_headers = [
                         h.strip() for h in response.content.strip().split(",")
@@ -518,6 +519,8 @@ class GoogleSheetsParser:
                 headers=table["headers"], sample_data=json.dumps(sample_data, indent=2)
             )
             response = await self._call_llm(messages)
+            if '</think>' in response.content:
+                response.content = response.content.split('</think>')[-1]
             return response.content
 
         except Exception as e:
@@ -541,7 +544,8 @@ class GoogleSheetsParser:
             )
 
             response = await self._call_llm(messages)
-
+            if '</think>' in response.content:
+                response.content = response.content.split('</think>')[-1]
             # Parse JSON array from response
             try:
                 return json.loads(response.content)

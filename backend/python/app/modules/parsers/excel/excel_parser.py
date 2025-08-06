@@ -428,6 +428,8 @@ class ExcelParser:
                     {"role": "user", "content": formatted_prompt},
                 ]
                 response = await self._call_llm(messages)
+                if '</think>' in response.content:
+                    response.content = response.content.split('</think>')[-1]
 
                 try:
                     # Parse LLM response to get headers
@@ -488,6 +490,8 @@ class ExcelParser:
                 headers=table["headers"], sample_data=json.dumps(sample_data, indent=2)
             )
             response = await self._call_llm(messages)
+            if '</think>' in response.content:
+                response.content = response.content.split('</think>')[-1]
             return response.content
 
         except Exception:
@@ -517,7 +521,8 @@ class ExcelParser:
             )
 
             response = await self._call_llm(messages)
-
+            if '</think>' in response.content:
+                response.content = response.content.split('</think>')[-1]
             # Try to extract JSON array from response
             try:
                 # First try direct JSON parsing

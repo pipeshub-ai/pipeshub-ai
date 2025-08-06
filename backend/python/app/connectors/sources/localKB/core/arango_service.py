@@ -91,7 +91,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
 
             # Get storage endpoint
             try:
-                endpoints = await self.key_value_store.get_key(
+                endpoints = await self.config_service.get_config(
                     config_node_constants.ENDPOINTS.value
                 )
                 self.logger.info(f"This the the endpoint {endpoints}")
@@ -142,7 +142,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
     ) -> Dict:
         """Create update record event payload matching Node.js format"""
         try:
-            endpoints = await self.key_value_store.get_key(
+            endpoints = await self.config_service.get_config(
                     config_node_constants.ENDPOINTS.value
                 )
             storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)

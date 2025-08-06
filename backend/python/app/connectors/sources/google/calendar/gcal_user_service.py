@@ -10,8 +10,8 @@ from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
+from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
-from app.config.key_value_store import KeyValueStore
 from app.connectors.sources.google.common.scopes import (
     GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES,
 )
@@ -25,12 +25,12 @@ class GCalUserService:
     def __init__(
         self,
         logger,
-        key_value_store: KeyValueStore,
+        config_service: ConfigurationService,
         rate_limiter: GoogleAPIRateLimiter,
         credentials=None,
     ) -> None:
         self.logger = logger
-        self.key_value_store = key_value_store
+        self.config_service = config_service
         self.service = None
         self.credentials = credentials
         self.rate_limiter = rate_limiter
@@ -49,7 +49,7 @@ class GCalUserService:
                 if creds and creds.expired and creds.refresh_token:
                     creds.refresh(Request())
                 else:
-                    credentials_path = await self.key_value_store.get_key(
+                    credentials_path = await self.config_service.get_config(
                         config_node_constants.GOOGLE_AUTH_CREDENTIALS_PATH.value
                     )
                     flow = InstalledAppFlow.from_client_secrets_file(

@@ -232,7 +232,7 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
             logger.debug("📋 Found %d valid keys: %s", len(valid_keys), valid_keys)
             return valid_keys
 
-    def watch_key(
+    async def watch_key(
         self,
         key: str,
         callback: Callable[[Optional[T]], None],

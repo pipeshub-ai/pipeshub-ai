@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from app.config.key_value_store import KeyValueStore
+from app.config.configuration_service import ConfigurationService
 from app.modules.retrieval.retrieval_arango import ArangoService
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.setups.query_setup import AppContainer
@@ -46,10 +46,10 @@ async def get_arango_service(request: Request) -> ArangoService:
     return arango_service
 
 
-async def get_key_value_store(request: Request) -> KeyValueStore:
+async def get_config_service(request: Request) -> ConfigurationService:
     container: AppContainer = request.app.container
-    key_value_store = container.key_value_store()
-    return key_value_store
+    config_service = container.config_service()
+    return config_service
 
 
 @router.post("/search")

@@ -40,12 +40,12 @@ class App:
         pass
 
 class DataSourceEntitiesProcessor:
-    def __init__(self, logger, app: App, arango_service: ArangoService):
+    def __init__(self, logger, app: App, arango_service: ArangoService) -> None:
         self.logger = logger
         self.app = app
         self.arango_service = arango_service
 
-    async def on_new_records(self, records: List[RecordWithPermissions]):
+    async def on_new_records(self, records: List[RecordWithPermissions]) -> None:
         # Create a transaction
 
         for record in records:
@@ -63,22 +63,22 @@ class DataSourceEntitiesProcessor:
             print(record)
         # Commit the transaction
 
-    async def on_updated_record_permissions(self, record: RecordWithPermissions):
+    async def on_updated_record_permissions(self, record: RecordWithPermissions) -> None:
         pass
 
-    async def on_record_content_update(self, record: Record):
+    async def on_record_content_update(self, record: Record) -> None:
         pass
 
-    async def on_record_metadata_update(self, record: Record):
+    async def on_record_metadata_update(self, record: Record) -> None:
         pass
 
-    async def on_record_deleted(self, record_id: str):
+    async def on_record_deleted(self, record_id: str) -> None:
         # Remove all edges from the record
         # Remove the record
         pass
 
 
-    async def on_new_record_groups(self, record_groups: List[RecordGroupWithPermissions]):
+    async def on_new_record_groups(self, record_groups: List[RecordGroupWithPermissions]) -> None:
         # Create a transaction
         for record_group in record_groups:
 
@@ -95,7 +95,7 @@ class DataSourceEntitiesProcessor:
         # Commit the transaction
 
 
-    async def on_new_users(self, users: List[User]):
+    async def on_new_users(self, users: List[User]) -> None:
         # Create a transaction
 
         for user in users:
@@ -110,7 +110,7 @@ class DataSourceEntitiesProcessor:
         # Commit the transaction
 
 
-    async def on_new_user_groups(self, user_groups: List[UserGroupWithMembers]):
+    async def on_new_user_groups(self, user_groups: List[UserGroupWithMembers]) -> None:
         # Create a transaction
 
         for user_group in user_groups:

@@ -39,7 +39,7 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         ca_cert: Optional[str] = None,
         cert_key: Optional[str] = None,
         cert_cert: Optional[str] = None,
-    ):
+    ) -> None:
         """
         Initialize the ETCD3 store.
 
@@ -224,11 +224,11 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         key: str,
         callback: Callable[[Optional[T]], None],
         error_callback: Optional[Callable[[Exception], None]] = None,
-    ) -> Any:
+    ) -> None:
         logger.debug("🔄 Setting up watch for key: %s", key)
         client = await self._get_client()
 
-        def watch_callback(event):
+        def watch_callback(event) -> None:
             logger.debug("📋 Watch event received for key: %s", key)
             logger.debug("   - Event type: %s", event.type)
             logger.debug("   - Event value: %s", event.value)
@@ -266,6 +266,10 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             return [key.decode("utf-8") for key, _ in await client.get_prefix(prefix)]
         except Exception as e:
             raise ConnectionError(f"Failed to list keys in directory: {str(e)}")
+
+    async def cancel_watch(self, key: str, watch_id: str) -> None:
+        client = await self._get_client()
+        await client.cancel_watch(watch_id)
 
     async def close(self) -> None:
         """Clean up resources and close connection."""
