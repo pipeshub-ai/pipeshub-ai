@@ -6,9 +6,7 @@ from typing import Any, Dict, Optional
 import aioboto3
 from botocore.exceptions import ClientError, NoCredentialsError
 
-from app.connectors.core.base.auth.authentication_service import (
-    BaseAuthenticationService,
-)
+from app.connectors.core.base.token_service.token_service import BaseTokenService
 from app.connectors.core.interfaces.connector.iconnector_config import ConnectorConfig
 from app.connectors.sources.s3.const.const import (
     AP_SOUTH_REGION,
@@ -19,8 +17,8 @@ from app.connectors.sources.s3.const.const import (
 )
 
 
-class S3AuthenticationService(BaseAuthenticationService):
-    """Handles authentication for AWS S3 API"""
+class S3TokenService(BaseTokenService):
+    """Handles authentication and session management for AWS S3 using credentials."""
 
     def __init__(self, logger: logging.Logger, config: ConnectorConfig) -> None:
         super().__init__(logger, config)

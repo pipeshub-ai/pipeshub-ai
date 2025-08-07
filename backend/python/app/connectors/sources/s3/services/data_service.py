@@ -8,7 +8,7 @@ import aioboto3
 from botocore.exceptions import ClientError
 
 from app.connectors.core.base.data_service.data_service import BaseDataService
-from app.connectors.core.interfaces.auth.iauth_service import IAuthenticationService
+from app.connectors.core.interfaces.token_service.itoken_service import ITokenService
 
 
 @dataclass
@@ -33,13 +33,13 @@ class S3Bucket:
 class S3DataService(BaseDataService):
     """Handles data operations for AWS S3 API"""
 
-    def __init__(self, logger: logging.Logger, auth_service: IAuthenticationService) -> None:
-        super().__init__(logger, auth_service)
-        self.auth_service = auth_service
+    def __init__(self, logger: logging.Logger, token_service: ITokenService) -> None:
+        super().__init__(logger, token_service)
+        self.token_service = token_service
 
     def _get_session(self) -> Optional[aioboto3.Session]:
-        """Get the current session from auth service"""
-        return self.auth_service.get_service()
+        """Get the current session from token service"""
+        return self.token_service.get_service()
 
     async def list_items(self, path: str = "/", recursive: bool = True) -> List[Dict[str, Any]]:
         """List buckets from S3 using aioboto3 (path is ignored for S3)"""

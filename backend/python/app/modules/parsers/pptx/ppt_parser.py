@@ -6,7 +6,7 @@ import tempfile
 class PPTParser:
     """Parser for Microsoft PowerPoint .ppt files"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         pass
 
     def convert_ppt_to_pptx(self, binary: bytes) -> bytes:

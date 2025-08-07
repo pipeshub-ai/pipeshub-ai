@@ -3,16 +3,12 @@
 import logging
 from typing import Any, Dict, List, Optional, Type
 
-from app.connectors.core.base.auth.authentication_service import (
-    BaseAuthenticationService,
-)
-from app.connectors.core.base.data_service.data_service import (
-    BaseDataProcessor,
-    BaseDataService,
-)
+from app.connectors.core.base.data_processor.data_processor import BaseDataProcessor
+from app.connectors.core.base.data_service.data_service import BaseDataService
 from app.connectors.core.base.error.error import BaseErrorHandlingService
 from app.connectors.core.base.event_service.event_service import BaseEventService
 from app.connectors.core.base.sync_service.sync_service import BaseSyncService
+from app.connectors.core.base.token_service.token_service import BaseTokenService
 from app.connectors.core.base.webhook.webhook_service import BaseWebhookService
 from app.connectors.core.interfaces.connector.iconnector_config import ConnectorConfig
 from app.connectors.core.interfaces.connector.iconnector_factory import (
@@ -29,35 +25,42 @@ class ConnectorRegistry:
 
     def __init__(self) -> None:
         self._connectors: Dict[ConnectorType, Type[IConnectorService]] = {}
-        self._auth_services: Dict[ConnectorType, Type[BaseAuthenticationService]] = {}
+        self._token_services: Dict[ConnectorType, Type[BaseTokenService]] = {}
         self._data_services: Dict[ConnectorType, Type[BaseDataService]] = {}
+        self._data_processors: Dict[ConnectorType, Type[BaseDataProcessor]] = {}
         self._configs: Dict[ConnectorType, ConnectorConfig] = {}
 
     def register_connector(
         self,
         connector_type: ConnectorType,
         connector_class: Type[IConnectorService],
-        auth_service_class: Type[BaseAuthenticationService],
+        token_service_class: Type[BaseTokenService],
         data_service_class: Type[BaseDataService],
+        data_processor_class: Type[BaseDataProcessor],
         config: ConnectorConfig,
     ) -> None:
         """Register a connector implementation"""
         self._connectors[connector_type] = connector_class
-        self._auth_services[connector_type] = auth_service_class
+        self._token_services[connector_type] = token_service_class
         self._data_services[connector_type] = data_service_class
+        self._data_processors[connector_type] = data_processor_class
         self._configs[connector_type] = config
 
     def get_connector_class(self, connector_type: ConnectorType) -> Optional[Type[IConnectorService]]:
         """Get connector class for a type"""
         return self._connectors.get(connector_type)
 
-    def get_auth_service_class(self, connector_type: ConnectorType) -> Optional[Type[BaseAuthenticationService]]:
-        """Get auth service class for a type"""
-        return self._auth_services.get(connector_type)
+    def get_token_service_class(self, connector_type: ConnectorType) -> Optional[Type[BaseTokenService]]:
+        """Get token service class for a type"""
+        return self._token_services.get(connector_type)
 
     def get_data_service_class(self, connector_type: ConnectorType) -> Optional[Type[BaseDataService]]:
         """Get data service class for a type"""
         return self._data_services.get(connector_type)
+
+    def get_data_processor_class(self, connector_type: ConnectorType) -> Optional[Type[BaseDataProcessor]]:
+        """Get data processor class for a type"""
+        return self._data_processors.get(connector_type)
 
     def get_config(self, connector_type: ConnectorType) -> Optional[ConnectorConfig]:
         """Get config for a connector type"""
@@ -95,13 +98,14 @@ class UniversalConnectorFactory(IConnectorFactory):
         self,
         connector_type: ConnectorType,
         connector_class: Type[IConnectorService],
-        auth_service_class: Type[BaseAuthenticationService],
+        token_service_class: Type[BaseTokenService],
         data_service_class: Type[BaseDataService],
+        data_processor_class: Type[BaseDataProcessor],
         config: ConnectorConfig,
     ) -> None:
         """Register a new connector implementation"""
         self.registry.register_connector(
-            connector_type, connector_class, auth_service_class, data_service_class, config
+            connector_type, connector_class, token_service_class, data_service_class, data_processor_class, config
         )
         self.logger.info(f"Registered connector: {connector_type.value}")
 
@@ -113,23 +117,25 @@ class UniversalConnectorFactory(IConnectorFactory):
 
             # Get registered classes
             connector_class = self.registry.get_connector_class(connector_type)
-            auth_service_class = self.registry.get_auth_service_class(connector_type)
+            token_service_class = self.registry.get_token_service_class(connector_type)
             data_service_class = self.registry.get_data_service_class(connector_type)
+            data_processor_class = self.registry.get_data_processor_class(connector_type)
 
-            if not all([connector_class, auth_service_class, data_service_class]):
+            if not all([connector_class, token_service_class, data_service_class, data_processor_class]):
                 raise ValueError(f"Incomplete registration for connector type {connector_type.value}")
 
             # Create service instances
-            auth_service = auth_service_class(self.logger, config)
-            data_service = data_service_class(self.logger, auth_service)
-
+            token_service = token_service_class(self.logger, config)
+            data_service = data_service_class(self.logger, token_service)
+            data_processor = data_processor_class(self.logger)
             # Create connector instance
             connector = connector_class(
                 logger=self.logger,
                 connector_type=connector_type,
                 config=config,
-                auth_service=auth_service,
+                token_service=token_service,
                 data_service=data_service,
+                data_processor=data_processor,
                 error_service=self.default_error_service,
                 event_service=self.default_event_service,
             )
@@ -188,9 +194,9 @@ class ConnectorBuilder:
         self._config = config
         return self
 
-    def with_custom_auth_service(self, auth_service: BaseAuthenticationService) -> 'ConnectorBuilder':
-        """Set a custom authentication service"""
-        self._custom_services['auth_service'] = auth_service
+    def with_custom_token_service(self, token_service: BaseTokenService) -> 'ConnectorBuilder':
+        """Set a custom token service"""
+        self._custom_services['token_service'] = token_service
         return self
 
     def with_custom_data_service(self, data_service: BaseDataService) -> 'ConnectorBuilder':
@@ -218,8 +224,8 @@ class ConnectorBuilder:
         connector = self.factory.create_connector(self._connector_type, self._config)
 
         # Apply custom services if provided
-        if 'auth_service' in self._custom_services:
-            connector.auth_service = self._custom_services['auth_service']
+        if 'token_service' in self._custom_services:
+            connector.token_service = self._custom_services['token_service']
 
         if 'data_service' in self._custom_services:
             connector.data_service = self._custom_services['data_service']

@@ -6,14 +6,15 @@ from uuid import uuid4
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from dependency_injector.wiring import inject
 
-# Import required services
-from app.config.configuration_service import KafkaConfig, config_node_constants
-from app.config.utils.named_constants.arangodb_constants import (
+from app.config.constants.arangodb import (
     AccountType,
     CollectionNames,
     Connectors,
 )
-from app.setups.connector_setup import (
+from app.config.constants.service import KafkaConfig, config_node_constants
+
+# Import required services
+from app.containers.connector import (
     initialize_enterprise_account_services_fn,
     initialize_individual_account_services_fn,
 )
@@ -323,7 +324,7 @@ class EntityKafkaRouteConsumer:
             await self.arango_service.batch_upsert_nodes([kb_data], CollectionNames.RECORD_GROUPS.value)
             await self.arango_service.batch_upsert_nodes([root_folder_data], CollectionNames.FILES.value)
             await self.arango_service.batch_create_edges([permission_edge], CollectionNames.PERMISSIONS_TO_KB.value)
-            await self.arango_service.batch_create_edges([folder_edge], CollectionNames.BELONGS_TO_KB.value)
+            await self.arango_service.batch_create_edges([folder_edge], CollectionNames.BELONGS_TO.value)
 
             self.logger.info(f"Created new knowledge base for user {userId} in organization {orgId}")
             return {

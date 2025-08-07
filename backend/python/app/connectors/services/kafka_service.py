@@ -3,14 +3,15 @@ from typing import Dict
 
 from aiokafka import AIOKafkaProducer
 
-from app.config.configuration_service import ConfigurationService, config_node_constants
-from app.config.utils.named_constants.arangodb_constants import EventTypes
+from app.config.configuration_service import ConfigurationService
+from app.config.constants.arangodb import EventTypes
+from app.config.constants.service import config_node_constants
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class KafkaService:
-    def __init__(self, config: ConfigurationService, logger) -> None:
-        self.config_service = config
+    def __init__(self, config_service: ConfigurationService, logger) -> None:
+        self.config_service = config_service
         self.producer = None
         self.logger = logger
 
@@ -37,6 +38,9 @@ class KafkaService:
                 producer_config = {
                     "bootstrap_servers": brokers,  # aiokafka uses bootstrap_servers
                     "client_id": kafka_config.get("client_id", "file-processor"),
+                    "request_timeout_ms": 30000,
+                    "retry_backoff_ms": 100,
+                    "enable_idempotence": True
                 }
 
                 self.producer = AIOKafkaProducer(**producer_config)
@@ -94,7 +98,10 @@ class KafkaService:
         try:
             # Ensure producer is ready
             await self._ensure_producer()
-
+            if not isinstance(self.producer, AIOKafkaProducer):
+                raise TypeError(
+                    f"Producer is of incorrect type: {type(self.producer).__name__}. Expected AIOKafkaProducer."
+                )
             # Standardize event format
             formatted_event = {
                 "eventType": event_data.get("eventType", EventTypes.NEW_RECORD.value),

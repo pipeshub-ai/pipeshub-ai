@@ -2,7 +2,7 @@ import asyncio
 import uuid
 from typing import Dict, List, Optional, Union
 
-from app.config.utils.named_constants.arangodb_constants import (
+from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
 )
@@ -66,7 +66,7 @@ class KnowledgeBaseService :
                         CollectionNames.RECORDS.value,
                         CollectionNames.FILES.value,
                         CollectionNames.IS_OF_TYPE.value,
-                        CollectionNames.BELONGS_TO_KB.value,
+                        CollectionNames.BELONGS_TO.value,
                         CollectionNames.PERMISSIONS_TO_KB.value,
                     ]
                 )

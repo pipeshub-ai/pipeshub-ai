@@ -3,9 +3,9 @@ from datetime import timedelta
 
 from celery import Celery
 
-from app.config.configuration_service import (
+from app.config.configuration_service import ConfigurationService
+from app.config.constants.service import (
     CeleryConfig,
-    ConfigurationService,
     RedisConfig,
     WebhookConfig,
     config_node_constants,

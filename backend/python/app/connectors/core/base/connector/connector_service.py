@@ -3,14 +3,15 @@ import logging
 from abc import ABC
 from typing import Any, Dict
 
-from app.connectors.core.interfaces.auth.iauth_service import IAuthenticationService
 from app.connectors.core.interfaces.connector.iconnector_config import ConnectorConfig
 from app.connectors.core.interfaces.connector.iconnector_service import (
     IConnectorService,
 )
+from app.connectors.core.interfaces.data_processor.data_processor import IDataProcessor
 from app.connectors.core.interfaces.data_service.data_service import IDataService
 from app.connectors.core.interfaces.error.error import IErrorHandlingService
 from app.connectors.core.interfaces.event_service.event_service import IEventService
+from app.connectors.core.interfaces.token_service.itoken_service import ITokenService
 from app.connectors.enums.enums import ConnectorType
 
 
@@ -22,16 +23,18 @@ class BaseConnectorService(IConnectorService, ABC):
         logger: logging.Logger,
         connector_type: ConnectorType,
         config: ConnectorConfig,
-        auth_service: IAuthenticationService,
+        token_service: ITokenService,
         data_service: IDataService,
+        data_processor: IDataProcessor,
         error_service: IErrorHandlingService,
         event_service: IEventService,
     ) -> None:
         self.logger = logger
         self.connector_type = connector_type
         self.config = config
-        self.auth_service = auth_service
+        self.token_service = token_service
         self.data_service = data_service
+        self.data_processor = data_processor
         self.error_service = error_service
         self.event_service = event_service
         self._connected = False
@@ -44,7 +47,7 @@ class BaseConnectorService(IConnectorService, ABC):
                 self.logger.info(f"Connecting to {self.connector_type.value}")
 
                 # Authenticate
-                if not await self.auth_service.authenticate(credentials):
+                if not await self.token_service.authenticate(credentials):
                     raise Exception("Authentication failed")
 
                 # Test connection
@@ -88,7 +91,7 @@ class BaseConnectorService(IConnectorService, ABC):
         try:
             # This should be implemented by specific connectors
             # For now, return True if we have a valid auth service
-            return self._connected and self.auth_service is not None
+            return self._connected and self.token_service is not None
         except Exception as e:
             self.error_service.log_error(e, "test_connection", {
                 "connector_type": self.connector_type.value

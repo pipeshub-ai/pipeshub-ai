@@ -5,36 +5,41 @@ Migrates from old knowledgeBase collection to new recordGroups system
 
 import asyncio
 import uuid
+from logging import Logger
 from typing import Dict, List, Optional
 
-from app.config.utils.named_constants.arangodb_constants import (
+from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
 )
 from app.connectors.sources.localKB.core.arango_service import (
     KnowledgeBaseArangoService,
 )
+from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class KnowledgeBaseMigrationService:
     """Service to handle migration from old KB system to new recordGroups system"""
 
-    def __init__(self, arango_service: KnowledgeBaseArangoService) -> None:
+    def __init__(self, arango_service: KnowledgeBaseArangoService, logger: Logger) -> None:
         self.arango_service = arango_service
-        self.logger = arango_service.logger
+        self.logger = logger
         self.db = arango_service.db
 
         # Old collection names (Node.js system)
-        self.OLD_KB_COLLECTION = "knowledgeBase"
-        self.OLD_USER_TO_RECORD_EDGES = "permissions"  # Direct user→record permissions
-        self.OLD_KB_TO_RECORD_EDGES = "belongsToKnowledgeBase"  # KB→record relationships
+        self.OLD_KB_COLLECTION = CollectionNames.KNOWLEDGE_BASE.value
+        self.OLD_USER_TO_KB_EDGES = CollectionNames.PERMISSIONS_TO_KNOWLEDGE_BASE.value  # Direct user→kb permissions
+        self.OLD_KB_TO_RECORD_EDGES = CollectionNames.BELONGS_TO_KNOWLEDGE_BASE.value  # KB→record relationships
 
         # New collection names (Python system)
         self.NEW_KB_COLLECTION = CollectionNames.RECORD_GROUPS.value
         self.NEW_USER_TO_KB_EDGES = CollectionNames.PERMISSIONS_TO_KB.value
-        self.NEW_RECORD_TO_KB_EDGES = CollectionNames.BELONGS_TO_KB.value
+        self.NEW_RECORD_TO_KB_EDGES = CollectionNames.BELONGS_TO.value
         self.NEW_RECORD_RELATION_EDGES = CollectionNames.RECORD_RELATIONS.value
+
+        self.OLD_GRAPH_NAME = CollectionNames.FILE_ACCESS_GRAPH.value
+        self.NEW_GRAPH_NAME = CollectionNames.KNOWLEDGE_GRAPH.value
 
     async def run_migration(self) -> Dict:
         """
@@ -44,96 +49,48 @@ class KnowledgeBaseMigrationService:
             self.logger.info("🚀 Starting Knowledge Base migration from old to new system")
 
             # Step 1: Validate migration preconditions
-            await self._validate_migration_preconditions()
+            migration_preconditions = await self._validate_migration_preconditions()
+            if not migration_preconditions["success"]:
+                return migration_preconditions
+
+            # Check if migration is actually needed
+            if not migration_preconditions.get("migration_needed", True):
+                self.logger.info("✅ No migration needed - old KB collection not found")
+                return {
+                    "success": True,
+                    "message": "No migration needed - old KB collection not found",
+                    "migrated_count": 0,
+                    "failed_count": 0,
+                    "details": {
+                        "successful": [],
+                        "failed": []
+                    }
+                }
 
             # Step 2: Get all old knowledge bases and their relationships
             migration_data = await self._analyze_old_system()
 
-            if not migration_data["old_kbs"]:
-                self.logger.info("✅ No old knowledge bases found - migration not needed")
-                return {"success": True, "message": "No migration needed", "migrated_count": 0}
+            # Step 3: Migrate data in transaction
+            migration_results = await self._migrate_data(migration_data)
 
-            # Step 3: Create transaction for migration
-            transaction = self.db.begin_transaction(
-                write=[
-                    self.NEW_KB_COLLECTION,
-                    self.NEW_USER_TO_KB_EDGES,
-                    self.NEW_RECORD_TO_KB_EDGES,
-                    self.NEW_RECORD_RELATION_EDGES,
-                    CollectionNames.USERS.value,
-                    CollectionNames.RECORDS.value,
-                ]
-            )
+            if not migration_results["success"]:
+                return migration_results
 
-            migration_results = []
-            migration_successful = False
+            # Step 4: Update graph structure (remove old edges, rename graph)
+            await self._update_graph_structure()
 
-            try:
-                # Step 4: Migrate each old KB to new system
-                migration_results = await self._migrate_knowledge_bases(
-                    migration_data, transaction
-                )
+            # Step 5: Clean up old collections
+            await self._cleanup_old_collections(migration_data)
 
-                # Check if ALL migrations were successful
-                successful_migrations = [r for r in migration_results if r.get('success')]
-                failed_migrations = [r for r in migration_results if not r.get('success')]
-
-                if failed_migrations:
-                    # If ANY migration failed, abort the entire transaction
-                    self.logger.error(f"❌ {len(failed_migrations)} migrations failed - aborting transaction")
-                    for failure in failed_migrations:
-                        self.logger.error(f"   - KB {failure.get('old_kb_id')}: {failure.get('error')}")
-
-                    await asyncio.to_thread(lambda: transaction.abort_transaction())
-                    self.logger.info("🔄 Migration transaction aborted due to failures")
-
-                    return {
-                        "success": False,
-                        "message": f"Migration failed: {len(failed_migrations)} out of {len(migration_results)} KBs failed",
-                        "migrated_count": 0,
-                        "failed_count": len(failed_migrations),
-                        "details": {
-                            "successful": successful_migrations,
-                            "failed": failed_migrations
-                        }
-                    }
-
-                # Step 5: Commit transaction ONLY if all migrations succeeded
-                await asyncio.to_thread(lambda: transaction.commit_transaction())
-                self.logger.info("✅ Migration transaction committed successfully")
-                migration_successful = True
-
-            except Exception as e:
-                self.logger.error(f"❌ Migration failed, aborting transaction: {str(e)}")
-                try:
-                    await asyncio.to_thread(lambda: transaction.abort_transaction())
-                    self.logger.info("🔄 Transaction aborted due to exception")
-                except Exception as abort_error:
-                    self.logger.error(f"❌ Failed to abort transaction: {str(abort_error)}")
-                raise
-
-            # Step 6: Clean up old collections ONLY if migration was completely successful
-            if migration_successful and len([r for r in migration_results if r.get('success')]) > 0:
-                try:
-                    await self._cleanup_old_collections(migration_data)
-                    self.logger.info("✅ Cleanup completed successfully")
-                except Exception as cleanup_error:
-                    self.logger.error(f"❌ Cleanup failed but migration succeeded: {str(cleanup_error)}")
-                    self.logger.warning("⚠️ Manual cleanup may be needed for old collections")
-                    # Don't fail the migration for cleanup issues since data was migrated successfully
-            else:
-                self.logger.info("⏭️ Skipping cleanup - no successful migrations to clean up")
-
-            # Step 7: Verify migration success
-            if migration_successful:
-                await self._verify_migration(migration_results)
+            # Step 6: Verify migration
+            await self._verify_migration(migration_results["details"])
 
             self.logger.info("🎉 Knowledge Base migration completed successfully")
             return {
                 "success": True,
                 "message": "Migration completed successfully",
-                "migrated_count": len([r for r in migration_results if r.get('success')]),
-                "failed_count": len([r for r in migration_results if not r.get('success')]),
+                "migrated_count": migration_results["migrated_count"],
+                "failed_count": migration_results["failed_count"],
                 "details": migration_results
             }
 
@@ -143,10 +100,14 @@ class KnowledgeBaseMigrationService:
                 "success": False,
                 "message": f"Migration failed: {str(e)}",
                 "migrated_count": 0,
-                "failed_count": 0
+                "failed_count": 0,
+                "details": {
+                    "successful": [],
+                    "failed": []
+                }
             }
 
-    async def _validate_migration_preconditions(self) -> None:
+    async def _validate_migration_preconditions(self) -> Dict:
         """Validate that migration can proceed safely"""
         self.logger.info("🔍 Validating migration preconditions")
 
@@ -156,7 +117,18 @@ class KnowledgeBaseMigrationService:
 
         if self.OLD_KB_COLLECTION not in collection_names:
             self.logger.info(f"✅ Old KB collection '{self.OLD_KB_COLLECTION}' not found - no migration needed")
-            return
+            return {
+                "success": True,
+                "message": f"Old KB collection '{self.OLD_KB_COLLECTION}' not found - no migration needed",
+                "old_kb_collection_exists": False,
+                "migration_needed": False,
+                "migrated_count": 0,
+                "failed_count": 0,
+                "details": {
+                    "successful": [],
+                    "failed": []
+                }
+            }
 
         # Check if new collections exist
         required_new_collections = [
@@ -172,6 +144,18 @@ class KnowledgeBaseMigrationService:
             raise Exception(f"Required new collections missing: {missing_collections}")
 
         self.logger.info("✅ Migration preconditions validated")
+        return {
+            "success": True,
+            "message": "Migration preconditions validated",
+            "old_kb_collection_exists": True,
+            "migration_needed": True,
+            "migrated_count": 0,
+            "failed_count": 0,
+            "details": {
+                "successful": [],
+                "failed": []
+            }
+        }
 
     async def _analyze_old_system(self) -> Dict:
         """Analyze the old system to understand what needs to be migrated"""
@@ -190,20 +174,20 @@ class KnowledgeBaseMigrationService:
 
             self.logger.info(f"📋 Found {len(old_kbs)} old knowledge bases to migrate")
 
-            # Get old user-to-record permissions
-            old_user_permissions_query = f"""
-            FOR edge IN {self.OLD_USER_TO_RECORD_EDGES}
-                LET user = DOCUMENT(edge._to)
-                LET record = DOCUMENT(edge._from)
-                FILTER user != null AND record != null
+            # Get user→KB permissions
+            old_user_kb_permissions_query = f"""
+            FOR edge IN {self.OLD_USER_TO_KB_EDGES}
+                LET user = DOCUMENT(edge._from)
+                LET kb = DOCUMENT(edge._to)
+                FILTER user != null AND kb != null
                 RETURN {{
                     edge: edge,
                     user: user,
-                    record: record
+                    kb: kb
                 }}
             """
 
-            cursor = self.db.aql.execute(old_user_permissions_query)
+            cursor = self.db.aql.execute(old_user_kb_permissions_query)
             old_user_permissions = list(cursor)
 
             # Get old KB-to-record relationships
@@ -277,6 +261,85 @@ class KnowledgeBaseMigrationService:
 
         except Exception as e:
             self.logger.error(f"❌ Failed to analyze old system: {str(e)}")
+            raise
+
+    async def _migrate_data(self, migration_data: Dict) -> Dict:
+        """Migrate data from old to new system (same as original migration logic)"""
+        if not migration_data["old_kbs"]:
+            self.logger.info("✅ No old knowledge bases found - migration not needed")
+            return {
+                "success": True,
+                "message": "No migration needed",
+                "migrated_count": 0,
+                "failed_count": 0,
+                "details": {
+                    "successful": [],
+                    "failed": []
+                }
+            }
+
+        # Step 1: Create transaction for migration
+        transaction = self.db.begin_transaction(
+            write=[
+                self.NEW_KB_COLLECTION,
+                self.NEW_USER_TO_KB_EDGES,
+                self.NEW_RECORD_TO_KB_EDGES,
+                self.NEW_RECORD_RELATION_EDGES,
+                CollectionNames.USERS.value,
+                CollectionNames.RECORDS.value,
+            ]
+        )
+
+        migration_results = []
+
+        try:
+            # Step 2: Migrate each old KB to new system
+            migration_results = await self._migrate_knowledge_bases(
+                migration_data, transaction
+            )
+
+            # Check if ALL migrations were successful
+            successful_migrations = [r for r in migration_results if r.get('success')]
+            failed_migrations = [r for r in migration_results if not r.get('success')]
+
+            if failed_migrations:
+                # If ANY migration failed, abort the entire transaction
+                self.logger.error(f"❌ {len(failed_migrations)} migrations failed - aborting transaction")
+                for failure in failed_migrations:
+                    self.logger.error(f"   - KB {failure.get('old_kb_id')}: {failure.get('error')}")
+
+                await asyncio.to_thread(lambda: transaction.abort_transaction())
+                self.logger.info("🔄 Migration transaction aborted due to failures")
+
+                return {
+                    "success": False,
+                    "message": f"Migration failed: {len(failed_migrations)} out of {len(migration_results)} KBs failed",
+                    "migrated_count": 0,
+                    "failed_count": len(failed_migrations),
+                    "details": {
+                        "successful": successful_migrations,
+                        "failed": failed_migrations
+                    }
+                }
+
+            # Step 3: Commit transaction ONLY if all migrations succeeded
+            await asyncio.to_thread(lambda: transaction.commit_transaction())
+            self.logger.info("✅ Migration transaction committed successfully")
+            return {
+                "success": True,
+                "message": "Migration completed successfully",
+                "migrated_count": len(successful_migrations),
+                "failed_count": len(failed_migrations),
+                "details": migration_results
+            }
+
+        except Exception as e:
+            self.logger.error(f"❌ Migration failed, aborting transaction: {str(e)}")
+            try:
+                await asyncio.to_thread(lambda: transaction.abort_transaction())
+                self.logger.info("🔄 Transaction aborted due to exception")
+            except Exception as abort_error:
+                self.logger.error(f"❌ Failed to abort transaction: {str(abort_error)}")
             raise
 
     async def _migrate_knowledge_bases(self, migration_data: Dict, transaction) -> List[Dict]:
@@ -475,6 +538,160 @@ class KnowledgeBaseMigrationService:
 
         return user_key
 
+    async def _create_new_edge_definition(self, graph: object, edge_def: Dict) -> None:
+        """Create a new edge definition"""
+        try:
+            edge_collection = edge_def["edge_collection"]
+            self.logger.info(f"🆕 Creating new edge definition: {edge_collection}")
+
+            # Check if edge collection exists
+            if not self.db.has_collection(edge_collection):
+                self.logger.warning(f"⚠️ Edge collection {edge_collection} does not exist, skipping creation")
+                return
+
+            graph.create_edge_definition(**edge_def)
+            self.logger.info(f"✅ Created new edge definition: {edge_collection}")
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to create edge definition {edge_def['edge_collection']}: {str(e)}")
+            # Don't raise here - continue with other edge definitions
+
+    async def _create_complete_new_graph(self) -> None:
+        """Create a complete new graph with all required edge definitions"""
+        try:
+            self.logger.info(f"🆕 Creating complete new graph: {self.NEW_GRAPH_NAME}")
+
+            graph = self.db.create_graph(self.NEW_GRAPH_NAME)
+            edge_definitions = EDGE_DEFINITIONS
+
+            created_count = 0
+            for edge_def in edge_definitions:
+                try:
+                    edge_collection = edge_def["edge_collection"]
+
+                    # Check if edge collection exists before creating edge definition
+                    if self.db.has_collection(edge_collection):
+                        graph.create_edge_definition(**edge_def)
+                        created_count += 1
+                        self.logger.info(f"✅ Created edge definition for {edge_collection}")
+                    else:
+                        self.logger.warning(f"⚠️ Skipping edge definition for non-existent collection: {edge_collection}")
+
+                except Exception as e:
+                    self.logger.error(f"❌ Failed to create edge definition for {edge_def['edge_collection']}: {str(e)}")
+                    # Continue with other edge definitions
+
+            self.logger.info(f"✅ Created new graph with {created_count} edge definitions")
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to create complete new graph: {str(e)}")
+            raise
+
+    async def _update_existing_edge_definition(self, graph: object, edge_collection: str, new_edge_def: Dict) -> None:
+        """Update an existing edge definition with new vertex collections"""
+        try:
+            self.logger.info(f"🔄 Updating edge definition: {edge_collection}")
+
+            # Check if the edge collection exists
+            if not self.db.has_collection(edge_collection):
+                self.logger.warning(f"⚠️ Edge collection {edge_collection} does not exist, skipping update")
+                return
+
+            # Get current definition
+            existing_definitions = {ed['edge_collection']: ed for ed in graph.edge_definitions()}
+            current_def = existing_definitions.get(edge_collection)
+
+            if not current_def:
+                self.logger.warning(f"⚠️ Current definition not found for {edge_collection}")
+                return
+
+            # Compare vertex collections
+            current_from = set(current_def.get('from_vertex_collections', []))
+            current_to = set(current_def.get('to_vertex_collections', []))
+
+            new_from = set(new_edge_def['from_vertex_collections'])
+            new_to = set(new_edge_def['to_vertex_collections'])
+
+            # Check if update is needed
+            if current_from == new_from and current_to == new_to:
+                self.logger.debug(f"📝 No update needed for {edge_collection}")
+                return
+
+            self.logger.info(f"🔄 Updating vertices for {edge_collection}")
+            self.logger.info(f"   From: {current_from} → {new_from}")
+            self.logger.info(f"   To: {current_to} → {new_to}")
+
+            # Remove old edge definition and create new one
+            graph.delete_edge_definition(edge_collection, purge=False)
+            graph.create_edge_definition(**new_edge_def)
+
+            self.logger.info(f"✅ Updated edge definition: {edge_collection}")
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to update edge definition {edge_collection}: {str(e)}")
+            raise
+
+    async def _update_graph_vertices(self) -> None:
+        """Update graph vertices to match the new system structure"""
+        try:
+            self.logger.info("🔄 Updating graph vertices to match new structure")
+
+            if not self.db.has_graph(self.NEW_GRAPH_NAME):
+                self.logger.warning(f"⚠️ Graph {self.NEW_GRAPH_NAME} not found, creating new graph")
+                await self._create_complete_new_graph()
+                return
+
+            graph = self.db.graph(self.NEW_GRAPH_NAME)
+            existing_definitions = {ed['edge_collection']: ed for ed in graph.edge_definitions()}
+
+            # Define the complete new edge definitions that should exist
+            new_edge_definitions = EDGE_DEFINITIONS
+
+            # Process each new edge definition
+            for edge_def in new_edge_definitions:
+                edge_collection = edge_def["edge_collection"]
+
+                try:
+                    if edge_collection in existing_definitions:
+                        # Update existing edge definition
+                        await self._update_existing_edge_definition(graph, edge_collection, edge_def)
+                    else:
+                        # Create new edge definition
+                        await self._create_new_edge_definition(graph, edge_def)
+
+                except Exception as e:
+                    self.logger.error(f"❌ Failed to process edge definition {edge_collection}: {str(e)}")
+                    # Continue with other edge definitions
+
+            self.logger.info("✅ Graph vertices updated successfully")
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to update graph vertices: {str(e)}")
+            raise
+
+    async def _update_graph_structure(self) -> None:
+        """Handle all graph updates - rename graph and remove old edge definitions"""
+        try:
+            self.logger.info("🔄 Updating graph structure")
+
+            # Step 1: Handle graph renaming
+            if self.db.has_graph(self.OLD_GRAPH_NAME):
+                self.db.delete_graph(self.OLD_GRAPH_NAME)
+                self.logger.info(f"🗑️ Deleted old graph: {self.OLD_GRAPH_NAME}")
+
+            # Step 2: Create the new graph with the correct definitions if it's not already there.
+            if not self.db.has_graph(self.NEW_GRAPH_NAME):
+                await self._create_complete_new_graph()
+            else:
+                self.logger.info(f"✅ Graph '{self.NEW_GRAPH_NAME}' already exists, ensuring vertices are updated.")
+                await self._update_graph_vertices() # This function correctly updates/adds edge definitions.
+
+            self.logger.info("✅ Graph structure updated successfully")
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to update graph structure: {str(e)}")
+            raise
+
     async def _cleanup_old_collections(self, migration_data: Dict) -> None:
         """Clean up old collections after successful migration"""
         self.logger.info("🧹 Starting cleanup of old collections")
@@ -484,54 +701,46 @@ class KnowledgeBaseMigrationService:
             cleanup_transaction = self.db.begin_transaction(
                 write=[
                     self.OLD_KB_COLLECTION,
-                    self.OLD_USER_TO_RECORD_EDGES,
+                    self.OLD_USER_TO_KB_EDGES,
                     self.OLD_KB_TO_RECORD_EDGES,
                 ]
             )
 
             try:
-                # Delete old KB-to-record edges
-                old_kb_edges_count = len(migration_data['old_kb_relationships'])
-                if old_kb_edges_count > 0:
-                    delete_kb_edges_query = f"""
-                    FOR edge IN {self.OLD_KB_TO_RECORD_EDGES}
-                        REMOVE edge IN {self.OLD_KB_TO_RECORD_EDGES}
-                    """
-                    cleanup_transaction.aql.execute(delete_kb_edges_query)
-                    self.logger.info(f"🗑️ Deleted {old_kb_edges_count} old KB-to-record edges")
+                # Delete old data
+                for collection_name in [self.OLD_KB_TO_RECORD_EDGES, self.OLD_USER_TO_KB_EDGES, self.OLD_KB_COLLECTION]:
+                    if self.db.has_collection(collection_name):
+                        delete_query = f"FOR doc IN {collection_name} REMOVE doc IN {collection_name}"
+                        cleanup_transaction.aql.execute(delete_query)
+                        self.logger.info(f"🗑️ Deleted data from {collection_name}")
 
-                # Delete old user-to-record permissions that were KB-related
-                old_user_perms_count = len(migration_data['old_user_permissions'])
-                if old_user_perms_count > 0:
-                    # Only delete user permissions that were related to KB access
-                    # Be careful not to delete direct connector permissions
-                    delete_user_perms_query = f"""
-                    FOR edge IN {self.OLD_USER_TO_RECORD_EDGES}
-                        LET record = DOCUMENT(edge._from)
-                        FILTER record != null AND record.origin == "UPLOAD"
-                        REMOVE edge IN {self.OLD_USER_TO_RECORD_EDGES}
-                    """
-                    cleanup_transaction.aql.execute(delete_user_perms_query)
-                    self.logger.info("🗑️ Deleted KB-related user permissions")
-
-                # Delete old knowledge base documents
-                old_kbs_count = len(migration_data['old_kbs'])
-                if old_kbs_count > 0:
-                    delete_kbs_query = f"""
-                    FOR kb IN {self.OLD_KB_COLLECTION}
-                        REMOVE kb IN {self.OLD_KB_COLLECTION}
-                    """
-                    cleanup_transaction.aql.execute(delete_kbs_query)
-                    self.logger.info(f"🗑️ Deleted {old_kbs_count} old knowledge bases")
-
-                # Commit cleanup transaction
                 await asyncio.to_thread(lambda: cleanup_transaction.commit_transaction())
-                self.logger.info("✅ Cleanup transaction committed successfully")
+                self.logger.info("✅ Old data deleted successfully")
 
-            except Exception as cleanup_error:
-                self.logger.error(f"❌ Cleanup failed, aborting: {str(cleanup_error)}")
+            except Exception:
                 await asyncio.to_thread(lambda: cleanup_transaction.abort_transaction())
                 raise
+
+            # Step 2: Drop the now-empty collections (non-transactional)
+            self.logger.info("🗑️ Dropping empty old collections")
+            collections_to_drop = [
+                self.OLD_KB_COLLECTION,                # "knowledgeBase"
+                self.OLD_USER_TO_KB_EDGES,            # "permissionsToKnowledgeBase"
+                self.OLD_KB_TO_RECORD_EDGES,          # "belongsToKnowledgeBase"
+            ]
+
+            for collection_name in collections_to_drop:
+                try:
+                    if self.db.has_collection(collection_name):
+                        self.db.delete_collection(collection_name)
+                        self.logger.info(f"🗑️ Successfully dropped collection: '{collection_name}'")
+                    else:
+                        self.logger.info(f"⏭️ Collection '{collection_name}' does not exist - skipping")
+                except Exception as drop_error:
+                    self.logger.warning(f"⚠️ Failed to drop collection '{collection_name}': {str(drop_error)}")
+                    # Continue with other collections even if one fails
+
+            self.logger.info("✅ Old collections cleanup and drop completed")
 
         except Exception as e:
             self.logger.error(f"❌ Failed to cleanup old collections: {str(e)}")
@@ -595,11 +804,14 @@ async def run_kb_migration(container) -> Dict:
         logger = container.logger()
         kb_arango_service = await container.kb_arango_service()
 
-        migration_service = KnowledgeBaseMigrationService(kb_arango_service)
+        migration_service = KnowledgeBaseMigrationService(kb_arango_service,logger)
         result = await migration_service.run_migration()
 
         if result['success']:
-            logger.info(f"✅ KB Migration completed successfully: {result['migrated_count']} KBs migrated")
+            if result['migrated_count'] == 0 and "no migration needed" in result['message'].lower():
+                logger.info(f"✅ KB Migration: {result['message']}")
+            else:
+                logger.info(f"✅ KB Migration completed successfully: {result['migrated_count']} KBs migrated")
         else:
             logger.error(f"❌ KB Migration failed: {result['message']}")
 

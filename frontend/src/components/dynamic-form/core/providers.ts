@@ -105,6 +105,20 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
     ],
   },
   {
+    id: 'bedrock',
+    label: 'AWS Bedrock',
+    description: 'Enter your AWS Bedrock API credentials to get started.',
+    modelPlaceholder:
+      'e.g. us.anthropic.claude-sonnet-4-20250514-v1:0, arn:aws:bedrock:us-east-1:106782021127:inference-profile/apac.anthropic.claude-sonnet-4-20250514-v1:0"',
+    fields: [
+      { name: 'awsAccessKeyId', required: true },
+      { name: 'awsAccessSecretKey', required: true },
+      { name: 'region', required: true },
+      { name: 'model', required: true, placeholder: 'model id/arn' },
+      { name: 'provider', required: true, defaultValue: 'anthropic' },
+    ],
+  },
+  {
     id: 'xai',
     label: 'XAI',
     description: 'Enter your XAI API credentials to get started.',
@@ -227,6 +241,19 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
         defaultValue: 'http://host.docker.internal:11434',
         placeholder: 'e.g. http://localhost:11434',
       }, // Optional endpoint
+    ],
+  },
+  {
+    id: 'bedrock',
+    label: 'AWS Bedrock',
+    description: 'Enter your AWS Bedrock API credentials for embeddings.',
+    modelPlaceholder: 'e.g. cohere2.embed-multilingual-v3',
+    fields: [
+      { name: 'awsAccessKeyId', required: true },
+      { name: 'awsAccessSecretKey', required: true },
+      { name: 'region', required: true },
+      { name: 'model', required: true, placeholder: 'Model ID/ARN' },
+      { name: 'provider', required: true, defaultValue: 'cohere' },
     ],
   },
   {

@@ -7,15 +7,15 @@ from jinja2 import Template
 from pydantic import BaseModel
 
 from app.config.configuration_service import ConfigurationService
-from app.config.utils.named_constants.arangodb_constants import (
+from app.config.constants.arangodb import (
     AccountType,
     CollectionNames,
 )
+from app.containers.query import QueryAppContainer
 from app.modules.qna.prompt_templates import qna_prompt
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_arango import ArangoService
 from app.modules.retrieval.retrieval_service import RetrievalService
-from app.setups.query_setup import AppContainer
 from app.utils.citations import process_citations
 from app.utils.query_decompose import QueryDecompositionExpansionService
 from app.utils.query_transform import (
@@ -37,25 +37,25 @@ class ChatQuery(BaseModel):
 
 
 async def get_retrieval_service(request: Request) -> RetrievalService:
-    container: AppContainer = request.app.container
+    container: QueryAppContainer = request.app.container
     retrieval_service = await container.retrieval_service()
     return retrieval_service
 
 
 async def get_arango_service(request: Request) -> ArangoService:
-    container: AppContainer = request.app.container
+    container: QueryAppContainer = request.app.container
     arango_service = await container.arango_service()
     return arango_service
 
 
 async def get_config_service(request: Request) -> ConfigurationService:
-    container: AppContainer = request.app.container
+    container: QueryAppContainer = request.app.container
     config_service = container.config_service()
     return config_service
 
 
 async def get_reranker_service(request: Request) -> RerankerService:
-    container: AppContainer = request.app.container
+    container: QueryAppContainer = request.app.container
     reranker_service = container.reranker_service()
     return reranker_service
 

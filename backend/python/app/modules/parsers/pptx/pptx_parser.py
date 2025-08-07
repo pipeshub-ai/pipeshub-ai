@@ -1,14 +1,15 @@
 from io import BytesIO
 
 from docling.datamodel.base_models import DocumentStream
+from docling.datamodel.document import DoclingDocument
 from docling.document_converter import DocumentConverter
 
 
 class PPTXParser:
-    def __init__(self):
+    def __init__(self) -> None:
         self.converter = DocumentConverter()
 
-    def parse_binary(self, pptx_binary: bytes):
+    def parse_binary(self, pptx_binary: bytes) -> DoclingDocument:
         """
         Parse PPTX content from binary data.
 
@@ -35,7 +36,7 @@ class PPTXParser:
 
         return result.document
 
-    def parse_file(self, file_path: str):
+    def parse_file(self, file_path: str) -> DoclingDocument:
         """
         Parse PPTX content from a file.
 

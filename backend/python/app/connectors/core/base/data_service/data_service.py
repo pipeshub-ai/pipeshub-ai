@@ -2,19 +2,16 @@ import logging
 from abc import ABC
 from typing import Any, Dict, List, Optional
 
-from app.connectors.core.interfaces.auth.iauth_service import IAuthenticationService
-from app.connectors.core.interfaces.data_service.data_service import (
-    IDataProcessor,
-    IDataService,
-)
+from app.connectors.core.interfaces.data_service.data_service import IDataService
+from app.connectors.core.interfaces.token_service.itoken_service import ITokenService
 
 
 class BaseDataService(IDataService, ABC):
     """Base data service with common functionality"""
 
-    def __init__(self, logger: logging.Logger, auth_service: IAuthenticationService) -> None:
+    def __init__(self, logger: logging.Logger, token_service: ITokenService) -> None:
         self.logger = logger
-        self.auth_service = auth_service
+        self.token_service = token_service
 
     async def list_items(self, path: str = "/", recursive: bool = True) -> List[Dict[str, Any]]:
         """List items from the service"""
@@ -65,43 +62,3 @@ class BaseDataService(IDataService, ABC):
         except Exception as e:
             self.logger.error(f"Failed to get item permissions: {str(e)}")
             return []
-
-
-class BaseDataProcessor(IDataProcessor, ABC):
-    """Base data processor with common functionality"""
-
-    def __init__(self, logger: logging.Logger) -> None:
-        self.logger = logger
-
-    async def process_item(self, item_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Process a single item"""
-        try:
-            # This should be implemented by specific data processors
-            self.logger.debug(f"Processing item: {item_data.get('id', 'unknown')}")
-            return item_data
-        except Exception as e:
-            self.logger.error(f"Failed to process item: {str(e)}")
-            return {}
-
-    async def process_batch(self, items_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Process multiple items"""
-        try:
-            self.logger.info(f"Processing batch of {len(items_data)} items")
-            results = []
-            for item_data in items_data:
-                processed_item = await self.process_item(item_data)
-                if processed_item:
-                    results.append(processed_item)
-            return results
-        except Exception as e:
-            self.logger.error(f"Failed to process batch: {str(e)}")
-            return []
-
-    def validate_item(self, item_data: Dict[str, Any]) -> bool:
-        """Validate item data"""
-        try:
-            # This should be implemented by specific data processors
-            return isinstance(item_data, dict) and "id" in item_data
-        except Exception as e:
-            self.logger.error(f"Failed to validate item: {str(e)}")
-            return False

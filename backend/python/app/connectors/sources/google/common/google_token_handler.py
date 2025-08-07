@@ -9,13 +9,13 @@ from tenacity import (
     wait_exponential,
 )
 
-from app.config.configuration_service import (
+from app.config.constants.http_status_code import HttpStatusCode
+from app.config.constants.service import (
     DefaultEndpoints,
     Routes,
     TokenScopes,
     config_node_constants,
 )
-from app.config.utils.named_constants.http_status_code_constants import HttpStatusCode
 
 
 class CredentialKeys(Enum):

@@ -10,12 +10,20 @@ export interface LlmFormValues extends BaseFormValues {
   model?: string;
   endpoint?: string;
   deploymentName?: string;
+  awsAccessKeyId?: string;
+  awsAccessSecretKey?: string;
+  region?: string;
+  provider?: string;
 }
 
 export interface EmbeddingFormValues extends BaseFormValues {
   apiKey?: string;
   model?: string;
   endpoint?: string;
+  awsAccessKeyId?: string;
+  awsAccessSecretKey?: string;
+  region?: string;
+  provider?: string;
 }
 
 export interface StorageFormValues extends BaseFormValues {

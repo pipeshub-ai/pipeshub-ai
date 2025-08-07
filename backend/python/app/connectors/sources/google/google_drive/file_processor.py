@@ -2,7 +2,7 @@ import uuid
 from typing import Tuple
 
 from app.builders.records_builder import FileRecordBuilder, RecordBuilder
-from app.config.utils.named_constants.arangodb_constants import (
+from app.config.constants.arangodb import (
         CollectionNames,
         Connectors,
         MimeTypes,

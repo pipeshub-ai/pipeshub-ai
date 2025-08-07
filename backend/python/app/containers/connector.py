@@ -1,25 +1,13 @@
 import asyncio
-import os
 from datetime import datetime, timedelta, timezone
 
-import aiohttp
 import google.oauth2.credentials
-from aiokafka import AIOKafkaConsumer
-from arango import ArangoClient
 from dependency_injector import containers, providers
 from google.oauth2 import service_account
-from qdrant_client import QdrantClient
-from redis import asyncio as aioredis
-from redis.asyncio import Redis
-from redis.exceptions import RedisError
 
-from app.config.configuration_service import (
-    ConfigurationService,
-    RedisConfig,
-    config_node_constants,
-)
-from app.config.utils.named_constants.arangodb_constants import AppGroups
-from app.config.utils.named_constants.http_status_code_constants import HttpStatusCode
+from app.config.configuration_service import ConfigurationService
+from app.config.constants.arangodb import AppGroups
+from app.config.providers.etcd.etcd3_encrypted_store import Etcd3EncryptedKeyValueStore
 from app.connectors.services.kafka_service import KafkaService
 from app.connectors.services.sync_kafka_consumer import SyncKafkaRouteConsumer
 from app.connectors.sources.google.admin.admin_webhook_handler import (
@@ -63,8 +51,10 @@ from app.connectors.sources.localKB.core.arango_service import (
 from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
 from app.connectors.sources.localKB.handlers.migration_service import run_kb_migration
 from app.connectors.utils.rate_limiter import GoogleAPIRateLimiter
+from app.containers.container import BaseAppContainer
 from app.core.celery_app import CeleryApp
 from app.core.signed_url import SignedUrlConfig, SignedUrlHandler
+from app.health.health import Health
 from app.modules.parsers.google_files.google_docs_parser import GoogleDocsParser
 from app.modules.parsers.google_files.google_sheets_parser import GoogleSheetsParser
 from app.modules.parsers.google_files.google_slides_parser import GoogleSlidesParser
@@ -83,7 +73,7 @@ async def initialize_individual_account_services_fn(org_id, container) -> None:
             providers.Singleton(
                 DriveUserService,
                 logger=logger,
-                config=container.config_service,
+                config_service=container.config_service,
                 rate_limiter=container.rate_limiter,
                 google_token_handler=await container.google_token_handler(),
             )
@@ -95,7 +85,7 @@ async def initialize_individual_account_services_fn(org_id, container) -> None:
             providers.Singleton(
                 GmailUserService,
                 logger=logger,
-                config=container.config_service,
+                config_service=container.config_service,
                 rate_limiter=container.rate_limiter,
                 google_token_handler=await container.google_token_handler(),
             )
@@ -108,7 +98,7 @@ async def initialize_individual_account_services_fn(org_id, container) -> None:
             providers.Singleton(
                 IndividualDriveWebhookHandler,
                 logger=logger,
-                config=container.config_service,
+                config_service=container.config_service,
                 drive_user_service=container.drive_service(),
                 arango_service=await container.arango_service(),
                 change_handler=await container.drive_change_handler(),
@@ -121,7 +111,7 @@ async def initialize_individual_account_services_fn(org_id, container) -> None:
             providers.Singleton(
                 IndividualGmailWebhookHandler,
                 logger=logger,
-                config=container.config_service,
+                config_service=container.config_service,
                 gmail_user_service=container.gmail_service(),
                 arango_service=await container.arango_service(),
                 change_handler=await container.gmail_change_handler(),
@@ -135,7 +125,7 @@ async def initialize_individual_account_services_fn(org_id, container) -> None:
             providers.Singleton(
                 DriveSyncIndividualService,
                 logger=logger,
-                config=container.config_service,
+                config_service=container.config_service,
                 drive_user_service=container.drive_service(),
                 arango_service=await container.arango_service(),
                 change_handler=await container.drive_change_handler(),
@@ -150,7 +140,7 @@ async def initialize_individual_account_services_fn(org_id, container) -> None:
             providers.Singleton(
                 GmailSyncIndividualService,
                 logger=logger,
-                config=container.config_service,
+                config_service=container.config_service,
                 gmail_user_service=container.gmail_service(),
                 arango_service=await container.arango_service(),
                 change_handler=await container.gmail_change_handler(),
@@ -179,7 +169,7 @@ async def initialize_individual_account_services_fn(org_id, container) -> None:
             providers.Singleton(
                 ParserUserService,
                 logger=logger,
-                config=container.config_service,
+                config_service=container.config_service,
                 rate_limiter=container.rate_limiter,
                 google_token_handler=await container.google_token_handler(),
             )
@@ -272,7 +262,7 @@ async def initialize_enterprise_account_services_fn(org_id, container) -> None:
             providers.Singleton(
                 GoogleAdminService,
                 logger=logger,
-                config=container.config_service,
+                config_service=container.config_service,
                 rate_limiter=container.rate_limiter,
                 google_token_handler=await container.google_token_handler(),
                 arango_service=await container.arango_service(),
@@ -282,7 +272,7 @@ async def initialize_enterprise_account_services_fn(org_id, container) -> None:
             providers.Singleton(
                 GoogleAdminService,
                 logger=logger,
-                config=container.config_service,
+                config_service=container.config_service,
                 rate_limiter=container.rate_limiter,
                 google_token_handler=await container.google_token_handler(),
                 arango_service=await container.arango_service(),
@@ -294,7 +284,7 @@ async def initialize_enterprise_account_services_fn(org_id, container) -> None:
             providers.Singleton(
                 EnterpriseDriveWebhookHandler,
                 logger=logger,
-                config=container.config_service,
+                config_service=container.config_service,
                 drive_admin_service=container.drive_service(),
                 arango_service=await container.arango_service(),
                 change_handler=await container.drive_change_handler(),
@@ -307,7 +297,7 @@ async def initialize_enterprise_account_services_fn(org_id, container) -> None:
             providers.Singleton(
                 EnterpriseGmailWebhookHandler,
                 logger=logger,
-                config=container.config_service,
+                config_service=container.config_service,
                 gmail_admin_service=container.gmail_service(),
                 arango_service=await container.arango_service(),
                 change_handler=await container.gmail_change_handler(),
@@ -321,7 +311,7 @@ async def initialize_enterprise_account_services_fn(org_id, container) -> None:
             providers.Singleton(
                 DriveSyncEnterpriseService,
                 logger=logger,
-                config=container.config_service,
+                config_service=container.config_service,
                 drive_admin_service=container.drive_service(),
                 arango_service=await container.arango_service(),
                 change_handler=await container.drive_change_handler(),
@@ -336,7 +326,7 @@ async def initialize_enterprise_account_services_fn(org_id, container) -> None:
             providers.Singleton(
                 GmailSyncEnterpriseService,
                 logger=logger,
-                config=container.config_service,
+                config_service=container.config_service,
                 gmail_admin_service=container.gmail_service(),
                 arango_service=await container.arango_service(),
                 change_handler=await container.gmail_change_handler(),
@@ -364,7 +354,7 @@ async def initialize_enterprise_account_services_fn(org_id, container) -> None:
             providers.Singleton(
                 GoogleAdminService,
                 logger=logger,
-                config=container.config_service,
+                config_service=container.config_service,
                 rate_limiter=container.rate_limiter,
                 google_token_handler=await container.google_token_handler(),
                 arango_service=await container.arango_service(),
@@ -580,51 +570,29 @@ async def refresh_google_workspace_user_credentials(org_id, arango_service, logg
         logger.debug("🔄 Checking refresh status of credentials for user")
 
 
-class AppContainer(containers.DeclarativeContainer):
-    """Dependency injection container for the application."""
+class ConnectorAppContainer(BaseAppContainer):
+    """Dependency injection container for the connector application."""
 
-    # Add locks for cache access
-    service_creds_lock = providers.Singleton(asyncio.Lock)
-    user_creds_lock = providers.Singleton(asyncio.Lock)
-
-    # Initialize logger correctly as a singleton provider
+    # Override logger with service-specific name
     logger = providers.Singleton(create_logger, "connector_service")
 
-    # Log when container is initialized
-    logger().info("🚀 Initializing AppContainer")
-    logger().info("🔧 Environment: dev")
+    key_value_store = providers.Singleton(Etcd3EncryptedKeyValueStore, logger=logger)
 
-    # Core services that don't depend on account type
-    config_service = providers.Singleton(ConfigurationService, logger=logger)
+    # Override config_service to use the service-specific logger
+    config_service = providers.Singleton(ConfigurationService, logger=logger, key_value_store=key_value_store)
 
-    async def _create_arango_client(config_service) -> ArangoClient:
-        """Async method to initialize ArangoClient."""
-        arangodb_config = await config_service.get_config(
-            config_node_constants.ARANGODB.value
-        )
-        hosts = arangodb_config["url"]
-        return ArangoClient(hosts=hosts)
-
-    async def _create_redis_client(config_service) -> Redis:
-        """Async method to initialize RedisClient."""
-        redis_config = await config_service.get_config(
-            config_node_constants.REDIS.value
-        )
-        url = f"redis://{redis_config['host']}:{redis_config['port']}/{RedisConfig.REDIS_DB.value}"
-        return await aioredis.from_url(url, encoding="utf-8", decode_responses=True)
-
-    # Core Resources
+    # Override arango_client and redis_client to use the service-specific config_service
     arango_client = providers.Resource(
-        _create_arango_client, config_service=config_service
+        BaseAppContainer._create_arango_client, config_service=config_service
     )
     redis_client = providers.Resource(
-        _create_redis_client, config_service=config_service
+        BaseAppContainer._create_redis_client, config_service=config_service
     )
 
     # Core Services
     rate_limiter = providers.Singleton(GoogleAPIRateLimiter)
     kafka_service = providers.Singleton(
-        KafkaService, logger=logger, config=config_service
+        KafkaService, logger=logger, config_service=config_service
     )
 
     arango_service = providers.Singleton(
@@ -632,7 +600,7 @@ class AppContainer(containers.DeclarativeContainer):
         logger=logger,
         arango_client=arango_client,
         kafka_service=kafka_service,
-        config=config_service,
+        config_service=config_service,
     )
 
     kb_arango_service = providers.Singleton(
@@ -640,7 +608,7 @@ class AppContainer(containers.DeclarativeContainer):
         logger=logger,
         arango_client=arango_client,
         kafka_service=kafka_service,
-        config=config_service,
+        config_service=config_service,
     )
 
     kb_service = providers.Singleton(
@@ -679,13 +647,13 @@ class AppContainer(containers.DeclarativeContainer):
 
     # Signed URL Handler
     signed_url_config = providers.Resource(
-        SignedUrlConfig.create, configuration_service=config_service
+        SignedUrlConfig.create, config_service=config_service
     )
     signed_url_handler = providers.Singleton(
         SignedUrlHandler,
         logger=logger,
         config=signed_url_config,
-        configuration_service=config_service,
+        config_service=config_service,
     )
 
     # Services that will be initialized based on account type
@@ -705,7 +673,8 @@ class AppContainer(containers.DeclarativeContainer):
     google_slides_parser = providers.Dependency()
     parser_user_service = providers.Dependency()
     sync_kafka_consumer = providers.Dependency()
-    # Wire everything up
+
+    # Connector-specific wiring configuration
     wiring_config = containers.WiringConfiguration(
         modules=[
             "app.core.celery_app",
@@ -716,212 +685,6 @@ class AppContainer(containers.DeclarativeContainer):
             "app.core.signed_url",
         ]
     )
-
-
-async def health_check_etcd(container) -> None:
-    """Check the health of etcd via HTTP request."""
-    logger = container.logger()
-    logger.info("🔍 Starting etcd health check...")
-    try:
-        etcd_url = os.getenv("ETCD_URL")
-        if not etcd_url:
-            error_msg = "ETCD_URL environment variable is not set"
-            logger.error(f"❌ {error_msg}")
-            raise Exception(error_msg)
-
-        logger.debug(f"Checking etcd health at endpoint: {etcd_url}/health")
-
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"{etcd_url}/health") as response:
-                if response.status == HttpStatusCode.SUCCESS.value:
-                    response_text = await response.text()
-                    logger.info("✅ etcd health check passed")
-                    logger.debug(f"etcd health response: {response_text}")
-                else:
-                    error_msg = (
-                        f"etcd health check failed with status {response.status}"
-                    )
-                    logger.error(f"❌ {error_msg}")
-                    raise Exception(error_msg)
-    except aiohttp.ClientError as e:
-        error_msg = f"Connection error during etcd health check: {str(e)}"
-        logger.error(f"❌ {error_msg}")
-        raise Exception(error_msg)
-    except Exception as e:
-        error_msg = f"etcd health check failed: {str(e)}"
-        logger.error(f"❌ {error_msg}")
-        raise
-
-
-async def health_check_arango(container) -> None:
-    """Check the health of ArangoDB using ArangoClient."""
-    logger = container.logger()
-    logger.info("🔍 Starting ArangoDB health check...")
-    try:
-        # Get the config_service instance first, then call get_config
-        config_service = container.config_service()
-        arangodb_config = await config_service.get_config(
-            config_node_constants.ARANGODB.value
-        )
-        username = arangodb_config["username"]
-        password = arangodb_config["password"]
-
-        logger.debug("Checking ArangoDB connection using ArangoClient")
-
-        # Get the ArangoClient from the container
-        client = await container.arango_client()
-
-        # Connect to system database
-        sys_db = client.db("_system", username=username, password=password)
-
-        # Check server version to verify connection
-        server_version = sys_db.version()
-        logger.info("✅ ArangoDB health check passed")
-        logger.debug(f"ArangoDB server version: {server_version}")
-
-    except Exception as e:
-        error_msg = f"ArangoDB health check failed: {str(e)}"
-        logger.error(f"❌ {error_msg}")
-        raise Exception(error_msg)
-
-
-async def health_check_kafka(container) -> None:
-    """Check the health of Kafka by attempting to create a connection."""
-    logger = container.logger()
-    logger.info("🔍 Starting Kafka health check...")
-    consumer = None
-    try:
-        kafka_config = await container.config_service().get_config(
-            config_node_constants.KAFKA.value
-        )
-        brokers = kafka_config["brokers"]
-        logger.debug(f"Checking Kafka connection at: {brokers}")
-
-        # Try to create a consumer with aiokafka
-        try:
-            config = {
-                "bootstrap_servers": ",".join(brokers),  # aiokafka uses bootstrap_servers
-                "group_id": "health_check_test",
-                "auto_offset_reset": "earliest",
-                "enable_auto_commit": True,
-            }
-
-            # Create and start consumer to test connection
-            consumer = AIOKafkaConsumer(**config)
-            await consumer.start()
-
-            # Try to get cluster metadata to verify connection
-            try:
-                cluster_metadata = await consumer._client.cluster
-                available_topics = list(cluster_metadata.topics())
-                logger.debug(f"Available Kafka topics: {available_topics}")
-            except Exception:
-                # If metadata fails, just try basic connection test
-                logger.debug("Basic Kafka connection test passed")
-
-            logger.info("✅ Kafka health check passed")
-
-        except Exception as e:
-            error_msg = f"Failed to connect to Kafka: {str(e)}"
-            logger.error(f"❌ {error_msg}")
-            raise Exception(error_msg)
-
-    except Exception as e:
-        error_msg = f"Kafka health check failed: {str(e)}"
-        logger.error(f"❌ {error_msg}")
-        raise
-    finally:
-        # Clean up consumer
-        if consumer:
-            try:
-                await consumer.stop()
-                logger.debug("Health check consumer stopped")
-            except Exception as e:
-                logger.warning(f"Error stopping health check consumer: {e}")
-
-
-async def health_check_redis(container) -> None:
-    """Check the health of Redis by attempting to connect and ping."""
-    logger = container.logger()
-    logger.info("🔍 Starting Redis health check...")
-    try:
-        config_service = container.config_service()
-        redis_config = await config_service.get_config(
-            config_node_constants.REDIS.value
-        )
-        redis_url = f"redis://{redis_config['host']}:{redis_config['port']}/{RedisConfig.REDIS_DB.value}"
-        logger.debug(f"Checking Redis connection at: {redis_url}")
-        # Create Redis client and attempt to ping
-        redis_client = Redis.from_url(redis_url, socket_timeout=5.0)
-        try:
-            await redis_client.ping()
-            logger.info("✅ Redis health check passed")
-        except RedisError as re:
-            error_msg = f"Failed to connect to Redis: {str(re)}"
-            logger.error(f"❌ {error_msg}")
-            raise Exception(error_msg)
-        finally:
-            await redis_client.close()
-
-    except Exception as e:
-        error_msg = f"Redis health check failed: {str(e)}"
-        logger.error(f"❌ {error_msg}")
-        raise
-
-
-async def health_check_qdrant(container) -> None:
-    """Check the health of Qdrant via HTTP request."""
-    logger = container.logger()
-    logger.info("🔍 Starting Qdrant health check...")
-    try:
-        qdrant_config = await container.config_service().get_config(
-            config_node_constants.QDRANT.value
-        )
-        host = qdrant_config["host"]
-        port = qdrant_config["port"]
-        api_key = qdrant_config["apiKey"]
-
-        client = QdrantClient(host=host, port=port, api_key=api_key, https=False)
-        logger.debug(f"Checking Qdrant health at endpoint: {host}:{port}")
-        try:
-            # Fetch collections to check connectivity
-            client.get_collections()
-            logger.info("Qdrant is healthy!")
-        except Exception as e:
-            error_msg = f"Qdrant health check failed: {str(e)}"
-            logger.error(f"❌ {error_msg}")
-            raise
-    except Exception as e:
-        error_msg = f"Qdrant health check failed: {str(e)}"
-        logger.error(f"❌ {error_msg}")
-        raise
-
-
-async def health_check(container) -> None:
-    """Run health checks sequentially using HTTP requests."""
-    logger = container.logger()
-    logger.info("🏥 Starting health checks for all services...")
-    try:
-        # Run health checks sequentially
-        await health_check_etcd(container)
-        logger.info("✅ etcd health check completed")
-
-        await health_check_arango(container)
-        logger.info("✅ ArangoDB health check completed")
-
-        await health_check_kafka(container)
-        logger.info("✅ Kafka health check completed")
-
-        await health_check_redis(container)
-        logger.info("✅ Redis health check completed")
-
-        await health_check_qdrant(container)
-        logger.info("✅ Qdrant health check completed")
-
-        logger.info("✅ All health checks completed successfully")
-    except Exception as e:
-        logger.error(f"❌ One or more health checks failed: {str(e)}")
-        raise
 
 
 async def run_knowledge_base_migration(container) -> bool:
@@ -959,8 +722,7 @@ async def initialize_container(container) -> bool:
 
     logger.info("🚀 Initializing application resources")
     try:
-        logger.info("Running health checks for all services...")
-        await health_check(container)
+        await Health.system_health_check(container)
 
         logger.info("Connecting to ArangoDB")
         arango_service = await container.arango_service()

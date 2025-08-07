@@ -3,7 +3,7 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, TextIO
+from typing import Any, Dict, List, Optional, TextIO, Union
 
 from tenacity import (
     retry,
@@ -17,7 +17,7 @@ from app.modules.parsers.excel.prompt_template import row_text_prompt
 class CSVParser:
     def __init__(
         self, delimiter: str = ",", quotechar: str = '"', encoding: str = "utf-8"
-    ):
+    ) -> None:
         """
         Initialize the CSV parser with configurable parameters.
 
@@ -123,7 +123,7 @@ class CSVParser:
             writer.writeheader()
             writer.writerows(data)
 
-    def _parse_value(self, value: str) -> Any:
+    def _parse_value(self, value: str) -> int | float | bool | str | None:
         """
         Parse a string value into its appropriate Python type.
 
@@ -162,7 +162,7 @@ class CSVParser:
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=10),
     )
-    async def _call_llm(self, llm, messages):
+    async def _call_llm(self, llm, messages) -> Union[str, dict, list]:
         """Wrapper for LLM calls with retry logic"""
         return await llm.ainvoke(messages)
 
@@ -191,7 +191,8 @@ class CSVParser:
             )
 
             response = await self._call_llm(llm, messages)
-
+            if '</think>' in response.content:
+                response.content = response.content.split('</think>')[-1]
             # Try to extract JSON array from response
             try:
                 processed_texts.extend(json.loads(response.content))
@@ -213,7 +214,7 @@ class CSVParser:
         return processed_texts
 
 
-def main():
+def main() -> None:
     """Test the CSV parser functionality"""
     # Create sample data
     test_data = [

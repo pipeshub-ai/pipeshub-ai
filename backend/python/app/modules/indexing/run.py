@@ -7,10 +7,11 @@ from qdrant_client import QdrantClient
 from qdrant_client.http import models
 from qdrant_client.http.models import FieldCondition, Filter, MatchValue
 
-from app.config.configuration_service import config_node_constants
-from app.config.utils.named_constants.arangodb_constants import (
+from app.config.configuration_service import ConfigurationService
+from app.config.constants.arangodb import (
     CollectionNames,
 )
+from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import (
     ChunkingError,
     DocumentProcessingError,
@@ -319,7 +320,7 @@ class IndexingPipeline:
     def __init__(
         self,
         logger,
-        config_service,
+        config_service: ConfigurationService,
         arango_service,
         collection_name: str,
         qdrant_client: QdrantClient,

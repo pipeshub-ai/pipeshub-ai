@@ -9,7 +9,7 @@ from arango import ArangoClient
 from arango.database import TransactionDatabase
 
 from app.config.configuration_service import ConfigurationService
-from app.config.utils.named_constants.arangodb_constants import (
+from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
 )
@@ -25,10 +25,10 @@ class ArangoService(BaseArangoService):
         logger,
         arango_client: ArangoClient,
         kafka_service,
-        config: ConfigurationService,
+        config_service: ConfigurationService,
     ) -> None:
         # Call parent class constructor to initialize shared attributes
-        super().__init__(logger, arango_client, config,kafka_service)
+        super().__init__(logger, arango_client, config_service, kafka_service)
         self.kafka_service = kafka_service
         self.logger = logger
 
@@ -985,7 +985,6 @@ class ArangoService(BaseArangoService):
                 CollectionNames.BELONGS_TO.value,
                 CollectionNames.BELONGS_TO_DEPARTMENT.value,
                 CollectionNames.BELONGS_TO_CATEGORY.value,
-                CollectionNames.BELONGS_TO_KNOWLEDGE_BASE.value,
                 CollectionNames.BELONGS_TO_LANGUAGE.value,
                 CollectionNames.BELONGS_TO_TOPIC.value,
                 CollectionNames.IS_OF_TYPE.value,

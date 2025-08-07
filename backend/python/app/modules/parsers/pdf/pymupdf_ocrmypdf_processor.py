@@ -29,6 +29,7 @@ class PyMuPDFOCRStrategy(OCRStrategy):
 
         # Load with PyMuPDF first
         self.logger.debug("📄 Initial PyMuPDF load")
+        self.logger.debug(f"Content type: {type(content)} {len(content)}")
         temp_doc = fitz.open(stream=content, filetype="pdf")
 
         # Check if any page needs OCR

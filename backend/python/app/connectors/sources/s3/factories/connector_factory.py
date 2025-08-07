@@ -8,11 +8,10 @@ from app.connectors.core.interfaces.connector.iconnector_service import (
 )
 from app.connectors.enums.enums import ConnectorType
 from app.connectors.sources.s3.config.config import S3_CONFIG
-from app.connectors.sources.s3.services.authentication_service import (
-    S3AuthenticationService,
-)
 from app.connectors.sources.s3.services.connector_service import S3ConnectorService
+from app.connectors.sources.s3.services.data_processor import S3DataProcessor
 from app.connectors.sources.s3.services.data_service import S3DataService
+from app.connectors.sources.s3.services.token_service import S3TokenService
 
 
 class S3ConnectorFactory:
@@ -24,8 +23,9 @@ class S3ConnectorFactory:
         factory.register_connector_implementation(
             connector_type=ConnectorType.S3,
             connector_class=S3ConnectorService,
-            auth_service_class=S3AuthenticationService,
+            token_service_class=S3TokenService,
             data_service_class=S3DataService,
+            data_processor_class=S3DataProcessor,
             config=S3_CONFIG
         )
 

@@ -6,7 +6,7 @@ from typing import Any, Dict
 from langchain.chat_models.base import BaseChatModel
 from langchain_core.embeddings.embeddings import Embeddings
 
-from app.config.utils.named_constants.ai_models_named_constants import (
+from app.config.constants.ai_models import (
     AZURE_EMBEDDING_API_VERSION,
     DEFAULT_EMBEDDING_MODEL,
     AzureOpenAILLM,
@@ -162,6 +162,16 @@ def get_embedding_model(provider: str, config: Dict[str, Any]) -> Embeddings:
             organization=configuration.get("organizationId"),
         )
 
+    elif provider == EmbeddingProvider.AWS_BEDROCK.value:
+        from langchain_aws import BedrockEmbeddings
+
+        return BedrockEmbeddings(
+            model_id=configuration["model"],
+            aws_access_key_id=configuration["awsAccessKeyId"],
+            aws_secret_access_key=configuration["awsAccessSecretKey"],
+            region_name=configuration["region"],
+        )
+
     elif provider == EmbeddingProvider.SENTENCE_TRANSFOMERS.value:
         from langchain_community.embeddings import SentenceTransformerEmbeddings
 
@@ -219,11 +229,12 @@ def get_generator_model(provider: str, config: Dict[str, Any]) -> BaseChatModel:
         from langchain_aws import ChatBedrock
 
         return ChatBedrock(
-                model=configuration["model"],
+                model_id=configuration["model"],
                 temperature=0.2,
                 aws_access_key_id=configuration["awsAccessKeyId"],
                 aws_secret_access_key=configuration["awsAccessSecretKey"],
                 region_name=configuration["region"],
+                provider=configuration["provider"],
             )
     elif provider == LLMProvider.AZURE_OPENAI.value:
         from langchain_community.chat_models import AzureChatOpenAI

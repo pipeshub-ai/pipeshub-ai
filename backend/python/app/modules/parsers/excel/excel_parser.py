@@ -1,7 +1,7 @@
 import io
 import json
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Union
 
 from openpyxl import load_workbook
 from openpyxl.cell.cell import MergedCell
@@ -21,7 +21,7 @@ from app.modules.parsers.excel.prompt_template import (
 
 
 class ExcelParser:
-    def __init__(self, logger):
+    def __init__(self, logger) -> None:
         self.logger = logger
         self.workbook = None
         self.file_binary = None
@@ -216,7 +216,7 @@ class ExcelParser:
             tables = []
             visited_cells = set()  # Track already processed cells
 
-            def get_table(start_row, start_col):
+            def get_table(start_row: int, start_col: int) -> Dict[str, Any]:
                 """Extract a table starting from (start_row, start_col)."""
                 # Find the last column of the table
                 max_col = start_col
@@ -316,7 +316,7 @@ class ExcelParser:
         except Exception:
             raise
 
-    def _process_cell(self, cell, header, row, col):
+    def _process_cell(self, cell, header, row, col) -> Dict[str, Any]:
         """Process a single cell and return its data with denormalized merged cell values."""
         try:
             # Check if the cell is a merged cell
@@ -380,7 +380,7 @@ class ExcelParser:
             f"Retrying LLM call after error. Attempt {retry_state.attempt_number}"
         ),
     )
-    async def _call_llm(self, messages):
+    async def _call_llm(self, messages) -> Union[str, dict, list]:
         """Wrapper for LLM calls with retry logic"""
         return await self.llm.ainvoke(messages)
 
@@ -428,6 +428,8 @@ class ExcelParser:
                     {"role": "user", "content": formatted_prompt},
                 ]
                 response = await self._call_llm(messages)
+                if '</think>' in response.content:
+                    response.content = response.content.split('</think>')[-1]
 
                 try:
                     # Parse LLM response to get headers
@@ -488,6 +490,8 @@ class ExcelParser:
                 headers=table["headers"], sample_data=json.dumps(sample_data, indent=2)
             )
             response = await self._call_llm(messages)
+            if '</think>' in response.content:
+                response.content = response.content.split('</think>')[-1]
             return response.content
 
         except Exception:
@@ -517,7 +521,8 @@ class ExcelParser:
             )
 
             response = await self._call_llm(messages)
-
+            if '</think>' in response.content:
+                response.content = response.content.split('</think>')[-1]
             # Try to extract JSON array from response
             try:
                 # First try direct JSON parsing

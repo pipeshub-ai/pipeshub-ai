@@ -1,14 +1,15 @@
 from io import BytesIO
 
 from docling.datamodel.base_models import DocumentStream
+from docling.datamodel.document import DoclingDocument
 from docling.document_converter import DocumentConverter
 
 
 class HTMLParser:
-    def __init__(self):
+    def __init__(self) -> None:
         self.converter = DocumentConverter()
 
-    def parse_string(self, html_content: str):
+    def parse_string(self, html_content: str) -> DoclingDocument:
         """
         Parse HTML content from a string.
 
@@ -38,7 +39,7 @@ class HTMLParser:
 
         return result.document
 
-    def parse_file(self, file_path: str):
+    def parse_file(self, file_path: str) -> DoclingDocument:
         """
         Parse HTML content from a file.
 

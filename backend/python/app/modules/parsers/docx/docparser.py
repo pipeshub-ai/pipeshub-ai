@@ -7,7 +7,7 @@ from io import BytesIO
 class DocParser:
     """Parser for Microsoft Word .doc and .docx files"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         pass
 
     def convert_doc_to_docx(self, binary: bytes) -> BytesIO:

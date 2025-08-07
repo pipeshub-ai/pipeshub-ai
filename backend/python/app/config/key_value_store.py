@@ -1,10 +1,10 @@
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Generic, List, Optional, TypeVar
+from typing import Callable, Generic, List, Optional, TypeVar
 
 T = TypeVar("T")
 
 
-class DistributedKeyValueStore(ABC, Generic[T]):
+class KeyValueStore(ABC, Generic[T]):
     """
     Abstract base class defining the interface for distributed key-value stores.
 
@@ -16,7 +16,7 @@ class DistributedKeyValueStore(ABC, Generic[T]):
     """
 
     @abstractmethod
-    async def create_key(self, key: str, value: T, ttl: Optional[int] = None) -> None:
+    async def create_key(self, key: str, value: T, overwrite: bool = True, ttl: Optional[int] = None) -> None:
         """
         Create a new key-value pair in the store.
 
@@ -100,7 +100,7 @@ class DistributedKeyValueStore(ABC, Generic[T]):
         key: str,
         callback: Callable[[Optional[T]], None],
         error_callback: Optional[Callable[[Exception], None]] = None,
-    ) -> Any:
+    ) -> int:
         """
         Watch a key for changes and execute callbacks when changes occur.
 
@@ -115,6 +115,13 @@ class DistributedKeyValueStore(ABC, Generic[T]):
         Raises:
             ConnectionError: If the store is unavailable
             NotImplementedError: If watching is not supported
+        """
+        pass
+
+    @abstractmethod
+    async def cancel_watch(self, key: str, watch_id: str) -> None:
+        """
+        Cancel a watch for a key.
         """
         pass
 

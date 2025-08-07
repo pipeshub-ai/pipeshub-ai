@@ -6,8 +6,9 @@ from typing import Dict, List, Optional
 from arango import ArangoClient
 from arango.database import TransactionDatabase
 
-from app.config.configuration_service import ConfigurationService, config_node_constants
-from app.config.utils.named_constants.arangodb_constants import CollectionNames
+from app.config.configuration_service import ConfigurationService
+from app.config.constants.arangodb import CollectionNames
+from app.config.constants.service import config_node_constants
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -15,11 +16,11 @@ class ArangoService:
     """ArangoDB service for interacting with the database"""
 
     def __init__(
-        self, logger, arango_client: ArangoClient, config: ConfigurationService
-    ):
+        self, logger, arango_client: ArangoClient, config_service: ConfigurationService
+    ) -> None:
         self.logger = logger
         self.logger.info("🚀 Initializing ArangoService")
-        self.config_service = config
+        self.config_service = config_service
         self.client = arango_client
         self.db = None
 
@@ -73,7 +74,7 @@ class ArangoService:
 
             return False
 
-    async def disconnect(self):
+    async def disconnect(self) -> bool | None:
         """Disconnect from ArangoDB"""
         try:
             self.logger.info("🚀 Disconnecting from ArangoDB")
@@ -262,7 +263,7 @@ class ArangoService:
         nodes: List[Dict],
         collection: str,
         transaction: Optional[TransactionDatabase] = None,
-    ):
+    ) -> bool | None:
         """Batch upsert multiple nodes using Python-Arango SDK methods"""
         try:
             self.logger.info("🚀 Batch upserting nodes: %s", collection)
@@ -300,7 +301,7 @@ class ArangoService:
         edges: List[Dict],
         collection: str,
         transaction: Optional[TransactionDatabase] = None,
-    ):
+    ) -> bool | None:
         """Batch create PARENT_CHILD relationships"""
         try:
             self.logger.info("🚀 Batch creating edges: %s", collection)
@@ -432,7 +433,7 @@ class ArangoService:
                 raise
             return []
 
-    async def copy_document_relationships(self, source_key: str, target_key: str):
+    async def copy_document_relationships(self, source_key: str, target_key: str) -> None:
         """
         Copy all relationships (edges) from source document to target document.
         This includes departments, categories, subcategories, languages, and topics.

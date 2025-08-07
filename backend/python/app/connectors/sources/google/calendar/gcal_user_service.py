@@ -10,7 +10,8 @@ from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
-from app.config.configuration_service import ConfigurationService, config_node_constants
+from app.config.configuration_service import ConfigurationService
+from app.config.constants.service import config_node_constants
 from app.connectors.sources.google.common.scopes import (
     GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES,
 )
@@ -24,12 +25,12 @@ class GCalUserService:
     def __init__(
         self,
         logger,
-        config: ConfigurationService,
+        config_service: ConfigurationService,
         rate_limiter: GoogleAPIRateLimiter,
         credentials=None,
     ) -> None:
         self.logger = logger
-        self.config_service = config
+        self.config_service = config_service
         self.service = None
         self.credentials = credentials
         self.rate_limiter = rate_limiter

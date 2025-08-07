@@ -466,7 +466,7 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
     }));
 
     try {
-      const recordId = record._id;
+      const recordId = record._key;
 
       if (!record) {
         console.error('Record not found for ID:', recordId);
@@ -549,6 +549,7 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
               { responseType: 'blob', params }
             );
           } else {
+            console.log(recordId)
             connectorResponse = await axios.get(
               `${CONFIG.backendUrl}/api/v1/knowledgeBase/stream/record/${recordId}`,
               { responseType: 'blob', params }

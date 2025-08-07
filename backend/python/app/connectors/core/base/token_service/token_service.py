@@ -2,12 +2,12 @@ import logging
 from abc import ABC
 from typing import Any, Dict, Optional
 
-from app.connectors.core.interfaces.auth.iauth_service import IAuthenticationService
 from app.connectors.core.interfaces.connector.iconnector_config import ConnectorConfig
+from app.connectors.core.interfaces.token_service.itoken_service import ITokenService
 
 
-class BaseAuthenticationService(IAuthenticationService, ABC):
-    """Base authentication service with common functionality"""
+class BaseTokenService(ITokenService, ABC):
+    """Base token service with common functionality"""
 
     def __init__(self, logger: logging.Logger, config: ConnectorConfig) -> None:
         self.logger = logger
@@ -17,7 +17,7 @@ class BaseAuthenticationService(IAuthenticationService, ABC):
         self._token_expiry = None
 
     async def authenticate(self, credentials: Dict[str, Any]) -> bool:
-        """Authenticate with the service"""
+        """Authenticate with the service and return a token"""
         try:
             # This should be implemented by specific auth services
             self.logger.info("Authenticating with service")
@@ -27,7 +27,7 @@ class BaseAuthenticationService(IAuthenticationService, ABC):
             return False
 
     async def refresh_token(self, refresh_token: str) -> Dict[str, Any]:
-        """Refresh authentication token"""
+        """Refresh a token"""
         try:
             # This should be implemented by specific auth services
             self.logger.info("Refreshing token")
@@ -37,7 +37,7 @@ class BaseAuthenticationService(IAuthenticationService, ABC):
             raise
 
     async def validate_token(self, token: str) -> bool:
-        """Validate current token"""
+        """Validate a token"""
         try:
             # This should be implemented by specific auth services
             return token is not None and len(token) > 0
@@ -46,7 +46,7 @@ class BaseAuthenticationService(IAuthenticationService, ABC):
             return False
 
     async def revoke_token(self, token: str) -> bool:
-        """Revoke authentication token"""
+        """Revoke a token"""
         try:
             # This should be implemented by specific auth services
             self.logger.info("Revoking token")
@@ -56,11 +56,11 @@ class BaseAuthenticationService(IAuthenticationService, ABC):
             return False
 
     def get_auth_headers(self) -> Dict[str, str]:
-        """Get authentication headers for API calls"""
+        """Get headers for API calls"""
         if self._token:
             return {"Authorization": f"Bearer {self._token}"}
         return {}
 
     def get_service(self) -> Optional[object]:
-        """Get the underlying service instance (to be implemented by subclasses)"""
+        """Get the underlying service instance"""
         return None

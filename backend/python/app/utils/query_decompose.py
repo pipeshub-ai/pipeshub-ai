@@ -152,10 +152,19 @@ class QueryDecompositionExpansionService:
         try:
             # Handle different response formats
             if hasattr(response, "content"):
+                if '</think>' in response.content:
+                    response.content = response.content.split('</think>')[-1]
+                    response.content = response.content.strip()
                 json_str = response.content
             elif isinstance(response, dict):
+                if '</think>' in response.get("content", str(response)):
+                    response.content = response.content.split('</think>')[-1]
+                    response.content = response.content.strip()
                 json_str = response.get("content", str(response))
             else:
+                if '</think>' in str(response):
+                    response = str(response).split('</think>')[-1]
+                    response = response.strip()
                 json_str = str(response)
 
             # Clean the JSON string
@@ -173,7 +182,6 @@ class QueryDecompositionExpansionService:
 
             # Parse the JSON
             parsed_json = json.loads(json_str)
-
             # Validate and normalize the structure
             if not isinstance(parsed_json, dict):
                 raise ValueError("Response is not a JSON object")

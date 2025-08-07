@@ -2,21 +2,22 @@ from typing import Dict, List, Optional
 
 from arango import ArangoClient
 
-from app.config.configuration_service import ConfigurationService, config_node_constants
-from app.config.utils.named_constants.arangodb_constants import (
+from app.config.configuration_service import ConfigurationService
+from app.config.constants.arangodb import (
     CollectionNames,
     RecordTypes,
 )
+from app.config.constants.service import config_node_constants
 
 
 class ArangoService:
     """ArangoDB service for interacting with the database"""
 
     def __init__(
-        self, logger, arango_client: ArangoClient, config: ConfigurationService
+        self, logger, arango_client: ArangoClient, config_service: ConfigurationService
     ) -> None:
         self.logger = logger
-        self.config_service = config
+        self.config_service = config_service
         self.client = arango_client
         self.db = None
 
@@ -176,7 +177,7 @@ class ArangoService:
                 LET kbRecords = (
                     FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSIONS_TO_KB.value}
                     FILTER kb._key IN @kb_ids  // Filter by specific KB IDs
-                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO_KB.value}
+                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
                     RETURN DISTINCT records
                 )
                 """
@@ -185,7 +186,7 @@ class ArangoService:
                 query += f"""
                 LET kbRecords = (
                     FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSIONS_TO_KB.value}
-                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO_KB.value}
+                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
                     RETURN DISTINCT records
                 )
                 """
@@ -462,7 +463,7 @@ class ArangoService:
 
             LET kbAccess = (
                 FOR kb, kbEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSIONS_TO_KNOWLEDGE_BASE.value}
-                FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO_KNOWLEDGE_BASE.value}
+                FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
                 FILTER records._key == @recordId
                 RETURN {{
                     type: 'KNOWLEDGE_BASE',

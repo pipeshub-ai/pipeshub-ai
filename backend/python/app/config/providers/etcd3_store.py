@@ -39,7 +39,7 @@ class Etcd3DistributedKeyValueStore(DistributedKeyValueStore[T], Generic[T]):
         ca_cert: Optional[str] = None,
         cert_key: Optional[str] = None,
         cert_cert: Optional[str] = None,
-    ):
+    ) -> None:
         """
         Initialize the ETCD3 store.
 
@@ -221,11 +221,11 @@ class Etcd3DistributedKeyValueStore(DistributedKeyValueStore[T], Generic[T]):
         key: str,
         callback: Callable[[Optional[T]], None],
         error_callback: Optional[Callable[[Exception], None]] = None,
-    ) -> Any:
+    ) -> int:
         logger.debug("🔄 Setting up watch for key: %s", key)
         client = await self._get_client()
 
-        def watch_callback(event):
+        def watch_callback(event) -> None:
             logger.debug("📋 Watch event received for key: %s", key)
             logger.debug("   - Event type: %s", event.type)
             logger.debug("   - Event value: %s", event.value)
@@ -285,18 +285,18 @@ class Etcd3DistributedKeyValueStore(DistributedKeyValueStore[T], Generic[T]):
 
 
 class Etcd3Transaction:
-    def __init__(self, client):
+    def __init__(self, client) -> None:
         self.client = client
         self.operations = []
 
-    async def if_value(self, key: str, value: T):
+    async def if_value(self, key: str, value: T) -> None:
         # Add condition to transaction
         pass
 
-    async def then_update(self, key: str, value: T):
+    async def then_update(self, key: str, value: T) -> None:
         # Add update operation
         pass
 
-    async def commit(self):
+    async def commit(self) -> None:
         # Execute transaction
         pass

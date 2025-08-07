@@ -18,6 +18,18 @@ import jsonIcon from '@iconify-icons/vscode-icons/file-type-json';
 import zipIcon from '@iconify-icons/vscode-icons/file-type-zip';
 import imageIcon from '@iconify-icons/vscode-icons/file-type-image';
 import defaultFileIcon from '@iconify-icons/mdi/file-document';
+import boxIcon from '@iconify-icons/mdi/box';
+import jiraIcon from '@iconify-icons/mdi/jira';
+import gmailIcon from '@iconify-icons/mdi/gmail';
+import slackIcon from '@iconify-icons/mdi/slack';
+import dropboxIcon from '@iconify-icons/mdi/dropbox';
+import databaseIcon from '@iconify-icons/mdi/database';
+import googleDriveIcon from '@iconify-icons/mdi/google-drive';
+import cloudUploadIcon from '@iconify-icons/mdi/cloud-upload';
+import microsoftTeamsIcon from '@iconify-icons/mdi/microsoft-teams';
+import microsoftOutlookIcon from '@iconify-icons/mdi/microsoft-outlook';
+import microsoftOnedriveIcon from '@iconify-icons/mdi/microsoft-onedrive';
+import microsoftSharepointIcon from '@iconify-icons/mdi/microsoft-sharepoint';
 
 import { Box, Paper, Stack, Button, Collapse, Typography, alpha, useTheme } from '@mui/material';
 
@@ -65,6 +77,22 @@ const FILE_CONFIG = {
   viewableExtensions: ['pdf', 'xlsx', 'xls', 'csv', 'docx', 'html', 'txt', 'md', 'ppt', 'pptx'],
 };
 
+const CONNECTOR_ICONS = {
+  DRIVE: googleDriveIcon,
+  GMAIL: gmailIcon,
+  SLACK: slackIcon,
+  JIRA: jiraIcon,
+  TEAMS: microsoftTeamsIcon,
+  ONEDRIVE: microsoftOnedriveIcon,
+  SHAREPOINT: microsoftSharepointIcon,
+  OUTLOOK: microsoftOutlookIcon,
+  DROPBOX: dropboxIcon,
+  BOX: boxIcon,
+  UPLOAD: cloudUploadIcon,
+  // Add fallback for unknown connectors
+  DEFAULT: databaseIcon,
+};
+
 interface FileInfo {
   recordId: string;
   recordName: string;
@@ -72,6 +100,7 @@ interface FileInfo {
   webUrl?: string;
   citationCount: number;
   citation: CustomCitation;
+  connector: string;
 }
 
 interface SourcesAndCitationsProps {
@@ -93,6 +122,36 @@ const getFileIcon = (extension: string): IconifyIcon =>
 
 const isDocViewable = (extension: string): boolean =>
   FILE_CONFIG.viewableExtensions.includes(extension.toLowerCase());
+
+// Get connector color based on connector type
+const getConnectorColor = (connector: string): string => {
+  switch (connector.toUpperCase()) {
+    case 'DRIVE':
+      return '#4285F4'; // Google Drive blue
+    case 'GMAIL':
+      return '#EA4335'; // Gmail red
+    case 'SLACK':
+      return '#4A154B'; // Slack purple
+    case 'JIRA':
+      return '#0052CC'; // Jira blue
+    case 'TEAMS':
+      return '#6264A7'; // Microsoft Teams purple
+    case 'ONEDRIVE':
+      return '#0078D4'; // OneDrive blue
+    case 'SHAREPOINT':
+      return '#0078D4'; // SharePoint blue
+    case 'OUTLOOK':
+      return '#0078D4'; // Outlook blue
+    case 'DROPBOX':
+      return '#0061FE'; // Dropbox blue
+    case 'BOX':
+      return '#0061D5'; // Box blue
+    case 'UPLOAD':
+      return '#1976D2'; // Default blue
+    default:
+      return '#1976D2'; // Default blue
+  }
+};
 
 // Common button styles following the existing pattern
 const getButtonStyles = (theme: any, colorType: 'primary' | 'success' = 'primary') => ({
@@ -145,8 +204,8 @@ const FileCard = React.memo(
     <Paper
       elevation={0}
       sx={{
-        p: 2,
-        mb: 1,
+        p: 1.25,
+        mb: 0.75,
         bgcolor:
           theme.palette.mode === 'dark' ? 'rgba(255, 255, 255, 0.03)' : 'rgba(0, 0, 0, 0.02)',
         borderRadius: 2,
@@ -168,13 +227,13 @@ const FileCard = React.memo(
     >
       <Box
         sx={{
-          pl: 1.5,
+          pl: 1,
           borderLeft: `3px solid ${theme.palette.success.main}`,
           borderRadius: '2px',
         }}
       >
         {/* Main Content Area */}
-        <Stack direction="row" spacing={2} alignItems="flex-start">
+        <Stack direction="row" spacing={1.5} alignItems="flex-start">
           {/* File Icon */}
           <Box
             sx={{
@@ -182,13 +241,13 @@ const FileCard = React.memo(
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              mt: 0.25,
+              mt: 0.125,
             }}
           >
             <Icon
               icon={getFileIcon(file.extension)}
-              width={50}
-              height={50}
+              width={40}
+              height={40}
               style={{ borderRadius: '4px' }}
             />
           </Box>
@@ -198,10 +257,10 @@ const FileCard = React.memo(
             <Typography
               variant="body2"
               sx={{
-                fontSize: '14px',
+                fontSize: '13px',
                 fontWeight: 600,
                 color: 'text.primary',
-                mb: 0.75,
+                mb: 0.5,
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
@@ -212,7 +271,7 @@ const FileCard = React.memo(
               {file.recordName}
             </Typography>
 
-            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.5 }}>
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
               <Typography
                 variant="caption"
                 sx={{
@@ -251,76 +310,101 @@ const FileCard = React.memo(
               )}
             </Stack>
           </Box>
-          {/* Action Buttons with Names */}
-          <Stack direction="row" spacing={1}>
-            {file.webUrl && (
-              <Button
-                size="small"
-                variant="text"
-                startIcon={<Icon icon={linkIcon} width={14} height={14} />}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onViewDocument(file);
-                }}
-                sx={{
-                  textTransform: 'none',
-                  fontSize: '12px',
-                  fontWeight: 500,
-                  borderRadius: 1.5,
-                  px: 1.5,
-                  py: 0.5,
-                  minHeight: 28,
-                }}
-              >
-                Open
-              </Button>
-            )}
 
-            {isDocViewable(file.extension) && (
-              <Button
-                size="small"
-                variant="text"
-                startIcon={<Icon icon={eyeIcon} width={14} height={14} />}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onViewCitations(file);
-                }}
-                sx={{
-                  textTransform: 'none',
-                  fontSize: '12px',
-                  fontWeight: 500,
-                  borderRadius: 1.5,
-                  px: 1.5,
-                  py: 0.5,
-                  minHeight: 28,
-                }}
-              >
-                View Citations
-              </Button>
-            )}
+          {/* Connector Icon */}
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexShrink: 0 }}>
+            <Icon 
+              icon={file.connector ? CONNECTOR_ICONS[file.connector as keyof typeof CONNECTOR_ICONS] || databaseIcon : databaseIcon} 
+              width={16} 
+              height={16}
+              style={{
+                color: file.connector ? getConnectorColor(file.connector) : theme.palette.text.secondary
+              }}
+            />
+            <Typography 
+              variant="caption" 
+              sx={{ 
+                color: 'text.secondary', 
+                fontSize: '11px', 
+                fontWeight: 500,
+                textTransform: 'uppercase',
+                letterSpacing: '0.3px'
+              }}
+            >
+              {file.connector || 'UPLOAD'}
+            </Typography>
+          </Box>
+        </Stack>
 
+        {/* Action Buttons - Moved below and made responsive */}
+        <Box sx={{ mt: 0.75, display: 'flex', flexWrap: 'wrap', gap: 0.75, justifyContent: 'flex-end' }}>
+          {file.webUrl && (
             <Button
               size="small"
               variant="text"
-              startIcon={<Icon icon={fileDocIcon} width={14} height={14} />}
+              startIcon={<Icon icon={linkIcon} width={14} height={14} />}
               onClick={(e) => {
                 e.stopPropagation();
-                onViewRecord(file);
+                onViewDocument(file);
               }}
               sx={{
                 textTransform: 'none',
-                fontSize: '12px',
+                fontSize: '11px',
                 fontWeight: 500,
                 borderRadius: 1.5,
-                px: 1.5,
-                py: 0.5,
-                minHeight: 28,
+                px: 1.25,
+                py: 0.375,
+                minHeight: 26,
               }}
             >
-              Details
+              Open
             </Button>
-          </Stack>
-        </Stack>
+          )}
+
+          {isDocViewable(file.extension) && (
+            <Button
+              size="small"
+              variant="text"
+              startIcon={<Icon icon={eyeIcon} width={14} height={14} />}
+              onClick={(e) => {
+                e.stopPropagation();
+                onViewCitations(file);
+              }}
+              sx={{
+                textTransform: 'none',
+                fontSize: '11px',
+                fontWeight: 500,
+                borderRadius: 1.5,
+                px: 1.25,
+                py: 0.375,
+                minHeight: 26,
+              }}
+            >
+              View Citations
+            </Button>
+          )}
+
+          <Button
+            size="small"
+            variant="text"
+            startIcon={<Icon icon={fileDocIcon} width={14} height={14} />}
+            onClick={(e) => {
+              e.stopPropagation();
+              onViewRecord(file);
+            }}
+            sx={{
+              textTransform: 'none',
+              fontSize: '11px',
+              fontWeight: 500,
+              borderRadius: 1.5,
+              px: 1.25,
+              py: 0.375,
+              minHeight: 26,
+            }}
+          >
+            Details
+          </Button>
+        </Box>
       </Box>
     </Paper>
   )
@@ -353,6 +437,7 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
           webUrl: citation.metadata?.webUrl,
           citationCount: aggregatedCitations[recordId]?.length || 1,
           citation,
+          connector: citation.metadata?.connector,
         });
       }
     });

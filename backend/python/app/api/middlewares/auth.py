@@ -4,7 +4,8 @@ from dependency_injector.wiring import inject
 from fastapi import HTTPException, Request, status
 from jose import JWTError, jwt
 
-from app.config.configuration_service import ConfigurationService, config_node_constants
+from app.config.configuration_service import ConfigurationService
+from app.config.constants.service import config_node_constants
 
 
 async def get_config_service(request: Request) -> ConfigurationService:
@@ -15,7 +16,7 @@ async def get_config_service(request: Request) -> ConfigurationService:
 
 # Authentication logic
 @inject
-async def isJwtTokenValid(request: Request):
+async def isJwtTokenValid(request: Request) -> dict:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -50,7 +51,7 @@ async def isJwtTokenValid(request: Request):
 
 
 # Dependency for injecting authentication
-async def authMiddleware(request: Request):
+async def authMiddleware(request: Request) -> Request:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Not authenticated",

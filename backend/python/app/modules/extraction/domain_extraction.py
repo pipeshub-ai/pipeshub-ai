@@ -18,17 +18,17 @@ from tenacity import (
     wait_exponential,
 )
 
-from app.config.configuration_service import (
+from app.config.constants.arangodb import (
+    CollectionNames,
+    DepartmentNames,
+)
+from app.config.constants.http_status_code import HttpStatusCode
+from app.config.constants.service import (
     DefaultEndpoints,
     Routes,
     TokenScopes,
     config_node_constants,
 )
-from app.config.utils.named_constants.arangodb_constants import (
-    CollectionNames,
-    DepartmentNames,
-)
-from app.config.utils.named_constants.http_status_code_constants import HttpStatusCode
 from app.modules.extraction.prompt_template import prompt
 from app.utils.llm import get_llm
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -216,9 +216,12 @@ class DomainExtractor:
             messages = [HumanMessage(content=formatted_prompt)]
             # Use retry wrapper for LLM call
             response = await self._call_llm(messages)
-
+            # Remove any thinking tags if present
+            if '</think>' in response.content:
+                response.content = response.content.split('</think>')[-1]
             # Clean the response content
             response_text = response.content.strip()
+
             if response_text.startswith("```json"):
                 response_text = response_text.replace("```json", "", 1)
             if response_text.endswith("```"):
@@ -264,6 +267,8 @@ class DomainExtractor:
 
                     # Use retry wrapper for reflection LLM call
                     reflection_response = await self._call_llm(reflection_messages)
+                    if '</think>' in reflection_response.content:
+                        reflection_response.content = reflection_response.content.split('</think>')[-1]
                     reflection_text = reflection_response.content.strip()
 
                     # Clean the reflection response

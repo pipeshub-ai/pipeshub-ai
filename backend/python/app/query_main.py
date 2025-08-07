@@ -15,15 +15,15 @@ from app.api.routes.chatbot import router as chatbot_router
 from app.api.routes.health import router as health_router
 from app.api.routes.records import router as records_router
 from app.api.routes.search import router as search_router
-from app.config.configuration_service import DefaultEndpoints, config_node_constants
-from app.config.utils.named_constants.http_status_code_constants import HttpStatusCode
-from app.setups.query_setup import AppContainer
+from app.config.constants.http_status_code import HttpStatusCode
+from app.config.constants.service import DefaultEndpoints, config_node_constants
+from app.containers.query import QueryAppContainer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
-container = AppContainer()
+container = QueryAppContainer.init("query_service")
 
 
-async def initialize_container(container: AppContainer) -> bool:
+async def initialize_container(container: QueryAppContainer) -> bool:
     """Initialize container resources"""
     logger = container.logger()
     logger.info("🚀 Initializing application resources")
@@ -52,7 +52,7 @@ async def initialize_container(container: AppContainer) -> bool:
         raise
 
 
-async def get_initialized_container() -> AppContainer:
+async def get_initialized_container() -> QueryAppContainer:
     """Dependency provider for initialized container"""
     if not hasattr(get_initialized_container, "initialized"):
         await initialize_container(container)

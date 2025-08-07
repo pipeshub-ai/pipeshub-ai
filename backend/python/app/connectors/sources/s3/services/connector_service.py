@@ -4,11 +4,12 @@ import logging
 from typing import Any, Dict, Optional
 
 from app.connectors.core.base.connector.connector_service import BaseConnectorService
-from app.connectors.core.interfaces.auth.iauth_service import IAuthenticationService
 from app.connectors.core.interfaces.connector.iconnector_config import ConnectorConfig
+from app.connectors.core.interfaces.data_processor.data_processor import IDataProcessor
 from app.connectors.core.interfaces.data_service.data_service import IDataService
 from app.connectors.core.interfaces.error.error import IErrorHandlingService
 from app.connectors.core.interfaces.event_service.event_service import IEventService
+from app.connectors.core.interfaces.token_service.itoken_service import ITokenService
 from app.connectors.enums.enums import ConnectorType
 from app.connectors.sources.s3.const.const import (
     AWS_S3_API_VERSION,
@@ -28,14 +29,15 @@ class S3ConnectorService(BaseConnectorService):
         logger: logging.Logger,
         connector_type: ConnectorType,
         config: ConnectorConfig,
-        auth_service: IAuthenticationService,
+        token_service: ITokenService,
         data_service: IDataService,
+        data_processor: IDataProcessor,
         error_service: IErrorHandlingService,
         event_service: IEventService,
     ) -> None:
         super().__init__(
-            logger, connector_type, config, auth_service,
-            data_service, error_service, event_service
+            logger, connector_type, config, token_service,
+            data_service, data_processor, error_service, event_service
         )
 
     async def test_connection(self) -> bool:
@@ -43,12 +45,12 @@ class S3ConnectorService(BaseConnectorService):
         try:
             self.logger.info("🧪 Testing S3 connection using aioboto3")
 
-            if not self.auth_service.is_connected():
-                self.logger.error("❌ Authentication service not connected")
+            if not self.token_service.is_connected():
+                self.logger.error("❌ Token service not connected")
                 return False
 
             # Test by listing S3 buckets using aioboto3
-            session = self.auth_service.get_service()
+            session = self.token_service.get_service()
             if not session:
                 self.logger.error("❌ No active AWS session")
                 return False
@@ -81,7 +83,7 @@ class S3ConnectorService(BaseConnectorService):
         # Add S3-specific information
         s3_info = {
             **base_info,
-            "aws_region": self.auth_service.get_region_name() if hasattr(self.auth_service, 'get_region_name') else None,
+            "aws_region": self.token_service.get_region_name() if hasattr(self.token_service, 'get_region_name') else None,
             "api_version": AWS_S3_API_VERSION,
             "supported_operations": [
                 OPERATION_LIST_BUCKETS,

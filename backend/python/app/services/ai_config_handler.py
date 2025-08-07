@@ -4,12 +4,13 @@ from typing import Dict, List
 
 from aiokafka import AIOKafkaConsumer
 
-from app.config.configuration_service import KafkaConfig, config_node_constants
+from app.config.configuration_service import ConfigurationService
+from app.config.constants.service import KafkaConfig, config_node_constants
 from app.modules.retrieval.retrieval_service import RetrievalService
 
 
 class RetrievalAiConfigHandler:
-    def __init__(self, logger, config_service, retrieval_service: RetrievalService) -> None:
+    def __init__(self, logger, config_service: ConfigurationService, retrieval_service: RetrievalService) -> None:
         """Initialize the LLM config handler with required services
 
         Args:
@@ -96,7 +97,7 @@ class RetrievalAiConfigHandler:
         try:
             self.logger.info("📥 Processing LLM configured event")
 
-            await self.retrieval_service.get_llm_instance()
+            await self.retrieval_service.get_llm_instance(use_cache=False)
 
             self.logger.info(
                 "✅ Successfully updated LLM configuration in all services"
@@ -111,7 +112,7 @@ class RetrievalAiConfigHandler:
         try:
             self.logger.info("📥 Processing embedding model configured event")
 
-            await self.retrieval_service.get_embedding_model_instance()
+            await self.retrieval_service.get_embedding_model_instance(use_cache=False)
             self.logger.info("✅ Successfully updated embedding model in all services")
             return True
         except Exception as e:

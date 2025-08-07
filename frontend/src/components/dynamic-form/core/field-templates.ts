@@ -337,6 +337,33 @@ export const FIELD_TEMPLATES = {
     required: false,
     validation: z.string().optional(),
   },
+
+  awsAccessKeyId: {
+    name: 'awsAccessKeyId',
+    label: 'AWS Access Key ID',
+    type: 'password' as const,
+    placeholder: 'AKIAIOSFODNN7EXAMPLE',
+    icon: keyIcon,
+    required: true,
+    validation: z.string().min(1, 'AWS Access Key ID is required'),
+  },
+
+  awsAccessSecretKey: {
+    name: 'awsAccessSecretKey',
+    label: 'AWS Access Secret Key',
+    type: 'password' as const,
+    placeholder: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+    icon: keyIcon,
+    required: true,
+    validation: z.string().min(1, 'AWS Access Secret Key is required'),
+  },
+
+  provider: {
+    name: 'provider',
+    label: 'Provider',
+    placeholder: 'anthropic',
+    icon: serverIcon,
+  },
 } as const;
 
 export type FieldTemplateName = keyof typeof FIELD_TEMPLATES;

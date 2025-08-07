@@ -12,8 +12,8 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 from app.config.configuration_service import ConfigurationService
-from app.config.utils.named_constants.arangodb_constants import AccountType
-from app.config.utils.named_constants.http_status_code_constants import (
+from app.config.constants.arangodb import AccountType
+from app.config.constants.http_status_code import (
     HttpStatusCode,
 )
 from app.connectors.sources.google.common.connector_google_exceptions import (
@@ -40,7 +40,7 @@ class GmailUserService:
     def __init__(
         self,
         logger,
-        config: ConfigurationService,
+        config_service: ConfigurationService,
         rate_limiter: GoogleAPIRateLimiter,
         google_token_handler,
         credentials=None,
@@ -50,13 +50,13 @@ class GmailUserService:
         try:
             self.logger = logger
             self.logger.info("🚀 Initializing GmailUserService")
-            self.config_service = config
+            self.config_service = config_service
             self.service = None
             self.credentials = credentials
             self.google_token_handler = google_token_handler
             self.gmail_drive_interface = GmailDriveInterface(
                 logger=self.logger,
-                config=self.config_service,
+                config_service=self.config_service,
                 google_token_handler=self.google_token_handler,
                 rate_limiter=rate_limiter,
                 admin_service=admin_service,

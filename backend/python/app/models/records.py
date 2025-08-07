@@ -5,6 +5,18 @@ from app.models.graph import Node
 
 
 @dataclass
+class RecordGroup(Node):
+    _key: str
+    org_id: str = ""
+    name: str = ""
+    description: Optional[str] = None
+    created_at_timestamp: Optional[float] = None
+    updated_at_timestamp: Optional[float] = None
+    last_sync_timestamp: Optional[float] = None
+    source_created_at_timestamp: Optional[float] = None
+    source_last_modified_timestamp: Optional[float] = None
+
+@dataclass
 class Record(Node):
     """Base record class for all types of records"""
     _key: str
@@ -33,7 +45,8 @@ class Record(Node):
     summary_document_id: Optional[str] = None
     virtual_record_id: Optional[str] = None
     deleted_by_user_id: Optional[str] = None
-    web_url: Optional[str] = None
+    web_url: Optional[str] = None,
+    mime_type: Optional[str] = None
 
     @staticmethod
     def from_dict(data: Dict[str, Any]) -> 'Record':
@@ -66,6 +79,7 @@ class Record(Node):
         record.virtual_record_id = data.get("virtualRecordId", None)
         record.deleted_by_user_id = data.get("deletedByUserId", None)
         record.web_url = data.get("webUrl", None)
+        record.mime_type = data.get("mimeType", None)
         return record
 
     def __post_init__(self) -> None:
@@ -121,7 +135,8 @@ class Record(Node):
             "reason": self.reason,
             "lastSyncTimestamp": self.last_sync_timestamp,
             "deletedByUserId": self.deleted_by_user_id,
-            "webUrl": self.web_url
+            "webUrl": self.web_url,
+            "mimeType": self.mime_type
         }
 
     def validate(self) -> bool:

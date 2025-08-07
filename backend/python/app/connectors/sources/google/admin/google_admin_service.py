@@ -5,15 +5,12 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-from app.config.configuration_service import (
-    ConfigurationService,
-    DefaultEndpoints,
-    config_node_constants,
-)
-from app.config.utils.named_constants.arangodb_constants import CollectionNames
-from app.config.utils.named_constants.http_status_code_constants import (
+from app.config.configuration_service import ConfigurationService
+from app.config.constants.arangodb import CollectionNames
+from app.config.constants.http_status_code import (
     HttpStatusCode,
 )
+from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.sources.google.calendar.gcal_user_service import GCalUserService
 from app.connectors.sources.google.common.connector_google_exceptions import (
     AdminAuthError,
@@ -43,13 +40,13 @@ class GoogleAdminService:
     def __init__(
         self,
         logger,
-        config: ConfigurationService,
+        config_service: ConfigurationService,
         rate_limiter: GoogleAPIRateLimiter,
         google_token_handler,
         arango_service,
     ) -> None:
         self.logger = logger
-        self.config_service = config
+        self.config_service = config_service
         self.rate_limiter = rate_limiter
         self.google_limiter = self.rate_limiter.google_limiter
         self.google_token_handler = google_token_handler
@@ -802,7 +799,7 @@ class GoogleAdminService:
             # Create new user service
             user_service = DriveUserService(
                 logger=self.logger,
-                config=self.config_service,
+                config_service=self.config_service,
                 rate_limiter=self.rate_limiter,
                 google_token_handler=self.google_token_handler,
                 credentials=user_credentials,
@@ -857,7 +854,7 @@ class GoogleAdminService:
             # Create new user service
             user_service = GmailUserService(
                 logger=self.logger,
-                config=self.config_service,
+                config_service=self.config_service,
                 rate_limiter=self.rate_limiter,
                 google_token_handler=self.google_token_handler,
                 credentials=user_credentials,
@@ -909,7 +906,7 @@ class GoogleAdminService:
 
             # Create new user service
             user_service = GCalUserService(
-                config=self.config_service,
+                config_service=self.config_service,
                 rate_limiter=self.rate_limiter,
                 credentials=user_credentials,
             )
@@ -950,7 +947,7 @@ class GoogleAdminService:
             # Create new user service
             user_service = ParserUserService(
                 logger=self.logger,
-                config=self.config_service,
+                config_service=self.config_service,
                 rate_limiter=self.rate_limiter,
                 google_token_handler=self.google_token_handler,
                 credentials=user_credentials,

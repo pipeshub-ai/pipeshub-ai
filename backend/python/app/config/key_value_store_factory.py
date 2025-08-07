@@ -2,8 +2,8 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, TypeVar
 
 from app.config.constants.store_type import StoreType
-from app.config.key_value_store import DistributedKeyValueStore
-from app.config.providers.etcd3_store import Etcd3DistributedKeyValueStore
+from app.config.key_value_store import KeyValueStore
+from app.config.providers.etcd.etcd3_store import Etcd3DistributedKeyValueStore
 from app.config.providers.in_memory_store import InMemoryKeyValueStore
 from app.utils.logger import create_logger
 
@@ -41,7 +41,7 @@ class KeyValueStoreFactory:
         serializer: Optional[Callable[[T], bytes]] = None,
         deserializer: Optional[Callable[[bytes], T]] = None,
         config: Optional[StoreConfig] = None,
-    ) -> DistributedKeyValueStore[T]:
+    ) -> KeyValueStore[T]:
         """
         Create a new key-value store instance.
 

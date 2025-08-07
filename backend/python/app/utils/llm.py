@@ -1,6 +1,7 @@
 from langchain.chat_models.base import BaseChatModel
 
-from app.config.configuration_service import ConfigurationService, config_node_constants
+from app.config.configuration_service import ConfigurationService
+from app.config.constants.service import config_node_constants
 from app.utils.aimodels import get_generator_model
 
 

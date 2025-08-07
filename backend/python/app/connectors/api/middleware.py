@@ -11,7 +11,7 @@ from fastapi import Request
 class WebhookAuthVerifier:
     """Reusable webhook auth helper for specific routes"""
 
-    def __init__(self, logger):
+    def __init__(self, logger) -> None:
         self.logger = logger
         self.google_ips = [
             "64.233.160.0/19",

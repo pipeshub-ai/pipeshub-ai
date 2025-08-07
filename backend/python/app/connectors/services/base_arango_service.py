@@ -3,28 +3,28 @@
 # pylint: disable=E1101, W0718
 import asyncio
 import uuid
-from typing import Dict, List, Tuple
+from io import BytesIO
+from typing import Dict, List, Optional, Tuple
 
-from arango import ArangoClient, Optional
+import aiohttp
+from arango import ArangoClient
+from fastapi import Request
 
-from app.config.configuration_service import (
-    ConfigurationService,
-    DefaultEndpoints,
-    config_node_constants,
-)
-from app.config.utils.named_constants.arangodb_constants import (
+from app.config.configuration_service import ConfigurationService
+from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
     DepartmentNames,
     OriginTypes,
     RecordTypes,
 )
+from app.config.constants.http_status_code import HttpStatusCode
+from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.services.kafka_service import KafkaService
 from app.schema.arango.documents import (
     app_schema,
     department_schema,
     file_record_schema,
-    kb_schema,
     mail_record_schema,
     orgs_schema,
     record_group_schema,
@@ -40,6 +40,7 @@ from app.schema.arango.edges import (
     user_app_relation_schema,
     user_drive_relation_schema,
 )
+from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Collection definitions with their schemas
@@ -65,7 +66,6 @@ NODE_COLLECTIONS = [
     (CollectionNames.SUBCATEGORIES2.value, None),
     (CollectionNames.SUBCATEGORIES3.value, None),
     (CollectionNames.BLOCKS.value, None),
-    (CollectionNames.KNOWLEDGE_BASE.value, kb_schema),
     (CollectionNames.RECORD_GROUPS.value, record_group_schema)
 ]
 
@@ -83,9 +83,6 @@ EDGE_COLLECTIONS = [
     (CollectionNames.BELONGS_TO_LANGUAGE.value, basic_edge_schema),
     (CollectionNames.BELONGS_TO_TOPIC.value, basic_edge_schema),
     (CollectionNames.INTER_CATEGORY_RELATIONS.value, basic_edge_schema),
-    (CollectionNames.BELONGS_TO_KNOWLEDGE_BASE.value, belongs_to_schema),
-    (CollectionNames.PERMISSIONS_TO_KNOWLEDGE_BASE.value, permissions_schema),
-    (CollectionNames.BELONGS_TO_KB.value, belongs_to_schema),
     (CollectionNames.PERMISSIONS_TO_KB.value, permissions_schema),
 ]
 
@@ -93,10 +90,10 @@ class BaseArangoService:
     """Base ArangoDB service class for interacting with the database"""
 
     def __init__(
-        self, logger, arango_client: ArangoClient, config: ConfigurationService, kafka_service: KafkaService,
+        self, logger, arango_client: ArangoClient, config_service: ConfigurationService, kafka_service: KafkaService,
     ) -> None:
         self.logger = logger
-        self.config = config
+        self.config_service = config_service
         self.client = arango_client
         self.kafka_service = kafka_service
         self.db = None
@@ -136,7 +133,7 @@ class BaseArangoService:
                 "edge_collections": [
                     CollectionNames.IS_OF_TYPE.value,
                     CollectionNames.RECORD_RELATIONS.value,
-                    CollectionNames.BELONGS_TO_KB.value,
+                    CollectionNames.BELONGS_TO.value,
                     CollectionNames.PERMISSIONS_TO_KB.value,
                 ],
                 "document_collections": [
@@ -153,11 +150,73 @@ class BaseArangoService:
             for collection_name, _ in NODE_COLLECTIONS + EDGE_COLLECTIONS
         }
 
+    async def _initialize_new_collections(self) -> None:
+        """Initialize all collections (both nodes and edges)"""
+        try:
+            self.logger.info("🚀 Initializing collections...")
+            # Initialize all collections (both nodes and edges)
+            for collection_name, schema in NODE_COLLECTIONS + EDGE_COLLECTIONS:
+                is_edge = (collection_name, schema) in EDGE_COLLECTIONS
+
+                collection = self._collections[collection_name] = (
+                    self.db.collection(collection_name)
+                    if self.db.has_collection(collection_name)
+                    else self.db.create_collection(
+                        collection_name,
+                        edge=is_edge,
+                        schema=schema
+                    )
+                )
+
+                # Update schema if collection exists and has a schema
+                if self.db.has_collection(collection_name) and schema:
+                    try:
+                        self.logger.info(f"Updating schema for collection {collection_name}")
+                        collection.configure(schema=schema)
+                    except Exception as e:
+                        self.logger.warning(
+                            f"Failed to update schema for {collection_name}: {str(e)}"
+                        )
+            self.logger.info("✅ Collections initialized successfully")
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to initialize collections: {str(e)}")
+            raise
+
+    async def _create_graph(self) -> None:
+        """Create the knowledge base graph with all required edge definitions"""
+        graph_name = CollectionNames.KNOWLEDGE_GRAPH.value
+
+        try:
+            self.logger.info("🚀 Creating knowledge base graph...")
+            graph = self.db.create_graph(graph_name)
+
+            # Create all edge definitions
+            created_count = 0
+            for edge_def in EDGE_DEFINITIONS:
+                try:
+                    # Check if edge collection exists before creating edge definition
+                    if self.db.has_collection(edge_def["edge_collection"]):
+                        graph.create_edge_definition(**edge_def)
+                        created_count += 1
+                        self.logger.info(f"✅ Created edge definition for {edge_def['edge_collection']}")
+                    else:
+                        self.logger.warning(f"⚠️ Skipping edge definition for non-existent collection: {edge_def['edge_collection']}")
+                except Exception as e:
+                    self.logger.error(f"❌ Failed to create edge definition for {edge_def['edge_collection']}: {str(e)}")
+                    # Continue with other edge definitions
+
+            self.logger.info(f"✅ Knowledge base graph created successfully with {created_count} edge definitions")
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to create knowledge base graph: {str(e)}")
+            raise
+
     async def connect(self) -> bool:
         """Connect to ArangoDB and initialize collections"""
         try:
             self.logger.info("🚀 Connecting to ArangoDB...")
-            arangodb_config = await self.config.get_config(
+            arangodb_config = await self.config_service.get_config(
                 config_node_constants.ARANGODB.value
             )
             arango_url = arangodb_config["url"]
@@ -204,142 +263,14 @@ class BaseArangoService:
             # Initialize collections with schema update handling
             try:
                 # Initialize all collections (both nodes and edges)
-                for collection_name, schema in NODE_COLLECTIONS + EDGE_COLLECTIONS:
-                    is_edge = (collection_name, schema) in EDGE_COLLECTIONS
+                await self._initialize_new_collections()
 
-                    collection = self._collections[collection_name] = (
-                        self.db.collection(collection_name)
-                        if self.db.has_collection(collection_name)
-                        else self.db.create_collection(
-                            collection_name,
-                            edge=is_edge,
-                            schema=schema
-                        )
-                    )
-
-                    # Update schema if collection exists and has a schema
-                    if self.db.has_collection(collection_name) and schema:
-                        try:
-                            self.logger.info(f"Updating schema for collection {collection_name}")
-                            collection.configure(schema=schema)
-                        except Exception as e:
-                            self.logger.warning(
-                                f"Failed to update schema for {collection_name}: {str(e)}"
-                            )
-
-                # Create the permissions graph if it doesn't exist
-                if not self.db.has_graph(CollectionNames.FILE_ACCESS_GRAPH.value):
-                    self.logger.info("🚀 Creating file access graph...")
-                    graph = self.db.create_graph(CollectionNames.FILE_ACCESS_GRAPH.value)
-
-                    # Define edge definitions
-                    edge_definitions = [
-                        {
-                            "edge_collection": CollectionNames.PERMISSIONS.value,
-                            "from_vertex_collections": [CollectionNames.RECORDS.value],
-                            "to_vertex_collections": [
-                                CollectionNames.USERS.value,
-                                CollectionNames.GROUPS.value,
-                                CollectionNames.ORGS.value,
-                            ],
-                        },
-                        {
-                            "edge_collection": CollectionNames.BELONGS_TO.value,
-                            "from_vertex_collections": [CollectionNames.USERS.value],
-                            "to_vertex_collections": [
-                                CollectionNames.GROUPS.value,
-                                CollectionNames.ORGS.value,
-                            ],
-                        },
-                        {
-                            "edge_collection": CollectionNames.ORG_DEPARTMENT_RELATION.value,
-                            "from_vertex_collections": [CollectionNames.ORGS.value],
-                            "to_vertex_collections": [CollectionNames.DEPARTMENTS.value],
-                        },
-                        {
-                            "edge_collection": CollectionNames.BELONGS_TO_DEPARTMENT.value,
-                            "from_vertex_collections": [CollectionNames.RECORDS.value],
-                            "to_vertex_collections": [CollectionNames.DEPARTMENTS.value],
-                        },
-                        {
-                            "edge_collection": CollectionNames.BELONGS_TO_CATEGORY.value,
-                            "from_vertex_collections": [CollectionNames.RECORDS.value],
-                            "to_vertex_collections": [
-                                CollectionNames.CATEGORIES.value,
-                                CollectionNames.SUBCATEGORIES1.value,
-                                CollectionNames.SUBCATEGORIES2.value,
-                                CollectionNames.SUBCATEGORIES3.value,
-                            ],
-                        },
-                        {
-                            "edge_collection": CollectionNames.BELONGS_TO_TOPIC.value,
-                            "from_vertex_collections": [CollectionNames.RECORDS.value],
-                            "to_vertex_collections": [CollectionNames.TOPICS.value],
-                        },
-                        {
-                            "edge_collection": CollectionNames.BELONGS_TO_LANGUAGE.value,
-                            "from_vertex_collections": [CollectionNames.RECORDS.value],
-                            "to_vertex_collections": [CollectionNames.LANGUAGES.value],
-                        },
-                        {
-                            "edge_collection": CollectionNames.INTER_CATEGORY_RELATIONS.value,
-                            "from_vertex_collections": [CollectionNames.CATEGORIES.value, CollectionNames.SUBCATEGORIES1.value, CollectionNames.SUBCATEGORIES2.value, CollectionNames.SUBCATEGORIES3.value],
-                            "to_vertex_collections": [CollectionNames.CATEGORIES.value, CollectionNames.SUBCATEGORIES1.value, CollectionNames.SUBCATEGORIES2.value, CollectionNames.SUBCATEGORIES3.value],
-                        },
-                        {
-                            "edge_collection": CollectionNames.BELONGS_TO_KNOWLEDGE_BASE.value,   # record belongs to KB
-                            "from_vertex_collections": [CollectionNames.RECORDS.value,CollectionNames.FILES.value],
-                            "to_vertex_collections": [CollectionNames.KNOWLEDGE_BASE.value],
-                        },
-                        {
-                            "edge_collection": CollectionNames.PERMISSIONS_TO_KNOWLEDGE_BASE.value,   # user KB permission
-                            "from_vertex_collections": [CollectionNames.USERS.value],
-                            "to_vertex_collections": [CollectionNames.KNOWLEDGE_BASE.value],
-                        },
-                        {
-                            "edge_collection": CollectionNames.BELONGS_TO_KB.value,
-                            "from_vertex_collections": [CollectionNames.RECORDS.value],
-                            "to_vertex_collections": [CollectionNames.RECORD_GROUPS.value],
-                        },
-                        {
-                            "edge_collection": CollectionNames.PERMISSIONS_TO_KB.value,
-                            "from_vertex_collections": [CollectionNames.USERS.value],
-                            "to_vertex_collections": [CollectionNames.RECORD_GROUPS.value],
-                        },
-                        {
-                            "edge_collection": CollectionNames.IS_OF_TYPE.value,
-                            "from_vertex_collections": [CollectionNames.RECORDS.value],
-                            "to_vertex_collections": [CollectionNames.FILES.value],
-                        },
-                        {
-                            "edge_collection": CollectionNames.RECORD_RELATIONS.value,
-                            "from_vertex_collections": [CollectionNames.RECORDS.value, CollectionNames.FILES.value,CollectionNames.KNOWLEDGE_BASE.value],
-                            "to_vertex_collections": [CollectionNames.RECORDS.value, CollectionNames.FILES.value],
-                        },
-                        {
-                            "edge_collection": CollectionNames.USER_DRIVE_RELATION.value,
-                            "from_vertex_collections": [CollectionNames.USERS.value],
-                            "to_vertex_collections": [CollectionNames.DRIVES.value],
-                        },
-                        {
-                            "edge_collection": CollectionNames.USER_APP_RELATION.value,
-                            "from_vertex_collections": [CollectionNames.USERS.value],
-                            "to_vertex_collections": [CollectionNames.APPS.value],
-                        },
-                        {
-                            "edge_collection": CollectionNames.ORG_APP_RELATION.value,
-                            "from_vertex_collections": [CollectionNames.ORGS.value],
-                            "to_vertex_collections": [CollectionNames.APPS.value],
-                        },
-                    ]
-
-                    # Create all edge definitions
-                    for edge_def in edge_definitions:
-                        graph.create_edge_definition(**edge_def)
-
-                    self.logger.info("✅ File access graph created successfully")
-
-                self.logger.info("✅ Collections initialized successfully")
+                # Initialize or update the file access graph
+                if not self.db.has_graph(CollectionNames.FILE_ACCESS_GRAPH.value) and not self.db.has_graph(CollectionNames.KNOWLEDGE_GRAPH.value):
+                    # No graph exists, create new graph (Knowledge Graph)
+                    await self._create_graph()
+                else:
+                    self.logger.info("Knowledge base graph already exists - skipping creation")
 
                 # Initialize departments
                 try:
@@ -527,14 +458,14 @@ class BaseArangoService:
                     FILTER kbEdge.role IN ["OWNER", "READER", "FILEORGANIZER", "WRITER", "COMMENTER", "ORGANIZER"]
                     LET kb = DOCUMENT(kbEdge._to)
                     FILTER kb != null AND kb.orgId == org_id
-                    FOR belongsEdge IN @@belongs_to_kb
+                    FOR belongsEdge IN @@belongs_to
                         FILTER belongsEdge._to == kb._id
                         LET record = DOCUMENT(belongsEdge._from)
                         FILTER record != null
                         FILTER record.isDeleted != true
                         FILTER record.orgId == org_id
                         FILTER record.origin == "UPLOAD"
-                        FILTER record.recordType != "DRIVE"
+                        FILTER record.recordType != @drive_record_type
                         RETURN {
                             record: record,
                             kb_id: kb._key,
@@ -550,7 +481,7 @@ class BaseArangoService:
                     FILTER record.isDeleted != true
                     FILTER record.orgId == org_id
                     FILTER record.origin == "CONNECTOR"
-                    FILTER record.recordType != "DRIVE"
+                    FILTER record.recordType != @drive_record_type
                     RETURN record
             )
             // Combine all accessible records
@@ -765,8 +696,9 @@ class BaseArangoService:
                 "user_from": f"users/{user_key}",
                 "@records": CollectionNames.RECORDS.value,
                 "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
-                "@belongs_to_kb": CollectionNames.BELONGS_TO_KB.value,
+                "@belongs_to": CollectionNames.BELONGS_TO.value,
                 "@permissions": CollectionNames.PERMISSIONS.value,
+                "drive_record_type": RecordTypes.DRIVE.value,
             })
 
             result = next(cursor, None)
@@ -816,7 +748,7 @@ class BaseArangoService:
             )
             LET recordDoc = DOCUMENT(CONCAT(@records, '/', @recordId))
             LET kb = FIRST(
-                FOR k IN 1..1 OUTBOUND recordDoc._id @@belongs_to_kb
+                FOR k IN 1..1 OUTBOUND recordDoc._id @@belongs_to
                 RETURN k
             )
             LET directAccess = (
@@ -895,7 +827,7 @@ class BaseArangoService:
                 "records": CollectionNames.RECORDS.value,
                 "files": CollectionNames.FILES.value,
                 "@anyone": CollectionNames.ANYONE.value,
-                "@belongs_to_kb": CollectionNames.BELONGS_TO_KB.value,
+                "@belongs_to": CollectionNames.BELONGS_TO.value,
                 "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
                 "@record_relations": CollectionNames.RECORD_RELATIONS.value,
             }
@@ -1142,7 +1074,7 @@ class BaseArangoService:
         source: str,
     ) -> Tuple[List[Dict], int, Dict]:
         """
-        List all records the user can access directly via belongs_to_kb edges.
+        List all records the user can access directly via belongs_to edges.
         Returns (records, total_count, available_filters)
         """
         try:
@@ -1196,7 +1128,7 @@ class BaseArangoService:
             main_query = f"""
             LET user_from = @user_from
             LET org_id = @org_id
-            // KB Records Section - Get records DIRECTLY from belongs_to_kb edges (not through folders)
+            // KB Records Section - Get records DIRECTLY from belongs_to edges (not through folders)
             LET kbRecords = {
                 f'''(
                     FOR kbEdge IN @@permissions_to_kb
@@ -1206,7 +1138,7 @@ class BaseArangoService:
                         LET kb = DOCUMENT(kbEdge._to)
                         FILTER kb != null AND kb.orgId == org_id
                         // Get records that belong directly to the KB
-                        FOR belongsEdge IN @@belongs_to_kb
+                        FOR belongsEdge IN @@belongs_to
                             FILTER belongsEdge._to == kb._id
                             LET record = DOCUMENT(belongsEdge._from)
                             FILTER record != null
@@ -1233,7 +1165,7 @@ class BaseArangoService:
                         {permission_filter}
                         LET record = DOCUMENT(permissionEdge._from)
                         FILTER record != null
-                        FILTER record.recordType != "DRIVE"   //remove this when drive is handled
+                        FILTER record.recordType != @drive_record_type
                         FILTER record.isDeleted != true
                         FILTER record.orgId == org_id
                         FILTER record.origin == "CONNECTOR"
@@ -1301,7 +1233,7 @@ class BaseArangoService:
                         FILTER kbEdge.role IN @kb_permissions
                         LET kb = DOCUMENT(kbEdge._to)
                         FILTER kb != null AND kb.orgId == org_id
-                        FOR belongsEdge IN @@belongs_to_kb
+                        FOR belongsEdge IN @@belongs_to
                             FILTER belongsEdge._to == kb._id
                             LET record = DOCUMENT(belongsEdge._from)
                             FILTER record != null
@@ -1320,6 +1252,7 @@ class BaseArangoService:
                         FILTER permissionEdge.type == "USER"
                         {permission_filter}
                         LET record = DOCUMENT(permissionEdge._from)
+                        FILTER record.recordType != @drive_record_type
                         FILTER record != null
                         FILTER record.isDeleted != true
                         FILTER record.orgId == org_id
@@ -1343,7 +1276,7 @@ class BaseArangoService:
                         FILTER kbEdge.role IN ["OWNER", "READER", "FILEORGANIZER", "WRITER", "COMMENTER", "ORGANIZER"]
                         LET kb = DOCUMENT(kbEdge._to)
                         FILTER kb != null AND kb.orgId == org_id
-                        FOR belongsEdge IN @@belongs_to_kb
+                        FOR belongsEdge IN @@belongs_to
                             FILTER belongsEdge._to == kb._id
                             LET record = DOCUMENT(belongsEdge._from)
                             FILTER record != null
@@ -1363,6 +1296,7 @@ class BaseArangoService:
                         FILTER permissionEdge._to == user_from
                         FILTER permissionEdge.type == "USER"
                         LET record = DOCUMENT(permissionEdge._from)
+                        FILTER record.recordType != @drive_record_type
                         FILTER record != null
                         FILTER record.isDeleted != true
                         FILTER record.orgId == org_id
@@ -1424,8 +1358,9 @@ class BaseArangoService:
                 "kb_permissions": final_kb_roles,
                 "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
                 "@permissions": CollectionNames.PERMISSIONS.value,
-                "@belongs_to_kb": CollectionNames.BELONGS_TO_KB.value,
+                "@belongs_to": CollectionNames.BELONGS_TO.value,
                 "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                "drive_record_type": RecordTypes.DRIVE.value,
                 **filter_bind_vars,
             }
 
@@ -1435,7 +1370,8 @@ class BaseArangoService:
                 "kb_permissions": final_kb_roles,
                 "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
                 "@permissions": CollectionNames.PERMISSIONS.value,
-                "@belongs_to_kb": CollectionNames.BELONGS_TO_KB.value,
+                "@belongs_to": CollectionNames.BELONGS_TO.value,
+                "drive_record_type": RecordTypes.DRIVE.value,
                 **filter_bind_vars,
             }
 
@@ -1444,7 +1380,8 @@ class BaseArangoService:
                 "org_id": org_id,
                 "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
                 "@permissions": CollectionNames.PERMISSIONS.value,
-                "@belongs_to_kb": CollectionNames.BELONGS_TO_KB.value,
+                "@belongs_to": CollectionNames.BELONGS_TO.value,
+                "drive_record_type": RecordTypes.DRIVE.value,
             }
 
             # Execute queries
@@ -1535,7 +1472,7 @@ class BaseArangoService:
             self.logger.error(f"❌ Failed to validate knowledge base permission for user {user_id}: {str(e)}")
             raise
 
-    async def reindex_single_record(self, record_id: str, user_id: str, org_id: str) -> Dict:
+    async def reindex_single_record(self, record_id: str, user_id: str, org_id: str, request: Request) -> Dict:
         """
         Reindex a single record with permission checks and event publishing
         """
@@ -1586,11 +1523,11 @@ class BaseArangoService:
                     }
 
                 user_role = await self.get_user_kb_permission(kb_context["kb_id"], user_key)
-                if user_role not in ["OWNER", "WRITER"]:
+                if user_role not in ["OWNER", "WRITER", "READER"]:
                     return {
                         "success": False,
                         "code": 403,
-                        "reason": f"Insufficient KB permissions. User role: {user_role}. Required: OWNER, WRITER"
+                        "reason": f"Insufficient KB permissions. User role: {user_role}. Required: OWNER, WRITER, READER"
                     }
 
                 connector_type = Connectors.KNOWLEDGE_BASE.value
@@ -1602,11 +1539,11 @@ class BaseArangoService:
                 elif connector_name == Connectors.GOOGLE_MAIL.value:
                     user_role = await self._check_gmail_permissions(record_id, user_key)
 
-                if not user_role or user_role not in ["OWNER", "WRITER"]:
+                if not user_role or user_role not in ["OWNER", "WRITER","READER"]:
                     return {
                         "success": False,
                         "code": 403,
-                        "reason": f"Insufficient permissions. User role: {user_role}. Required: OWNER, WRITER"
+                        "reason": f"Insufficient permissions. User role: {user_role}. Required: OWNER, WRITER, READER"
                     }
 
                 connector_type = connector_name
@@ -1618,11 +1555,12 @@ class BaseArangoService:
                 }
 
             # Get file record for event payload
-            file_record = await self.get_document(record_id, CollectionNames.FILES.value)
+            file_record = await self.get_document(record_id, CollectionNames.FILES.value) if record.get("recordType") == "FILE" else await self.get_document(record_id, CollectionNames.MAILS.value)
 
+            self.logger.info(f"📋 File record: {file_record}")
             # Create and publish reindex event
             try:
-                payload = await self._create_reindex_event_payload(record, file_record)
+                payload = await self._create_reindex_event_payload(record, file_record,user_id,request)
                 await self._publish_record_event("newRecord",payload)
 
                 self.logger.info(f"✅ Published reindex event for record {record_id}")
@@ -1821,9 +1759,9 @@ class BaseArangoService:
 
             kb_query = """
             LET record_from = CONCAT('records/', @record_id)
-            // Find KB via belongs_to_kb edge
+            // Find KB via belongs_to edge
             LET kb_edge = FIRST(
-                FOR btk_edge IN @@belongs_to_kb
+                FOR btk_edge IN @@belongs_to
                     FILTER btk_edge._from == record_from
                     RETURN btk_edge
             )
@@ -1837,7 +1775,7 @@ class BaseArangoService:
 
             cursor = self.db.aql.execute(kb_query, bind_vars={
                 "record_id": record_id,
-                "@belongs_to_kb": CollectionNames.BELONGS_TO_KB.value,
+                "@belongs_to": CollectionNames.BELONGS_TO.value,
             })
 
             result = next(cursor, None)
@@ -2751,7 +2689,93 @@ class BaseArangoService:
             self.logger.error(f"❌ Failed to create deleted record event payload: {str(e)}")
             return {}
 
-    async def _create_reindex_event_payload(self, record: Dict, file_record: Optional[Dict]) -> Dict:
+    async def _download_from_signed_url(
+        self, signed_url: str, request: Request
+    ) -> bytes:
+        """
+        Download file from signed URL with exponential backoff retry
+
+        Args:
+            signed_url: The signed URL to download from
+            record_id: Record ID for logging
+        Returns:
+            bytes: The downloaded file content
+        """
+        chunk_size = 1024 * 1024 * 3  # 3MB chunks
+        max_retries = 3
+        base_delay = 1  # Start with 1 second delay
+
+        timeout = aiohttp.ClientTimeout(
+            total=1200,  # 20 minutes total
+            connect=120,  # 2 minutes for initial connection
+            sock_read=1200,  # 20 minutes per chunk read
+        )
+        self.logger.info(f"Downloading file from signed URL: {signed_url}")
+        for attempt in range(max_retries):
+            delay = base_delay * (2**attempt)  # Exponential backoff
+            file_buffer = BytesIO()
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    try:
+                        async with session.get(signed_url, headers=request.headers) as response:
+                            if response.status != HttpStatusCode.SUCCESS.value:
+                                raise aiohttp.ClientError(
+                                    f"Failed to download file: {response.status}"
+                                )
+                            self.logger.info(f"Response {response}")
+
+                            content_length = response.headers.get("Content-Length")
+                            if content_length:
+                                self.logger.info(
+                                    f"Expected file size: {int(content_length) / (1024*1024):.2f} MB"
+                                )
+
+                            last_logged_size = 0
+                            total_size = 0
+                            log_interval = chunk_size
+
+                            self.logger.info("Starting chunked download...")
+                            try:
+                                async for chunk in response.content.iter_chunked(
+                                    chunk_size
+                                ):
+                                    file_buffer.write(chunk)
+                                    total_size += len(chunk)
+                                    if total_size - last_logged_size >= log_interval:
+                                        self.logger.debug(
+                                            f"Total size so far: {total_size / (1024*1024):.2f} MB"
+                                        )
+                                        last_logged_size = total_size
+                            except IOError as io_err:
+                                raise aiohttp.ClientError(
+                                    f"IO error during chunk download: {str(io_err)}"
+                                )
+
+                            file_content = file_buffer.getvalue()
+                            self.logger.info(
+                                f"✅ Download complete. Total size: {total_size / (1024*1024):.2f} MB"
+                            )
+                            return file_content
+
+                    except aiohttp.ServerDisconnectedError as sde:
+                        raise aiohttp.ClientError(f"Server disconnected: {str(sde)}")
+                    except aiohttp.ClientConnectorError as cce:
+                        raise aiohttp.ClientError(f"Connection error: {str(cce)}")
+
+            except (aiohttp.ClientError, asyncio.TimeoutError, IOError) as e:
+                error_type = type(e).__name__
+                self.logger.warning(
+                    f"Download attempt {attempt + 1} failed with {error_type}: {str(e)}. "
+                    f"Retrying in {delay} seconds..."
+                )
+
+                await asyncio.sleep(delay)
+
+            finally:
+                if not file_buffer.closed:
+                    file_buffer.close()
+
+    async def _create_reindex_event_payload(self, record: Dict, file_record: Optional[Dict], user_id: Optional[str] = None, request: Optional[Request] = None) -> Dict:
         """Create reindex event payload"""
         try:
             # Get extension and mimeType from file record
@@ -2761,12 +2785,33 @@ class BaseArangoService:
                 extension = file_record.get("extension", "")
                 mime_type = file_record.get("mimeType", "")
 
-            endpoints = await self.config.get_config(
+            endpoints = await self.config_service.get_config(
                     config_node_constants.ENDPOINTS.value
                 )
-            storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
+            signed_url_route = ""
+            file_content = ""
+            if record.get("origin") == OriginTypes.UPLOAD.value:
+                storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
+                signed_url_route = f"{storage_url}/api/v1/document/internal/{record['externalRecordId']}/download"
+            else:
+                connector_url = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
+                signed_url_route = f"{connector_url}/api/v1/{record['orgId']}/{user_id}/{record['connectorName'].lower()}/record/{record['_key']}/signedUrl"
 
-            signed_url_route = f"{storage_url}/api/v1/document/internal/{record['externalRecordId']}/download"
+                if record.get("recordType") == "MAIL":
+                    url = f"{connector_url}/api/v1/stream/record/{record['_key']}"
+                    file_content_bytes = await self._download_from_signed_url(url,request)
+                    mime_type = "text/gmail_content"
+                    # Convert bytes to string for JSON serialization
+                    try:
+                        # For mail content, decode as UTF-8 text
+                        file_content = file_content_bytes.decode('utf-8', errors='replace')
+                    except Exception as decode_error:
+                        self.logger.warning(f"Failed to decode file content as UTF-8: {str(decode_error)}")
+                        # Fallback: encode as base64 string for binary content
+                        import base64
+                        file_content = base64.b64encode(file_content_bytes).decode('utf-8')
+
+
 
             return {
                 "orgId": record.get("orgId"),
@@ -2778,6 +2823,7 @@ class BaseArangoService:
                 "origin": record.get("origin", ""),
                 "extension": extension,
                 "mimeType": mime_type,
+                "body": file_content,
                 "createdAtTimestamp": str(record.get("createdAtTimestamp", get_epoch_timestamp_in_ms())),
                 "updatedAtTimestamp": str(get_epoch_timestamp_in_ms()),
                 "sourceCreatedAtTimestamp": str(record.get("sourceCreatedAtTimestamp", record.get("createdAtTimestamp", get_epoch_timestamp_in_ms())))

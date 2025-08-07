@@ -5,7 +5,7 @@ import asyncio
 from abc import ABC, abstractmethod
 
 from app.config.configuration_service import ConfigurationService
-from app.config.utils.named_constants.arangodb_constants import CollectionNames
+from app.config.constants.arangodb import CollectionNames
 from app.connectors.services.kafka_service import KafkaService
 from app.connectors.sources.google.admin.google_admin_service import GoogleAdminService
 from app.connectors.sources.google.calendar.gcal_user_service import GCalUserService
@@ -30,16 +30,18 @@ class BaseGCalSyncService(ABC):
 
     def __init__(
         self,
-        config: ConfigurationService,
+        logger,
+        config_service: ConfigurationService,
         arango_service: ArangoService,
         kafka_service: KafkaService,
         celery_app,
     ) -> None:
-        self.config = config
+        self.logger = logger
+        self.config_service = config_service
         self.arango_service = arango_service
         self.kafka_service = kafka_service
         self.celery_app = celery_app
-        self.progress = GCalSyncProgress()
+        self.progress = GCalSyncProgress(logger)
 
         # Common state
         self._pause_event = asyncio.Event()
@@ -101,13 +103,14 @@ class GCalSyncEnterpriseService(BaseGCalSyncService):
 
     def __init__(
         self,
-        config: ConfigurationService,
+        logger,
+        config_service: ConfigurationService,
         gcal_admin_service: GoogleAdminService,
         arango_service: ArangoService,
         kafka_service: KafkaService,
         celery_app,
     ) -> None:
-        super().__init__(config, arango_service, kafka_service, celery_app)
+        super().__init__(logger, config_service, arango_service, kafka_service, celery_app)
         self.gcal_admin_service = gcal_admin_service
 
     async def connect_services(self, org_id: str) -> bool:
