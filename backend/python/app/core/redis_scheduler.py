@@ -1,7 +1,7 @@
 import json
 from datetime import datetime, timedelta
 
-from redis import asyncio as aioredis
+from redis import asyncio as aioredis  # type: ignore
 
 
 class RedisScheduler:

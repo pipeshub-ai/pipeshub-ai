@@ -172,8 +172,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Kafka Consumer - pass the app_container
     kafka_consumer = EntityKafkaRouteConsumer(
         logger=logger,
-        config_service=app.container.config_service(),
-        arango_service=await app.container.arango_service(),
+        config_service=app.state.config_service,
+        arango_service=app.state.arango_service,
         routes=kafka_routes,  # Pass the list of route patterns
         app_container=app.container,
     )

@@ -151,7 +151,7 @@ class SyncTasks:
         """
         Manual task to control sync operations
         Args:
-            action: 'start', 'pause', or 'resume'
+            action: 'start', 'pause', 'resume', 'init', 'user', 'resync', 'reindex', 'stop'
             org_id: Organization ID
         """
         try:
@@ -208,7 +208,7 @@ class SyncTasks:
         """
         Manual task to control sync operations
         Args:
-            action: 'start', 'pause', or 'resume'
+            action: 'start', 'pause', 'resume', 'init', 'user', 'resync', 'reindex', 'stop'
             org_id: Organization ID
         """
         try:
