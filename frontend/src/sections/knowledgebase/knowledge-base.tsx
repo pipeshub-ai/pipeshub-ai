@@ -732,6 +732,15 @@ export default function KnowledgeBaseComponent() {
     }
   };
 
+  const handleDownload = async (externalRecordId: string, recordName: string) => {
+    try {
+      await KnowledgeBaseAPI.handleDownloadDocument(externalRecordId, recordName);
+      setSuccess('Download started successfully');
+    } catch (err: any) {
+      console.error('Failed to download document', err);
+    }
+  };
+
   const renderContextMenu = () => {
     const canModify =
       currentUserPermission?.role === 'OWNER' || currentUserPermission?.role === 'WRITER';
@@ -784,6 +793,7 @@ export default function KnowledgeBaseComponent() {
         label: 'Download',
         icon: downloadIcon,
         onClick: () => {
+          handleDownload(contextItem.externalRecordId, contextItem.name);
           handleMenuClose();
         },
       },
