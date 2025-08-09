@@ -26,7 +26,6 @@ class BaseUserService(IUserService):
             logger (logging.Logger): Logger instance
             rate_limiter (IRateLimiter): Rate limiter for API calls
             config (Any): Service configuration
-            credentials (Optional[Dict[str, Any]]): User credentials
         """
         self.logger = logger
         self.rate_limiter = rate_limiter

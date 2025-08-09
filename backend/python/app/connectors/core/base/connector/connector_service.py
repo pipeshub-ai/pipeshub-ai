@@ -106,7 +106,6 @@ class BaseConnectorService(IConnectorService, ABC):
 
                     self.logger.info(f"Successfully disconnected from {self.connector_type.value}")
                     return True
-                return True
 
             except Exception as e:
                 self.error_service.log_error(e, "disconnect", {
@@ -227,7 +226,7 @@ class BaseConnectorService(IConnectorService, ABC):
             operation (str): The operation being performed
             operation_func: The function to execute
         Returns:
-            Any: Result of the operation
+            T: Result of the operation
         """
         try:
             # Acquire rate limit token

@@ -116,7 +116,7 @@ async def kafka_config_to_dict(kafka_config: KafkaConsumerConfig) -> Dict[str, A
 async def create_entity_message_handler(app_container: ConnectorAppContainer) -> Callable[[Dict[str, Any]], Awaitable[bool]]:
     """Create a message handler for entity events"""
     logger = app_container.logger()
-    arango_service = app_container.arango_service()
+    arango_service = await app_container.arango_service()
 
     # Create the entity event service
     entity_event_service = EntityEventService(
@@ -196,7 +196,7 @@ async def create_record_message_handler(app_container: ConnectorAppContainer) ->
 async def create_sync_message_handler(app_container: ConnectorAppContainer) -> Callable[[Dict[str, Any]], Awaitable[bool]]:
     """Create a message handler for sync events"""
     logger = app_container.logger()
-    arango_service = app_container.arango_service()
+    arango_service = await app_container.arango_service()
 
     async def handle_sync_message(message: Dict[str, Any]) -> bool:
         """Handle incoming sync messages"""
@@ -266,7 +266,7 @@ async def create_aiconfig_message_handler(app_container: QueryAppContainer) -> C
     logger = app_container.logger()
 
     # get the retrieval_service from your container
-    retrieval_service = app_container.retrieval_service()
+    retrieval_service = await app_container.retrieval_service()
 
     # Create the AI config event service
     aiconfig_event_service = AiConfigEventService(

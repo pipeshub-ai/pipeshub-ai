@@ -584,16 +584,32 @@ class ConnectorAppContainer(BaseAppContainer):
         KafkaService, logger=logger, config_service=config_service
     )
 
-    arango_service = providers.Singleton(
-        ArangoService,
+    # First create an async factory for the connected ArangoService
+    @staticmethod
+    async def _create_arango_service(logger, arango_client, kafka_service, config_service) -> ArangoService:
+        """Async factory to create and connect ArangoService"""
+        service = ArangoService(logger, arango_client, kafka_service, config_service)
+        await service.connect()
+        return service
+
+    arango_service = providers.Resource(
+        _create_arango_service,
         logger=logger,
         arango_client=arango_client,
         kafka_service=kafka_service,
         config_service=config_service,
     )
 
-    kb_arango_service = providers.Singleton(
-        KnowledgeBaseArangoService,
+    # First create an async factory for the connected KnowledgeBaseArangoService
+    @staticmethod
+    async def _create_kb_arango_service(logger, arango_client, kafka_service, config_service) -> KnowledgeBaseArangoService:
+        """Async factory to create and connect KnowledgeBaseArangoService"""
+        service = KnowledgeBaseArangoService(logger, arango_client, kafka_service, config_service)
+        await service.connect()
+        return service
+
+    kb_arango_service = providers.Resource(
+        _create_kb_arango_service,
         logger=logger,
         arango_client=arango_client,
         kafka_service=kafka_service,

@@ -49,7 +49,7 @@ async def get_initialized_container() -> ConnectorAppContainer:
     return container
 
 
-async def resume_sync_services(app_container: ConnectorAppContainer) -> None:
+async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
     """Resume sync services for users with active sync states"""
     logger = app_container.logger()
     logger.debug("🔄 Checking for sync services to resume")
@@ -274,12 +274,30 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.container = app_container
 
     app.state.config_service = app_container.config_service()
-    app.state.arango_service = app_container.arango_service()
+    app.state.arango_service = await app_container.arango_service()
 
     logger = app_container.logger()
     logger.debug("🚀 Starting application")
+    # Start messaging producer first
+    try:
+        await start_messaging_producer(app_container)
+        logger.info("✅ Messaging producer started successfully")
+    except Exception as e:
+        logger.error(f"❌ Failed to start messaging producer: {str(e)}")
+        raise
+
+    # Start all Kafka consumers centrally
+    try:
+        consumers = await start_kafka_consumers(app_container)
+        app_container.kafka_consumers = consumers
+        logger.info("✅ All Kafka consumers started successfully")
+    except Exception as e:
+        logger.error(f"❌ Failed to start Kafka consumers: {str(e)}")
+        raise
+
     # Resume sync services
-    asyncio.create_task(resume_sync_services(app.container))
+    asyncio.create_task(resume_sync_services(app_container))
+
     yield
     logger.info("🔄 Shut down application started")
     # Shutdown all container resources

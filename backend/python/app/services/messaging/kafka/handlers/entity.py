@@ -24,26 +24,26 @@ class EntityEventService(BaseEventService):
         self.arango_service = arango_service
         self.app_container = app_container
 
-    async def process_event(self, event_type: str, value: dict) -> bool:
+    async def process_event(self, event_type: str, payload: dict) -> bool:
         """Handle entity-related events by calling appropriate handlers"""
         try:
             self.logger.info(f"Processing entity event: {event_type}")
             if event_type == "orgCreated":
-                return await self.__handle_org_created(value)
+                return await self.__handle_org_created(payload)
             elif event_type == "orgUpdated":
-                return await self.__handle_org_updated(value)
+                return await self.__handle_org_updated(payload)
             elif event_type == "orgDeleted":
-                return await self.__handle_org_deleted(value)
+                return await self.__handle_org_deleted(payload)
             elif event_type == "userAdded":
-                return await self.__handle_user_added(value)
+                return await self.__handle_user_added(payload)
             elif event_type == "userUpdated":
-                return await self.__handle_user_updated(value)
+                return await self.__handle_user_updated(payload)
             elif event_type == "userDeleted":
-                return await self.__handle_user_deleted(value)
+                return await self.__handle_user_deleted(payload)
             elif event_type == "appEnabled":
-                return await self.__handle_app_enabled(value)
+                return await self.__handle_app_enabled(payload)
             elif event_type == "appDisabled":
-                return await self.__handle_app_disabled(value)
+                return await self.__handle_app_disabled(payload)
             else:
                 self.logger.error(f"Unknown entity event type: {event_type}")
                 return False
@@ -62,7 +62,7 @@ class EntityEventService(BaseEventService):
             }
 
             # Send the message to sync-events topic using aiokafka
-            await self.app_container.messaging_producer().send_message(
+            await self.app_container.messaging_producer.send_message(
                 topic='sync-events',
                 message=message
             )
@@ -664,7 +664,7 @@ class EntityEventService(BaseEventService):
             await self.arango_service.batch_upsert_nodes([kb_data], CollectionNames.RECORD_GROUPS.value)
             await self.arango_service.batch_upsert_nodes([root_folder_data], CollectionNames.FILES.value)
             await self.arango_service.batch_create_edges([permission_edge], CollectionNames.PERMISSIONS_TO_KB.value)
-            await self.arango_service.batch_create_edges([folder_edge], CollectionNames.BELONGS_TO_KB.value)
+            await self.arango_service.batch_create_edges([folder_edge], CollectionNames.BELONGS_TO.value)
 
             self.logger.info(f"Created new knowledge base for user {userId} in organization {orgId}")
             return {
