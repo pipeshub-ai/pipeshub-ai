@@ -11,6 +11,12 @@ from app.api.middlewares.auth import authMiddleware
 from app.config.constants.arangodb import AccountType, Connectors
 from app.connectors.api.router import router
 from app.connectors.sources.localKB.api.kb_router import kb_router
+from app.containers.connector import (
+    ConnectorAppContainer,
+    initialize_container,
+    initialize_enterprise_account_services_fn,
+    initialize_individual_account_services_fn,
+)
 from app.services.messaging.kafka.utils.utils import (
     create_entity_kafka_consumer_config,
     create_entity_message_handler,
@@ -19,12 +25,6 @@ from app.services.messaging.kafka.utils.utils import (
     create_sync_message_handler,
 )
 from app.services.messaging.messaging_factory import MessagingFactory
-from app.containers.connector import (
-    ConnectorAppContainer,
-    initialize_container,
-    initialize_enterprise_account_services_fn,
-    initialize_individual_account_services_fn,
-)
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 container = ConnectorAppContainer.init("connector_service")

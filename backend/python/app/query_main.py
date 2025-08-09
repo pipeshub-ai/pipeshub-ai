@@ -1,4 +1,3 @@
-import asyncio
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, List
 
@@ -18,12 +17,12 @@ from app.api.routes.search import router as search_router
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.containers.query import QueryAppContainer
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.services.messaging.kafka.utils.utils import (
     create_aiconfig_kafka_consumer_config,
     create_aiconfig_message_handler,
 )
 from app.services.messaging.messaging_factory import MessagingFactory
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 container = QueryAppContainer.init("query_service")
 

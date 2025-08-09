@@ -8,14 +8,14 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from app.config.constants.http_status_code import HttpStatusCode
+from app.config.constants.service import DefaultEndpoints, config_node_constants
+from app.containers.indexing import IndexingAppContainer, initialize_container
 from app.services.messaging.kafka.rate_limiter.rate_limiter import RateLimiter
 from app.services.messaging.kafka.utils.utils import (
     create_record_kafka_consumer_config,
     create_record_message_handler,
 )
 from app.services.messaging.messaging_factory import MessagingFactory
-from app.config.constants.service import DefaultEndpoints, config_node_constants
-from app.containers.indexing import IndexingAppContainer, initialize_container
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 container = IndexingAppContainer.init("indexing_service")

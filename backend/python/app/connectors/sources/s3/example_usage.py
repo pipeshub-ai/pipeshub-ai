@@ -1,21 +1,21 @@
 """Example usage of the S3 connector"""
 
 import asyncio
-import logging
-from typing import Any, Dict
+
+from pydantic import BaseModel
 
 from app.connectors.core.interfaces.connector.iconnector_service import (
     IConnectorService,
 )
 from app.connectors.sources.s3.factories.connector_factory import S3ConnectorFactory
+from app.utils.logger import create_logger
 
 
-async def basic_s3_example():
+async def basic_s3_example() -> None:
     """Basic example of using the S3 connector with aioboto3"""
 
     # Setup logging
-    logging.basicConfig(level=logging.INFO)
-    logger = logging.getLogger(__name__)
+    logger = create_logger(__name__)
 
     connector = None
 
@@ -92,11 +92,10 @@ async def basic_s3_example():
             logger.info("🔌 Disconnected from AWS S3 using aioboto3")
 
 
-async def advanced_s3_example():
+async def advanced_s3_example() -> None:
     """Advanced example with error handling and batch operations using aioboto3"""
 
-    logging.basicConfig(level=logging.INFO)
-    logger = logging.getLogger(__name__)
+    logger = create_logger(__name__)
 
     connector = None
 
@@ -170,14 +169,14 @@ async def advanced_s3_example():
 
 
 # Integration with main application
-class S3ApplicationManager:
+class S3ApplicationManager(BaseModel):
     """Manages S3 connector in the main application"""
 
-    def __init__(self):
-        self.logger = logging.getLogger(__name__)
+    def __init__(self) -> None:
+        self.logger = create_logger(__name__)
         self.connector = None
 
-    async def connect_to_s3(self, credentials: Dict[str, Any]) -> bool:
+    async def connect_to_s3(self, credentials: dict) -> bool:
         """Connect to S3 using aioboto3"""
         try:
             self.connector = S3ConnectorFactory.create_connector(self.logger)
@@ -193,7 +192,7 @@ class S3ApplicationManager:
             self.logger.error(f"❌ Error connecting to AWS S3 using aioboto3: {str(e)}")
             return False
 
-    async def get_s3_buckets(self) -> list:
+    async def get_s3_buckets(self) -> list[dict]:
         """Get all S3 buckets using aioboto3"""
         try:
             if not self.connector:
@@ -205,7 +204,7 @@ class S3ApplicationManager:
             self.logger.error(f"❌ Error getting S3 buckets using aioboto3: {str(e)}")
             return []
 
-    async def get_bucket_objects(self, bucket_name: str, max_keys: int = 1000) -> list:
+    async def get_bucket_objects(self, bucket_name: str, max_keys: int = 1000) -> list[dict]:
         """Get objects from a specific bucket using aioboto3"""
         try:
             if not self.connector:
@@ -217,7 +216,7 @@ class S3ApplicationManager:
             self.logger.error(f"❌ Error getting bucket objects using aioboto3: {str(e)}")
             return []
 
-    async def disconnect(self):
+    async def disconnect(self) -> None:
         """Disconnect from S3 using aioboto3"""
         if self.connector:
             await self.connector.disconnect()
@@ -225,10 +224,9 @@ class S3ApplicationManager:
 
 
 # Usage in main application
-async def main():
+async def main() -> None:
     """Main application example"""
 
-    logging.basicConfig(level=logging.INFO)
     manager = S3ApplicationManager()
 
     try:

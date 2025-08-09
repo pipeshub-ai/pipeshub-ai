@@ -29,6 +29,7 @@ from googleapiclient.http import MediaIoBaseDownload
 from jose import JWTError
 from pydantic import BaseModel, ValidationError
 
+from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AccountType,
     CollectionNames,
@@ -45,7 +46,10 @@ from app.connectors.api.middleware import WebhookAuthVerifier
 from app.connectors.sources.google.admin.admin_webhook_handler import (
     AdminWebhookHandler,
 )
-from app.connectors.sources.google.common.google_token_handler import CredentialKeys, GoogleTokenHandler
+from app.connectors.sources.google.common.google_token_handler import (
+    CredentialKeys,
+    GoogleTokenHandler,
+)
 from app.connectors.sources.google.common.scopes import (
     GOOGLE_CONNECTOR_ENTERPRISE_SCOPES,
     GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES,
@@ -63,7 +67,6 @@ from app.modules.parsers.google_files.google_sheets_parser import GoogleSheetsPa
 from app.modules.parsers.google_files.google_slides_parser import GoogleSlidesParser
 from app.utils.llm import get_llm
 from app.utils.logger import create_logger
-from app.config.configuration_service import ConfigurationService
 
 logger = create_logger("connector_service")
 
