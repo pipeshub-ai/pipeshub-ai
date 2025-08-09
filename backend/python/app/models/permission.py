@@ -1,14 +1,42 @@
-from typing import List, Optional
+from enum import Enum
+from typing import Dict, List
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+
+class PermissionType(str, Enum):
+    READ = "READER"
+    WRITE = "WRITER"
+    OWNER = "OWNER"
+
+class EntityType(str, Enum):
+    USER = "USER"
+    GROUP = "GROUP"
+    DOMAIN = "DOMAIN"
+    ORG = "ORG"
+    ANYONE = "ANYONE"
+    ANYONE_WITH_LINK = "ANYONE_WITH_LINK"
 
 class Permission(BaseModel):
-    permission_id: str
-    type: str
-    role: str
-    email: Optional[str] = None
+    external_id: str
+    email: str
+    type: PermissionType
+    entity_type: EntityType
+    created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the permission creation")
+    updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the permission update")
 
+    def to_arango_permission(self, from_collection: str, to_collection: str) -> Dict:
+
+        return {
+            "_from": from_collection,
+            "_to": to_collection,
+            "role": self.type.value,
+            "type": self.entity_type.value,
+            "createdAtTimestamp": self.created_at,
+            "updatedAtTimestamp": self.updated_at,
+        }
 
 class AccessControl(BaseModel):
     owners: List[str] = []

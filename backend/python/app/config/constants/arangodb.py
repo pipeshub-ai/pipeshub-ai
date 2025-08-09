@@ -93,13 +93,17 @@ class CollectionNames(Enum):
     ATTACHMENTS = "attachments"
     LINKS = "links"
     MAILS = "mails"
+    MESSAGES = "messages"
 
     # Users and groups
     PEOPLE = "people"
     USERS = "users"
     GROUPS = "groups"
+    USER_GROUPS = "userGroups"
     ORGS = "organizations"
+    DOMAINS = "domains"
     ANYONE = "anyone"
+    ANYONE_WITH_LINK = "anyoneWithLink"
     BELONGS_TO = "belongsTo"
 
     # Departments

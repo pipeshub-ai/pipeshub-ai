@@ -128,7 +128,7 @@ record_schema = {
             "recordName": {"type": "string", "minLength": 1},
             # should be a uuid
             "externalRecordId": {"type": "string", "minLength": 1},
-            "externalRevisionId": {"type": ["string", "null"]},
+            "externalRevisionId": {"type": ["string", "null"], "default": None},
             "recordType": {
                 "type": "string",
                 "enum": ["FILE", "DRIVE", "WEBPAGE", "MESSAGE", "MAIL", "NOTION_DATABASE", "WEBPAGE_COMMENTS","OTHERS"],
@@ -139,6 +139,7 @@ record_schema = {
                 "type": "string",
                 "enum": ["ONEDRIVE", "DRIVE", "CONFLUENCE", "GMAIL", "SLACK", "NOTION"],
             },
+            "mimeType": {"type": ["string", "null"], "default": None},
             "webUrl": {"type": ["string", "null"]},
             # Arango collection entry
             "createdAtTimestamp": {"type": "number"},
@@ -279,9 +280,10 @@ record_group_schema = {
             "groupName": {"type": "string", "minLength": 1},
             # should be a uuid
             "externalGroupId": {"type": "string", "minLength": 1},
+            "externalRevisionId": {"type": ["string", "null"], "default": None},
             "groupType": {
                 "type": "string",
-                "enum": ["SLACK_CHANNEL", "CONFLUENCE_SPACES","KB", "NOTION_WORKSPACE", "DRIVE"],
+                "enum": ["SLACK_CHANNEL", "CONFLUENCE_SPACES","KB", "NOTION_WORKSPACE", "DRIVE",],
             },
             "connectorName": {
                 "type": "string",
@@ -293,9 +295,9 @@ record_group_schema = {
             "updatedAtTimestamp": {"type": "number"},
             "lastSyncTimestamp": {"type": "number"},
             "isDeletedAtSource": {"type": "boolean", "default": False},
-            "deletedAtSourceTimestamp": {"type": "number"},
-            "sourceCreatedAtTimestamp": {"type": "number"},
-            "sourceLastModifiedTimestamp": {"type": "number"},
+            "deletedAtSourceTimestamp": {"type": ["number", "null"]},
+            "sourceCreatedAtTimestamp": {"type": ["number", "null"]},
+            "sourceLastModifiedTimestamp": {"type": ["number", "null"]},
         },
         "required": [
             "groupName",

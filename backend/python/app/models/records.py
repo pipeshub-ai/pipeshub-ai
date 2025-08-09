@@ -19,7 +19,7 @@ class RecordGroup(Node):
 @dataclass
 class Record(Node):
     """Base record class for all types of records"""
-    _key: str
+    _key: str = ""
     org_id: str = ""
     record_name: str = ""
     external_record_id: str = ""
@@ -83,10 +83,10 @@ class Record(Node):
         return record
 
     def __post_init__(self) -> None:
-        if not self._key:
-            raise ValueError("_key must be set")
-        if not self.org_id:
-            raise ValueError("org_id must be set")
+        # if not self._key:
+        #     raise ValueError("_key must be set")
+        # if not self.org_id:
+        #     raise ValueError("org_id must be set")
         if not self.record_name:
             raise ValueError("record_name must be set")
         if not self.external_record_id:
@@ -102,10 +102,10 @@ class Record(Node):
         if not self.updated_at_timestamp:
             raise ValueError("updated_at_timestamp must be set")
 
-    def __setattr__(self, name, value) -> None:
-        if name == '_key' and hasattr(self, '_key'):
-            raise AttributeError("Cannot modify _key after initialization")
-        super().__setattr__(name, value)
+    # def __setattr__(self, name, value) -> None:
+    #     if name == '_key' and hasattr(self, '_key'):
+    #         raise AttributeError("Cannot modify _key after initialization")
+    #     super().__setattr__(name, value)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -154,7 +154,7 @@ class Record(Node):
 @dataclass
 class FileRecord(Node):
     """Specific record type for files"""
-    _key: str
+    _key: str = ""
     org_id: str = ""
     name: str = ""
     is_file: bool = True
@@ -163,7 +163,14 @@ class FileRecord(Node):
     size_in_bytes: Optional[int] = None
     web_url: Optional[str] = None
     path: Optional[str] = None
+
+    etag: Optional[str] = None
+    ctag: Optional[str] = None
     md5_checksum: Optional[str] = None
+    quick_xor_hash: Optional[str] = None
+    crc32_hash: Optional[str] = None
+    sha1_hash: Optional[str] = None
+    sha256_hash: Optional[str] = None
 
     @staticmethod
     def from_dict(data: Dict[str, Any]) -> 'FileRecord':
@@ -178,15 +185,21 @@ class FileRecord(Node):
         file_record.size_in_bytes = data.get("sizeInBytes", None)
         file_record.web_url = data.get("webUrl", None)
         file_record.path = data.get("path", None)
+        file_record.etag = data.get("etag", None)
+        file_record.ctag = data.get("ctag", None)
         file_record.md5_checksum = data.get("md5Checksum", None)
+        file_record.quick_xor_hash = data.get("quickXorHash", None)
+        file_record.crc32_hash = data.get("crc32Hash", None)
+        file_record.sha1_hash = data.get("sha1Hash", None)
+        file_record.sha256_hash = data.get("sha256Hash", None)
 
         return file_record
 
     def __post_init__(self) -> None:
-        if not self._key:
-            raise ValueError("_key must be set")
-        if not self.org_id:
-            raise ValueError("org_id must be set")
+        # if not self._key:
+        #     raise ValueError("_key must be set")
+        # if not self.org_id:
+        #     raise ValueError("org_id must be set")
         if not self.name:
             raise ValueError("name must be set")
 
@@ -201,7 +214,13 @@ class FileRecord(Node):
             "sizeInBytes": self.size_in_bytes,
             "webUrl": self.web_url,
             "path": self.path,
-            "md5Checksum": self.md5_checksum
+            "etag": self.etag,
+            "ctag": self.ctag,
+            "md5Checksum": self.md5_checksum,
+            "quickXorHash": self.quick_xor_hash,
+            "crc32Hash": self.crc32_hash,
+            "sha1Hash": self.sha1_hash,
+            "sha256Hash": self.sha256_hash
         }
 
     def validate(self) -> bool:
