@@ -106,7 +106,7 @@ export const AVAILABLE_MODEL_PROVIDERS: ModelProvider[] = [
     id: 'together',
     name: 'Together',
     description: 'Open-source models at scale',
-    src: '/assets/icons/together-color.svg',
+    src: '/assets/icons/ai-models/together-color.svg',
     supportedTypes: ['llm', 'embedding'],
     color: '#7C3AED',
   },
