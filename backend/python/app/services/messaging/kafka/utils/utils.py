@@ -205,7 +205,6 @@ async def create_sync_message_handler(app_container: ConnectorAppContainer) -> C
             if message is None:
                 logger.warning("Received a None message, likely during shutdown. Skipping.")
                 return True
-            logger.info(f"Processing sync message NEWWWWWWWW: {message}")
             event_type = message.get("eventType")
             payload = message.get("payload", {})
             connector = payload.get("connector")

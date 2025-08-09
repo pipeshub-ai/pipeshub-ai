@@ -155,7 +155,6 @@ class DriveSyncTasks(BaseSyncTasks):
 
             return {"status": "error", "message": f"Invalid action: {action}"}
         except Exception as e:
-            self.logger.error(f"NEWWWWWWWW Error in manual sync control: {str(e)}")
             return {"status": "error", "message": str(e)}
 
     async def _renew_user_watches(self, email: str) -> None:

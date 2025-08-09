@@ -37,18 +37,23 @@ def create_logger(service_name: str) -> logging.Logger:
 
     # Prevent DUPLICATE handlers
     if not logger.handlers:
+        # Enhanced format with filename and line number
+        log_format = "%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s"
+
         # File handler with enhanced format
         file_handler = logging.FileHandler(
             os.path.join(log_dir, f"{service_name}.log"),
             encoding="utf-8",  # Explicitly set encoding here too
         )
-        file_handler.setFormatter(
-            logging.Formatter(
-                "%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s"
-            )
-        )
+        file_handler.setFormatter(logging.Formatter(log_format))
+
+        # Console handler with enhanced format
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setFormatter(logging.Formatter(log_format))
 
         # Add handlers
         logger.addHandler(file_handler)
+        logger.addHandler(console_handler)
+        logger.propagate = False
 
     return logger
