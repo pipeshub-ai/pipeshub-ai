@@ -102,18 +102,42 @@ class DriveSyncTasks(BaseSyncTasks):
                 return {"status": "error", "message": "Failed to queue sync initialization"}
 
             elif action == "resync":
-                self.logger.info("Resyncing sync")
-                success = await self.drive_sync_service.resync_drive(org_id)
-                if not success:
-                    self.logger.error("Failed to resync drive")
-                    return {"status": "error", "message": "Failed to resync drive"}
+                self.logger.info(f"Resyncing sync for user: {user_email}")
 
-                # Get all users for the organization
-                users = await self.arango_service.get_users(org_id, active=True)
-                for user in users:
-                    if not await self.drive_sync_service.resync_drive(org_id, user):
-                        self.logger.error(f"Error resyncing Google Drive user {user['email']}")
-                        continue
+                if user_email:
+                    # Resync specific user
+                    self.logger.info(f"Resyncing specific user: {user_email}")
+                    user = await self.arango_service.get_entity_id_by_email(user_email)
+                    self.logger.info(f"User: {user}")
+                    if not user:
+                        self.logger.error(f"User not found: {user_email}")
+                        return {"status": "error", "message": f"User not found: {user_email}"}
+
+                    user_doc = await self.arango_service.get_document(user, "users")
+                    self.logger.info(f"User document: {user_doc}")
+                    if not user_doc:
+                        self.logger.error(f"User document not found: {user_email}")
+                        return {"status": "error", "message": f"User document not found: {user_email}"}
+
+                    if not await self.drive_sync_service.resync_drive(org_id, user_doc):
+                        self.logger.error(f"Error resyncing Google Drive user {user_email}")
+                        return {"status": "error", "message": f"Failed to resync user {user_email}"}
+
+                    self.logger.info(f"Successfully resynced user: {user_email}")
+                else:
+                    # Resync all users in the organization
+                    self.logger.info("Resyncing all users in organization")
+                    users = await self.arango_service.get_users(org_id, active=True)
+                    resync_success = True
+                    for user in users:
+                        if not await self.drive_sync_service.resync_drive(org_id, user):
+                            self.logger.error(f"Error resyncing Google Drive user {user['email']}")
+                            resync_success = False
+                            continue
+
+                    if not resync_success:
+                        self.logger.error("Failed to resync some users")
+                        return {"status": "error", "message": "Failed to resync some users"}
 
                 return {
                     "status": "accepted",
@@ -131,7 +155,7 @@ class DriveSyncTasks(BaseSyncTasks):
 
             return {"status": "error", "message": f"Invalid action: {action}"}
         except Exception as e:
-            self.logger.error(f"Error in manual sync control: {str(e)}")
+            self.logger.error(f"NEWWWWWWWW Error in manual sync control: {str(e)}")
             return {"status": "error", "message": str(e)}
 
     async def _renew_user_watches(self, email: str) -> None:

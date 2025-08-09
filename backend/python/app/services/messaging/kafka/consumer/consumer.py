@@ -3,7 +3,7 @@ import json
 from logging import Logger
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 
-from aiokafka import AIOKafkaConsumer  # type: ignore
+from aiokafka import AIOKafkaConsumer, TopicPartition  # type: ignore
 
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
@@ -216,8 +216,7 @@ class KafkaMessagingConsumer(IMessagingConsumer):
                                 self.logger.info(f"Received message: topic={message.topic}, partition={message.partition}, offset={message.offset}")
                                 # TODO: Remove this not needed
                                 if self.rate_limiter:
-                                    topic_partition_str = str(topic_partition)
-                                    await self.__start_processing_task(message, topic_partition_str)
+                                    await self.__start_processing_task(message, topic_partition)
                                 else:
                                     success = await self.__process_message(message)
                                     if success:
@@ -263,7 +262,7 @@ class KafkaMessagingConsumer(IMessagingConsumer):
             self.processed_messages[topic_partition] = []
         self.processed_messages[topic_partition].append(offset)
 
-    async def __start_processing_task(self, message, topic_partition: str) -> None:
+    async def __start_processing_task(self, message, topic_partition: TopicPartition) -> None:
         """Start a new task for processing a message with semaphore control"""
         # Wait for the rate limiter
         await self.rate_limiter.wait() # type: ignore
@@ -283,7 +282,7 @@ class KafkaMessagingConsumer(IMessagingConsumer):
             f"Active tasks: {len(self.active_tasks)}/{self.max_concurrent_tasks}"
         )
 
-    async def __process_message_wrapper(self, message, topic_partition: str) -> None:
+    async def __process_message_wrapper(self, message, topic_partition: TopicPartition) -> None:
         """Wrapper to handle async task cleanup and semaphore release"""
         # Extract message identifiers for logging
         topic = message.topic

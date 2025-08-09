@@ -201,7 +201,7 @@ class SyncTasks:
             return {"status": "error", "message": f"Invalid action: {action}"}
 
         except Exception as e:
-            self.logger.error(f"Error in manual sync control: {str(e)}")
+            self.logger.error(f"OLDDDDDDDDD Error in manual sync control: {str(e)}")
             return {"status": "error", "message": str(e)}
 
     async def gmail_manual_sync_control(self, action: str, org_id) -> dict:
@@ -258,5 +258,5 @@ class SyncTasks:
             return {"status": "error", "message": f"Invalid action: {action}"}
 
         except Exception as e:
-            self.logger.error(f"Error in manual sync control: {str(e)}")
+            self.logger.error(f"OLDDDDDDDDD Error in manual sync control: {str(e)}")
             return {"status": "error", "message": str(e)}

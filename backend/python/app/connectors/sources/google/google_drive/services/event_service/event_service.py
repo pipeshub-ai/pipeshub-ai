@@ -157,7 +157,7 @@ class GoogleDriveEventService(BaseEventService):
 
                 users = await self.arango_service.get_users(org_id, active=True)
                 for user in users:
-                    result = await self.sync_tasks.drive_manual_sync_control("re-sync", org_id, user_email=user["email"])
+                    result = await self.sync_tasks.drive_manual_sync_control("resync", org_id, user_email=user["email"])
                     if not result or result.get("status") != "accepted":
                         self.logger.error(f"Error re-syncing Google Drive user {user['email']}")
                         continue
@@ -175,6 +175,7 @@ class GoogleDriveEventService(BaseEventService):
                 raise ValueError("orgId is required")
 
             org_apps = await self.arango_service.get_org_apps(org_id)
+            self.logger.info(f"Org apps: {org_apps}")
             if Connectors.GOOGLE_DRIVE.value in org_apps:
                 await self._handle_resync_drive(payload)
             else:
