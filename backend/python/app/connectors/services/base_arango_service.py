@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Tuple
 
 import aiohttp
 from arango import ArangoClient
+from arango.database import TransactionDatabase
 from fastapi import Request
 
 from app.config.configuration_service import ConfigurationService
@@ -21,6 +22,7 @@ from app.config.constants.arangodb import (
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.services.kafka_service import KafkaService
+from app.models.entities import Record, RecordGroup, User
 from app.schema.arango.documents import (
     app_schema,
     department_schema,
@@ -82,6 +84,7 @@ EDGE_COLLECTIONS = [
     (CollectionNames.BELONGS_TO_CATEGORY.value, basic_edge_schema),
     (CollectionNames.BELONGS_TO_LANGUAGE.value, basic_edge_schema),
     (CollectionNames.BELONGS_TO_TOPIC.value, basic_edge_schema),
+    (CollectionNames.BELONGS_TO_RECORD_GROUP.value, basic_edge_schema),
     (CollectionNames.INTER_CATEGORY_RELATIONS.value, basic_edge_schema),
     (CollectionNames.PERMISSIONS_TO_KB.value, permissions_schema),
 ]
@@ -1143,7 +1146,7 @@ class BaseArangoService:
                             LET record = DOCUMENT(belongsEdge._from)
                             FILTER record != null
                             FILTER record.isDeleted != true
-                            FILTER record.orgId == org_id
+                            FILTER record.orgId == org_id OR record.orgId == null
                             FILTER record.origin == "UPLOAD"
                             // Only include actual records (not folders)
                             FILTER record.isFile != false
@@ -1167,7 +1170,7 @@ class BaseArangoService:
                         FILTER record != null
                         FILTER record.recordType != @drive_record_type
                         FILTER record.isDeleted != true
-                        FILTER record.orgId == org_id
+                        FILTER record.orgId == org_id OR record.orgId == null
                         FILTER record.origin == "CONNECTOR"
                         {record_filter}
                         RETURN {{
@@ -1238,7 +1241,7 @@ class BaseArangoService:
                             LET record = DOCUMENT(belongsEdge._from)
                             FILTER record != null
                             FILTER record.isDeleted != true
-                            FILTER record.orgId == org_id
+                            FILTER record.orgId == org_id OR record.orgId == null
                             FILTER record.origin == "UPLOAD"
                             FILTER record.isFile != false
                             {record_filter}
@@ -1255,7 +1258,7 @@ class BaseArangoService:
                         FILTER record.recordType != @drive_record_type
                         FILTER record != null
                         FILTER record.isDeleted != true
-                        FILTER record.orgId == org_id
+                        FILTER record.orgId == org_id OR record.orgId == null
                         FILTER record.origin == "CONNECTOR"
                         {record_filter}
                         RETURN 1
@@ -1281,7 +1284,7 @@ class BaseArangoService:
                             LET record = DOCUMENT(belongsEdge._from)
                             FILTER record != null
                             FILTER record.isDeleted != true
-                            FILTER record.orgId == org_id
+                            FILTER record.orgId == org_id OR record.orgId == null
                             FILTER record.origin == "UPLOAD"
                             FILTER record.isFile != false
                             RETURN {
@@ -1299,7 +1302,7 @@ class BaseArangoService:
                         FILTER record.recordType != @drive_record_type
                         FILTER record != null
                         FILTER record.isDeleted != true
-                        FILTER record.orgId == org_id
+                        FILTER record.orgId == org_id OR record.orgId == null
                         FILTER record.origin == "CONNECTOR"
                         RETURN {
                             record: record,
@@ -2944,3 +2947,188 @@ class BaseArangoService:
         except Exception as e:
             self.logger.error(f"❌ Failed to publish Gmail deletion event: {str(e)}")
 
+
+    async def batch_upsert_nodes(
+        self,
+        nodes: List[Dict],
+        collection: str,
+        transaction: Optional[TransactionDatabase] = None,
+    ) -> bool | None:
+        """Batch upsert multiple nodes using Python-Arango SDK methods"""
+        try:
+            self.logger.info("🚀 Batch upserting nodes: %s", collection)
+
+            batch_query = """
+            FOR node IN @nodes
+                UPSERT { _key: node._key }
+                INSERT node
+                UPDATE node
+                IN @@collection
+                RETURN NEW
+            """
+
+            bind_vars = {"nodes": nodes, "@collection": collection}
+
+            db = transaction if transaction else self.db
+
+            cursor = db.aql.execute(batch_query, bind_vars=bind_vars)
+            results = list(cursor)
+            self.logger.info(
+                "✅ Successfully upserted %d nodes in collection '%s'.",
+                len(results),
+                collection,
+            )
+            return True
+
+        except Exception as e:
+            self.logger.error("❌ Batch upsert failed: %s", str(e))
+            if transaction:
+                raise
+            return False
+
+    async def batch_create_edges(
+        self,
+        edges: List[Dict],
+        collection: str,
+        transaction: Optional[TransactionDatabase] = None,
+    ) -> bool | None:
+        """Batch create PARENT_CHILD relationships"""
+        try:
+            self.logger.info("🚀 Batch creating edges: %s", collection)
+
+            batch_query = """
+            FOR edge IN @edges
+                UPSERT { _from: edge._from, _to: edge._to }
+                INSERT edge
+                UPDATE edge
+                IN @@collection
+                RETURN NEW
+            """
+            bind_vars = {"edges": edges, "@collection": collection}
+
+            db = transaction if transaction else self.db
+
+            cursor = db.aql.execute(batch_query, bind_vars=bind_vars)
+            results = list(cursor)
+            self.logger.info(
+                "✅ Successfully created %d edges in collection '%s'.",
+                len(results),
+                collection,
+            )
+            return True
+        except Exception as e:
+            self.logger.error("❌ Batch edge creation failed: %s", str(e))
+            if transaction:
+                raise
+            return False
+
+    async def get_record_by_external_id(
+        self, connector_name: str, external_id: str, transaction: Optional[TransactionDatabase] = None
+    ) -> Optional[Record]:
+        """
+        Get internal file key using the external file ID
+
+        Args:
+            external_file_id (str): External file ID to look up
+            transaction (Optional[TransactionDatabase]): Optional database transaction
+
+        Returns:
+            Optional[str]: Internal file key if found, None otherwise
+        """
+        try:
+            self.logger.info(
+                "🚀 Retrieving internal key for external file ID %s %s", connector_name, external_id
+            )
+
+            query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.externalRecordId == @external_id AND record.connectorName == @connector_name
+                RETURN record
+            """
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(
+                query, bind_vars={"external_id": external_id, "connector_name": connector_name}
+            )
+            result = next(cursor, None)
+
+            if result:
+                self.logger.info(
+                    "✅ Successfully retrieved internal key for external file ID %s %s", connector_name, external_id
+                )
+                return Record.from_arango_base_record(result)
+            else:
+                self.logger.warning(
+                    "⚠️ No internal key found for external file ID %s %s", connector_name, external_id
+                )
+                return None
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to retrieve internal key for external file ID %s %s: %s", connector_name, external_id, str(e)
+            )
+            return None
+
+    async def get_record_group_by_external_id(self, connector_name: str, external_id: str, transaction: Optional[TransactionDatabase] = None) -> Optional[RecordGroup]:
+        """
+        Get internal record group key using the external record group ID
+        """
+        try:
+            self.logger.info(
+                "🚀 Retrieving internal key for external record group ID %s %s", connector_name, external_id
+            )
+            query = f"""
+            FOR record_group IN {CollectionNames.RECORD_GROUPS.value}
+                FILTER record_group.externalGroupId == @external_id AND record_group.connectorName == @connector_name
+                RETURN record_group
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"external_id": external_id, "connector_name": connector_name})
+            result = next(cursor, None)
+            if result:
+                self.logger.info(
+                    "✅ Successfully retrieved internal key for external record group ID %s %s", connector_name, external_id
+                )
+                return RecordGroup.from_arango_base_record_group(result)
+            else:
+                self.logger.warning(
+                    "⚠️ No internal key found for external record group ID %s %s", connector_name, external_id
+                )
+                return None
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to retrieve internal key for external record group ID %s %s: %s", connector_name, external_id, str(e)
+            )
+            return None
+
+    async def get_user_by_email(self, email: str, transaction: Optional[TransactionDatabase] = None) -> Optional[User]:
+        """
+        Get internal user key using the email
+        """
+        try:
+            self.logger.info(
+                "🚀 Retrieving internal key for email %s", email
+            )
+            query = f"""
+            FOR user IN {CollectionNames.USERS.value}
+                FILTER user.email == @email
+                RETURN user
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"email": email})
+            result = next(cursor, None)
+            if result:
+                self.logger.info(
+                    "✅ Successfully retrieved internal key for email %s", email
+                )
+                return User.from_arango_base_user(result)
+            else:
+                self.logger.warning(
+                    "⚠️ No internal key found for email %s", email
+                )
+                return None
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to retrieve internal key for email %s: %s", email, str(e)
+            )
+            return None

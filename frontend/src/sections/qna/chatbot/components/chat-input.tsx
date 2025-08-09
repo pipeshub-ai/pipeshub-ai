@@ -1,33 +1,166 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Icon } from '@iconify/react';
-import sendIcon from '@iconify-icons/mdi/send';
-import { Box, Paper, IconButton, useTheme, alpha } from '@mui/material';
+import arrowUpIcon from '@iconify-icons/mdi/arrow-up';
+import chevronDownIcon from '@iconify-icons/mdi/chevron-down';
+import {
+  Box,
+  Paper,
+  IconButton,
+  useTheme,
+  alpha,
+  Menu,
+  MenuItem,
+  Typography,
+  Chip,
+  Tooltip,
+  Divider,
+} from '@mui/material';
+import axios from 'src/utils/axios';
+import { createScrollableContainerStyle } from '../utils/styles/scrollbar';
 
-type ChatInputProps = {
-  onSubmit: (message: string) => Promise<void>;
+export interface Model {
+  modelType: string;
+  provider: string;
+  modelName: string;
+  modelKey: string;
+  isMultimodal: boolean;
+  isDefault: boolean;
+}
+
+export interface ChatMode {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  temperature: number;
+  maxTokens: number;
+}
+
+export type ChatInputProps = {
+  onSubmit: (
+    message: string,
+    modelKey?: string,
+    modelName?: string,
+    chatMode?: string
+  ) => Promise<void>;
   isLoading: boolean;
   disabled?: boolean;
   placeholder?: string;
+  selectedModel: Model | null;
+  selectedChatMode: ChatMode | null;
+  onModelChange: (model: Model) => void;
+  onChatModeChange: (mode: ChatMode) => void;
 };
+
+// Define chat modes locally in the frontend
+const CHAT_MODES: ChatMode[] = [
+  {
+    id: 'standard',
+    name: 'Standard',
+    description: 'Balanced responses with moderate creativity',
+    icon: '🎯',
+    temperature: 0.7,
+    maxTokens: 4000,
+  },
+  {
+    id: 'quick',
+    name: 'Quick',
+    description: 'Quick responses with minimal context',
+    icon: '🚀',
+    temperature: 0.1,
+    maxTokens: 1000,
+  }
+  // {
+  //   id: 'creative',
+  //   name: 'Creative',
+  //   description: 'More imaginative and creative responses',
+  //   icon: '🎨',
+  //   temperature: 0.9,
+  //   maxTokens: 6000,
+  // },
+  // {
+  //   id: 'precise',
+  //   name: 'Precise',
+  //   description: 'Focused and accurate responses',
+  //   icon: '⚡',
+  //   temperature: 0.3,
+  //   maxTokens: 2000,
+  // },
+  // {
+  //   id: 'detailed',
+  //   name: 'Detailed',
+  //   description: 'Comprehensive and thorough explanations',
+  //   icon: '📝',
+  //   temperature: 0.6,
+  //   maxTokens: 8000,
+  // },
+];
 
 const ChatInput: React.FC<ChatInputProps> = ({
   onSubmit,
   isLoading,
   disabled = false,
   placeholder = 'Type your message...',
+  selectedModel,
+  selectedChatMode,
+  onModelChange,
+  onChatModeChange,
 }) => {
   const [localValue, setLocalValue] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [hasText, setHasText] = useState(false);
+  const [models, setModels] = useState<Model[]>([]);
+  const [modelMenuAnchor, setModelMenuAnchor] = useState<null | HTMLElement>(null);
+  const [modeMenuAnchor, setModeMenuAnchor] = useState<null | HTMLElement>(null);
+  const [loadingModels, setLoadingModels] = useState(false);
+
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const resizeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
+  const scrollableStyles = createScrollableContainerStyle(theme);
+
+  const fetchAvailableModels = async () => {
+    try {
+      setLoadingModels(true);
+      const response = await axios.get('/api/v1/configurationManager/ai-models/available/llm');
+      
+      if (response.data.status === 'success') {
+        setModels(response.data.models || []);
+
+        // Set default model if not already selected
+        if (!selectedModel && response.data.data && response.data.data.length > 0) {
+          const defaultModel = response.data.data.find((model: Model) => model.isDefault) || response.data.data[0];
+          onModelChange(defaultModel);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to fetch available models:', error);
+    } finally {
+      setLoadingModels(false);
+    }
+  };
+
+  // Set default chat mode if not already selected
+  useEffect(() => {
+    if (!selectedChatMode && CHAT_MODES.length > 0) {
+      onChatModeChange(CHAT_MODES[0]); // Set first mode as default
+    }
+    if (!selectedModel && models.length > 0) {
+      const defaultModel = models.find((model: Model) => model.isDefault) || models[0];
+      onModelChange(defaultModel); // Set first model as default
+    }
+  }, [selectedChatMode, onChatModeChange, models, onModelChange,selectedModel]);
+
+  useEffect(() => {
+    fetchAvailableModels();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (inputRef.current) {
       const actuallyDisabled = inputRef.current.disabled;
-      
+
       if (actuallyDisabled && !isLoading && !disabled && !isSubmitting) {
         inputRef.current.disabled = false;
       }
@@ -38,22 +171,25 @@ const ChatInput: React.FC<ChatInputProps> = ({
   const autoResizeTextarea = useCallback(() => {
     if (inputRef.current) {
       inputRef.current.style.height = 'auto';
-      const newHeight = Math.min(Math.max(inputRef.current.scrollHeight, 46), 180);
+      const newHeight = Math.min(Math.max(inputRef.current.scrollHeight, 64), 200);
       inputRef.current.style.height = `${newHeight}px`;
     }
   }, []);
 
-  const handleChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const value = e.target.value;
-    setLocalValue(value);
-    setHasText(!!value.trim());
+  const handleChange = useCallback(
+    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+      const value = e.target.value;
+      setLocalValue(value);
+      setHasText(!!value.trim());
 
-    // Debounce resize to prevent excessive calculations
-    if (resizeTimeoutRef.current) {
-      clearTimeout(resizeTimeoutRef.current);
-    }
-    resizeTimeoutRef.current = setTimeout(autoResizeTextarea, 50);
-  }, [autoResizeTextarea]);
+      // Debounce resize to prevent excessive calculations
+      if (resizeTimeoutRef.current) {
+        clearTimeout(resizeTimeoutRef.current);
+      }
+      resizeTimeoutRef.current = setTimeout(autoResizeTextarea, 50);
+    },
+    [autoResizeTextarea]
+  );
 
   const handleSubmit = useCallback(async () => {
     const trimmedValue = localValue.trim();
@@ -62,21 +198,26 @@ const ChatInput: React.FC<ChatInputProps> = ({
     }
 
     setIsSubmitting(true);
-    
+
     try {
       setLocalValue('');
       setHasText(false);
-      
+
       // Reset textarea height
       if (inputRef.current) {
         setTimeout(() => {
           if (inputRef.current) {
-            inputRef.current.style.height = '46px';
+            inputRef.current.style.height = '64px';
           }
         }, 50);
       }
-      
-      await onSubmit(trimmedValue);
+
+      await onSubmit(
+        trimmedValue,
+        selectedModel?.modelKey,
+        selectedModel?.modelName,
+        selectedChatMode?.id
+      );
     } catch (error) {
       console.error('Failed to send message:', error);
       // Restore message on error
@@ -84,24 +225,53 @@ const ChatInput: React.FC<ChatInputProps> = ({
       setHasText(true);
     } finally {
       setIsSubmitting(false);
-      
+
       if (inputRef.current) {
         inputRef.current.focus();
       }
     }
-  }, [localValue, isLoading, isSubmitting, disabled, onSubmit]);
+  }, [localValue, isLoading, isSubmitting, disabled, onSubmit, selectedModel, selectedChatMode]);
 
-  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSubmit();
-    }
-  }, [handleSubmit]);
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        handleSubmit();
+      }
+    },
+    [handleSubmit]
+  );
+
+  const handleModelMenuOpen = (event: React.MouseEvent<HTMLElement>) => {
+    setModelMenuAnchor(event.currentTarget);
+  };
+
+  const handleModelMenuClose = () => {
+    setModelMenuAnchor(null);
+  };
+
+  const handleModeMenuOpen = (event: React.MouseEvent<HTMLElement>) => {
+    setModeMenuAnchor(event.currentTarget);
+  };
+
+  const handleModeMenuClose = () => {
+    setModeMenuAnchor(null);
+  };
+
+  const handleModelSelect = (model: Model) => {
+    onModelChange(model);
+    handleModelMenuClose();
+  };
+
+  const handleModeSelect = (mode: ChatMode) => {
+    onChatModeChange(mode);
+    handleModeMenuClose();
+  };
 
   useEffect(() => {
     if (inputRef.current) {
       inputRef.current.focus();
-      
+
       // Add scrollbar styles
       const styleId = 'chat-textarea-style';
       if (!document.getElementById(styleId)) {
@@ -149,6 +319,12 @@ const ChatInput: React.FC<ChatInputProps> = ({
   const isInputDisabled = disabled || isSubmitting || isLoading;
   const canSubmit = hasText && !isInputDisabled;
 
+  // Format model name for display
+  const getModelDisplayName = (model: Model | null) => {
+    if (!model) return 'Model';
+    return model.modelName || 'Model';
+  };
+
   return (
     <>
       {/* Add keyframes for spinner animation */}
@@ -160,127 +336,523 @@ const ChatInput: React.FC<ChatInputProps> = ({
           }
         `}
       </style>
-      
-      <Box sx={{ 
-        p: 1, 
-        width: { xs: '90%', sm: '80%', md: '70%' }, 
-        mx: 'auto',
-        position: 'relative',
-      }}>
+
+      <Box
+        sx={{
+          p: 1,
+          width: { xs: '90%', sm: '80%', md: '70%' },
+          mx: 'auto',
+          position: 'relative',
+        }}
+      >
         <Paper
           elevation={0}
           sx={{
             display: 'flex',
             alignItems: 'center',
-            p: '9px 14px',
-            borderRadius: '10px',
-            backgroundColor: isDark ? alpha('#131417', 0.5) : alpha('#f8f9fa', 0.6),
-            border: '2px solid',
-            borderColor: isDark ? alpha('#fff', 0.06) : alpha('#000', 0.04),
-            boxShadow: isDark ? '0 4px 16px rgba(0, 0, 0, 0.2)' : '0 2px 10px rgba(0, 0, 0, 0.03)',
-            transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
-            position: 'relative',
-            overflow: 'hidden',
+            p: '12px 16px',
+            borderRadius: '12px',
+            backgroundColor: isDark ? alpha('#131417', 0.6) : alpha('#f8f9fa', 0.8),
+            border: '1px solid',
+            borderColor: isDark ? alpha('#fff', 0.08) : alpha('#000', 0.06),
+            boxShadow: isDark ? '0 4px 16px rgba(0, 0, 0, 0.2)' : '0 2px 8px rgba(0, 0, 0, 0.06)',
+            transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+            minHeight: '48px',
+            gap: 1.5,
             '&:hover': {
-              borderColor: isDark ? alpha('#fff', 0.1) : alpha('#000', 0.07),
-              boxShadow: isDark ? '0 6px 20px rgba(0, 0, 0, 0.25)' : '0 4px 14px rgba(0, 0, 0, 0.05)',
-              backgroundColor: isDark ? alpha('#131417', 0.7) : alpha('#fff', 0.9),
+              borderColor: isDark ? alpha('#fff', 0.12) : alpha('#000', 0.1),
+              boxShadow: isDark
+                ? '0 6px 20px rgba(0, 0, 0, 0.25)'
+                : '0 4px 12px rgba(0, 0, 0, 0.1)',
+              backgroundColor: isDark ? alpha('#131417', 0.8) : alpha('#fff', 0.95),
+            },
+            '&:focus-within': {
+              borderColor: isDark ? alpha('#fff', 0.15) : alpha('#000', 0.12),
+              boxShadow: isDark
+                ? '0 6px 24px rgba(0, 0, 0, 0.3)'
+                : '0 4px 16px rgba(0, 0, 0, 0.12)',
             },
           }}
         >
-          <textarea
-            ref={inputRef}
-            placeholder={placeholder}
-            onChange={handleChange}
-            onKeyDown={handleKeyDown}
-            value={localValue}
-            disabled={isInputDisabled}
-            style={{
-              width: '100%',
-              border: 'none',
-              outline: 'none',
-              background: 'transparent',
-              color: isDark ? alpha('#fff', 0.95).toString() : alpha('#000', 0.85).toString(),
-              fontSize: '0.9rem',
-              lineHeight: 1.5,
-              minHeight: '46px',
-              maxHeight: '180px',
-              resize: 'none',
-              padding: '8px 8px',
-              fontFamily: 'Inter, system-ui, -apple-system, sans-serif',
-              margin: '0 6px 0 0',
-              overflowY: 'auto',
-              overflowX: 'hidden',
-              transition: 'all 0.2s ease',
-              letterSpacing: '0.01em',
-              cursor: 'text',
-              opacity: isInputDisabled ? 0.6 : 1,
-            }}
-          />
-
-          <IconButton
-            size="medium"
-            onClick={handleSubmit}
-            disabled={!canSubmit}
-            sx={{
-              backgroundColor: canSubmit 
-                ? alpha(theme.palette.primary.main, 0.9) 
-                : 'transparent',
-              width: 34,
-              height: 34,
-              borderRadius: '8px',
-              flexShrink: 0,
-              alignSelf: 'center',
-              transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
-              color: canSubmit 
-                ? '#fff' 
-                : (isDark ? alpha('#fff', 0.4) : alpha('#000', 0.3)),
-              opacity: canSubmit ? 1 : 0.6,
-              border: canSubmit
-                ? 'none'
-                : `1px solid ${isDark ? alpha('#fff', 0.1) : alpha('#000', 0.05)}`,
-              '&:hover': !isInputDisabled ? {
-                backgroundColor: canSubmit
-                  ? theme.palette.primary.main
-                  : (isDark ? alpha('#fff', 0.05) : alpha('#000', 0.04)),
-                transform: canSubmit ? 'translateY(-1px)' : 'none',
-                boxShadow: canSubmit ? '0 4px 8px rgba(0, 0, 0, 0.15)' : 'none',
-              } : {},
-              '&:active': {
-                transform: canSubmit ? 'translateY(0)' : 'none',
-                boxShadow: 'none',
-              },
-              '&.Mui-disabled': {
-                opacity: 0.6,
-                backgroundColor: 'transparent',
-                border: `1px solid ${isDark ? alpha('#fff', 0.05) : alpha('#000', 0.03)}`,
-              },
-            }}
-          >
-            {isInputDisabled ? (
-              <Box
-                sx={{
-                  width: '16px',
-                  height: '16px',
-                  border: `2px solid ${isDark ? alpha('#fff', 0.2) : alpha('#000', 0.2)}`,
-                  borderTop: `2px solid ${isDark ? alpha('#fff', 0.6) : alpha('#000', 0.6)}`,
-                  borderRadius: '50%',
-                  animation: 'spin 1s linear infinite',
-                }}
-              />
-            ) : (
-              <Icon
-                icon={sendIcon}
+          <Box sx={{ display: 'flex', flexDirection: 'column', width: '100%' }}>
+            {/* Text Input */}
+            <Box sx={{ flex: 1, minWidth: 0, pl: 1, pr: 1, pt: 0.5 }}>
+              <textarea
+                ref={inputRef}
+                placeholder={placeholder}
+                onChange={handleChange}
+                onKeyDown={handleKeyDown}
+                value={localValue}
+                disabled={isInputDisabled}
                 style={{
-                  fontSize: '1rem',
-                  transform: 'translateX(1px)',
-                  transition: 'transform 0.2s ease',
-                  filter: canSubmit ? 'drop-shadow(0 1px 1px rgba(0,0,0,0.1))' : 'none',
+                  width: '100%',
+                  border: 'none',
+                  outline: 'none',
+                  background: 'transparent',
+                  color: isDark ? alpha('#fff', 0.95).toString() : alpha('#000', 0.9).toString(),
+                  fontSize: '0.95rem',
+                  lineHeight: 1.4,
+                  minHeight: '24px',
+                  maxHeight: '60px',
+                  resize: 'none',
+                  fontFamily: 'Inter, system-ui, -apple-system, sans-serif',
+                  overflowY: 'auto',
+                  overflowX: 'hidden',
+                  transition: 'all 0.2s ease',
+                  cursor: 'text',
+                  opacity: isInputDisabled ? 0.6 : 1,
                 }}
               />
-            )}
-          </IconButton>
+            </Box>
+
+            <Box
+              sx={{
+                display: 'flex',
+                gap: 2,
+                mx: 2,
+                flexDirection: 'row',
+                width: '100%',
+                justifyContent: 'space-between',
+              }}
+            >
+              {/* Chat Mode Selector */}
+              <Tooltip
+                title={`${selectedChatMode ? selectedChatMode.description : 'Select chat mode'}`}
+              >
+                <Box
+                  onClick={handleModeMenuOpen}
+                  sx={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 0.5,
+                    p: '6px 10px',
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    color: isDark ? alpha('#fff', 0.7) : alpha('#000', 0.6),
+                    fontSize: '0.8rem',
+                    fontWeight: 500,
+                    transition: 'all 0.15s ease',
+                    backgroundColor: isDark ? alpha('#fff', 0.02) : alpha('#000', 0.02),
+                    border: `1px solid ${isDark ? alpha('#fff', 0.05) : alpha('#000', 0.04)}`,
+                    flexShrink: 0,
+                    '&:hover': {
+                      backgroundColor: isDark ? alpha('#fff', 0.06) : alpha('#000', 0.05),
+                      borderColor: isDark ? alpha('#fff', 0.08) : alpha('#000', 0.06),
+                    },
+                  }}
+                >
+                  <Typography variant="body2" sx={{ fontSize: '0.8rem', fontWeight: 500 }}>
+                    {selectedChatMode ? selectedChatMode.name : 'Standard'}
+                  </Typography>
+                  <Icon icon={chevronDownIcon} width={12} height={12} />
+                </Box>
+              </Tooltip>
+
+              <Box sx={{ display: 'flex', gap: 2, flexDirection: 'row', mr: 2 }}>
+                {/* Model Selector */}
+                <Tooltip
+                  title={`AI Model: ${selectedModel ? `${selectedModel.provider} - ${selectedModel.modelName}` : 'Select AI model'}`}
+                >
+                  <Box
+                    onClick={handleModelMenuOpen}
+                    sx={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 0.5,
+                      p: '6px 10px',
+                      borderRadius: '8px',
+                      cursor: 'pointer',
+                      color: isDark ? alpha('#fff', 0.7) : alpha('#000', 0.6),
+                      fontSize: '0.8rem',
+                      fontWeight: 500,
+                      transition: 'all 0.15s ease',
+                      backgroundColor: isDark ? alpha('#fff', 0.02) : alpha('#000', 0.02),
+                      border: `1px solid ${isDark ? alpha('#fff', 0.05) : alpha('#000', 0.04)}`,
+                      flexShrink: 0,
+                      '&:hover': {
+                        backgroundColor: isDark ? alpha('#fff', 0.06) : alpha('#000', 0.05),
+                        borderColor: isDark ? alpha('#fff', 0.08) : alpha('#000', 0.06),
+                      },
+                    }}
+                  >
+                    <Typography
+                      variant="body2"
+                      sx={{ fontSize: '0.8rem', fontWeight: 500, minWidth: '60px' }}
+                    >
+                      {getModelDisplayName(selectedModel)}
+                    </Typography>
+                    <Icon icon={chevronDownIcon} width={12} height={12} />
+                  </Box>
+                </Tooltip>
+
+                {/* Send Button */}
+                <IconButton
+                  size="small"
+                  onClick={handleSubmit}
+                  disabled={!canSubmit}
+                  sx={{
+                    backgroundColor: canSubmit
+                      ? alpha(theme.palette.primary.main, 0.9)
+                      : 'transparent',
+                    width: 36,
+                    height: 36,
+                    borderRadius: '8px',
+                    flexShrink: 0,
+                    transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+                    color: canSubmit ? '#fff' : isDark ? alpha('#fff', 0.4) : alpha('#000', 0.3),
+                    opacity: canSubmit ? 1 : 0.5,
+                    border: canSubmit
+                      ? 'none'
+                      : `1px solid ${isDark ? alpha('#fff', 0.08) : alpha('#000', 0.06)}`,
+                    '&:hover': !isInputDisabled
+                      ? {
+                          backgroundColor: canSubmit
+                            ? theme.palette.primary.main
+                            : isDark
+                              ? alpha('#fff', 0.04)
+                              : alpha('#000', 0.03),
+                          transform: canSubmit ? 'scale(1.05)' : 'none',
+                        }
+                      : {},
+                    '&:active': {
+                      transform: canSubmit ? 'scale(0.98)' : 'none',
+                    },
+                    '&.Mui-disabled': {
+                      opacity: 0.5,
+                      backgroundColor: 'transparent',
+                    },
+                  }}
+                >
+                  {isSubmitting ? (
+                    <Box
+                      component="span"
+                      sx={{
+                        width: 16,
+                        height: 16,
+                        border: '2px solid transparent',
+                        borderTop: `2px solid ${canSubmit ? '#fff' : isDark ? '#fff' : '#000'}`,
+                        borderRadius: '50%',
+                        animation: 'spin 1s linear infinite',
+                        display: 'inline-block',
+                      }}
+                    />
+                  ) : (
+                    <Icon icon={arrowUpIcon} width={18} height={18} />
+                  )}
+                </IconButton>
+              </Box>
+            </Box>
+          </Box>
         </Paper>
+
+        {/* Model Selection Menu */}
+        <Menu
+          anchorEl={modelMenuAnchor}
+          open={Boolean(modelMenuAnchor)}
+          onClose={handleModelMenuClose}
+          anchorOrigin={{
+            vertical: 'top',
+            horizontal: 'right',
+          }}
+          transformOrigin={{
+            vertical: 'bottom',
+            horizontal: 'right',
+          }}
+          PaperProps={{
+            sx: {
+              maxHeight: 320,
+              minWidth: 280,
+              mt: -0.5,
+              borderRadius: '12px',
+              border: `1px solid ${isDark ? alpha('#fff', 0.1) : alpha('#000', 0.1)}`,
+              backgroundColor: isDark ? '#1e1e1e' : '#ffffff',
+              boxShadow: isDark
+                ? '0 8px 32px rgba(0, 0, 0, 0.4)'
+                : '0 8px 32px rgba(0, 0, 0, 0.12)',
+            },
+          }}
+        >
+          <Box sx={{ p: 1.5 }}>
+            <Typography
+              variant="subtitle2"
+              sx={{
+                px: 1,
+                pb: 1.5,
+                color: 'text.secondary',
+                fontWeight: 600,
+                fontSize: '0.75rem',
+                textTransform: 'uppercase',
+                letterSpacing: '0.5px',
+              }}
+            >
+              AI Models
+            </Typography>
+            <Divider sx={{ mb: 1.5 }} />
+            {models.map((model) => (
+              <MenuItem
+                key={`${model.provider}-${model.modelName}`}
+                onClick={() => handleModelSelect(model)}
+                selected={
+                  selectedModel?.provider === model.provider && selectedModel?.modelName === model.modelName
+                }
+                sx={{
+                  borderRadius: '8px',
+                  mb: 0.5,
+                  p: '10px 12px',
+                  minHeight: 'auto',
+                  '&:last-child': { mb: 0 },
+                  '&.Mui-selected': {
+                    backgroundColor: isDark
+                      ? alpha('#fff', 0.08)
+                      : alpha(theme.palette.primary.main, 0.08),
+                    '&:hover': {
+                      backgroundColor: isDark
+                        ? alpha('#fff', 0.12)
+                        : alpha(theme.palette.primary.main, 0.12),
+                    },
+                  },
+                  '&:hover': {
+                    backgroundColor: isDark ? alpha('#fff', 0.04) : alpha('#000', 0.03),
+                  },
+                }}
+              >
+                <Box sx={{ width: '100%' }}>
+                  <Typography
+                    variant="body2"
+                    fontWeight="medium"
+                    sx={{ fontSize: '0.9rem', mb: 0.5 }}
+                  >
+                    {model.modelName}
+                  </Typography>
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    sx={{
+                      fontSize: '0.75rem',
+                      lineHeight: 1.3,
+                      opacity: 0.8,
+                      display: '-webkit-box',
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: 'vertical',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    {model.provider} {model.isMultimodal ? '• Multimodal' : ''} {model.isDefault ? '• Default' : ''}
+                  </Typography>
+                </Box>
+              </MenuItem>
+            ))}
+          </Box>
+        </Menu>
+
+        {/* Chat Mode Selection Menu */}
+        <Menu
+          anchorEl={modeMenuAnchor}
+          open={Boolean(modeMenuAnchor)}
+          onClose={handleModeMenuClose}
+          anchorOrigin={{
+            vertical: 'top',
+            horizontal: 'left',
+          }}
+          transformOrigin={{
+            vertical: 'bottom',
+            horizontal: 'left',
+          }}
+          PaperProps={{
+            sx: {
+              maxHeight: 320,
+              minWidth: 280,
+              mt: -0.5,
+              borderRadius: '12px',
+              border: `1px solid ${isDark ? alpha('#fff', 0.1) : alpha('#000', 0.1)}`,
+              backgroundColor: isDark ? '#1e1e1e' : '#ffffff',
+              boxShadow: isDark
+                ? '0 8px 32px rgba(0, 0, 0, 0.4)'
+                : '0 8px 32px rgba(0, 0, 0, 0.12)',
+              '&::-webkit-scrollbar': {
+                width: '14px',
+                height: '6px',
+                display: 'block',
+              },
+              '&::-webkit-scrollbar-track': {
+                background: isDark ? '#1a1a1a' : '#f5f7fa',
+              },
+              '&::-webkit-scrollbar-thumb': {
+                background: isDark ? 'rgba(255, 255, 255, 0.16)' : 'rgba(209, 213, 219, 0.8)',
+                borderRadius: '100px',
+                border: isDark ? '4px solid #1a1a1a' : '4px solid #f5f7fa',
+                backgroundClip: 'padding-box',
+                minHeight: '40px',
+                '&:hover': {
+                  background: isDark ? 'rgba(255, 255, 255, 0.24)' : 'rgba(156, 163, 175, 0.4)',
+                },
+              },
+              '&::-webkit-scrollbar-corner': {
+                background: 'transparent',
+              },
+            },
+          }}
+        >
+          <Box sx={{ p: 1.5, ...scrollableStyles }}>
+            <Typography
+              variant="subtitle2"
+              sx={{
+                px: 1,
+                pb: 1,
+                color: 'text.secondary',
+                fontWeight: 600,
+                fontSize: '0.75rem',
+                textTransform: 'uppercase',
+                letterSpacing: '0.5px',
+              }}
+            >
+              Chat Modes
+            </Typography>
+            <Divider sx={{ mb: 1 }} />
+
+            {CHAT_MODES.map((mode) => (
+              <Box
+                key={mode.id}
+                onClick={() => handleModeSelect(mode)}
+                sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 1,
+                  p: '8px 12px',
+                  mb: 0.5,
+                  borderRadius: '8px',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s ease',
+                  backgroundColor:
+                    selectedChatMode?.id === mode.id
+                      ? alpha(theme.palette.primary.main, 0.1)
+                      : 'transparent',
+                  border:
+                    selectedChatMode?.id === mode.id
+                      ? `1px solid ${alpha(theme.palette.primary.main, 0.3)}`
+                      : '1px solid transparent',
+                  '&:hover': {
+                    backgroundColor:
+                      selectedChatMode?.id === mode.id
+                        ? alpha(theme.palette.primary.main, 0.15)
+                        : isDark
+                          ? alpha('#fff', 0.04)
+                          : alpha('#000', 0.03),
+                  },
+                  '&:last-child': { mb: 0 },
+                }}
+              >
+                {/* Icon */}
+                <Box
+                  sx={{
+                    width: 28,
+                    height: 28,
+                    borderRadius: '6px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    backgroundColor:
+                      selectedChatMode?.id === mode.id
+                        ? theme.palette.primary.main
+                        : isDark
+                          ? alpha('#fff', 0.05)
+                          : alpha('#000', 0.05),
+                    flexShrink: 0,
+                  }}
+                >
+                  {mode.icon}
+                </Box>
+
+                {/* Content */}
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Box
+                    sx={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      mb: 0.5,
+                    }}
+                  >
+                    <Typography
+                      variant="body2"
+                      sx={{
+                        fontSize: '0.85rem',
+                        fontWeight: 500,
+                        color:
+                          selectedChatMode?.id === mode.id
+                            ? theme.palette.primary.main
+                            : 'text.primary',
+                      }}
+                    >
+                      {mode.name}
+                    </Typography>
+
+                    {/* Compact config badges */}
+                    <Box sx={{ display: 'flex', gap: 0.5 }}>
+                      <Box
+                        sx={{
+                          px: 0.5,
+                          py: 0.25,
+                          borderRadius: '4px',
+                          backgroundColor: isDark ? alpha('#fff', 0.08) : alpha('#000', 0.06),
+                          fontSize: '0.6rem',
+                          fontWeight: 500,
+                          color: 'text.secondary',
+                          lineHeight: 1,
+                        }}
+                      >
+                        {mode.temperature}
+                      </Box>
+                      <Box
+                        sx={{
+                          px: 0.5,
+                          py: 0.25,
+                          borderRadius: '4px',
+                          backgroundColor: isDark ? alpha('#fff', 0.08) : alpha('#000', 0.06),
+                          fontSize: '0.6rem',
+                          fontWeight: 500,
+                          color: 'text.secondary',
+                          lineHeight: 1,
+                        }}
+                      >
+                        {(mode.maxTokens / 1000).toFixed(0)}K
+                      </Box>
+                    </Box>
+                  </Box>
+
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      fontSize: '0.7rem',
+                      lineHeight: 1.2,
+                      color: 'text.secondary',
+                      opacity: 0.75,
+                      display: '-webkit-box',
+                      WebkitLineClamp: 1,
+                      WebkitBoxOrient: 'vertical',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    {mode.description}
+                  </Typography>
+                </Box>
+
+                {/* Selection indicator */}
+                {selectedChatMode?.id === mode.id && (
+                  <Box
+                    sx={{
+                      width: 6,
+                      height: 6,
+                      borderRadius: '50%',
+                      backgroundColor: theme.palette.primary.main,
+                      flexShrink: 0,
+                    }}
+                  />
+                )}
+              </Box>
+            ))}
+          </Box>
+        </Menu>
       </Box>
     </>
   );

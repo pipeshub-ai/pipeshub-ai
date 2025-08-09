@@ -49,6 +49,7 @@ import {
 import { registerStorageSwagger } from './modules/storage/docs/swagger';
 import { CrawlingManagerContainer } from './modules/crawling_manager/container/cm_container';
 import createCrawlingManagerRouter from './modules/crawling_manager/routes/cm_routes';
+import { MigrationService } from './modules/configuration_manager/services/migration.service';
 
 const loggerConfig = {
   service: 'Application',
@@ -145,6 +146,10 @@ export class Application {
         .inSingletonScope();
       this.configurationManagerContainer
         .bind<PrometheusService>(PrometheusService)
+        .toSelf()
+        .inSingletonScope();
+      this.configurationManagerContainer
+        .bind<MigrationService>(MigrationService)
         .toSelf()
         .inSingletonScope();
       this.storageServiceContainer
@@ -367,6 +372,23 @@ export class Application {
       this.logger.info('Application stopped successfully');
     } catch (error) {
       this.logger.error('Error stopping application', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+      throw error;
+    }
+  }
+
+  async runMigration(): Promise<void> {
+    try {
+      this.logger.info('Running migration...');
+      //  migrate ai models configurations
+      this.logger.info('Migrating ai models configurations');
+      await this.configurationManagerContainer.get(MigrationService).runMigration();
+      this.logger.info('✅ Ai models configurations migrated');
+
+      this.logger.info('Migration completed successfully');
+    } catch (error) {
+      this.logger.error('Failed to run migration', {
         error: error instanceof Error ? error.message : 'Unknown error',
       });
       throw error;

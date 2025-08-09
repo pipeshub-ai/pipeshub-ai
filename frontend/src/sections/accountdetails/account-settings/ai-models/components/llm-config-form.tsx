@@ -1,12 +1,12 @@
-import type { DynamicFormRef } from 'src/components/dynamic-form/components/dynamic-form';
+// ===================================================================
+// 📁 Legacy Form Components (Simplified)
+// ===================================================================
 
+// LLM Config Form (for backward compatibility with dynamic form)
 import React, { forwardRef } from 'react';
-
 import { Link, Alert } from '@mui/material';
-
-import DynamicForm from 'src/components/dynamic-form/components/dynamic-form';
-
-import { getLlmConfig, updateLlmConfig } from '../services/universal-config';
+import DynamicForm, { DynamicFormRef } from 'src/components/dynamic-form/components/dynamic-form';
+import { modelService } from '../services/universal-config';
 
 interface LlmConfigFormProps {
   onValidationChange: (isValid: boolean) => void;
@@ -14,16 +14,7 @@ interface LlmConfigFormProps {
   initialProvider?: string;
 }
 
-interface SaveResult {
-  success: boolean;
-  warning?: string;
-  error?: string;
-}
-
-// 🔥 CRITICAL: This interface MUST have all 4 methods to match DynamicFormRef
-export interface LlmConfigFormRef extends DynamicFormRef {
-
-}
+export interface LlmConfigFormRef extends DynamicFormRef {}
 
 const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
   ({ onValidationChange, onSaveSuccess, initialProvider = 'openAI' }, ref) => (
@@ -34,8 +25,8 @@ const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
         onValidationChange={onValidationChange}
         onSaveSuccess={onSaveSuccess}
         initialProvider={initialProvider}
-        getConfig={getLlmConfig}
-        updateConfig={updateLlmConfig}
+        getConfig={modelService.getLlmConfig}
+        updateConfig={modelService.updateLlmConfig}
       />
 
       <Alert variant="outlined" severity="info" sx={{ my: 3 }}>
@@ -50,4 +41,3 @@ const LlmConfigForm = forwardRef<LlmConfigFormRef, LlmConfigFormProps>(
 );
 
 LlmConfigForm.displayName = 'LlmConfigForm';
-export default LlmConfigForm;

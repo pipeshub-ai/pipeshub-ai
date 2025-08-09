@@ -13,6 +13,14 @@ from app.config.constants.ai_models import (
 )
 
 
+class ModelType(str, Enum):
+    LLM = "llm"
+    EMBEDDING = "embedding"
+    OCR = "ocr"
+    SLM = "slm"
+    REASONING = "reasoning"
+    MULTIMODAL = "multiModal"
+
 class EmbeddingProvider(Enum):
     ANTHROPIC = "anthropic"
     AWS_BEDROCK = "bedrock"
@@ -63,14 +71,25 @@ def get_default_embedding_model() -> Embeddings:
     except Exception  as e:
         raise e
 
-def get_embedding_model(provider: str, config: Dict[str, Any]) -> Embeddings:
+def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str | None = None) -> Embeddings:
     configuration = config['configuration']
+    is_default = config.get("isDefault")
+    if is_default and model_name is None:
+        model_names = [name.strip() for name in configuration["model"].split(",") if name.strip()]
+        model_name = model_names[0]
+    elif not is_default and model_name is None:
+        model_names = [name.strip() for name in configuration["model"].split(",") if name.strip()]
+        model_name = model_names[0]
+    elif not is_default and model_name is not None:
+        model_names = [name.strip() for name in configuration["model"].split(",") if name.strip()]
+        if model_name not in model_names:
+            raise ValueError(f"Model name {model_name} not found in {configuration['model']}")
 
     if provider == EmbeddingProvider.AZURE_OPENAI.value:
         from langchain_openai.embeddings import AzureOpenAIEmbeddings
 
         return AzureOpenAIEmbeddings(
-            model=configuration['model'],
+            model=model_name,
             api_key=configuration['apiKey'],
             api_version=AZURE_EMBEDDING_API_VERSION,
             azure_endpoint=configuration['endpoint'],
@@ -80,7 +99,7 @@ def get_embedding_model(provider: str, config: Dict[str, Any]) -> Embeddings:
         from langchain_cohere import CohereEmbeddings
 
         return CohereEmbeddings(
-            model=configuration['model'],
+            model=model_name,
             cohere_api_key=configuration['apiKey'],
         )
 
@@ -91,7 +110,7 @@ def get_embedding_model(provider: str, config: Dict[str, Any]) -> Embeddings:
     elif provider == EmbeddingProvider.FIREWORKS.value:
         from langchain_fireworks import FireworksEmbeddings
         return FireworksEmbeddings(
-            model=configuration['model'],
+            model=model_name,
             api_key=configuration['apiKey'],
             base_url=configuration['endpoint'],
         )
@@ -100,7 +119,6 @@ def get_embedding_model(provider: str, config: Dict[str, Any]) -> Embeddings:
         from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
         # Add "models/" prefix if it's missing
-        model_name = configuration['model']
         if not model_name.startswith("models/"):
             model_name = f"models/{model_name}"
         return GoogleGenerativeAIEmbeddings(
@@ -123,7 +141,7 @@ def get_embedding_model(provider: str, config: Dict[str, Any]) -> Embeddings:
             encode_kwargs["normalize_embeddings"] = True
 
         return HuggingFaceEmbeddings(
-            model_name=configuration['model'],
+            model_name=model_name,
             model_kwargs=model_kwargs,
             encode_kwargs=encode_kwargs
         )
@@ -132,7 +150,7 @@ def get_embedding_model(provider: str, config: Dict[str, Any]) -> Embeddings:
         from langchain_community.embeddings.jina import JinaEmbeddings
 
         return JinaEmbeddings(
-            model=configuration['model'],
+            model=model_name,
             jina_api_key=configuration['apiKey'],
         )
 
@@ -140,7 +158,7 @@ def get_embedding_model(provider: str, config: Dict[str, Any]) -> Embeddings:
         from langchain_mistralai import MistralAIEmbeddings
 
         return MistralAIEmbeddings(
-            model=configuration['model'],
+            model=model_name,
             api_key=configuration['apiKey'],
         )
 
@@ -149,7 +167,7 @@ def get_embedding_model(provider: str, config: Dict[str, Any]) -> Embeddings:
         from langchain_ollama import OllamaEmbeddings
 
         return OllamaEmbeddings(
-            model=configuration['model'],
+            model=model_name,
             base_url=configuration['endpoint']
         )
 
@@ -157,7 +175,7 @@ def get_embedding_model(provider: str, config: Dict[str, Any]) -> Embeddings:
         from langchain_openai.embeddings import OpenAIEmbeddings
 
         return OpenAIEmbeddings(
-            model=configuration["model"],
+            model=model_name,
             api_key=configuration["apiKey"],
             organization=configuration.get("organizationId"),
         )
@@ -178,7 +196,7 @@ def get_embedding_model(provider: str, config: Dict[str, Any]) -> Embeddings:
         encode_kwargs = configuration.get('encode_kwargs', {}).copy()
 
         return SentenceTransformerEmbeddings(
-            model_name=configuration['model'],
+            model_name=model_name,
             cache_folder=configuration.get('cache_folder', None),
             encode_kwargs=encode_kwargs
         )
@@ -187,7 +205,7 @@ def get_embedding_model(provider: str, config: Dict[str, Any]) -> Embeddings:
         from langchain_openai.embeddings import OpenAIEmbeddings
 
         return OpenAIEmbeddings(
-            model=configuration['model'],
+            model=model_name,
             api_key=configuration['apiKey'],
             base_url=configuration['endpoint'],
         )
@@ -196,7 +214,7 @@ def get_embedding_model(provider: str, config: Dict[str, Any]) -> Embeddings:
         from langchain_together import TogetherEmbeddings
 
         return TogetherEmbeddings(
-            model=configuration['model'],
+            model=model_name,
             api_key=configuration['apiKey'],
             base_url=configuration['endpoint'],
         )
@@ -205,21 +223,33 @@ def get_embedding_model(provider: str, config: Dict[str, Any]) -> Embeddings:
         from langchain_voyageai import VoyageAIEmbeddings
 
         return VoyageAIEmbeddings(
-            model=configuration['model'],
+            model=model_name,
             api_key=configuration['apiKey'],
         )
 
     raise ValueError(f"Unsupported embedding config type: {provider}")
 
-
-def get_generator_model(provider: str, config: Dict[str, Any]) -> BaseChatModel:
+def get_generator_model(provider: str, config: Dict[str, Any], model_name: str | None = None) -> BaseChatModel:
     configuration = config['configuration']
+    is_default = config.get("isDefault")
+    if is_default and model_name is None:
+        model_names = [name.strip() for name in configuration["model"].split(",") if name.strip()]
+        model_name = model_names[0]
+    elif not is_default and model_name is None:
+        model_names = [name.strip() for name in configuration["model"].split(",") if name.strip()]
+        model_name = model_names[0]
+    elif not is_default and model_name is not None:
+        model_names = [name.strip() for name in configuration["model"].split(",") if name.strip()]
+        if model_name not in model_names:
+            raise ValueError(f"Model name {model_name} not found in {configuration['model']}")
+
+
 
     if provider == LLMProvider.ANTHROPIC.value:
         from langchain_anthropic import ChatAnthropic
 
         return ChatAnthropic(
-                model=configuration["model"],
+                model=model_name,
                 temperature=0.2,
                 timeout=None,
                 max_retries=2,
@@ -229,7 +259,7 @@ def get_generator_model(provider: str, config: Dict[str, Any]) -> BaseChatModel:
         from langchain_aws import ChatBedrock
 
         return ChatBedrock(
-                model_id=configuration["model"],
+                model_id=model_name,
                 temperature=0.2,
                 aws_access_key_id=configuration["awsAccessKeyId"],
                 aws_secret_access_key=configuration["awsAccessSecretKey"],
@@ -241,7 +271,7 @@ def get_generator_model(provider: str, config: Dict[str, Any]) -> BaseChatModel:
 
         return AzureChatOpenAI(
                 api_key=configuration["apiKey"],
-                model=configuration["model"],
+                model=model_name,
                 azure_endpoint=configuration["endpoint"],
                 api_version=AzureOpenAILLM.AZURE_OPENAI_VERSION.value,
                 temperature=0.2,
@@ -252,7 +282,7 @@ def get_generator_model(provider: str, config: Dict[str, Any]) -> BaseChatModel:
         from langchain_cohere import ChatCohere
 
         return ChatCohere(
-                model=configuration["model"],
+                model=model_name,
                 temperature=0.2,
                 cohere_api_key=configuration["apiKey"],
             )
@@ -260,7 +290,7 @@ def get_generator_model(provider: str, config: Dict[str, Any]) -> BaseChatModel:
         from langchain_fireworks import ChatFireworks
 
         return ChatFireworks(
-                model=configuration["model"],
+                model=model_name,
                 temperature=0.2,
                 api_key=configuration["apiKey"],
             )
@@ -269,7 +299,7 @@ def get_generator_model(provider: str, config: Dict[str, Any]) -> BaseChatModel:
         from langchain_google_genai import ChatGoogleGenerativeAI
 
         return ChatGoogleGenerativeAI(
-                model=configuration["model"],
+                model=model_name,
                 temperature=0.2,
                 max_tokens=None,
                 timeout=None,
@@ -281,7 +311,7 @@ def get_generator_model(provider: str, config: Dict[str, Any]) -> BaseChatModel:
         from langchain_groq import ChatGroq
 
         return ChatGroq(
-                model=configuration["model"],
+                model=model_name,
                 temperature=0.2,
                 api_key=configuration["apiKey"],
             )
@@ -290,7 +320,7 @@ def get_generator_model(provider: str, config: Dict[str, Any]) -> BaseChatModel:
         from langchain_mistralai import ChatMistralAI
 
         return ChatMistralAI(
-                model=configuration["model"],
+                model=model_name,
                 temperature=0.2,
                 api_key=configuration["apiKey"],
             )
@@ -299,7 +329,7 @@ def get_generator_model(provider: str, config: Dict[str, Any]) -> BaseChatModel:
         from langchain_ollama import ChatOllama
 
         return ChatOllama(
-                model=configuration["model"],
+                model=model_name,
                 temperature=0.2,
                 base_url=configuration.get('endpoint', os.getenv("OLLAMA_API_URL", "http://localhost:11434"))
             )
@@ -308,7 +338,7 @@ def get_generator_model(provider: str, config: Dict[str, Any]) -> BaseChatModel:
         from langchain_community.chat_models import ChatOpenAI
 
         return ChatOpenAI(
-                model=configuration["model"],
+                model=model_name,
                 temperature=0.2,
                 api_key=configuration["apiKey"],
                 organization=configuration.get("organizationId"),
@@ -318,7 +348,7 @@ def get_generator_model(provider: str, config: Dict[str, Any]) -> BaseChatModel:
         from langchain_xai import ChatXAI
 
         return ChatXAI(
-                model=configuration["model"],
+                model=model_name,
                 temperature=0.2,
                 api_key=configuration["apiKey"],
             )
@@ -327,7 +357,7 @@ def get_generator_model(provider: str, config: Dict[str, Any]) -> BaseChatModel:
         from langchain_together import ChatTogether
 
         return ChatTogether(
-                model=configuration["model"],
+                model=model_name,
                 temperature=0.2,
                 api_key=configuration["apiKey"],
                 base_url=configuration["endpoint"],
@@ -337,7 +367,7 @@ def get_generator_model(provider: str, config: Dict[str, Any]) -> BaseChatModel:
         from langchain_community.chat_models import ChatOpenAI
 
         return ChatOpenAI(
-                model=configuration["model"],
+                model=model_name,
                 temperature=0.2,
                 api_key=configuration["apiKey"],
                 base_url=configuration["endpoint"],

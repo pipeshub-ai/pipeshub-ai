@@ -270,32 +270,32 @@ export const googleWorkspaceConfigSchema = z.object({
   }),
 });
 
-export const aiModelsConfigSchema = z.object({
-  body: z
-    .object({
-      ocr: z.array(z.record(z.any())).optional(),
-      embedding: z.array(z.record(z.any())).optional(),
-      slm: z.array(z.record(z.any())).optional(),
-      llm: z.array(z.record(z.any())).optional(),
-      reasoning: z.array(z.record(z.any())).optional(),
-      multiModal: z.array(z.record(z.any())).optional(),
-    })
-    .strict({
-      message:
-        'ai models can be ocr, embedding, llm, slm, reasoning, multimodal',
-    })
-    .refine(
-      (data) => {
-        // Ensure at least one field is present and non-empty
-        return Object.values(data).some(
-          (value) => Array.isArray(value) && value.length > 0,
-        );
-      },
-      {
-        message: 'At least one AI model type must be configured',
-      },
-    ),
-});
+// export const aiModelsConfigSchema = z.object({
+//   body: z
+//     .object({
+//       ocr: z.array(z.record(z.any())).optional(),
+//       embedding: z.array(z.record(z.any())).optional(),
+//       slm: z.array(z.record(z.any())).optional(),
+//       llm: z.array(z.record(z.any())).optional(),
+//       reasoning: z.array(z.record(z.any())).optional(),
+//       multiModal: z.array(z.record(z.any())).optional(),
+//     })
+//     .strict({
+//       message:
+//         'ai models can be ocr, embedding, llm, slm, reasoning, multimodal',
+//     })
+//     .refine(
+//       (data) => {
+//         // Ensure at least one field is present and non-empty
+//         return Object.values(data).some(
+//           (value) => Array.isArray(value) && value.length > 0,
+//         );
+//       },
+//       {
+//         message: 'At least one AI model type must be configured',
+//       },
+//     ),
+// });
 
 export const urlSchema = z.object({
   body: z.object({
@@ -337,5 +337,172 @@ export const metricsCollectionPushIntervalSchema = z.object({
 export const metricsCollectionRemoteServerSchema = z.object({
   body: z.object({
     serverUrl: z.string().url(),
+  }),
+});
+
+
+// Enum definitions
+export const modelType = z.enum([
+  'llm',
+  'embedding', 
+  'ocr',
+  'slm',
+  'reasoning',
+  'multiModal'
+]);
+
+export const embeddingProvider = z.enum([
+  'anthropic',
+  'bedrock',
+  'azureOpenAI', 
+  'cohere',
+  'default',
+  'fireworks',
+  'gemini',
+  'huggingFace',
+  'jinaAI',
+  'mistral',
+  'ollama',
+  'openAI',
+  'openAICompatible',
+  'sentenceTransformers',
+  'together',
+  'vertexAI',
+  'voyage'
+]);
+
+export const llmProvider = z.enum([
+  'anthropic',
+  'bedrock', 
+  'azureOpenAI',
+  'cohere',
+  'fireworks',
+  'gemini',
+  'groq',
+  'mistral',
+  'ollama',
+  'openAI',
+  'openAICompatible',
+  'together',
+  'vertexAI',
+  'xai'
+]);
+
+// Combined provider type that accepts both embedding and LLM providers
+export const providerType = z.union([embeddingProvider, llmProvider]);
+
+// Model Configuration schema
+export const configurationSchema = z.object({
+  model: z.string().optional().describe("Model name(s) - can be comma-separated for multiple models (e.g., 'gpt-4o, gpt-4o-mini')"),
+  apiKey: z.string().optional().describe("API key for the model"),
+  endpoint: z.string().optional().describe("Endpoint URL for the model"),
+  organizationId: z.string().optional().describe("Organization ID"),
+  deploymentName: z.string().optional().describe("Azure deployment name"),
+  awsAccessKeyId: z.string().optional().describe("AWS access key ID"),
+  awsAccessSecretKey: z.string().optional().describe("AWS secret access key"),
+  region: z.string().optional().describe("AWS region"),
+  model_kwargs: z.record(z.any()).optional().describe("Additional model kwargs"),
+  encode_kwargs: z.record(z.any()).optional().describe("Additional encoding kwargs"),
+  cache_folder: z.string().optional().describe("Cache folder for models")
+});
+
+// Add Provider Request schema
+export const modelConfigurationSchema = z.object({
+  provider: providerType,
+  configuration: configurationSchema,
+  isMultimodal: z.boolean().default(false).describe("Whether the model supports multimodal input"),
+  isDefault: z.boolean().default(false).describe("Whether this should be the default model")
+});
+
+export const updateProviderRequestSchema = z.object({
+  params: z.object({
+    modelType: modelType,
+    modelKey: z.string().min(1, { message: 'Model key is required' }),
+  }),
+  body: z.object({
+    provider: providerType,
+    configuration: configurationSchema,
+    isMultimodal: z.boolean().default(false).describe("Whether the model supports multimodal input"),
+    isDefault: z.boolean().default(false).describe("Whether this should be the default model")
+  }),
+});
+
+export const addProviderRequestSchema = z.object({
+  body: z.object({
+    modelType: modelType,
+    provider: providerType,
+    configuration: configurationSchema,
+    isMultimodal: z.boolean().default(false).describe("Whether the model supports multimodal input"),
+    isDefault: z.boolean().default(false).describe("Whether this should be the default model")
+  }),
+});
+
+// Updated AI Models Config schema with proper typing
+export const aiModelsConfigSchema = z.object({
+  body: z
+    .object({
+      ocr: z.array(modelConfigurationSchema).optional(),
+      embedding: z.array(modelConfigurationSchema).optional(),
+      slm: z.array(modelConfigurationSchema).optional(),
+      llm: z.array(modelConfigurationSchema).optional(),
+      reasoning: z.array(modelConfigurationSchema).optional(),
+      multiModal: z.array(modelConfigurationSchema).optional(),
+    })
+    .strict({
+      message: 'ai models can be ocr, embedding, llm, slm, reasoning, multimodal',
+    })
+    .refine(
+      (data) => {
+        // Ensure at least one field is present and non-empty
+        return Object.values(data).some(
+          (value) => Array.isArray(value) && value.length > 0,
+        );
+      },
+      {
+        message: 'At least one AI model type must be configured',
+      },
+    ),
+});
+
+
+
+export const modelTypeSchema = z.object({
+  params: z.object({
+    modelType: z.enum([
+      'ocr',
+      'embedding',
+      'llm',
+      'slm',
+      'reasoning',
+      'multiModal',
+    ]),
+  }),
+});
+
+export const updateDefaultModelSchema = z.object({
+  params: z.object({
+    modelType: z.enum([
+      'ocr',
+      'embedding',
+      'llm',
+      'slm',
+      'reasoning',
+      'multiModal',
+    ]),
+    modelKey: z.string().min(1, { message: 'Model key is required' }),
+  }),
+});
+
+export const deleteProviderSchema = z.object({
+  params: z.object({
+    modelType: z.enum([
+      'ocr',
+      'embedding',
+      'llm',
+      'slm',
+      'reasoning',
+      'multiModal',
+    ]),
+    modelKey: z.string().min(1, { message: 'Model key is required' }),
   }),
 });

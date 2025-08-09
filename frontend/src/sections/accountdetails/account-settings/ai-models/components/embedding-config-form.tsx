@@ -1,10 +1,13 @@
-import type { DynamicFormRef } from 'src/components/dynamic-form/components/dynamic-form';
+// ===================================================================
+// 📁 Legacy Form Components (Simplified)
+// ===================================================================
 
+// Embedding Config Form (for backward compatibility with dynamic form)
 import React, { forwardRef } from 'react';
+import { Link, Alert } from '@mui/material';
+import DynamicForm, { DynamicFormRef } from 'src/components/dynamic-form/components/dynamic-form';
 
-import DynamicForm from 'src/components/dynamic-form/components/dynamic-form';
-
-import { getEmbeddingConfig, updateEmbeddingConfig } from '../services/universal-config';
+import { modelService } from '../services/universal-config';
 
 interface EmbeddingConfigFormProps {
   onValidationChange: (isValid: boolean) => void;
@@ -12,28 +15,29 @@ interface EmbeddingConfigFormProps {
   initialProvider?: string;
 }
 
-interface SaveResult {
-  success: boolean;
-  warning?: string;
-  error?: string;
-}
+export interface EmbeddingConfigFormRef extends DynamicFormRef {}
 
-// 🔥 CRITICAL: This interface MUST have all 4 methods to match DynamicFormRef
-export interface EmbeddingConfigFormRef extends DynamicFormRef{
-
-}
-
-const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFormProps>(
+  const EmbeddingConfigForm = forwardRef<EmbeddingConfigFormRef, EmbeddingConfigFormProps>(
   ({ onValidationChange, onSaveSuccess, initialProvider = 'openAI' }, ref) => (
-    <DynamicForm
-      ref={ref as React.RefObject<DynamicFormRef>}
-      configType="embedding"
-      onValidationChange={onValidationChange}
-      onSaveSuccess={onSaveSuccess}
-      initialProvider={initialProvider}
-      getConfig={getEmbeddingConfig}
-      updateConfig={updateEmbeddingConfig}
-    />
+    <>
+      <DynamicForm
+        ref={ref as React.RefObject<DynamicFormRef>}
+        configType="embedding"
+        onValidationChange={onValidationChange}
+        onSaveSuccess={onSaveSuccess}
+        initialProvider={initialProvider}
+        getConfig={modelService.getEmbeddingConfig}
+        updateConfig={modelService.updateEmbeddingConfig}
+      />
+
+      <Alert variant="outlined" severity="info" sx={{ my: 3 }}>
+        Refer to{' '}
+        <Link href="https://docs.pipeshub.com/ai-models/overview" target="_blank" rel="noopener">
+          the documentation
+        </Link>{' '}
+        for more information.
+      </Alert>
+    </>
   )
 );
 

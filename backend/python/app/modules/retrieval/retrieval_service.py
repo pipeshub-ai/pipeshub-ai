@@ -77,12 +77,23 @@ class RetrievalService:
             # We will add logic to choose a specific provider based on our needs
 
             for config in llm_configs:
-                provider = config["provider"]
-                self.llm = get_generator_model(provider, config)
+                if config.get("isDefault", False):
+                    provider = config["provider"]
+                    self.llm = get_generator_model(provider, config)
                 if self.llm:
                     break
+
             if not self.llm:
-                raise ValueError("No supported LLM provider found in configuration")
+                self.logger.info("No default LLM found, using first available provider")
+
+            if not self.llm:
+                for config in llm_configs:
+                    provider = config["provider"]
+                    self.llm = get_generator_model(provider, config)
+                    if self.llm:
+                        break
+                if not self.llm:
+                    raise ValueError("No supported LLM provider found in configuration")
 
             self.logger.info("LLM created successfully")
             return self.llm
@@ -106,8 +117,15 @@ class RetrievalService:
                     )
                     dense_embeddings = None
                     if ai_models["embedding"]:
-                        config = ai_models["embedding"][0]
-                        dense_embeddings = get_embedding_model(config["provider"], config)
+                        self.logger.info("No default embedding model found, using first available provider")
+                        for config in ai_models["embedding"]:
+                            if config.get("isDefault", False):
+                                dense_embeddings = get_embedding_model(config["provider"], config)
+                                break
+                        if not dense_embeddings:
+                            for config in ai_models["embedding"]:
+                                dense_embeddings = get_embedding_model(config["provider"], config)
+                                break
 
             except Exception as e:
                 self.logger.error(f"Error creating embedding model: {str(e)}")
@@ -211,6 +229,19 @@ class RetrievalService:
         Returns:
             Qdrant Filter object
         """
+        # If no accessible virtual record IDs, return a filter that will match nothing
+        if not accessible_virtual_record_ids:
+            return Filter(
+                must=[
+                    FieldCondition(  # org_id condition
+                        key="metadata.orgId", match=MatchValue(value=org_id)
+                    ),
+                    FieldCondition(  # Impossible condition to ensure no matches
+                        key="metadata.virtualRecordId", match=MatchValue(value="__nonexistent__")
+                    ),
+                ]
+            )
+
         return Filter(
             must=[
                 FieldCondition(  # org_id condition
@@ -245,7 +276,7 @@ class RetrievalService:
 
             filter_groups = filter_groups or {}
 
-            kb_ids = filter_groups.get('kb') if filter_groups else None
+            kb_ids = filter_groups.get('kb', None) if filter_groups else None
             # Convert filter_groups to format expected by get_accessible_records
             arango_filters = {}
             if filter_groups:  # Only process if filter_groups is not empty
@@ -263,14 +294,17 @@ class RetrievalService:
             ]
 
             accessible_records, vector_store, user = await asyncio.gather(*init_tasks)
-
+            self.logger.debug(f"Accessible records: {accessible_records}")
 
             if not accessible_records:
                 return self._create_empty_response("No accessible records found for this user with provided filters.")
 
+            # FIX: Filter out None records before processing
+            accessible_records = [r for r in accessible_records if r is not None]
+
             accessible_virtual_record_ids = [
                 record["virtualRecordId"] for record in accessible_records
-                if record is not None and record.get("virtualRecordId") is not None
+                if record.get("virtualRecordId") is not None
             ]
             # Build Qdrant filter
             qdrant_filter =  self._build_qdrant_filter(org_id, accessible_virtual_record_ids)
@@ -280,56 +314,110 @@ class RetrievalService:
             if not search_results:
                 return self._create_empty_response("No search results found")
 
+            self.logger.info(f"Search results count: {len(search_results) if search_results else 0}")
 
-            virtual_record_ids = list(
-                set(result["metadata"]["virtualRecordId"] for result in search_results)
-            )
-            virtual_to_record_map = self._create_virtual_to_record_mapping(accessible_records, virtual_record_ids)
+            # Safely extract virtual_record_ids with proper null checking
+            self.logger.debug("Starting to extract virtual_record_ids")
+            virtual_record_ids = []
+            for idx, result in enumerate(search_results):
+                try:
+                    self.logger.debug(f"Processing search result {idx}: type={type(result)}, value={result}")
+                    if result and isinstance(result, dict) and result.get("metadata"):
+                        virtual_id = result["metadata"].get("virtualRecordId")
+                        if virtual_id is not None:
+                            virtual_record_ids.append(virtual_id)
+                except Exception as e:
+                    self.logger.error(f"Error processing search result {idx}: {e}, result={result}")
+                    continue
+
+            virtual_record_ids = list(set(virtual_record_ids))
+            self.logger.debug(f"Extracted virtual_record_ids: {virtual_record_ids}")
+
+            virtual_to_record_map = {}
+            try:
+                self.logger.debug("About to call _create_virtual_to_record_mapping")
+                virtual_to_record_map = self._create_virtual_to_record_mapping(accessible_records, virtual_record_ids)
+                self.logger.info(f"Virtual to record map size: {len(virtual_to_record_map)}")
+            except Exception as e:
+                self.logger.error(f"Error in _create_virtual_to_record_mapping: {e}")
+                import traceback
+                self.logger.error(f"Traceback: {traceback.format_exc()}")
+                raise
+
             unique_record_ids = set(virtual_to_record_map.values())
 
             if not unique_record_ids:
                 return self._create_empty_response("No accessible records found for this user with provided filters.")
+            self.logger.info(f"Unique record IDs count: {len(unique_record_ids)}")
 
             # Replace virtualRecordId with first accessible record ID in search results
             for result in search_results:
-                virtual_id = result["metadata"]["virtualRecordId"]
-                if virtual_id in virtual_to_record_map:
+                if not result or not isinstance(result, dict):
+                    continue
+
+                # Check if metadata exists before accessing it
+                if not result.get("metadata"):
+                    self.logger.warning(f"Result has no metadata: {result}")
+                    continue
+
+                virtual_id = result["metadata"].get("virtualRecordId")
+                # Skip results with None virtualRecordId
+                if virtual_id is not None and virtual_id in virtual_to_record_map:
                     record_id = virtual_to_record_map[virtual_id]
                     result["metadata"]["recordId"] = record_id
-                    record = next((r for r in accessible_records if r["_key"] == record_id), None)
+                    # FIX: Add null check for r before accessing r["_key"]
+                    record = next((r for r in accessible_records if r and r.get("_key") == record_id), None)
                     if record:
                         result["metadata"]["origin"] = record.get("origin")
-                        result["metadata"]["connector"] = record.get("connectorName")
-                        result["metadata"]["kbId"] = record.get("kbId")
+                        result["metadata"]["connector"] = record.get("connectorName", None)
+                        result["metadata"]["kbId"] = record.get("kbId", None)
                         weburl = record.get("webUrl")
                         if weburl and weburl.startswith("https://mail.google.com/mail?authuser="):
-                            weburl = weburl.replace("{user.email}", user["email"])
+                            user_email = user.get("email") if user else None
+                            if user_email:
+                                weburl = weburl.replace("{user.email}", user_email)
                         result["metadata"]["webUrl"] = weburl
 
+                        # Fetch additional file URL if needed
                         if not weburl and record.get("recordType", "") == RecordTypes.FILE.value:
-                            files = await arango_service.get_document(
-                                record_id, CollectionNames.FILES.value
-                            )
-                            weburl = files.get("webUrl")
-                            if weburl and record.get("connectorName", "") == Connectors.GOOGLE_MAIL.value:
-                                weburl = weburl.replace("{user.email}", user["email"])
-                            result["metadata"]["webUrl"] = weburl
+                            try:
+                                files = await arango_service.get_document(
+                                    record_id, CollectionNames.FILES.value
+                                )
+                                if files:  # Check if files is not None
+                                    weburl = files.get("webUrl")
+                                    if weburl and record.get("connectorName", "") == Connectors.GOOGLE_MAIL.value:
+                                        user_email = user.get("email") if user else None
+                                        if user_email:
+                                            weburl = weburl.replace("{user.email}", user_email)
+                                    result["metadata"]["webUrl"] = weburl
+                            except Exception as e:
+                                self.logger.warning(f"Failed to fetch file document for {record_id}: {str(e)}")
 
+                        # Fetch additional mail URL if needed
                         if not weburl and record.get("recordType", "") == RecordTypes.MAIL.value:
-                            mail = await arango_service.get_document(
-                                record_id, CollectionNames.MAILS.value
-                            )
-                            weburl = mail.get("webUrl")
-                            if weburl and weburl.startswith("https://mail.google.com/mail?authuser="):
-                                weburl = weburl.replace("{user.email}", user["email"])
-                            result["metadata"]["webUrl"] = weburl
+                            try:
+                                mail = await arango_service.get_document(
+                                    record_id, CollectionNames.MAILS.value
+                                )
+                                if mail:  # Check if mail is not None
+                                    weburl = mail.get("webUrl")
+                                    if weburl and weburl.startswith("https://mail.google.com/mail?authuser="):
+                                        user_email = user.get("email") if user else None
+                                        if user_email:
+                                            weburl = weburl.replace("{user.email}", user_email)
+                                    result["metadata"]["webUrl"] = weburl
+                            except Exception as e:
+                                self.logger.warning(f"Failed to fetch mail document for {record_id}: {str(e)}")
 
             # Get full record documents from Arango
             records = []
             if unique_record_ids:
                 for record_id in unique_record_ids:
-                    record = next((r for r in accessible_records if r["_key"] == record_id), None)
-                    records.append(record)
+                    # FIX: Add null check for r before accessing r.get("_key")
+                    record = next((r for r in accessible_records if r and r.get("_key") == record_id), None)
+                    if record:  # Only append non-None records
+                        records.append(record)
 
             if search_results or records:
                 response_data = {
@@ -358,7 +446,11 @@ class RetrievalService:
                 }
 
         except Exception as e:
+            import traceback
+            tb_str = traceback.format_exc()
             self.logger.error(f"Filtered search failed: {str(e)}")
+            self.logger.error(f"Full traceback:\n{tb_str}")
+
             return {
                 "searchResults": [],
                 "records": [],
@@ -366,7 +458,6 @@ class RetrievalService:
                 "status_code": 500,
                 "message": f"An error occurred during search: {str(e)}",
             }
-
 
     async def _get_accessible_records_task(self, user_id, org_id, filter_groups, arango_service) -> List[Dict[str, Any]]:
         """Separate task for getting accessible records"""
@@ -471,21 +562,27 @@ class RetrievalService:
             Dict[str, str]: Mapping of virtual_record_id -> first accessible record_id
         """
         # Create a mapping from virtualRecordId to list of record IDs
+        # self.logger.info(f"Accessible records: {accessible_records}")
+        # self.logger.info(f"Virtual record IDs: {virtual_record_ids}")
         virtual_to_records = {}
         for record in accessible_records:
-            virtual_id = record.get("virtualRecordId")
-            record_id = record.get("_key")
+            if record and isinstance(record, dict):
+                virtual_id = record.get("virtualRecordId", None)
+                record_id = record.get("_key", None)
+                # self.logger.info(f"Virtual ID: {virtual_id}, Record ID: {record_id}")
+                if virtual_id and record_id:
+                    if virtual_id not in virtual_to_records:
+                        virtual_to_records[virtual_id] = []
+                    virtual_to_records[virtual_id].append(record_id)
 
-            if virtual_id and record_id:
-                if virtual_id not in virtual_to_records:
-                    virtual_to_records[virtual_id] = []
-                virtual_to_records[virtual_id].append(record_id)
+        # self.logger.info(f"Virtual to records: {virtual_to_records}")
 
         # Create the final mapping using only the virtual record IDs from search results
         # Use the first record ID for each virtual record ID
         mapping = {}
         for virtual_id in virtual_record_ids:
-            if virtual_id in virtual_to_records and virtual_to_records[virtual_id]:
+            # Skip None values and ensure virtual_id exists in virtual_to_records
+            if virtual_id is not None and virtual_id in virtual_to_records and virtual_to_records[virtual_id]:
                 mapping[virtual_id] = virtual_to_records[virtual_id][0]  # Use first record
 
         return mapping

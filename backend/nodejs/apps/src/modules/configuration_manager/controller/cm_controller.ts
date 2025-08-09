@@ -1,3 +1,4 @@
+import { v4 as uuidv4 } from 'uuid';
 import { Response, NextFunction } from 'express';
 import {
   AuthenticatedServiceRequest,
@@ -1326,124 +1327,6 @@ export const getGoogleWorkspaceOauthConfig =
     }
   };
 
-export const createAIModelsConfig =
-  (
-    keyValueStoreService: KeyValueStoreService,
-    eventService: EntitiesEventProducer,
-    appConfig: AppConfig,
-  ) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    try {
-      const aiConfig = req.body;
-      if (!aiConfig) {
-        throw new BadRequestError('Invalid configuration passed');
-      }
-
-      // Handle LLM health check
-      if (aiConfig.llm.length > 0) {
-        const aiCommandOptions: AICommandOptions = {
-          uri: `${appConfig.aiBackend}/api/v1/llm-health-check`,
-          method: HttpMethod.POST,
-          headers: req.headers as Record<string, string>,
-          body: aiConfig.llm,
-        };
-
-        logger.debug('Health Check for AI llm Config API calling');
-
-        // Don't use nested try/catch with next() inside
-        const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
-        const aiResponseData =
-          (await aiServiceCommand.execute()) as AIServiceResponse;
-
-        if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
-          throw new InternalServerError(
-            'Failed to do health check of llm configuration, check credentials again',
-            aiResponseData?.data,
-          );
-        }
-      }
-
-      // Handle embedding health check
-      if (aiConfig.embedding.length > 0) {
-        const aiCommandOptions: AICommandOptions = {
-          uri: `${appConfig.aiBackend}/api/v1/embedding-health-check`,
-          method: HttpMethod.POST,
-          headers: req.headers as Record<string, string>,
-          body: aiConfig.embedding,
-        };
-
-        logger.debug('Health Check for AI embedding Config API calling');
-
-        // Don't use nested try/catch with next() inside
-        const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
-        const aiResponseData =
-          (await aiServiceCommand.execute()) as AIServiceResponse;
-
-        if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
-          throw new InternalServerError(
-            'Failed to do health check of embedding configuration, check credentials again',
-            aiResponseData?.data,
-          );
-        }
-      }
-
-      // Encrypt and store configuration
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedAIConfig = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify(aiConfig));
-
-      await keyValueStoreService.set<string>(
-        configPaths.aiModels,
-        encryptedAIConfig,
-      );
-
-      // Handle event publication
-      await eventService.start();
-      const event: Event = {
-        eventType: EventType.LLMConfiguredEvent,
-        timestamp: Date.now(),
-        payload: {
-          credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
-        } as LLMConfiguredEvent,
-      };
-      await eventService.publishEvent(event);
-      await eventService.stop();
-      res.status(200).json({ message: 'AI config created successfully' }).end();
-    } catch (error: any) {
-      logger.error('Error creating ai models config', { error });
-      next(error);
-    }
-  };
-
-export const getAIModelsConfig =
-  (keyValueStoreService: KeyValueStoreService) =>
-  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedAIConfig = await keyValueStoreService.get<string>(
-        configPaths.aiModels,
-      );
-      if (encryptedAIConfig) {
-        const decryptedAIConfig = JSON.parse(
-          EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).decrypt(encryptedAIConfig),
-        );
-        res.status(200).json(decryptedAIConfig).end();
-        return;
-      } else {
-        res.status(200).json({}).end();
-        return;
-      }
-    } catch (error: any) {
-      logger.error('Error getting ai models config', { error });
-      next(error);
-    }
-  };
-
 export const setSsoAuthConfig =
   (keyValueStoreService: KeyValueStoreService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
@@ -1786,6 +1669,876 @@ export const setMetricsCollectionRemoteServer =
         .json({ message: 'Metrics collection remote server set successfully' });
     } catch (error: any) {
       logger.error('Error setting metrics collection remote server', { error });
+      next(error);
+    }
+  };
+
+export const createAIModelsConfig =
+  (
+    keyValueStoreService: KeyValueStoreService,
+    eventService: EntitiesEventProducer,
+    appConfig: AppConfig,
+  ) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const aiConfig = req.body;
+      if (!aiConfig) {
+        throw new BadRequestError('Invalid configuration passed');
+      }
+
+      // Handle LLM health check
+      if (aiConfig.llm.length > 0) {
+        const aiCommandOptions: AICommandOptions = {
+          uri: `${appConfig.aiBackend}/api/v1/llm-health-check`,
+          method: HttpMethod.POST,
+          headers: req.headers as Record<string, string>,
+          body: aiConfig.llm,
+        };
+
+        logger.debug('Health Check for AI llm Config API calling');
+
+        // Don't use nested try/catch with next() inside
+        const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
+        const aiResponseData =
+          (await aiServiceCommand.execute()) as AIServiceResponse;
+
+        if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
+          throw new InternalServerError(
+            'Failed to do health check of llm configuration, check credentials again',
+            aiResponseData?.data,
+          );
+        }
+      }
+
+      // Handle embedding health check
+      if (aiConfig.embedding.length > 0) {
+        const aiCommandOptions: AICommandOptions = {
+          uri: `${appConfig.aiBackend}/api/v1/embedding-health-check`,
+          method: HttpMethod.POST,
+          headers: req.headers as Record<string, string>,
+          body: aiConfig.embedding,
+        };
+
+        logger.debug('Health Check for AI embedding Config API calling');
+
+        // Don't use nested try/catch with next() inside
+        const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
+        const aiResponseData =
+          (await aiServiceCommand.execute()) as AIServiceResponse;
+
+        if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
+          throw new InternalServerError(
+            'Failed to do health check of embedding configuration, check credentials again',
+            aiResponseData?.data,
+          );
+        }
+      }
+
+      if (aiConfig.llm.length > 0) {
+        aiConfig.llm.forEach((llm: any,index:number) => {
+          const modelKey = uuidv4();
+          llm.modelKey = modelKey;
+          llm.isMultimodal = false;
+          llm.isDefault = index === 0;
+        });
+      }
+
+      if (aiConfig.embedding.length > 0) {
+        aiConfig.embedding.forEach((embedding: any,index:number) => {
+          const modelKey = uuidv4();
+          embedding.modelKey = modelKey;
+          embedding.isMultimodal = false;
+          embedding.isDefault = index === 0;
+        });
+      }
+
+      // Encrypt and store configuration
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const encryptedAIConfig = EncryptionService.getInstance(
+        configManagerConfig.algorithm,
+        configManagerConfig.secretKey,
+      ).encrypt(JSON.stringify(aiConfig));
+
+      await keyValueStoreService.set<string>(
+        configPaths.aiModels,
+        encryptedAIConfig,
+      );
+
+      // Handle event publication
+      await eventService.start();
+      const event: Event = {
+        eventType: EventType.LLMConfiguredEvent,
+        timestamp: Date.now(),
+        payload: {
+          credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
+        } as LLMConfiguredEvent,
+      };
+      await eventService.publishEvent(event);
+      await eventService.stop();
+      res.status(200).json({ message: 'AI config created successfully' }).end();
+    } catch (error: any) {
+      logger.error('Error creating ai models config', { error });
+      next(error);
+    }
+  };
+
+export const getAIModelsConfig =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const encryptedAIConfig = await keyValueStoreService.get<string>(
+        configPaths.aiModels,
+      );
+      if (encryptedAIConfig) {
+        const decryptedAIConfig = JSON.parse(
+          EncryptionService.getInstance(
+            configManagerConfig.algorithm,
+            configManagerConfig.secretKey,
+          ).decrypt(encryptedAIConfig),
+        );
+        res.status(200).json(decryptedAIConfig).end();
+        return;
+      } else {
+        res.status(200).json({}).end();
+        return;
+      }
+    } catch (error: any) {
+      logger.error('Error getting ai models config', { error });
+      next(error);
+    }
+  };
+
+// AI Models Provider Management Functions (Direct Node.js Implementation)
+export const getAIModelsProviders =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const encryptedAIConfig = await keyValueStoreService.get<string>(
+        configPaths.aiModels,
+      );
+
+      if (!encryptedAIConfig) {
+        res.status(200).json({
+          status: 'success',
+          models: {
+            ocr: [],
+            embedding: [],
+            slm: [],
+            llm: [],
+            reasoning: [],
+            multiModal: [],
+          },
+          message: 'No AI models found',
+        });
+        return;
+      }
+
+      const aiModels = JSON.parse(
+        EncryptionService.getInstance(
+          configManagerConfig.algorithm,
+          configManagerConfig.secretKey,
+        ).decrypt(encryptedAIConfig),
+      );
+
+      // Ensure all top-level keys exist
+      const defaultStructure = {
+        ocr: [],
+        embedding: [],
+        slm: [],
+        llm: [],
+        reasoning: [],
+        multiModal: [],
+      };
+
+      for (const key of Object.keys(defaultStructure)) {
+        if (!aiModels[key]) {
+          aiModels[key] = [];
+        }
+      }
+
+      res.status(200).json({
+        status: 'success',
+        models: aiModels,
+        message: 'AI models retrieved successfully',
+      });
+    } catch (error: any) {
+      logger.error('Error getting AI models providers', { error });
+      next(error);
+    }
+  };
+
+export const getModelsByType =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { modelType } = req.params;
+      if (!modelType) {
+        res.status(400).json({
+          status: 'error',
+          message: 'modelType is required',
+        });
+        return;
+      }
+      const validTypes = [
+        'llm',
+        'embedding',
+        'ocr',
+        'slm',
+        'reasoning',
+        'multiModal',
+      ];
+      if (!validTypes.includes(modelType)) {
+        res.status(400).json({
+          status: 'error',
+          message: `Invalid model type. Must be one of: ${validTypes.join(', ')}`,
+        });
+        return;
+      }
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const encryptedAIConfig = await keyValueStoreService.get<string>(
+        configPaths.aiModels,
+      );
+
+      if (!encryptedAIConfig) {
+        res.status(200).json({
+          status: 'success',
+          models: [],
+          message: `No ${modelType} models found`,
+        });
+        return;
+      }
+
+      const aiModels = JSON.parse(
+        EncryptionService.getInstance(
+          configManagerConfig.algorithm,
+          configManagerConfig.secretKey,
+        ).decrypt(encryptedAIConfig),
+      );
+
+      if (!aiModels[modelType]) {
+        res.status(200).json({
+          status: 'success',
+          models: [],
+          message: `No ${modelType} models found`,
+        });
+        return;
+      }
+      const configs = aiModels[modelType];
+      res.status(200).json({
+        status: 'success',
+        models: configs,
+        message: `Found ${configs.length} ${modelType} models`,
+      });
+    } catch (error: any) {
+      logger.error('Error getting models by type', { error });
+      next(error);
+    }
+  };
+
+export const getAvailableModelsByType =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { modelType } = req.params;
+      if (!modelType) {
+        res.status(400).json({
+          status: 'error',
+          message: 'modelType is required',
+        });
+        return;
+      }
+      // Validate model type
+      const validTypes = [
+        'llm',
+        'embedding',
+        'ocr',
+        'slm',
+        'reasoning',
+        'multiModal',
+      ];
+      if (!validTypes.includes(modelType)) {
+        res.status(400).json({
+          status: 'error',
+          message: `Invalid model type. Must be one of: ${validTypes.join(', ')}`,
+        });
+        return;
+      }
+
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const encryptedAIConfig = await keyValueStoreService.get<string>(
+        configPaths.aiModels,
+      );
+
+      if (!encryptedAIConfig) {
+        res.status(200).json({
+          status: 'success',
+          models: [],
+          message: `No ${modelType} models found`,
+        });
+        return;
+      }
+      logger.debug('encryptedAIConfig', encryptedAIConfig);
+
+      const aiModels = JSON.parse(
+        EncryptionService.getInstance(
+          configManagerConfig.algorithm,
+          configManagerConfig.secretKey,
+        ).decrypt(encryptedAIConfig),
+      );
+
+      if (!aiModels[modelType]) {
+        res.status(200).json({
+          status: 'success',
+          models: [],
+          message: `No ${modelType} models found`,
+        });
+        return;
+      }
+
+      const configs = aiModels[modelType];
+      const flattenedModels = [];
+
+      for (const config of configs) {
+        // Extract individual model names from comma-separated string
+        let modelNames = [];
+        if (config.configuration?.model) {
+          const modelString = config.configuration.model;
+          modelNames = modelString
+            .split(',')
+            .map((name: string) => name.trim())
+            .filter(Boolean);
+        }
+
+        // Create a flattened entry for each individual model
+        let markDefault = false;
+        if (config.isDefault) {
+          markDefault = true;
+        }
+
+        for (const modelName of modelNames) {
+          const flattenedModel = {
+            modelType,
+            provider: config.provider,
+            modelName,
+            modelKey: config.modelKey,
+            isMultimodal: config.isMultimodal || false,
+            isDefault: markDefault,
+          };
+          markDefault = false; // Only mark first model as default
+          flattenedModels.push(flattenedModel);
+        }
+      }
+
+      res.status(200).json({
+        status: 'success',
+        models: flattenedModels,
+        message: `Found ${flattenedModels.length} ${modelType} models`,
+      });
+      return;
+    } catch (error: any) {
+      logger.error('Error getting available models by type', { error });
+      next(error);
+    }
+  };
+
+export const addAIModelProvider =
+  (keyValueStoreService: KeyValueStoreService, appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const {
+        modelType,
+        provider,
+        configuration,
+        isMultimodal = false,
+        isDefault = false,
+      } = req.body;
+
+      // Validate required fields
+      if (!modelType || !provider || !configuration) {
+        res.status(400).json({
+          status: 'error',
+          message: 'modelType, provider, and configuration are required',
+        });
+        return;
+      }
+
+      // Validate model type
+      const validTypes = [
+        'llm',
+        'embedding',
+        'ocr',
+        'slm',
+        'reasoning',
+        'multiModal',
+      ];
+      if (!validTypes.includes(modelType)) {
+        res.status(400).json({
+          status: 'error',
+          message: `Invalid model type. Must be one of: ${validTypes.join(', ')}`,
+        });
+        return;
+      }
+
+      const healthCheckPayload = {
+        provider,
+        configuration,
+        modelType,
+      };
+
+      const aiCommandOptions: AICommandOptions = {
+        uri: `${appConfig.aiBackend}/api/v1/health-check/${modelType}`,
+        method: HttpMethod.POST,
+        headers: req.headers as Record<string, string>,
+        body: healthCheckPayload,
+      };
+
+      logger.debug('Health Check for AI embedding Config API calling');
+
+      // Don't use nested try/catch with next() inside
+      const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
+      const aiResponseData =
+        (await aiServiceCommand.execute()) as AIServiceResponse;
+
+      if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
+        throw new InternalServerError(
+          'Failed to do health check of embedding configuration, check credentials again',
+          aiResponseData?.data,
+        );
+      }
+
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const encryptedAIConfig = await keyValueStoreService.get<string>(
+        configPaths.aiModels,
+      );
+
+      let aiModels: any = {};
+      if (encryptedAIConfig) {
+        aiModels = JSON.parse(
+          EncryptionService.getInstance(
+            configManagerConfig.algorithm,
+            configManagerConfig.secretKey,
+          ).decrypt(encryptedAIConfig),
+        );
+      }
+
+      // Ensure all top-level keys exist
+      const defaultStructure = {
+        ocr: [],
+        embedding: [],
+        slm: [],
+        llm: [],
+        reasoning: [],
+        multiModal: [],
+      };
+      for (const key of Object.keys(defaultStructure)) {
+        if (!(key in aiModels)) {
+          aiModels[key] = [];
+        }
+      }
+
+      // Generate unique model key with collision check
+      let modelKey: string;
+      let existingKeys: string[];
+      do {
+        modelKey = uuidv4();
+        existingKeys = aiModels[modelType].map(
+          (config: any) => config.modelKey,
+        );
+      } while (existingKeys.includes(modelKey));
+
+      // Prepare the new configuration
+      const newConfig = {
+        provider,
+        configuration,
+        modelKey,
+        isMultimodal,
+        isDefault,
+      };
+
+      // If this is set as default, remove default flag from other models
+      if (isDefault) {
+        for (const config of aiModels[modelType]) {
+          config.isDefault = false;
+        }
+      }
+
+      // Add the new configuration
+      aiModels[modelType].push(newConfig);
+
+      // Encrypt and save the updated configuration
+      const encryptedUpdatedConfig = EncryptionService.getInstance(
+        configManagerConfig.algorithm,
+        configManagerConfig.secretKey,
+      ).encrypt(JSON.stringify(aiModels));
+
+      await keyValueStoreService.set<string>(
+        configPaths.aiModels,
+        encryptedUpdatedConfig,
+      );
+
+      res.status(200).json({
+        status: 'success',
+        message: `${modelType.toUpperCase()} provider added successfully`,
+        details: {
+          modelKey,
+          modelType,
+          provider,
+          model: configuration.model,
+          isDefault,
+        },
+      });
+    } catch (error: any) {
+      logger.error('Error adding AI model provider', { error });
+      next(error);
+    }
+  };
+
+export const updateAIModelProvider =
+  (keyValueStoreService: KeyValueStoreService, appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { modelType, modelKey } = req.params;
+      const {
+        provider,
+        configuration,
+        isMultimodal = false,
+        isDefault = false,
+      } = req.body;
+
+      logger.debug('updateAIModelProvider', {
+        modelType,
+        modelKey,
+        provider,
+        configuration,
+        isMultimodal,
+        isDefault,
+      });
+
+      // Validate required fields
+      if (!provider || !configuration) {
+        res.status(400).json({
+          status: 'error',
+          message: 'provider and configuration are required',
+        });
+        return;
+      }
+
+      const healthCheckPayload = {
+        provider,
+        configuration,
+        modelType,
+      };
+
+      const aiCommandOptions: AICommandOptions = {
+        uri: `${appConfig.aiBackend}/api/v1/health-check/${modelType}`,
+        method: HttpMethod.POST,
+        headers: req.headers as Record<string, string>,
+        body: healthCheckPayload,
+      };
+
+      logger.debug('Health Check for AI embedding Config API calling');
+
+      // Don't use nested try/catch with next() inside
+      const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
+      const aiResponseData =
+        (await aiServiceCommand.execute()) as AIServiceResponse;
+
+      if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
+        throw new InternalServerError(
+          'Failed to do health check of embedding configuration, check credentials again',
+          aiResponseData?.data,
+        );
+      }
+
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const encryptedAIConfig = await keyValueStoreService.get<string>(
+        configPaths.aiModels,
+      );
+
+      if (!encryptedAIConfig) {
+        res.status(404).json({
+          status: 'error',
+          message: 'No AI models configuration found',
+        });
+        return;
+      }
+
+      const aiModels = JSON.parse(
+        EncryptionService.getInstance(
+          configManagerConfig.algorithm,
+          configManagerConfig.secretKey,
+        ).decrypt(encryptedAIConfig),
+      );
+
+      // Find the model with the specified key across all model types
+      let targetModel = null;
+      let targetModelType = null;
+
+      for (const [modelTypeKey, modelConfigs] of Object.entries(aiModels)) {
+        for (const config of modelConfigs as any[]) {
+          if (config.modelKey === modelKey) {
+            targetModel = config;
+            targetModelType = modelTypeKey;
+            break;
+          }
+        }
+        if (targetModel) break;
+      }
+
+      if (!targetModel || !targetModelType) {
+        res.status(404).json({
+          status: 'error',
+          message: `Model with key '${modelKey}' not found or model type not found`,
+        });
+        return;
+      }
+
+      // Verify the model type matches if provided
+      if (modelType && targetModelType !== modelType) {
+        res.status(400).json({
+          status: 'error',
+          message: `Model key '${modelKey}' belongs to type '${targetModelType}', not '${modelType}'`,
+        });
+        return;
+      }
+
+      // Update the model configuration
+      targetModel.configuration = configuration;
+      targetModel.isMultimodal = isMultimodal;
+      targetModel.isDefault = isDefault;
+
+      // If this is set as default, remove default flag from other models of the same type
+      if (isDefault) {
+        for (const config of aiModels[targetModelType]) {
+          if (config.modelKey !== modelKey) {
+            config.isDefault = false;
+          }
+        }
+      }
+
+      // Encrypt and save the updated configuration
+      const encryptedUpdatedConfig = EncryptionService.getInstance(
+        configManagerConfig.algorithm,
+        configManagerConfig.secretKey,
+      ).encrypt(JSON.stringify(aiModels));
+
+      await keyValueStoreService.set<string>(
+        configPaths.aiModels,
+        encryptedUpdatedConfig,
+      );
+
+      res.status(200).json({
+        status: 'success',
+        message: `${targetModelType.toUpperCase()} provider updated successfully`,
+        details: {
+          modelKey,
+          modelType: targetModelType,
+          provider: targetModel.provider,
+          model: targetModel.configuration?.model,
+        },
+      });
+    } catch (error: any) {
+      logger.error('Error updating AI model provider', { error });
+      next(error);
+    }
+  };
+
+export const deleteAIModelProvider =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { modelType, modelKey } = req.params;
+
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const encryptedAIConfig = await keyValueStoreService.get<string>(
+        configPaths.aiModels,
+      );
+
+      if (!encryptedAIConfig) {
+        res.status(404).json({
+          status: 'error',
+          message: 'No AI models configuration found',
+        });
+        return;
+      }
+
+      const aiModels = JSON.parse(
+        EncryptionService.getInstance(
+          configManagerConfig.algorithm,
+          configManagerConfig.secretKey,
+        ).decrypt(encryptedAIConfig),
+      );
+
+      // Find the model with the specified key across all model types
+      let deletedModel = null;
+      let targetModelType = null;
+      let modelIndex = -1;
+
+      for (const [modelTypeKey, modelConfigs] of Object.entries(aiModels)) {
+        if (!Array.isArray(modelConfigs)) continue;
+        for (let i = 0; i < modelConfigs.length; i++) {
+          const config = modelConfigs[i];
+          if (
+            config &&
+            typeof config === 'object' &&
+            'modelKey' in config &&
+            config.modelKey === modelKey
+          ) {
+            deletedModel = config;
+            targetModelType = modelTypeKey;
+            modelIndex = i;
+            break;
+          }
+        }
+        if (deletedModel) break;
+      }
+
+      if (!deletedModel || !targetModelType) {
+        res.status(404).json({
+          status: 'error',
+          message: `Model with key '${modelKey}' not found`,
+        });
+        return;
+      }
+
+      // Verify the model type matches if provided
+      if (modelType && targetModelType !== modelType) {
+        res.status(400).json({
+          status: 'error',
+          message: `Model key '${modelKey}' belongs to type '${targetModelType}', not '${modelType}'`,
+        });
+        return;
+      }
+
+      const wasDefault = deletedModel.isDefault || false;
+
+      // Remove the model from the configuration
+      aiModels[targetModelType].splice(modelIndex, 1);
+
+      // If the deleted model was default, set the first remaining model as default
+      if (wasDefault && aiModels[targetModelType].length > 0) {
+        aiModels[targetModelType][0].isDefault = true;
+      }
+
+      // Encrypt and save the updated configuration
+      const encryptedUpdatedConfig = EncryptionService.getInstance(
+        configManagerConfig.algorithm,
+        configManagerConfig.secretKey,
+      ).encrypt(JSON.stringify(aiModels));
+
+      await keyValueStoreService.set<string>(
+        configPaths.aiModels,
+        encryptedUpdatedConfig,
+      );
+
+      res.status(200).json({
+        status: 'success',
+        message: `${targetModelType.toUpperCase()} provider deleted successfully`,
+        details: {
+          modelKey,
+          modelType: targetModelType,
+          provider: deletedModel.provider,
+          model: deletedModel.configuration?.model,
+          wasDefault,
+        },
+      });
+    } catch (error: any) {
+      logger.error('Error deleting AI model provider', { error });
+      next(error);
+    }
+  };
+
+export const updateDefaultAIModel =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { modelType, modelKey } = req.params;
+
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const encryptedAIConfig = await keyValueStoreService.get<string>(
+        configPaths.aiModels,
+      );
+
+      if (!encryptedAIConfig) {
+        res.status(404).json({
+          status: 'error',
+          message: 'No AI models configuration found',
+        });
+        return;
+      }
+
+      const aiModels = JSON.parse(
+        EncryptionService.getInstance(
+          configManagerConfig.algorithm,
+          configManagerConfig.secretKey,
+        ).decrypt(encryptedAIConfig),
+      );
+
+      // Find the model with the specified key across all model types
+      let targetModel = null;
+      let targetModelType = null;
+
+      for (const [modelTypeKey, modelConfigs] of Object.entries(aiModels)) {
+        for (const config of modelConfigs as any[]) {
+          if (config.modelKey === modelKey) {
+            targetModel = config;
+            targetModelType = modelTypeKey;
+            break;
+          }
+        }
+        if (targetModel) break;
+      }
+
+      if (!targetModel || !targetModelType) {
+        res.status(404).json({
+          status: 'error',
+          message: `Model with key '${modelKey}' not found`,
+        });
+        return;
+      }
+
+      // Verify the model type matches if provided
+      if (modelType && targetModelType !== modelType) {
+        res.status(400).json({
+          status: 'error',
+          message: `Model key '${modelKey}' belongs to type '${targetModelType}', not '${modelType}'`,
+        });
+        return;
+      }
+
+      // Remove default flag from all models in this type
+      for (const config of aiModels[targetModelType]) {
+        config.isDefault = false;
+      }
+
+      // Set the target model as default
+      targetModel.isDefault = true;
+
+      // Encrypt and save the updated configuration
+      const encryptedUpdatedConfig = EncryptionService.getInstance(
+        configManagerConfig.algorithm,
+        configManagerConfig.secretKey,
+      ).encrypt(JSON.stringify(aiModels));
+
+      await keyValueStoreService.set<string>(
+        configPaths.aiModels,
+        encryptedUpdatedConfig,
+      );
+
+      res.status(200).json({
+        status: 'success',
+        message: `Default ${targetModelType} model updated successfully`,
+        details: {
+          modelKey,
+          modelType: targetModelType,
+          provider: targetModel.provider,
+          model: targetModel.configuration?.model,
+        },
+      });
+    } catch (error: any) {
+      logger.error('Error updating default AI model', { error });
       next(error);
     }
   };

@@ -441,9 +441,22 @@ class IndexingPipeline:
             if not embedding_configs:
                 dense_embeddings = get_default_embedding_model()
             else:
-                config = embedding_configs[0]
-                provider = config["provider"]
-                dense_embeddings = get_embedding_model(provider, config)
+                dense_embeddings = None
+                for config in embedding_configs:
+                    if config.get("isDefault", False):
+                        provider = config["provider"]
+                        dense_embeddings = get_embedding_model(provider, config)
+                        break
+
+                if not dense_embeddings:
+                    self.logger.info("No default embedding model found, using first available provider")
+                    for config in embedding_configs:
+                        provider = config["provider"]
+                        dense_embeddings = get_embedding_model(provider, config)
+                        break
+
+                if not dense_embeddings:
+                    raise IndexingError("No default embedding model found")
 
             # Get the embedding dimensions from the model
             try:

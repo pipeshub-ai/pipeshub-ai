@@ -128,6 +128,10 @@ export const streamChat =
         previousConversations: req.body.previousConversations || [],
         recordIds: req.body.recordIds || [],
         filters: req.body.filters || {},
+        // New fields for multi-model support
+        modelKey: req.body.modelKey || null,
+        modelName: req.body.modelName || null,
+        chatMode: req.body.chatMode || 'standard',
       };
 
       const aiCommandOptions: AICommandOptions = {
@@ -390,6 +394,10 @@ export const createConversation =
           previousConversations: req.body.previousConversations || [],
           recordIds: req.body.recordIds || [],
           filters: req.body.filters || {},
+          // New fields for multi-model support
+          modelKey: req.body.modelKey || null,
+          modelName: req.body.modelName || null,
+          chatMode: req.body.chatMode || 'standard',
         },
       };
 
@@ -645,6 +653,10 @@ export const addMessage =
             query: req.body.query,
             previousConversations: previousConversations,
             filters: req.body.filters || {},
+            // New fields for multi-model support
+            modelKey: req.body.modelKey || null,
+            modelName: req.body.modelName || null,
+            chatMode: req.body.chatMode || 'standard',
           },
         };
         try {
@@ -841,7 +853,7 @@ export const addMessage =
     }
   };
 
-  export const addMessageStream =
+export const addMessageStream =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response) => {
     const requestId = req.context?.requestId;
@@ -854,7 +866,9 @@ export const addMessage =
     let existingConversation: IConversationDocument | null = null;
 
     // Helper function that contains the common conversation operations
-    async function performAddMessageStream(session?: ClientSession | null): Promise<void> {
+    async function performAddMessageStream(
+      session?: ClientSession | null,
+    ): Promise<void> {
       // Get existing conversation
       const conversation = await Conversation.findOne({
         _id: conversationId,
@@ -902,13 +916,15 @@ export const addMessage =
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
+        Connection: 'keep-alive',
         'Access-Control-Allow-Origin': '*',
         'X-Accel-Buffering': 'no',
       });
 
       // Send initial connection event and flush
-      res.write(`event: connected\ndata: ${JSON.stringify({ message: 'SSE connection established' })}\n\n`);
+      res.write(
+        `event: connected\ndata: ${JSON.stringify({ message: 'SSE connection established' })}\n\n`,
+      );
       (res as any).flush?.();
 
       logger.debug('Adding message to conversation via stream', {
@@ -934,7 +950,10 @@ export const addMessage =
 
       // Format previous conversations for context (excluding the user message we just added)
       const previousConversations = formatPreviousConversations(
-        (existingConversation as IConversationDocument).messages.slice(0, -1) as IMessage[],
+        (existingConversation as IConversationDocument).messages.slice(
+          0,
+          -1,
+        ) as IMessage[],
       );
 
       // Prepare AI payload
@@ -942,13 +961,17 @@ export const addMessage =
         query: req.body.query,
         previousConversations: previousConversations,
         filters: req.body.filters || {},
+        // New fields for multi-model support
+        modelKey: req.body.modelKey || null,
+        modelName: req.body.modelName || null,
+        chatMode: req.body.chatMode || 'standard',
       };
 
       const aiCommandOptions: AICommandOptions = {
         uri: `${appConfig.aiBackend}/api/v1/chat/stream`,
         method: HttpMethod.POST,
         headers: {
-          ...req.headers as Record<string, string>,
+          ...(req.headers as Record<string, string>),
           'Content-Type': 'application/json',
         },
         body: aiPayload,
@@ -956,7 +979,7 @@ export const addMessage =
 
       const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
       const stream = await aiServiceCommand.executeStream();
-      
+
       if (!stream) {
         throw new Error('Failed to get stream from AI service');
       }
@@ -975,19 +998,24 @@ export const addMessage =
       stream.on('data', (chunk: Buffer) => {
         const chunkStr = chunk.toString();
         buffer += chunkStr;
-        
+
         // Look for complete events in the buffer
         const events = buffer.split('\n\n');
         buffer = events.pop() || ''; // Keep incomplete event in buffer
-        
+
         let filteredChunk = '';
-        
+
         for (const event of events) {
           if (event.trim()) {
             // Check if this is a complete event
             const lines = event.split('\n');
-            const eventType = lines.find(line => line.startsWith('event:'))?.replace('event:', '').trim();
-            const dataLines = lines.filter(line => line.startsWith('data:')).map(line => line.replace(/^data: ?/, ''));
+            const eventType = lines
+              .find((line) => line.startsWith('event:'))
+              ?.replace('event:', '')
+              .trim();
+            const dataLines = lines
+              .filter((line) => line.startsWith('data:'))
+              .map((line) => line.replace(/^data: ?/, ''));
             const dataLine = dataLines.join('\n');
             if (eventType === 'complete' && dataLine) {
               try {
@@ -1012,7 +1040,11 @@ export const addMessage =
             } else if (eventType === 'error' && dataLine) {
               try {
                 const errorData = JSON.parse(dataLine);
-                markConversationFailed(existingConversation as IConversationDocument, errorData.error, session);
+                markConversationFailed(
+                  existingConversation as IConversationDocument,
+                  errorData.error,
+                  session,
+                );
                 filteredChunk += event + '\n\n';
               } catch (parseError: any) {
                 logger.error('Failed to parse error event data', {
@@ -1028,7 +1060,7 @@ export const addMessage =
             }
           }
         }
-        
+
         // Forward only non-complete events to client
         if (filteredChunk) {
           res.write(filteredChunk);
@@ -1084,18 +1116,20 @@ export const addMessage =
               const plainConversation = updatedConversation.toObject();
               const responseConversation = {
                 ...plainConversation,
-                messages: plainConversation.messages.map((message: IMessage) => ({
-                  ...message,
-                  citations:
-                    message.citations?.map((citation: IMessageCitation) => ({
-                      ...citation,
-                      citationData: savedCitations.find(
-                        (c) =>
-                          (c as mongoose.Document).id.toString() ===
-                          citation.citationId?.toString(),
-                      ),
-                    })) || [],
-                })),
+                messages: plainConversation.messages.map(
+                  (message: IMessage) => ({
+                    ...message,
+                    citations:
+                      message.citations?.map((citation: IMessageCitation) => ({
+                        ...citation,
+                        citationData: savedCitations.find(
+                          (c) =>
+                            (c as mongoose.Document).id.toString() ===
+                            citation.citationId?.toString(),
+                        ),
+                      })) || [],
+                  }),
+                ),
               };
 
               // Send the final conversation data in the same format as addMessage
@@ -1111,22 +1145,28 @@ export const addMessage =
               };
 
               // Send final response event with the complete conversation data
-              res.write(`event: complete\ndata: ${JSON.stringify(responsePayload)}\n\n`);
+              res.write(
+                `event: complete\ndata: ${JSON.stringify(responsePayload)}\n\n`,
+              );
 
-              logger.debug('Message added and conversation updated, sent custom complete event', {
-                requestId,
-                conversationId: existingConversation._id,
-                duration: Date.now() - startTime,
-              });
-
+              logger.debug(
+                'Message added and conversation updated, sent custom complete event',
+                {
+                  requestId,
+                  conversationId: existingConversation._id,
+                  duration: Date.now() - startTime,
+                },
+              );
             } catch (error: any) {
               // Update conversation status for general errors
               if (existingConversation) {
                 existingConversation.status = CONVERSATION_STATUS.FAILED;
-                existingConversation.failReason = error.message || 'Unknown error occurred';
+                existingConversation.failReason =
+                  error.message || 'Unknown error occurred';
 
                 // Add error message using existing utility
-                const failedMessage = buildAIFailureResponseMessage() as IMessageDocument;
+                const failedMessage =
+                  buildAIFailureResponseMessage() as IMessageDocument;
                 existingConversation.messages.push(failedMessage);
                 existingConversation.lastActivityAt = Date.now();
 
@@ -1135,15 +1175,21 @@ export const addMessage =
                   : await existingConversation.save();
 
                 if (!saveGeneralError) {
-                  logger.error('Failed to save conversation general error status', {
-                    requestId,
-                    conversationId: existingConversation._id,
-                  });
+                  logger.error(
+                    'Failed to save conversation general error status',
+                    {
+                      requestId,
+                      conversationId: existingConversation._id,
+                    },
+                  );
                 }
               }
 
               if (error.cause && error.cause.code === 'ECONNREFUSED') {
-                throw new InternalServerError(AI_SERVICE_UNAVAILABLE_MESSAGE, error);
+                throw new InternalServerError(
+                  AI_SERVICE_UNAVAILABLE_MESSAGE,
+                  error,
+                );
               }
               throw error;
             }
@@ -1151,7 +1197,8 @@ export const addMessage =
             // Mark as failed if no complete data received
             if (existingConversation) {
               existingConversation.status = CONVERSATION_STATUS.FAILED;
-              existingConversation.failReason = 'No complete response received from AI service';
+              existingConversation.failReason =
+                'No complete response received from AI service';
               existingConversation.lastActivityAt = Date.now();
 
               const savedWithError = session
@@ -1167,9 +1214,11 @@ export const addMessage =
             }
 
             // Send error event
-            res.write(`event: error\ndata: ${JSON.stringify({ 
-              error: 'No complete response received from AI service' 
-            })}\n\n`);
+            res.write(
+              `event: error\ndata: ${JSON.stringify({
+                error: 'No complete response received from AI service',
+              })}\n\n`,
+            );
           }
         } catch (dbError: any) {
           logger.error('Failed to save AI response to conversation', {
@@ -1179,10 +1228,12 @@ export const addMessage =
           });
 
           // Send error event
-          res.write(`event: error\ndata: ${JSON.stringify({ 
-            error: 'Failed to save AI response',
-            details: dbError.message 
-          })}\n\n`);
+          res.write(
+            `event: error\ndata: ${JSON.stringify({
+              error: 'Failed to save AI response',
+              details: dbError.message,
+            })}\n\n`,
+          );
         }
 
         res.end();
@@ -1192,7 +1243,11 @@ export const addMessage =
         logger.error('Stream error', { requestId, error: error.message });
         try {
           if (existingConversation) {
-            markConversationFailed(existingConversation as IConversationDocument, error.message, session);
+            markConversationFailed(
+              existingConversation as IConversationDocument,
+              error.message,
+              session,
+            );
           }
         } catch (dbError: any) {
           logger.error('Failed to mark conversation as failed', {
@@ -1201,42 +1256,53 @@ export const addMessage =
             error: dbError.message,
           });
         }
-        
-        const errorEvent = `event: error\ndata: ${JSON.stringify({ 
+
+        const errorEvent = `event: error\ndata: ${JSON.stringify({
           error: error.message || 'Stream error occurred',
-          details: error.message 
+          details: error.message,
         })}\n\n`;
         res.write(errorEvent);
         res.end();
       });
-
     } catch (error: any) {
-      logger.error('Error in addMessageStream', { 
-        requestId, 
+      logger.error('Error in addMessageStream', {
+        requestId,
         conversationId,
-        error: error.message 
+        error: error.message,
       });
-      
+
       try {
         // Mark conversation as failed if it exists
         if (existingConversation) {
-          (existingConversation as IConversationDocument).status = CONVERSATION_STATUS.FAILED;
-          (existingConversation as IConversationDocument).failReason = error.message || 'Internal server error';
+          (existingConversation as IConversationDocument).status =
+            CONVERSATION_STATUS.FAILED;
+          (existingConversation as IConversationDocument).failReason =
+            error.message || 'Internal server error';
 
           // Add error message using existing utility
-          const failedMessage = buildAIFailureResponseMessage() as IMessageDocument;
-          (existingConversation as IConversationDocument).messages.push(failedMessage);
-          (existingConversation as IConversationDocument).lastActivityAt = Date.now();
+          const failedMessage =
+            buildAIFailureResponseMessage() as IMessageDocument;
+          (existingConversation as IConversationDocument).messages.push(
+            failedMessage,
+          );
+          (existingConversation as IConversationDocument).lastActivityAt =
+            Date.now();
 
           const saveGeneralError = session
-            ? await (existingConversation as IConversationDocument).save({ session })
+            ? await (existingConversation as IConversationDocument).save({
+                session,
+              })
             : await (existingConversation as IConversationDocument).save();
 
           if (!saveGeneralError) {
-            logger.error('Failed to save conversation general error status in catch block', {
-              requestId,
-              conversationId: (existingConversation as IConversationDocument)._id,
-            });
+            logger.error(
+              'Failed to save conversation general error status in catch block',
+              {
+                requestId,
+                conversationId: (existingConversation as IConversationDocument)
+                  ._id,
+              },
+            );
           }
         }
       } catch (dbError: any) {
@@ -1246,14 +1312,14 @@ export const addMessage =
           error: dbError.message,
         });
       }
-      
+
       if (!res.headersSent) {
         res.writeHead(500, { 'Content-Type': 'text/event-stream' });
       }
-      
-      const errorEvent = `event: error\ndata: ${JSON.stringify({ 
+
+      const errorEvent = `event: error\ndata: ${JSON.stringify({
         error: error.message || 'Internal server error',
-        details: error.message 
+        details: error.message,
       })}\n\n`;
       res.write(errorEvent);
       res.end();

@@ -27,6 +27,7 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
   try {
     await app.initialize();
     await app.start();
+    await app.runMigration();
   } catch (error) {
     logger.error('Failed to start application:', error);
     process.exit(1);

@@ -14,8 +14,15 @@ async def get_llm(config_service: ConfigurationService, llm_configs = None) -> B
         raise ValueError("No LLM configurations found")
 
     for config in llm_configs:
+        if config.get("isDefault", False):
+            llm = get_generator_model(config["provider"], config)
+            if llm:
+                return llm
+
+    for config in llm_configs:
         llm = get_generator_model(config["provider"], config)
         if llm:
             return llm
+
 
     raise ValueError("No LLM found")

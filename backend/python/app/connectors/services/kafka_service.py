@@ -98,11 +98,6 @@ class KafkaService:
         try:
             # Ensure producer is ready
             await self._ensure_producer()
-            if not isinstance(self.producer, AIOKafkaProducer):
-                raise TypeError(
-                    f"Producer is of incorrect type: {type(self.producer).__name__}. Expected AIOKafkaProducer."
-                )
-            # Standardize event format
             formatted_event = {
                 "eventType": event_data.get("eventType", EventTypes.NEW_RECORD.value),
                 "timestamp": get_epoch_timestamp_in_ms(),

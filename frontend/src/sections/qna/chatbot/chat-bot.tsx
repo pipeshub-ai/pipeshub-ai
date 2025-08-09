@@ -527,6 +527,24 @@ const ChatInterface = () => {
   const [shouldRefreshSidebar, setShouldRefreshSidebar] = useState<boolean>(false);
   const [isNavigationBlocked, setIsNavigationBlocked] = useState<boolean>(false);
 
+  // Model selection state
+  const [selectedModel, setSelectedModel] = useState<{
+    modelType: string;
+    provider: string;
+    modelName: string;
+    modelKey: string;
+    isMultimodal: boolean;
+    isDefault: boolean;
+  } | null>(null);
+  const [selectedChatMode, setSelectedChatMode] = useState<{
+    id: string;
+    name: string;
+    description: string;
+    icon: string;
+    temperature: number;
+    maxTokens: number;
+  } | null>(null);
+
   const navigate = useNavigate();
   const { conversationId } = useParams<{ conversationId: string }>();
 
@@ -888,7 +906,12 @@ const ChatInterface = () => {
 
   // Updated handleSendMessage to properly handle the promise
   const handleSendMessage = useCallback(
-    async (messageOverride?: string): Promise<void> => {
+    async (
+      messageOverride?: string,
+      modelKey?: string,
+      modelName?: string,
+      chatMode?: string
+    ): Promise<void> => {
       const trimmedInput =
         typeof messageOverride === 'string' ? messageOverride.trim() : inputValue.trim();
       if (!trimmedInput) return;
@@ -921,11 +944,15 @@ const ChatInterface = () => {
       const streamingUrl = wasCreatingNewConversation
         ? `${CONFIG.backendUrl}/api/v1/conversations/stream`
         : `${CONFIG.backendUrl}/api/v1/conversations/${currentConversationId}/messages/stream`;
-
       try {
         const createdConversationId = await handleStreamingResponse(
           streamingUrl,
-          { query: trimmedInput },
+          { 
+            query: trimmedInput,
+            modelKey: selectedModel?.modelKey,
+            modelName: selectedModel?.modelName,
+            chatMode,
+          },
           wasCreatingNewConversation
         );
 
@@ -936,14 +963,6 @@ const ChatInterface = () => {
         }
       } catch (error) {
         console.error('Error in streaming response:', error);
-        // Handle error state appropriately
-        streamingManager.updateConversationMessages(conversationKey, (prev) => [
-          ...prev.slice(0, -1), // Remove the temporary user message
-          {
-            ...tempUserMessage,
-            error: true, // Mark as error if needed
-          },
-        ]);
       }
     },
     [
@@ -955,6 +974,7 @@ const ChatInterface = () => {
       handleStreamingResponse,
       isNavigationBlocked,
       isCurrentConversationLoading,
+      selectedModel,
     ]
   );
 
@@ -1526,6 +1546,10 @@ const ChatInterface = () => {
                 key="welcome-screen"
                 onSubmit={handleSendMessage}
                 isLoading={isCurrentConversationLoading}
+                selectedModel={selectedModel}
+                selectedChatMode={selectedChatMode}
+                onModelChange={setSelectedModel}
+                onChatModeChange={setSelectedChatMode}
               />
             ) : (
               <>
@@ -1546,6 +1570,10 @@ const ChatInterface = () => {
                   isLoading={isCurrentConversationLoading}
                   disabled={isCurrentConversationLoading || isNavigationBlocked}
                   placeholder="Type your message..."
+                  selectedModel={selectedModel}
+                  selectedChatMode={selectedChatMode}
+                  onModelChange={setSelectedModel}
+                  onChatModeChange={setSelectedChatMode}
                 />
               </>
             )}

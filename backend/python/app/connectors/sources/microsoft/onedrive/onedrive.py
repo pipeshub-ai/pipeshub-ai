@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from logging import Logger
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from aiolimiter import AsyncLimiter
 from azure.identity.aio import ClientSecretCredential
@@ -20,12 +20,11 @@ from msgraph.generated.models.base_delta_function_response import (
 )
 from msgraph.generated.models.drive_item import DriveItem
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
-from msgraph.generated.models.permission import Permission
 from msgraph.generated.models.subscription import Subscription
 from msgraph.generated.users.users_request_builder import UsersRequestBuilder
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import Connectors, OriginTypes, RecordTypes
+from app.config.constants.arangodb import Connectors, OriginTypes
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.providers.in_memory_store import InMemoryKeyValueStore
 from app.connectors.sources.microsoft.onedrive.arango_service import ArangoService
@@ -33,16 +32,34 @@ from app.connectors.sources.microsoft.onedrive.data_source_entities_processor im
     App,
     DataSourceEntitiesProcessor,
 )
-from app.models.records import FileRecord, Record
+from app.models.entities import FileRecord, RecordStatus, RecordType
+from app.models.permission import EntityType, Permission, PermissionType
 from app.models.users import User, UserGroup
 from app.services.kafka_consumer import KafkaConsumerManager
 from app.utils.logger import create_logger
 
 
 class OneDriveApp(App):
-    def get_app_name(self) -> str:
-        return Connectors.ONEDRIVE.value
+    def __init__(self) -> None:
+        super().__init__(Connectors.ONEDRIVE.value)
 
+# class MicrosoftAppGroup(AppGroup):
+#     def __init__(self):
+#         super().__init__(Connectors.ONEDRIVE.value)
+
+# Map Microsoft Graph roles to permission type
+def map_msgraph_role_to_permission_type(role: str) -> PermissionType:
+    """Map Microsoft Graph permission roles to application permission types"""
+    role_lower = role.lower()
+    if role_lower in ["owner", "fullcontrol"]:
+        return PermissionType.OWNER
+    elif role_lower in ["write", "editor", "contributor", "writeaccess"]:
+        return PermissionType.WRITE
+    elif role_lower in ["read", "reader", "readaccess"]:
+        return PermissionType.READ
+    else:
+        # Default to read for unknown roles
+        return PermissionType.READ
 
 @dataclass
 class DeltaGetResponse(BaseDeltaFunctionResponse, Parsable):
@@ -238,7 +255,7 @@ class OneDriveClient:
                     response['delta_link'] = result.odata_delta_link
 
                 self.logger.info(f"Retrieved delta response for URL: {url}")
-                print(response, "response.......")
+                # print(response, "response.......")
                 return response
 
         except Exception as ex:
@@ -384,7 +401,7 @@ class OneDriveClient:
                 async with self.rate_limiter:
                     result = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(item_id).permissions.get_next_page(result.odata_next_link)
                 permissions.extend(result.value)
-            print(permissions, "permissions...")
+            # print(permissions, "permissions...")
             self.logger.info(f"Retrieved {len(permissions)} permissions for file ID {item_id}.")
             return permissions
         except ODataError as e:
@@ -812,7 +829,7 @@ class OneDriveConnector:
         self.onedrive_client = OneDriveClient(self.client, self.logger)
         self.onedrive_admin_client = OneDriveAdminClient(self.client, self.logger)
 
-    async def _process_delta_items(self, delta_items: List[dict]) -> None:
+    async def _process_delta_items(self, delta_items: List[dict]) -> List[Tuple[FileRecord, List[Permission]]]:
         """
         Process the delta items received from Microsoft Graph API.
 
@@ -821,7 +838,7 @@ class OneDriveConnector:
         """
         try:
             self.logger.info(f"Processing {len(delta_items)} delta items")
-
+            file_records = []
             for item in delta_items:
                 # Check if the item has been deleted
                 if hasattr(item, 'deleted') and item.deleted is not None:
@@ -831,38 +848,58 @@ class OneDriveConnector:
 
                 # Process existing or new item
                 # Handle file
-                self.logger.info(f"Processing item: {item.name}")
-                FileRecord(
-                    external_record_id=item.id,
-                    external_revision_id=item.etag,
-                    is_file=item.get("folder") is None,
-                    extension=item.name.split(".")[-1],
-                    mime_type=item.get("file") is not None and item.get("file").get("mimeType") or None,
-                    size_in_bytes=item.size,
-                    web_url=item.web_url,
-                    created_at_timestamp=item.created_date_time.timestamp(),
-                    updated_at_timestamp=item.last_modified_date_time.timestamp(),
-                )
-                Record(
-                    external_record_id=item.id,
-                    external_revision_id=item.etag,
+                self.logger.info(f"Processing item: {item}")
+
+                # Create FileRecord with all metadata (inherits from Record)
+                file_record = FileRecord(
                     record_name=item.name,
-                    web_url=item.web_url,
-                    mime_type=item.get("file") is not None and item.get("file").get("mimeType") or None,
-                    created_at_timestamp=item.created_date_time.timestamp(),
-                    updated_at_timestamp=item.last_modified_date_time.timestamp(),
-                    connector_name=Connectors.ONEDRIVE.value,
-                    record_type=RecordTypes.FILE.value,
+                    record_type=RecordType.FILE,
+                    record_status=RecordStatus.NOT_STARTED,
+                    record_group_type="DRIVE",
+                    parent_record_type="FILE",
+                    external_record_id=item.id,
+                    external_revision_id=item.e_tag,
+                    version=0,
                     origin=OriginTypes.CONNECTOR.value,
-                    is_latest_version=True,
-                    is_deleted=False,
-                    is_archived=False,
-                    is_dirty=False,
+                    connector_name=Connectors.ONEDRIVE.value,
+                    created_at=int(item.created_date_time.timestamp() * 1000),
+                    updated_at=int(item.last_modified_date_time.timestamp() * 1000),
+                    source_created_at=int(item.created_date_time.timestamp() * 1000),
+                    source_updated_at=int(item.last_modified_date_time.timestamp() * 1000),
+                    weburl=item.web_url,
+                    mime_type=item.file is not None and item.file.mime_type or None,
+                    md5_hash=None,
+                    parent_external_record_id=item.parent_reference.id,
+                    external_record_group_id=item.parent_reference.drive_id,
+                    # File-specific fields
+                    size_in_bytes=item.size,
+                    is_file=item.folder is None,
+                    extension=item.name.split(".")[-1] if "." in item.name else None,
+                    path=item.parent_reference.path,
+                    etag=item.e_tag,
+                    ctag=item.c_tag,
+                    quick_xor_hash=item.file is not None and item.file.hashes.quick_xor_hash or None,
+                    crc32_hash=item.file is not None and item.file.hashes.crc32_hash or None,
+                    sha1_hash=item.file is not None and item.file.hashes.sha1_hash or None,
+                    sha256_hash=item.file is not None and item.file.hashes.sha256_hash or None,
                 )
+
                 permission_result = await self.onedrive_client.get_file_permission(item.parent_reference.drive_id, item.id)
-                print(permission_result, "permissions")
-                print(item, "item")
+
+
+                permissions = [Permission(
+                    external_id=permission.granted_to.user.id,
+                    email=permission.granted_to.user.additional_data.get("email", None),
+                    type=map_msgraph_role_to_permission_type(permission.roles[0]),
+                    entity_type=EntityType.USER
+                ) for permission in permission_result]
+
+                # print(permission_result, "permissions")
+                # print(item, "item")
+                file_records.append((file_record, permissions))
                 #self.drive_item_service.upsert(item, permissions=permission_result)
+
+            return file_records
 
         except Exception as ex:
             self.logger.error(f"Error processing delta items: {ex}")
@@ -893,7 +930,8 @@ class OneDriveConnector:
                     break
 
                 # Process items from this page
-                await self._process_delta_items(drive_items)
+                file_records_with_permissions = await self._process_delta_items(drive_items)
+                await self.data_entities_processor.on_new_records(file_records_with_permissions)
 
                 # Update sync state with next_link
                 next_link = result.get('next_link')
@@ -955,22 +993,24 @@ class OneDriveConnector:
         await self.onedrive_client.get_all_user_groups()
         print("Getting all drives")
         for user in users:
-            await self._run_sync("24cd1f96-b8ee-4db7-91f5-ac3ac338519d")
+            await self._run_sync(user.source_user_id)
+
         # print("Getting all subscriptions")
         # await self.onedrive_client.get_all_subscriptions()
         # print("Getting all drives")
 
-
-
-
-if __name__ == "__main__":
+async def test_run() -> None:
     logger = create_logger("onedrive_connector")
     key_value_store = InMemoryKeyValueStore(logger, "app/config/default_config.json")
     config_service = ConfigurationService(logger, key_value_store)
     kafka_service = KafkaConsumerManager(logger, config_service, None, None)
-
     arango_service = ArangoService(logger, config_service, kafka_service)
-
     data_entities_processor = DataSourceEntitiesProcessor(logger, OneDriveApp(), arango_service)
-    print(config_service.get_config("test"))
-    asyncio.run(OneDriveConnector(logger, data_entities_processor).run())
+
+    await arango_service.connect()
+    onedrive_connector = OneDriveConnector(logger, data_entities_processor)
+    await onedrive_connector.run()
+
+if __name__ == "__main__":
+    asyncio.run(test_run())
+

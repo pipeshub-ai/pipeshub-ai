@@ -20,7 +20,7 @@ import { Box, Button, styled, useTheme, Typography, IconButton } from '@mui/mate
 import axiosInstance from 'src/utils/axios';
 
 import RecordSidebar from './ask-me-anything-sidebar';
-import ChatInput from '../qna/chatbot/components/chat-input';
+import ChatInput, { Model, ChatMode } from '../qna/chatbot/components/chat-input';
 import PdfHighlighterComp from '../qna/chatbot/components/pdf-highlighter';
 
 import type {
@@ -172,7 +172,8 @@ const RecordSalesAgent = ({ initialContext, recordId }: RecordSalesAgentProps) =
   const [isDrawerOpen, setDrawerOpen] = useState<boolean>(true);
   const [shouldRefreshSidebar, setShouldRefreshSidebar] = useState<boolean>(false);
   const [isLoadingConversation, setIsLoadingConversation] = useState<boolean>(false);
-
+  const [selectedModel, setSelectedModel] = useState<Model | null>(null);
+  const [selectedChatMode, setSelectedChatMode] = useState<ChatMode | null>(null);
   const [selectedRecord, setSelectedRecord] = useState<Record | null>(
     initialContext?.recordId
       ? {
@@ -659,6 +660,10 @@ const RecordSalesAgent = ({ initialContext, recordId }: RecordSalesAgentProps) =
                     ? 'Continue the conversation...'
                     : 'Start a new conversation...'
               }
+              selectedModel={selectedModel}
+              selectedChatMode={selectedChatMode}
+              onModelChange={setSelectedModel}
+              onChatModeChange={setSelectedChatMode}
             />
           </Box>
         </Box>

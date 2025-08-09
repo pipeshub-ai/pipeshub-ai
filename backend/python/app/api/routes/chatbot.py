@@ -4,10 +4,12 @@ from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from jinja2 import Template
+from langchain.chat_models.base import BaseChatModel
 from pydantic import BaseModel
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import (
+from app.config.constants.service import config_node_constants
+from app.config.utils.named_constants.arangodb_constants import (
     AccountType,
     CollectionNames,
 )
@@ -16,6 +18,7 @@ from app.modules.qna.prompt_templates import qna_prompt
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_arango import ArangoService
 from app.modules.retrieval.retrieval_service import RetrievalService
+from app.utils.aimodels import get_generator_model
 from app.utils.citations import process_citations
 from app.utils.query_decompose import QueryDecompositionExpansionService
 from app.utils.query_transform import (
@@ -34,6 +37,10 @@ class ChatQuery(BaseModel):
     filters: Optional[Dict[str, Any]] = None
     retrievalMode: Optional[str] = "HYBRID"
     quickMode: Optional[bool] = False
+    # New fields for multi-model support
+    modelKey: Optional[str] = None  # e.g., "uuid-of-the-model"
+    modelName: Optional[str] = None  # e.g., "gpt-4o-mini", "claude-3-5-sonnet", "llama3.2"
+    chatMode: Optional[str] = "standard"  # "quick", "analysis", "deep_research", "creative", "precise"
 
 
 async def get_retrieval_service(request: Request) -> RetrievalService:
@@ -60,6 +67,84 @@ async def get_reranker_service(request: Request) -> RerankerService:
     return reranker_service
 
 
+def get_model_config_for_mode(chat_mode: str) -> Dict[str, Any]:
+    """Get model configuration based on chat mode and user selection"""
+    mode_configs = {
+        "quick": {
+            "temperature": 0.1,
+            "max_tokens": 1000,
+            "system_prompt": "You are a concise assistant. Provide brief, accurate answers."
+        },
+        "analysis": {
+            "temperature": 0.3,
+            "max_tokens": 2000,
+            "system_prompt": "You are an analytical assistant. Provide detailed analysis with insights and patterns."
+        },
+        "deep_research": {
+            "temperature": 0.2,
+            "max_tokens": 4000,
+            "system_prompt": "You are a research assistant. Provide comprehensive, well-sourced answers with detailed explanations."
+        },
+        "creative": {
+            "temperature": 0.7,
+            "max_tokens": 3000,
+            "system_prompt": "You are a creative assistant. Provide innovative and imaginative responses while staying relevant."
+        },
+        "precise": {
+            "temperature": 0.05,
+            "max_tokens": 1500,
+            "system_prompt": "You are a precise assistant. Provide accurate, factual answers with high attention to detail."
+        },
+        "standard": {
+            "temperature": 0.2,
+            "max_tokens": 2000,
+            "system_prompt": "You are an enterprise questions answering expert"
+        }
+    }
+
+    return mode_configs.get(chat_mode, mode_configs["standard"])
+
+
+async def get_llm_for_chat(config_service: ConfigurationService, model_key: str = None, model_name: str = None, chat_mode: str = "standard") -> BaseChatModel:
+    """Get LLM instance based on user selection or fallback to default"""
+    try:
+        ai_models = await config_service.get_config(
+                config_node_constants.AI_MODELS.value
+            )
+        llm_configs = ai_models["llm"]
+
+        if not llm_configs:
+            raise ValueError("No LLM configurations found")
+
+        # If user specified a model, try to find it
+        if model_key and model_name:
+            for config in llm_configs:
+                model_string = config.get("configuration", {}).get("model")
+                model_names = [name.strip() for name in model_string.split(",") if name.strip()]
+                if (config.get("modelKey") == model_key and model_name in model_names):
+                    model_provider = config.get("provider")
+                    return get_generator_model(model_provider, config, model_name)
+
+        # If user specified only provider, find first matching model
+        if model_key:
+            for config in llm_configs:
+                model_string = config.get("configuration", {}).get("model")
+                model_names = [name.strip() for name in model_string.split(",") if name.strip()]
+                if config.get("modelKey") == model_key:
+                    model_provider = config.get("provider")
+                    default_model_name = model_names[0]
+                    return get_generator_model(model_provider, config, default_model_name)
+
+        # Fallback to first available model
+        config = llm_configs[0]
+        model_provider = config.get("provider")
+        model_string = config.get("configuration", {}).get("model")
+        model_names = [name.strip() for name in model_string.split(",") if name.strip()]
+        default_model_name = model_names[0]
+        return get_generator_model(model_provider, config, default_model_name)
+
+    except Exception as e:
+            raise ValueError(f"Failed to initialize LLM: {str(e)}")
 
 
 @router.post("/chat/stream")
@@ -69,24 +154,28 @@ async def askAIStream(
     retrieval_service: RetrievalService = Depends(get_retrieval_service),
     arango_service: ArangoService = Depends(get_arango_service),
     reranker_service: RerankerService = Depends(get_reranker_service),
+    config_service: ConfigurationService = Depends(get_config_service),
 ) -> StreamingResponse:
     """Perform semantic search across documents with streaming events"""
     query_info = ChatQuery(**(await request.json()))
-
     async def generate_stream() -> AsyncGenerator[str, None]:
         try:
             container = request.app.container
             logger = container.logger()
-
             # Send initial event
             yield create_sse_event("status", {"status": "started", "message": "Starting AI processing..."})
 
-            llm = retrieval_service.llm
+            # Get LLM based on user selection or fallback to default
+            llm = await get_llm_for_chat(
+                config_service,
+                query_info.modelKey,
+                query_info.modelName,
+                query_info.chatMode
+            )
+
             if llm is None:
-                llm = await retrieval_service.get_llm_instance()
-                if llm is None:
-                    yield create_sse_event("error", {"error": "Failed to initialize LLM service"})
-                    return
+                yield create_sse_event("error", {"error": "Failed to initialize LLM service"})
+                return
 
             # Send LLM initialized event
             yield create_sse_event("status", {"status": "llm_ready", "message": "LLM service initialized"})
@@ -108,12 +197,13 @@ async def askAIStream(
 
                 yield create_sse_event("query_transformed", {"original_query": query_info.query, "transformed_query": followup_query})
 
-            # Query decomposition
+            # Query decomposition based on mode
             yield create_sse_event("status", {"status": "decomposing", "message": "Decomposing query..."})
 
             decomposed_queries = []
 
-            if not query_info.quickMode:
+            # Skip decomposition for quick mode or if explicitly disabled
+            if not query_info.quickMode and query_info.chatMode != "quick":
                 decomposition_service = QueryDecompositionExpansionService(llm, logger=logger)
                 decomposition_result = await decomposition_service.transform_query(query_info.query)
                 decomposed_queries = decomposition_result["queries"]
@@ -175,8 +265,8 @@ async def askAIStream(
 
             yield create_sse_event("results_ready", {"total_results": len(flattened_results)})
 
-            # Re-rank results
-            if len(flattened_results) > 1 and not query_info.quickMode:
+            # Re-rank results based on mode
+            if len(flattened_results) > 1 and not query_info.quickMode and query_info.chatMode != "quick":
                 yield create_sse_event("status", {"status": "reranking", "message": "Reranking results for better relevance..."})
                 final_results = await reranker_service.rerank(
                     query=query_info.query,
@@ -214,7 +304,10 @@ async def askAIStream(
             else:
                 user_data = ""
 
-            # Prepare prompt
+            # Get mode-specific configuration
+            mode_config = get_model_config_for_mode(query_info.chatMode)
+
+            # Prepare prompt with mode-specific system message
             template = Template(qna_prompt)
             rendered_form = template.render(
                 user_data=user_data,
@@ -224,7 +317,7 @@ async def askAIStream(
             )
 
             messages = [
-                {"role": "system", "content": "You are a enterprise questions answering expert"}
+                {"role": "system", "content": mode_config["system_prompt"]}
             ]
 
             # Add conversation history
@@ -268,20 +361,27 @@ async def askAI(
     retrieval_service: RetrievalService = Depends(get_retrieval_service),
     arango_service: ArangoService = Depends(get_arango_service),
     reranker_service: RerankerService = Depends(get_reranker_service),
+    config_service: ConfigurationService = Depends(get_config_service),
 ) -> JSONResponse:
     """Perform semantic search across documents"""
     try:
         container = request.app.container
 
         logger = container.logger()
-        llm = retrieval_service.llm
+
+        # Get LLM based on user selection or fallback to default
+        llm = await get_llm_for_chat(
+            config_service,
+            query_info.modelKey,
+            query_info.modelName,
+            query_info.chatMode
+        )
+
         if llm is None:
-            llm = await retrieval_service.get_llm_instance()
-            if llm is None:
-                raise HTTPException(
-                    status_code=500,
-                    detail="Failed to initialize LLM service. LLM configuration is missing.",
-                )
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to initialize LLM service. LLM configuration is missing.",
+            )
 
         if len(query_info.previousConversations) > 0:
             followup_query_transformation = setup_followup_query_transformation(llm)
@@ -302,7 +402,7 @@ async def askAI(
         logger.debug(f"query_info.query {query_info.query}")
 
         decomposed_queries = []
-        if not query_info.quickMode:
+        if not query_info.quickMode and query_info.chatMode != "quick":
             decomposition_service = QueryDecompositionExpansionService(llm, logger=logger)
             decomposition_result = await decomposition_service.transform_query(
                 query_info.query
@@ -354,7 +454,7 @@ async def askAI(
                 flattened_results.append(result)
 
         # Re-rank the combined results with the original query for better relevance
-        if len(flattened_results) > 1 and not query_info.quickMode:
+        if len(flattened_results) > 1 and not query_info.quickMode and query_info.chatMode != "quick":
             final_results = await reranker_service.rerank(
                 query=query_info.query,  # Use original query for final ranking
                 documents=flattened_results,
@@ -400,10 +500,13 @@ async def askAI(
             chunks=final_results,
         )
 
+        # Get mode-specific configuration
+        mode_config = get_model_config_for_mode(query_info.chatMode)
+
         messages = [
             {
                 "role": "system",
-                "content": "You are a enterprise questions answering expert",
+                "content": mode_config["system_prompt"],
             }
         ]
 

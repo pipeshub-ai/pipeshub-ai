@@ -494,8 +494,9 @@ const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>((props, ref) =>
 
       const isLegacyModelType = ['llm', 'embedding'].includes(finalConfigType);
       if (isLegacyModelType && originalApiConfigRef.current) {
-        const originalProvider = originalApiConfigRef.current.modelType;
-        if (resetToProvider) {
+        // For legacy model types, reset to the original configuration
+        const originalProvider = originalApiConfigRef.current.providerType || originalApiConfigRef.current.modelType;
+        if (resetToProvider && originalProvider) {
           resetToProvider(originalProvider, originalApiConfigRef.current);
         }
       } else if (!stepperMode) {

@@ -42,6 +42,13 @@ import {
   getMetricsCollection,
   setMetricsCollectionPushInterval,
   setMetricsCollectionRemoteServer,
+  getAvailableModelsByType,
+  addAIModelProvider,
+  updateAIModelProvider,
+  deleteAIModelProvider,
+  updateDefaultAIModel,
+  getAIModelsProviders,
+  getModelsByType,
 } from '../controller/cm_controller';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
@@ -63,6 +70,11 @@ import {
   metricsCollectionPushIntervalSchema,
   metricsCollectionToggleSchema,
   metricsCollectionRemoteServerSchema,
+  modelTypeSchema,
+  updateDefaultModelSchema,
+  deleteProviderSchema,
+  addProviderRequestSchema,
+  updateProviderRequestSchema,
 } from '../validator/validators';
 import { FileProcessorFactory } from '../../../libs/middlewares/file_processor/fp.factory';
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
@@ -627,6 +639,112 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
     metricsMiddleware(container),
     getAIModelsConfig(keyValueStoreService),
+  );
+
+  /**
+   * @route GET /api/v1/conversations/ai-models
+   * @desc Get all AI models providers (direct Node.js implementation)
+   * @access Private 
+   */
+  router.get(
+    '/ai-models',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    getAIModelsProviders(keyValueStoreService),
+  );
+
+  /**
+   * @route GET /api/v1/conversations/ai-models/:modelType
+   * @desc Get all available AI models of a specific type
+   * @access Private
+   * @param {string} modelType - Type of model (llm, embedding, ocr, slm, reasoning, multiModal)
+   */
+
+    router.get(
+      '/ai-models/:modelType',
+      authMiddleware.authenticate,
+      userAdminCheck,
+      metricsMiddleware(container),
+      ValidationMiddleware.validate(modelTypeSchema),
+      getModelsByType(keyValueStoreService),
+    );
+    
+  /**
+   * @route GET /api/v1/conversations/ai-models/available/:modelType
+   * @desc Get available models of a specific type in flattened format
+   * @access Private
+   * @param {string} modelType - Type of model (llm, embedding, ocr, slm, reasoning, multiModal)
+   */
+  router.get(
+    '/ai-models/available/:modelType',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(modelTypeSchema),
+    getAvailableModelsByType(keyValueStoreService),
+  );
+
+  /**
+   * @route POST /api/v1/conversations/ai-models/providers
+   * @desc Add a new AI model provider (direct Node.js implementation)
+   * @access Private
+   */
+  router.post(
+    '/ai-models/providers',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(addProviderRequestSchema),
+    addAIModelProvider(keyValueStoreService, appConfig),
+  );
+
+  /**
+   * @route PUT /api/v1/conversations/ai-models/providers/:modelType/:modelKey
+   * @desc Update an AI model provider (direct Node.js implementation)
+   * @access Private
+   * @param {string} modelType - Type of model (llm, embedding, ocr, slm, reasoning, multiModal)
+   * @param {string} modelKey - Unique key for the model configuration
+   */
+  router.put(
+    '/ai-models/providers/:modelType/:modelKey',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(updateProviderRequestSchema),
+    updateAIModelProvider(keyValueStoreService, appConfig),
+  );
+
+  /**
+   * @route DELETE /api/v1/conversations/ai-models/providers/:modelType/:modelKey
+   * @desc Delete an AI model provider (direct Node.js implementation)
+   * @access Private
+   * @param {string} modelType - Type of model (llm, embedding, ocr, slm, reasoning, multiModal)
+   * @param {string} modelKey - Unique key for the model configuration
+   */
+  router.delete(
+    '/ai-models/providers/:modelType/:modelKey',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(deleteProviderSchema),
+    deleteAIModelProvider(keyValueStoreService),
+  );
+
+  /**
+   * @route PUT /api/v1/conversations/ai-models/default/:modelType/:modelKey
+   * @desc Update the default AI model (direct Node.js implementation)
+   * @access Private
+   * @param {string} modelType - Type of model (llm, embedding, ocr, slm, reasoning, multiModal)
+   * @param {string} modelKey - Unique key for the model configuration
+   */
+  router.put(
+    '/ai-models/default/:modelType/:modelKey',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(updateDefaultModelSchema),
+    updateDefaultAIModel(keyValueStoreService),
   );
 
   router.get(

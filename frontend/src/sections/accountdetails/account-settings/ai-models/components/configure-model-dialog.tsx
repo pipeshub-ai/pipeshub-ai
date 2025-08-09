@@ -1,513 +1,540 @@
-import { createPortal } from 'react-dom';
-import { useRef, useState, useCallback, useEffect } from 'react';
-import settingsIcon from '@iconify-icons/eva/settings-2-outline';
-import closeIcon from '@iconify-icons/eva/close-outline';
-import expandMoreIcon from '@iconify-icons/material-symbols/expand-more';
+// ===================================================================
+// 📁 Fixed Model Configuration Dialog - ESLint Issues Resolved
+// ===================================================================
 
+import React, { useState, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import {
-  Box,
-  alpha,
-  Alert,
   Dialog,
-  Button,
-  useTheme,
-  IconButton,
   DialogTitle,
   DialogContent,
   DialogActions,
+  Button,
+  Box,
   Accordion,
   AccordionSummary,
   AccordionDetails,
   Typography,
+  IconButton,
+  Alert,
+  Divider,
+  Chip,
+  useTheme,
+  alpha,
+  CircularProgress,
+  Snackbar,
 } from '@mui/material';
-
 import { Iconify } from 'src/components/iconify';
+import robotIcon from '@iconify-icons/mdi/robot';
+import closeIcon from '@iconify-icons/mdi/close';
+import DynamicForm, { DynamicFormRef } from 'src/components/dynamic-form/components/dynamic-form';
+import { ModelProvider, ConfiguredModel, ModelType } from '../types';
+import { modelService } from '../services/universal-config';
 
-import { createScrollableContainerStyle } from 'src/sections/qna/chatbot/utils/styles/scrollbar';
-import LlmConfigForm, { LlmConfigFormRef } from './llm-config-form';
-import EmbeddingConfigForm, { EmbeddingConfigFormRef } from './embedding-config-form';
-import { MODEL_TYPE_NAMES, MODEL_TYPE_ICONS } from '../types';
-import { updateBothModelConfigs } from '../services/universal-config';
 
-interface SaveResult {
-  success: boolean;
-  warning?: string;
-  error?: string;
-}
-
-interface ConfigureModelDialogProps {
+interface ModelConfigurationDialogProps {
   open: boolean;
   onClose: () => void;
-  onSave: (result?: SaveResult) => void;
-  modelType: string | null;
+  selectedProvider: ModelProvider & {
+    editingModel?: ConfiguredModel;
+    targetModelType?: ModelType;
+  };
+  onSuccess: () => void;
 }
 
-const ConfigureModelDialog = ({ open, onClose, onSave, modelType }: ConfigureModelDialogProps) => {
+const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
+  open,
+  onClose,
+  selectedProvider,
+  onSuccess,
+}) => {
   const theme = useTheme();
-  const [isLlmValid, setIsLlmValid] = useState(false);
-  const [isEmbeddingValid, setIsEmbeddingValid] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
-  const [dialogError, setDialogError] = useState<string | null>(null);
-  const scrollableStyles = createScrollableContainerStyle(theme);
-  const [healthCheckInfo, setHealthCheckInfo] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [formValidations, setFormValidations] = useState<{ [key: string]: boolean }>({});
+  const [expandedAccordion, setExpandedAccordion] = useState<string>('');
+  const [showHealthCheckInfo, setShowHealthCheckInfo] = useState(false);
 
-  const [expandedAccordion, setExpandedAccordion] = useState<string | false>(false);
-  const llmConfigFormRef = useRef<LlmConfigFormRef>(null);
-  const embeddingConfigFormRef = useRef<EmbeddingConfigFormRef>(null);
+  const formRefs = useRef<{ [key: string]: DynamicFormRef | null }>({});
+  const isEditMode = !!selectedProvider?.editingModel;
 
+  // Reset state when dialog opens/closes and handle auto-expand
   useEffect(() => {
-    if (open) {
-      setExpandedAccordion(modelType || 'llm');
-      setDialogError(null);
-      setIsSaving(false);
-      setIsLlmValid(false);
-      setIsEmbeddingValid(false);
-      setHealthCheckInfo(null);
+    if (open && selectedProvider) {
+      setError(null);
+      setIsSubmitting(false);
+      setFormValidations({});
+
+      // Auto-expand logic
+      if (isEditMode) {
+        // In edit mode, don't use accordions - show the single form directly
+        setExpandedAccordion('');
+      } else if (selectedProvider.targetModelType) {
+        // Auto-expand the target model type accordion
+        setExpandedAccordion(selectedProvider.targetModelType);
+      } else if (selectedProvider.supportedTypes.length === 1) {
+        // Auto-expand if only one model type is supported
+        setExpandedAccordion(selectedProvider.supportedTypes[0]);
+      } else {
+        // Default to first supported type
+        setExpandedAccordion(selectedProvider.supportedTypes[0] || '');
+      }
+    } else {
+      setExpandedAccordion('');
     }
-  }, [open, modelType]);
+  }, [open, selectedProvider, isEditMode]);
 
-  const getModelColor = useCallback(
-    (type: string) => {
-      const colors: Record<string, string> = {
-        llm: '#4CAF50', // Green
-        ocr: '#2196F3', // Blue
-        embedding: '#9C27B0', // Purple
-        slm: '#FF9800', // Orange
-        reasoning: '#E91E63', // Pink
-        multiModal: '#673AB7', // Deep Purple
-      };
-      return colors[type] || theme.palette.primary.main;
-    },
-    [theme.palette.primary.main]
-  );
+  if (!selectedProvider) return null;
 
-  const getModelIcon = useCallback((type: string) => MODEL_TYPE_ICONS[type] || settingsIcon, []);
+  const handleValidationChange = (modelType: string, isValid: boolean) => {
+    setFormValidations((prev) => ({
+      ...prev,
+      [modelType]: isValid,
+    }));
+  };
 
-  const getModelTitle = useCallback(
-    (type: string) => MODEL_TYPE_NAMES[type] || type.toUpperCase(),
-    []
-  );
-
-  const handleClose = useCallback(() => {
-    setExpandedAccordion(false);
-    setDialogError(null);
-    setIsSaving(false);
-    setIsLlmValid(false);
-    setIsEmbeddingValid(false);
-    onClose();
-  }, [onClose]);
-
-  const handleAccordionChange = useCallback(
+  const handleAccordionChange =
     (panel: string) => (event: React.SyntheticEvent, isExpanded: boolean) => {
-      setExpandedAccordion(isExpanded ? panel : false);
-    },
-    []
-  );
+      setExpandedAccordion(isExpanded ? panel : '');
+    };
 
-  const handleLlmAccordionChange = handleAccordionChange('llm');
-  const handleEmbeddingAccordionChange = handleAccordionChange('embedding');
-
-  const handleLlmValidationChange = useCallback((valid: boolean) => {
-    setIsLlmValid(valid);
-  }, []);
-
-  const handleEmbeddingValidationChange = useCallback((valid: boolean) => {
-    setIsEmbeddingValid(valid);
-  }, []);
-
-  const isValid = isLlmValid || isEmbeddingValid;
-
-  const handleSaveClick = useCallback(async () => {
-    setIsSaving(true);
-    setDialogError(null);
+  const handleSubmit = async () => {
+    setIsSubmitting(true);
+    setError(null);
+    setShowHealthCheckInfo(true); // Show health check info immediately
 
     try {
-      let llmFormData = null;
-      let embeddingFormData = null;
-      const errors: string[] = [];
+      if (isEditMode) {
+        // Edit mode - the DynamicForm will handle the update via updateConfig
+        const modelType = selectedProvider.editingModel!.modelType;
+        const formRef = formRefs.current[modelType];
 
-      // Get LLM form data if valid
-      if (isLlmValid && llmConfigFormRef.current?.getFormData) {
-        try {
-          llmFormData = await llmConfigFormRef.current.getFormData();
-        } catch (error) {
-          console.error('Error getting LLM form data:', error);
-          errors.push('Failed to get LLM configuration data');
+        if (formRef) {
+          const result = await formRef.handleSave();
+          if (result.success) {
+            setShowHealthCheckInfo(false); // Hide health check info on success
+            onSuccess();
+            onClose();
+          } else {
+            setShowHealthCheckInfo(false); // Hide health check info on error
+            setError(result.error || 'Failed to update model');
+          }
+        } else {
+          setShowHealthCheckInfo(false);
+          setError('Form reference not found');
         }
-      }
+      } else {
+        // Add mode - create new models for each valid form
+        const promises: Promise<any>[] = [];
+        const configuredTypes: string[] = [];
 
-      // Get Embedding form data if valid
-      if (isEmbeddingValid && embeddingConfigFormRef.current?.getFormData) {
-        try {
-          embeddingFormData = await embeddingConfigFormRef.current.getFormData();
-        } catch (error) {
-          console.error('Error getting Embedding form data:', error);
-          errors.push('Failed to get Embedding configuration data');
+        // Get the types to process - either the target type or all supported types
+        const typesToProcess = selectedProvider.targetModelType
+          ? [selectedProvider.targetModelType]
+          : selectedProvider.supportedTypes;
+
+        // FIXED: Replace for...of loop with Promise.all and map
+        // Collect all form data first (parallel async operations)
+        const formDataPromises = typesToProcess
+          .map((type) => {
+            const formRef = formRefs.current[type];
+            if (formRef && formValidations[type]) {
+              return formRef.getFormData().then((formData) => ({ type, formData }));
+            }
+            return null;
+          })
+          .filter(Boolean) as Promise<{ type: string; formData: any }>[];
+
+        const formDataResults = await Promise.all(formDataPromises);
+
+        // Process the form data
+        formDataResults.forEach(({ type, formData }) => {
+          // Clean up form data
+          const { providerType, modelType, _provider, ...cleanConfig } = formData;
+
+          promises.push(
+            modelService.addModel(type as ModelType, {
+              provider: selectedProvider.id,
+              configuration: cleanConfig,
+              name: formData.name || `${selectedProvider.name} ${type.toUpperCase()} Model`,
+            })
+          );
+          configuredTypes.push(type);
+        });
+
+        if (promises.length === 0) {
+          setShowHealthCheckInfo(false);
+          if (selectedProvider.targetModelType) {
+            setError(
+              `Please configure the ${selectedProvider.targetModelType.toUpperCase()} model`
+            );
+          } else {
+            setError('Please configure at least one model type');
+          }
+          return;
         }
+
+        await Promise.all(promises);
+        setShowHealthCheckInfo(false); // Hide health check info on success
+        onSuccess();
+        onClose();
       }
-
-      if (errors.length > 0) {
-        setDialogError(errors.join(', '));
-        setIsSaving(false);
-        return;
-      }
-
-      if (!llmFormData && !embeddingFormData) {
-        setDialogError('No valid configurations to save');
-        setIsSaving(false);
-        return;
-      }
-
-      // Determine success message based on what was saved
-      const savedConfigs = [];
-      if (llmFormData) savedConfigs.push('LLM');
-      if (embeddingFormData) savedConfigs.push('Embedding');
-      setHealthCheckInfo(
-        `Running health checks for ${savedConfigs.join(' and ')} model${savedConfigs.length > 1 ? 's' : ''}. This may take a few moments...`
-      );
-
-      // Single API call to update both configurations
-      await updateBothModelConfigs(llmFormData, embeddingFormData);
-
-      setHealthCheckInfo(null);
-      const successMessage = `${savedConfigs.join(' and ')} configuration${savedConfigs.length > 1 ? 's' : ''} updated successfully`;
-
-      onSave({
-        success: true,
-        warning: undefined,
-      });
-
-      // Close dialog after successful save
-      handleClose();
-    } catch (error: any) {
-      console.error('Error saving configurations:', error);
-      const errorMessage =
-        error?.response?.data?.message || error?.message || 'An unexpected error occurred';
-      setDialogError(`Failed to save configurations: ${errorMessage}`);
-      setHealthCheckInfo(null);
-      onSave({
-        success: false,
-        error: `Failed to save configurations ${errorMessage}`,
-      });
-
-      setIsSaving(false);
+    } catch (err: any) {
+      console.error('Submit error:', err);
+      setShowHealthCheckInfo(false); // Hide health check info on error
+      setError(err.message || 'Failed to save models');
+    } finally {
+      setIsSubmitting(false);
     }
-  }, [isLlmValid, isEmbeddingValid, onSave, handleClose]);
+  };
 
-  const llmColor = getModelColor('llm');
-  const embeddingColor = getModelColor('embedding');
-  const llmIcon = getModelIcon('llm');
-  const embeddingIcon = getModelIcon('embedding');
-  const llmTitle = getModelTitle('llm');
-  const embeddingTitle = getModelTitle('embedding');
+  // Calculate if we can submit
+  const canSubmit = isEditMode
+    ? formValidations[selectedProvider.editingModel!.modelType]
+    : selectedProvider.targetModelType
+      ? formValidations[selectedProvider.targetModelType] // Specific model type selected
+      : Object.values(formValidations).some((valid) => valid); // Any model type configured
+
+  // Helper function to create config handlers for DynamicForm
+  const createConfigHandlers = (modelType: string) => ({
+    getConfig: async () => {
+      if (isEditMode && selectedProvider.editingModel!.modelType === modelType) {
+        return {
+          ...selectedProvider.editingModel!.configuration,
+          providerType: selectedProvider.id,
+          modelType: selectedProvider.id,
+          _provider: selectedProvider.id,
+        };
+      }
+      return {
+        providerType: selectedProvider.id,
+        modelType: selectedProvider.id,
+        _provider: selectedProvider.id,
+      };
+    },
+    updateConfig: async (config: any) => {
+      if (isEditMode && selectedProvider.editingModel!.modelType === modelType) {
+        // Extract the clean configuration data
+        const { providerType, modelType: configModelType, _provider, ...cleanConfig } = config;
+
+        // Call the model service update method
+        const result = await modelService.updateModel(
+          selectedProvider.editingModel!.modelType as ModelType,
+          selectedProvider.editingModel!.modelKey || selectedProvider.editingModel!.id,
+          {
+            provider: selectedProvider.id,
+            configuration: cleanConfig,
+            isDefault: selectedProvider.editingModel!.isDefault,
+            isMultimodal: selectedProvider.editingModel!.isMultimodal,
+            name: config.name || selectedProvider.editingModel!.name,
+          }
+        );
+
+        return result;
+      }
+
+      // For non-edit mode, just return the config (not used in add mode)
+      return config;
+    },
+  });
+
+  // FIXED: Removed unnecessary else statements
+  const getDialogTitle = () => {
+    if (isEditMode) {
+      return `Edit ${selectedProvider.name}`;
+    }
+    if (selectedProvider.targetModelType) {
+      return `Add ${selectedProvider.name} ${selectedProvider.targetModelType.toUpperCase()} Model`;
+    }
+    return `Configure ${selectedProvider.name}`;
+  };
+
+  const getDialogSubtitle = () => {
+    if (isEditMode) {
+      return `Update ${selectedProvider.editingModel!.name} configuration`;
+    }
+    if (selectedProvider.targetModelType) {
+      return `Configure ${selectedProvider.targetModelType.toUpperCase()} model settings`;
+    }
+    return `Set up models for ${selectedProvider.supportedTypes.join(' & ').toUpperCase()}`;
+  };
 
   return (
     <>
       <Dialog
         open={open}
-        onClose={handleClose}
-        maxWidth="md"
+        onClose={onClose}
+        maxWidth="lg"
         fullWidth
+        PaperProps={{
+          sx: {
+            borderRadius: 1,
+            maxHeight: '90vh',
+            backgroundColor: theme.palette.background.paper,
+          },
+        }}
         BackdropProps={{
           sx: {
             backdropFilter: 'blur(1px)',
             backgroundColor: alpha(theme.palette.common.black, 0.3),
           },
         }}
-        PaperProps={{
-          sx: {
-            borderRadius: 1,
-            boxShadow: '0 10px 35px rgba(0, 0, 0, 0.1)',
-            // overflow: 'hidden',
-          },
-        }}
       >
         <DialogTitle
-          sx={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            p: 2.5,
-            pl: 3,
-            color: theme.palette.text.primary,
-            borderBottom: '1px solid',
-            borderColor: theme.palette.divider,
-            fontWeight: 500,
-            fontSize: '1rem',
-            m: 0,
-          }}
+          sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', pb: 1 }}
         >
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
             <Box
               sx={{
+                width: 40,
+                height: 40,
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                width: 32,
-                height: 32,
-                borderRadius: '6px',
-                bgcolor: alpha(theme.palette.primary.main, 0.1),
-                color: theme.palette.primary.main,
+                borderRadius: 1.5,
+                bgcolor: 'white',
               }}
             >
-              <Iconify icon={settingsIcon} width={18} height={18} />
+              {selectedProvider.src ? (
+                <img src={selectedProvider.src} alt={selectedProvider.name} width={22} height={22} />
+              ) : (
+                <Iconify icon={robotIcon} width={22} height={22} />
+              )}
             </Box>
-            Configure AI Model Integrations
+
+            <Box>
+              <Typography variant="h6" sx={{ fontWeight: 600 }}>
+                {getDialogTitle()}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                {getDialogSubtitle()}
+              </Typography>
+            </Box>
           </Box>
 
-          <IconButton
-            onClick={handleClose}
-            size="small"
-            sx={{ color: theme.palette.text.secondary }}
-            aria-label="close"
-          >
+          <IconButton onClick={onClose} size="small">
             <Iconify icon={closeIcon} width={20} height={20} />
           </IconButton>
         </DialogTitle>
 
-        <DialogContent
-          sx={{
-            p: 0,
-            '&.MuiDialogContent-root': {
-              pt: 3,
-              px: 3,
-              pb: 0,
-            },
-            ...scrollableStyles,
-          }}
-        >
-          {dialogError && (
-            <Alert
-              severity="error"
-              sx={{
-                mb: 3,
-                borderRadius: 1,
-              }}
-            >
-              {dialogError}
+        <Divider />
+
+        <DialogContent sx={{ px: 0, py: 0 }}>
+          {error && (
+            <Alert severity="error" sx={{ mx: 3, mt: 3 }}>
+              {error}
             </Alert>
           )}
 
-          <Box sx={{ mb: 3 }}>
-            {/* LLM Configuration Accordion */}
-            <Accordion
-              expanded={expandedAccordion === 'llm'}
-              onChange={handleLlmAccordionChange}
-              sx={{
-                mb: 2,
-                borderRadius: 1,
-                border: '1px solid',
-                borderColor: theme.palette.divider,
-                '&:before': {
-                  display: 'none',
-                },
-                '&.Mui-expanded': {
-                  boxShadow: theme.customShadows.z8,
-                },
-              }}
-            >
-              <AccordionSummary
-                expandIcon={<Iconify icon={expandMoreIcon} />}
-                sx={{
-                  px: 2.5,
-                  py: 1.5,
-                  minHeight: 64,
-                  '&.Mui-expanded': {
-                    minHeight: 64,
-                  },
-                  '& .MuiAccordionSummary-content': {
-                    margin: '12px 0',
-                    '&.Mui-expanded': {
-                      margin: '12px 0',
-                    },
-                  },
-                }}
-              >
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                  <Box
+          <Box sx={{ px: 3, py: 3 }}>
+            {isEditMode ? (
+              // Edit mode - single model type (no accordion needed)
+              <Box>
+                <Typography variant="h6" sx={{ mb: 2 }}>
+                  {selectedProvider.editingModel!.modelType.toUpperCase()} Configuration
+                </Typography>
+                <DynamicForm
+                  ref={(ref) => {
+                    formRefs.current[selectedProvider.editingModel!.modelType] = ref;
+                  }}
+                  configType={selectedProvider.editingModel!.modelType as 'llm' | 'embedding'}
+                  onValidationChange={(isValid) =>
+                    handleValidationChange(selectedProvider.editingModel!.modelType, isValid)
+                  }
+                  initialProvider={selectedProvider.id}
+                  {...createConfigHandlers(selectedProvider.editingModel!.modelType)}
+                />
+              </Box>
+            ) : selectedProvider.targetModelType ? (
+              // Specific model type selected - no accordion needed
+              <Box>
+                <Typography
+                  variant="h6"
+                  sx={{ mb: 2, display: 'flex', alignItems: 'center', gap: 1.5 }}
+                >
+                  <Iconify
+                    icon={
+                      selectedProvider.targetModelType === 'llm'
+                        ? 'carbon:machine-learning-model'
+                        : 'mdi:magnify'
+                    }
+                    width={20}
+                    height={20}
                     sx={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      width: 40,
-                      height: 40,
-                      borderRadius: '8px',
-                      bgcolor: alpha(llmColor, 0.1),
-                      color: llmColor,
+                      color: selectedProvider.targetModelType === 'llm' ? '#4CAF50' : '#9C27B0',
                     }}
-                  >
-                    <Iconify icon={llmIcon} width={20} height={20} />
-                  </Box>
-                  <Box>
-                    <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-                      {llmTitle}
-                    </Typography>
-                    <Typography variant="body2" color="text.secondary">
-                      Configure large language model settings
-                    </Typography>
-                  </Box>
-                </Box>
-              </AccordionSummary>
-              <AccordionDetails sx={{ p: 0, pt: 0 }}>
-                <Box sx={{ px: 2.5, pb: 2.5 }}>
-                  <LlmConfigForm
-                    onValidationChange={handleLlmValidationChange}
-                    ref={llmConfigFormRef}
                   />
-                </Box>
-              </AccordionDetails>
-            </Accordion>
+                  {selectedProvider.targetModelType.toUpperCase()} Configuration
+                </Typography>
+                <DynamicForm
+                  ref={(ref) => {
+                    formRefs.current[selectedProvider.targetModelType!] = ref;
+                  }}
+                  configType={selectedProvider.targetModelType as 'llm' | 'embedding'}
+                  onValidationChange={(isValid) =>
+                    handleValidationChange(selectedProvider.targetModelType!, isValid)
+                  }
+                  initialProvider={selectedProvider.id}
+                  stepperMode={Boolean(true)}
+                  isRequired={Boolean(true)}
+                  {...createConfigHandlers(selectedProvider.targetModelType!)}
+                />
+              </Box>
+            ) : (
+              // Multiple model types - show accordions
+              selectedProvider.supportedTypes.map((type) => {
+                const isExpanded = expandedAccordion === type;
+                const typeColor = type === 'llm' ? '#4CAF50' : '#9C27B0';
+                const typeIcon = type === 'llm' ? 'carbon:machine-learning-model' : 'mdi:magnify';
 
-            {/* Embedding Configuration Accordion */}
-            <Accordion
-              expanded={expandedAccordion === 'embedding'}
-              onChange={handleEmbeddingAccordionChange}
-              sx={{
-                borderRadius: 1,
-                border: '1px solid',
-                borderColor: theme.palette.divider,
-                '&:before': {
-                  display: 'none',
-                },
-                '&.Mui-expanded': {
-                  boxShadow: theme.customShadows.z8,
-                },
-              }}
-            >
-              <AccordionSummary
-                expandIcon={<Iconify icon={expandMoreIcon} />}
-                sx={{
-                  px: 2.5,
-                  py: 1.5,
-                  minHeight: 64,
-                  '&.Mui-expanded': {
-                    minHeight: 64,
-                  },
-                  '& .MuiAccordionSummary-content': {
-                    margin: '12px 0',
-                    '&.Mui-expanded': {
-                      margin: '12px 0',
-                    },
-                  },
-                }}
-              >
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                  <Box
+                return (
+                  <Accordion
+                    key={type}
+                    expanded={isExpanded}
+                    onChange={handleAccordionChange(type)}
                     sx={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      width: 40,
-                      height: 40,
-                      borderRadius: '8px',
-                      bgcolor: alpha(embeddingColor, 0.1),
-                      color: embeddingColor,
+                      mb: 2,
+                      border: '1px solid',
+                      borderColor: formValidations[type]
+                        ? alpha(theme.palette.success.main, 0.3)
+                        : theme.palette.divider,
+                      borderRadius: 1,
+                      '&:before': { display: 'none' },
+                      '&.Mui-expanded': {
+                        borderColor: alpha(typeColor, 0.3),
+                      },
                     }}
                   >
-                    <Iconify icon={embeddingIcon} width={20} height={20} />
-                  </Box>
-                  <Box>
-                    <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-                      {embeddingTitle}
-                    </Typography>
-                    <Typography variant="body2" color="text.secondary">
-                      Configure embedding model settings for search and retrieval
-                    </Typography>
-                  </Box>
-                </Box>
-              </AccordionSummary>
-              <AccordionDetails sx={{ p: 0, pt: 0 }}>
-                <Box sx={{ px: 2.5, pb: 2.5 }}>
-                  <EmbeddingConfigForm
-                    onValidationChange={handleEmbeddingValidationChange}
-                    ref={embeddingConfigFormRef}
-                  />
-                </Box>
-              </AccordionDetails>
-            </Accordion>
+                    <AccordionSummary
+                      expandIcon={<Iconify icon="eva:arrow-ios-downward-fill" />}
+                      sx={{
+                        px: 2.5,
+                        py: 1,
+                        minHeight: 56,
+                        bgcolor: formValidations[type]
+                          ? alpha(theme.palette.success.main, 0.04)
+                          : isExpanded
+                            ? alpha(typeColor, 0.04)
+                            : 'transparent',
+                      }}
+                    >
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, width: '100%' }}>
+                        <Box
+                          sx={{
+                            width: 32,
+                            height: 32,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            borderRadius: 1,
+                            bgcolor: alpha(typeColor, 0.1),
+                            color: typeColor,
+                          }}
+                        >
+                          <Iconify icon={typeIcon} width={16} height={16} />
+                        </Box>
+
+                        <Typography variant="subtitle1" sx={{ fontWeight: 600, flexGrow: 1 }}>
+                          {type.toUpperCase()} Configuration
+                        </Typography>
+
+                        {formValidations[type] && (
+                          <Chip
+                            label="Configured"
+                            size="small"
+                            color="success"
+                            variant="outlined"
+                          />
+                        )}
+                      </Box>
+                    </AccordionSummary>
+
+                    <AccordionDetails sx={{ px: 2.5, py: 2 }}>
+                      <DynamicForm
+                        ref={(ref) => {
+                          formRefs.current[type] = ref;
+                        }}
+                        configType={type as 'llm' | 'embedding'}
+                        onValidationChange={(isValid) => handleValidationChange(type, isValid)}
+                        initialProvider={selectedProvider.id}
+                        stepperMode={Boolean(true)}
+                        isRequired={Boolean(true)}
+                        {...createConfigHandlers(type)}
+                      />
+                    </AccordionDetails>
+                  </Accordion>
+                );
+              })
+            )}
           </Box>
         </DialogContent>
 
-        <DialogActions
-          sx={{
-            p: 2.5,
-            borderTop: '1px solid',
-            borderColor: theme.palette.divider,
-            bgcolor: alpha(theme.palette.background.default, 0.5),
-          }}
-        >
-          <Button
-            variant="text"
-            onClick={handleClose}
-            sx={{
-              color: theme.palette.text.secondary,
-              fontWeight: 500,
-              '&:hover': {
-                backgroundColor: alpha(theme.palette.divider, 0.8),
-              },
-            }}
-          >
+        <Divider />
+
+        <DialogActions sx={{ px: 3, py: 2 }}>
+          <Button onClick={onClose} color="inherit" disabled={isSubmitting}>
             Cancel
           </Button>
           <Button
             variant="contained"
-            onClick={handleSaveClick}
-            disabled={!isValid || isSaving}
+            onClick={handleSubmit}
+            disabled={!canSubmit || isSubmitting}
+            startIcon={isSubmitting ? <CircularProgress size={16} /> : undefined}
             sx={{
-              bgcolor: theme.palette.primary.main,
-              boxShadow: 'none',
-              fontWeight: 500,
+              bgcolor: 'white',
               '&:hover': {
-                bgcolor: theme.palette.primary.dark,
-                boxShadow: 'none',
+                bgcolor: 'white',
               },
-              px: 3,
             }}
           >
-            {isSaving ? 'Saving...' : 'Save Configurations'}
+            {isSubmitting
+              ? isEditMode
+                ? 'Updating...'
+                : selectedProvider.targetModelType
+                  ? 'Adding Model...'
+                  : 'Adding Models...'
+              : isEditMode
+                ? 'Update Model'
+                : selectedProvider.targetModelType
+                  ? 'Add Model'
+                  : 'Add Models'}
           </Button>
         </DialogActions>
       </Dialog>
 
-      {/* Health Check Snackbar - positioned above dialog */}
-     {healthCheckInfo &&
-        createPortal(
-          <Box
+      {/* Health Check Info Snackbar */}
+      {createPortal(
+        <Snackbar
+          open={showHealthCheckInfo}
+          anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
+          sx={{ mt: 8 }}
+        >
+          <Alert
+            severity="info"
             sx={{
-              position: 'fixed',
-              top: 72,
-              right: 24,
-              zIndex: theme.zIndex.snackbar, 
-              pointerEvents: 'none',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 1,
+              minWidth: 350,
+              boxShadow: theme.customShadows?.z8 || '0 4px 12px rgba(0,0,0,0.15)',
             }}
+            icon={<CircularProgress size={18} sx={{ color: 'info.main' }} />}
           >
-            <Alert
-              severity="info"
-              variant="filled"
-              sx={{
-                minWidth: 320,
-                boxShadow:
-                  theme.palette.mode === 'dark'
-                    ? '0px 8px 24px rgba(0, 0, 0, 0.5)'
-                    : '0px 8px 24px rgba(0, 0, 0, 0.2)',
-                '& .MuiAlert-icon': {
-                  animation: 'pulse 2s infinite',
-                },
-                fontSize: '0.8125rem',
-                '@keyframes pulse': {
-                  '0%': { opacity: 0.8 },
-                  '50%': { opacity: 1 },
-                  '100%': { opacity: 0.8 },
-                },
-              }}
-            >
-              {healthCheckInfo}
-            </Alert>
-          </Box>,
-          document.body // Render directly to body
-        )}
+            <Typography variant="body2">
+              {isEditMode
+                ? 'Updating model configuration and performing health check...'
+                : 'Adding model and performing health check...'}
+              <br />
+              <Typography variant="caption" color="text.secondary">
+                This may take a few seconds
+              </Typography>
+            </Typography>
+          </Alert>
+        </Snackbar>,
+        document.body
+      )}
     </>
   );
 };
 
-export default ConfigureModelDialog;
+export default ModelConfigurationDialog;
