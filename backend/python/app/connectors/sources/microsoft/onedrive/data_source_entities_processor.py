@@ -113,8 +113,6 @@ class DataSourceEntitiesProcessor:
 
             if parent_record and isinstance(parent_record, Record):
                 # Create a edge between the record and the parent record if it doesn't exist
-                print(parent_record, "parent_record")
-                print(record.id, "record.id")
                 parent_record_edge = {
                     "_from": f"{CollectionNames.RECORDS.value}/{parent_record.id}",
                     "_to": f"{CollectionNames.RECORDS.value}/{record.id}",
@@ -230,30 +228,30 @@ class DataSourceEntitiesProcessor:
 
                 if user:
                     to_collection = f"{CollectionNames.USERS.value}/{user.id}"
-            elif permission.entity_type == EntityType.GROUP.value:
-                if permission.external_id:
-                    user_group = await self.arango_service.get_user_group_by_external_id(permission.external_id)
-                else:
-                    user_group = await self.arango_service.get_user_group_by_email(permission.email)
+            # elif permission.entity_type == EntityType.GROUP.value:
+            #     if permission.external_id:
+            #         user_group = await self.arango_service.get_user_group_by_external_id(permission.external_id)
+            #     else:
+            #         user_group = await self.arango_service.get_user_group_by_email(permission.email)
 
-                if user_group:
-                    to_collection = f"{CollectionNames.USER_GROUPS.value}/{user_group.id}"
+            #     if user_group:
+            #         to_collection = f"{CollectionNames.USER_GROUPS.value}/{user_group.id}"
 
-            if permission.entity_type == EntityType.ORG.value:
-                org = await self.arango_service.get_org_by_external_id(permission.external_id)
-                if org:
-                    to_collection = f"{CollectionNames.ORGS.value}/{org.id}"
+            # if permission.entity_type == EntityType.ORG.value:
+            #     org = await self.arango_service.get_org_by_external_id(permission.external_id)
+            #     if org:
+            #         to_collection = f"{CollectionNames.ORGS.value}/{org.id}"
 
-            if permission.entity_type == EntityType.DOMAIN.value:
-                domain = await self.arango_service.get_domain_by_external_id(permission.external_id)
-                if domain:
-                    to_collection = f"{CollectionNames.DOMAINS.value}/{domain.id}"
+            # if permission.entity_type == EntityType.DOMAIN.value:
+            #     domain = await self.arango_service.get_domain_by_external_id(permission.external_id)
+            #     if domain:
+            #         to_collection = f"{CollectionNames.DOMAINS.value}/{domain.id}"
 
-            if permission.entity_type == EntityType.ANYONE.value:
-                to_collection = f"{CollectionNames.ANYONE.value}"
+            # if permission.entity_type == EntityType.ANYONE.value:
+            #     to_collection = f"{CollectionNames.ANYONE.value}"
 
-            if permission.entity_type == EntityType.ANYONE_WITH_LINK.value:
-                to_collection = f"{CollectionNames.ANYONE_WITH_LINK.value}"
+            # if permission.entity_type == EntityType.ANYONE_WITH_LINK.value:
+            #     to_collection = f"{CollectionNames.ANYONE_WITH_LINK.value}"
 
             if to_collection:
                 record_permissions.append(permission.to_arango_permission(from_collection, to_collection))
@@ -265,43 +263,50 @@ class DataSourceEntitiesProcessor:
             )
 
 
+    async def _process_record(self, record: Record, permissions: List[Permission], transaction: TransactionDatabase) -> None:
+        existing_record = await self.arango_service.get_record_by_external_id(connector_name=record.connector_name,
+                                                                                    external_id=record.external_record_id, transaction=transaction)
+
+        if existing_record is None:
+            await self._handle_new_record(record, transaction)
+        else:
+            record.id = existing_record.id
+            await self._handle_updated_record(record, existing_record, transaction)
+
+        # Create a edge between the record and the parent record if it doesn't exist and if parent_record_id is provided
+        await self._handle_parent_record(record, transaction)
+
+        # Create a edge between the record and the record group if it doesn't exist and if record_group_id is provided
+        await self._handle_record_group(record, transaction)
+
+        # Create a edge between the base record and the specific record if it doesn't exist - isOfType - File, Mail, Message
+
+        await self._handle_record_permissions(record, permissions, transaction)
+        #Todo: Check if record is updated, permissions are updated or content is updated
+        #if existing_record:
+
+
+        # Create record if it doesn't exist
+        # Record download function
+        # Create a permission edge between the record and the app with sync status if it doesn't exist
+
+        # print(record)
 
     async def on_new_records(self, records_with_permissions: List[Tuple[Record, List[Permission]]]) -> None:
-        # Create a transaction
-        for record, permissions in records_with_permissions:
+        try:
             transaction = self.arango_service.db.begin_transaction(
-                read=read_collections,
-                write=write_collections,
+                    read=read_collections,
+                    write=write_collections,
             )
-            existing_record = await self.arango_service.get_record_by_external_id(connector_name=record.connector_name,
-                                                                                  external_id=record.external_record_id, transaction=transaction)
-
-            if existing_record is None:
-                await self._handle_new_record(record, transaction)
-            else:
-                record.id = existing_record.id
-                await self._handle_updated_record(record, existing_record, transaction)
-
-            # Create a edge between the record and the parent record if it doesn't exist and if parent_record_id is provided
-            await self._handle_parent_record(record, transaction)
-
-            # Create a edge between the record and the record group if it doesn't exist and if record_group_id is provided
-            await self._handle_record_group(record, transaction)
-
-            # Create a edge between the base record and the specific record if it doesn't exist - isOfType - File, Mail, Message
-
-            await self._handle_record_permissions(record, permissions, transaction)
-            #Todo: Check if record is updated, permissions are updated or content is updated
-            #if existing_record:
-
-
-            # Create record if it doesn't exist
-            # Record download function
-            # Create a permission edge between the record and the app with sync status if it doesn't exist
+            # Create a transaction
+            for record, permissions in records_with_permissions:
+                await self._process_record(record, permissions, transaction)
 
             transaction.commit_transaction()
-            # print(record)
-        # Commit the transaction
+        except Exception as e:
+            self.logger.error(f"Error in on_new_records: {str(e)}")
+            transaction.abort_transaction()
+            raise e
 
     async def _handle_updated_record(self, record: Record, existing_record: Record, transaction: TransactionDatabase) -> None:
         pass

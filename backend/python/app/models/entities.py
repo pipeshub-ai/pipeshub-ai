@@ -140,29 +140,36 @@ class FileRecord(Record):
         }
 
     @staticmethod
-    def from_arango_base_file_record(arango_base_file_record: Dict) -> "FileRecord":
+    def from_arango_base_file_record(arango_base_file_record: Dict, arango_base_record: Dict) -> "FileRecord":
         return FileRecord(
-            id=arango_base_file_record["_key"],
-            record_name=arango_base_file_record["recordName"],
-            record_type=arango_base_file_record["recordType"],
-            external_record_id=arango_base_file_record["externalRecordId"],
-            version=arango_base_file_record["version"],
-            origin=arango_base_file_record["origin"],
-            connector_name=arango_base_file_record["connectorName"],
-            mime_type=arango_base_file_record["mimeType"],
-            weburl=arango_base_file_record["webUrl"],
-            created_at=arango_base_file_record["createdAtTimestamp"],
-            updated_at=arango_base_file_record["updatedAtTimestamp"],
-            source_created_at=arango_base_file_record["sourceCreatedAtTimestamp"],
-            source_updated_at=arango_base_file_record["sourceLastModifiedTimestamp"],
+            id=arango_base_record["_key"],
+            record_name=arango_base_record["recordName"],
+            record_type=arango_base_record["recordType"],
+            external_record_id=arango_base_record["externalRecordId"],
+            version=arango_base_record["version"],
+            origin=arango_base_record["origin"],
+            connector_name=arango_base_record["connectorName"],
+            mime_type=arango_base_record["mimeType"],
+            weburl=arango_base_record["webUrl"],
+            created_at=arango_base_record["createdAtTimestamp"],
+            updated_at=arango_base_record["updatedAtTimestamp"],
+            source_created_at=arango_base_record["sourceCreatedAtTimestamp"],
+            source_updated_at=arango_base_record["sourceLastModifiedTimestamp"],
+            size_in_bytes=arango_base_file_record["sizeInBytes"],
+            extension=arango_base_file_record["extension"],
+            path=arango_base_file_record["path"],
+            etag=arango_base_file_record["etag"],
+            ctag=arango_base_file_record["ctag"],
+            quick_xor_hash=arango_base_file_record["quickXorHash"],
+            crc32_hash=arango_base_file_record["crc32Hash"],
+            sha1_hash=arango_base_file_record["sha1Hash"],
+            sha256_hash=arango_base_file_record["sha256Hash"],
         )
 
 class MessageRecord(Record):
-    message_id: Optional[str] = None
-    message_subject: Optional[str] = None
+    content: Optional[str] = None
 
 class MailRecord(Record):
-    id: Optional[str] = None
     subject: Optional[str] = None
     from_email: Optional[str] = None
     to_emails: Optional[List[str]] = None

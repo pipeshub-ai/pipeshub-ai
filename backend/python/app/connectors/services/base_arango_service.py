@@ -3018,6 +3018,8 @@ class BaseArangoService:
             return True
         except Exception as e:
             self.logger.error("❌ Batch edge creation failed: %s", str(e))
+            if transaction:
+                raise
             return False
 
     async def get_record_by_external_id(

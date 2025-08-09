@@ -47,6 +47,20 @@ class OneDriveApp(App):
 #     def __init__(self):
 #         super().__init__(Connectors.ONEDRIVE.value)
 
+# Map Microsoft Graph roles to permission type
+def map_msgraph_role_to_permission_type(role: str) -> PermissionType:
+    """Map Microsoft Graph permission roles to application permission types"""
+    role_lower = role.lower()
+    if role_lower in ["owner", "fullcontrol"]:
+        return PermissionType.OWNER
+    elif role_lower in ["write", "editor", "contributor", "writeaccess"]:
+        return PermissionType.WRITE
+    elif role_lower in ["read", "reader", "readaccess"]:
+        return PermissionType.READ
+    else:
+        # Default to read for unknown roles
+        return PermissionType.READ
+
 @dataclass
 class DeltaGetResponse(BaseDeltaFunctionResponse, Parsable):
     # The value property
@@ -871,19 +885,7 @@ class OneDriveConnector:
                 )
 
                 permission_result = await self.onedrive_client.get_file_permission(item.parent_reference.drive_id, item.id)
-                # Map Microsoft Graph roles to permission type
-                def map_msgraph_role_to_permission_type(role: str) -> PermissionType:
-                    """Map Microsoft Graph permission roles to application permission types"""
-                    role_lower = role.lower()
-                    if role_lower in ["owner", "fullcontrol"]:
-                        return PermissionType.OWNER
-                    elif role_lower in ["write", "editor", "contributor", "writeaccess"]:
-                        return PermissionType.WRITE
-                    elif role_lower in ["read", "reader", "readaccess"]:
-                        return PermissionType.READ
-                    else:
-                        # Default to read for unknown roles
-                        return PermissionType.READ
+
 
                 permissions = [Permission(
                     external_id=permission.granted_to.user.id,
@@ -990,8 +992,9 @@ class OneDriveConnector:
         print("Getting all user groups")
         await self.onedrive_client.get_all_user_groups()
         print("Getting all drives")
-        # for user in users:
-        await self._run_sync("24cd1f96-b8ee-4db7-91f5-ac3ac338519d")
+        for user in users:
+            await self._run_sync(user.source_user_id)
+
         # print("Getting all subscriptions")
         # await self.onedrive_client.get_all_subscriptions()
         # print("Getting all drives")
