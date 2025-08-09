@@ -147,7 +147,6 @@ class GmailEventService(BaseEventService):
                 if not user:
                     self.logger.error(f"User not found for user_id: {user_id}")
                     return False
-
                 result = await self.sync_tasks.gmail_manual_sync_control("resync", org_id, user_email=user["email"])
                 if not result or result.get("status") != "accepted":
                     self.logger.error(f"Error resyncing Gmail user {user['email']}")

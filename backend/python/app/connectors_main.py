@@ -32,7 +32,7 @@ container = ConnectorAppContainer.init("connector_service")
 async def get_initialized_container() -> ConnectorAppContainer:
     """Dependency provider for initialized container"""
     # Create container instance
-    if not hasattr(get_initialized_container, "initialized"):
+    if not hasattr(get_initialized_container, "_initialized"):
         await initialize_container(container)
         # Wire the container after initialization
         container.wire(
@@ -45,7 +45,7 @@ async def get_initialized_container() -> ConnectorAppContainer:
                 "app.core.signed_url",
             ]
         )
-        get_initialized_container.initialized = True
+        setattr(get_initialized_container, "_initialized", True)
     return container
 
 
@@ -55,13 +55,13 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
     logger.debug("🔄 Checking for sync services to resume")
 
     try:
-        arango_service = await app_container.arango_service()
+        arango_service = await app_container.arango_service()  # type: ignore
 
         # Get all organizations
         orgs = await arango_service.get_all_orgs(active=True)
         if not orgs:
             logger.info("No organizations found in the system")
-            return
+            return True
 
         logger.info("Found %d organizations in the system", len(orgs))
 
@@ -103,18 +103,18 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
                     continue
 
                 if app["name"] == Connectors.GOOGLE_DRIVE.value:
-                    drive_sync_service = app_container.drive_sync_service()
-                    await drive_sync_service.initialize(org_id)
+                    drive_sync_service = app_container.drive_sync_service()  # type: ignore
+                    await drive_sync_service.initialize(org_id)  # type: ignore
                     logger.info("Drive Service initialized for org %s", org_id)
 
                 if app["name"] == Connectors.GOOGLE_MAIL.value:
-                    gmail_sync_service = app_container.gmail_sync_service()
-                    await gmail_sync_service.initialize(org_id)
+                    gmail_sync_service = app_container.gmail_sync_service()  # type: ignore
+                    await gmail_sync_service.initialize(org_id)  # type: ignore
                     logger.info("Gmail Service initialized for org %s", org_id)
 
             if drive_sync_service is not None:
                 try:
-                    asyncio.create_task(drive_sync_service.perform_initial_sync(org_id))
+                    asyncio.create_task(drive_sync_service.perform_initial_sync(org_id))  # type: ignore
                     logger.info(
                         "✅ Resumed Drive sync for org %s",
                         org_id,
@@ -128,7 +128,7 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
 
             if gmail_sync_service is not None:
                 try:
-                    asyncio.create_task(gmail_sync_service.perform_initial_sync(org_id))
+                    asyncio.create_task(gmail_sync_service.perform_initial_sync(org_id))  # type: ignore
                     logger.info(
                         "✅ Resumed Gmail sync for org %s",
                         org_id,
@@ -146,6 +146,7 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
         return True
     except Exception as e:
         logger.error("❌ Error during sync service resumption: %s", str(e))
+        return False
 
 async def start_messaging_producer(app_container: ConnectorAppContainer) -> None:
     """Start messaging producer and attach it to container"""
@@ -271,10 +272,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context manager for FastAPI"""
     # Initialize container
     app_container = await get_initialized_container()
-    app.container = app_container
+    app.container = app_container  # type: ignore
 
     app.state.config_service = app_container.config_service()
-    app.state.arango_service = await app_container.arango_service()
+    app.state.arango_service = await app_container.arango_service()  # type: ignore
 
     logger = app_container.logger()
     logger.debug("🚀 Starting application")
@@ -322,7 +323,7 @@ INCLUDE_PATHS = ["/api/v1/stream/record/", "/api/v1/delete/"]
 
 @app.middleware("http")
 async def authenticate_requests(request: Request, call_next)-> JSONResponse:
-    logger = app.container.logger()
+    logger = app.container.logger()  # type: ignore
     logger.info(f"Middleware request: {request.url.path}")
     # Apply middleware only to specific paths
     if not any(request.url.path.startswith(path) for path in INCLUDE_PATHS):
@@ -388,7 +389,7 @@ app.include_router(kb_router)
 # Global error handler
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    logger = app.container.logger()
+    logger = app.container.logger()  # type: ignore
     logger.error("Global error: %s", str(exc), exc_info=True)
     return JSONResponse(
         status_code=500,
