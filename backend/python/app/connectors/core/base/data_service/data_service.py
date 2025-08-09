@@ -2,7 +2,7 @@ import logging
 from abc import ABC
 from typing import Any, Dict, List, Optional
 
-from app.connectors.core.interfaces.data_service.data_service import IDataService
+from app.connectors.core.interfaces.data_service.idata_service import IDataService
 from app.connectors.core.interfaces.token_service.itoken_service import ITokenService
 
 

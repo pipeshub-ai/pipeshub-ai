@@ -11,7 +11,6 @@ from app.containers.container import BaseAppContainer
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_arango import ArangoService
 from app.modules.retrieval.retrieval_service import RetrievalService
-from app.services.ai_config_handler import RetrievalAiConfigHandler
 from app.utils.logger import create_logger
 
 
@@ -97,13 +96,6 @@ class QueryAppContainer(BaseAppContainer):
         config_service=config_service,
         logger=logger,
         qdrant_client=qdrant_client,
-    )
-
-    llm_config_handler = providers.Singleton(
-        RetrievalAiConfigHandler,
-        logger=logger,
-        config_service=config_service,
-        retrieval_service=retrieval_service,
     )
 
     reranker_service = providers.Singleton(

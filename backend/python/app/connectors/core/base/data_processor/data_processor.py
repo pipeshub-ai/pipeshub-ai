@@ -1,7 +1,7 @@
 import logging
 from typing import Any, Dict, List
 
-from app.connectors.core.interfaces.data_processor.data_processor import IDataProcessor
+from app.connectors.core.interfaces.data_processor.idata_processor import IDataProcessor
 
 
 class BaseDataProcessor(IDataProcessor):

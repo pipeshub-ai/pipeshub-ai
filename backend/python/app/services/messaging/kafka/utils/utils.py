@@ -9,6 +9,8 @@ from app.connectors.sources.google.google_drive.services.event_service.event_ser
     GoogleDriveEventService,
 )
 from app.containers.connector import ConnectorAppContainer
+from app.containers.indexing import IndexingAppContainer
+from app.containers.query import QueryAppContainer
 from app.services.messaging.kafka.config.kafka_config import (
     KafkaConsumerConfig,
     KafkaProducerConfig,
@@ -66,7 +68,7 @@ async def create_sync_kafka_consumer_config(app_container: ConnectorAppContainer
         topics=['sync-events']  # Sync-specific topics
     )
 
-async def create_record_kafka_consumer_config(app_container: ConnectorAppContainer) -> KafkaConsumerConfig:
+async def create_record_kafka_consumer_config(app_container: IndexingAppContainer) -> KafkaConsumerConfig:
     """Create Kafka configuration for record events"""
     config_service = app_container.config_service()
     kafka_config = await config_service.get_config(
@@ -83,7 +85,7 @@ async def create_record_kafka_consumer_config(app_container: ConnectorAppContain
         topics=['record-events']  # Records-specific topics
     )
 
-async def create_aiconfig_kafka_consumer_config(app_container: ConnectorAppContainer) -> KafkaConsumerConfig:
+async def create_aiconfig_kafka_consumer_config(app_container: QueryAppContainer) -> KafkaConsumerConfig:
     """Create Kafka configuration for AI config events"""
     config_service = app_container.config_service()
     kafka_config = await config_service.get_config(
@@ -259,12 +261,12 @@ async def create_sync_message_handler(app_container: ConnectorAppContainer) -> C
 
     return handle_sync_message
 
-async def create_aiconfig_message_handler(app_container: ConnectorAppContainer) -> Callable[[Dict[str, Any]], Awaitable[bool]]:
+async def create_aiconfig_message_handler(app_container: QueryAppContainer) -> Callable[[Dict[str, Any]], Awaitable[bool]]:
     """Create a message handler for AI config events"""
     logger = app_container.logger()
 
     # get the retrieval_service from your container
-    retrieval_service = await app_container.retrieval_service()  # Adjust this based on your container setup
+    retrieval_service = app_container.retrieval_service()
 
     # Create the AI config event service
     aiconfig_event_service = AiConfigEventService(

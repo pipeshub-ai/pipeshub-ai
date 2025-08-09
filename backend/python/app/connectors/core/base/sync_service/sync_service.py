@@ -1,7 +1,7 @@
 import logging
 from abc import ABC
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from app.connectors.core.interfaces.sync_service.isync_service import (
     ISyncService,
@@ -16,7 +16,7 @@ class BaseSyncService(ISyncService, ABC):
     def __init__(self, logger: logging.Logger) -> None:
         self.logger = logger
 
-    async def initialize(self, org_id: str, sync_config: Dict[str, Any] = None) -> bool:
+    async def initialize(self, org_id: str, sync_config: Optional[Dict[str, Any]] = None) -> bool:
         """Initialize the sync service"""
         try:
             self.logger.info(f"Initialized sync service for org: {org_id}")
@@ -43,7 +43,7 @@ class BaseSyncService(ISyncService, ABC):
             self.logger.error(f"Failed to initialize sync: {str(e)}")
             raise
 
-    async def start_sync(self, org_id: str, sync_config: Dict[str, Any] = None) -> bool:
+    async def start_sync(self, org_id: str, sync_config: Optional[Dict[str, Any]] = None) -> bool:
         """Start a sync operation"""
         try:
             self.logger.info(f"Started sync operation: {sync_config}")
@@ -52,7 +52,7 @@ class BaseSyncService(ISyncService, ABC):
             self.logger.error(f"Failed to start sync: {str(e)}")
             raise
 
-    async def pause_sync(self, org_id: str, sync_id: str = None) -> bool:
+    async def pause_sync(self, org_id: str, sync_id: Optional[str] = None) -> bool:
         """Pause a sync operation"""
         try:
             self.logger.info(f"Paused sync operation: {sync_id}")
@@ -61,7 +61,7 @@ class BaseSyncService(ISyncService, ABC):
             self.logger.error(f"Failed to pause sync: {str(e)}")
             return False
 
-    async def resume_sync(self, org_id: str, sync_id: str = None) -> bool:
+    async def resume_sync(self, org_id: str, sync_id: Optional[str] = None) -> bool:
         """Resume a sync operation"""
         try:
             self.logger.info(f"Resumed sync operation: {sync_id}")
@@ -70,7 +70,7 @@ class BaseSyncService(ISyncService, ABC):
             self.logger.error(f"Failed to resume sync: {str(e)}")
             return False
 
-    async def stop_sync(self, org_id: str, sync_id: str = None) -> bool:
+    async def stop_sync(self, org_id: str, sync_id: Optional[str] = None) -> bool:
         """Stop a sync operation"""
         try:
             self.logger.info(f"Stopped sync operation: {sync_id}")
@@ -79,7 +79,7 @@ class BaseSyncService(ISyncService, ABC):
             self.logger.error(f"Failed to stop sync: {str(e)}")
             return False
 
-    async def get_sync_progress(self, org_id: str, sync_id: str) -> SyncProgress:
+    async def get_sync_progress(self, org_id: str, sync_id: Optional[str] = None) -> SyncProgress:
         """Get sync progress"""
         try:
             # TODO: Implement sync progress

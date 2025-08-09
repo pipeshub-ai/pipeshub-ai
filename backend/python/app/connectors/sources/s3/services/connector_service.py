@@ -5,11 +5,14 @@ from typing import Any, Dict, Optional
 
 from app.connectors.core.base.connector.connector_service import BaseConnectorService
 from app.connectors.core.interfaces.connector.iconnector_config import ConnectorConfig
-from app.connectors.core.interfaces.data_processor.data_processor import IDataProcessor
-from app.connectors.core.interfaces.data_service.data_service import IDataService
-from app.connectors.core.interfaces.error.error import IErrorHandlingService
-from app.connectors.core.interfaces.event_service.event_service import IEventService
+from app.connectors.core.interfaces.data_processor.idata_processor import IDataProcessor
+from app.connectors.core.interfaces.data_service.idata_service import IDataService
+from app.connectors.core.interfaces.error.ierror import IErrorHandlingService
+from app.connectors.core.interfaces.event_service.ievent_service import IEventService
+from app.connectors.core.interfaces.rate_limiter.irate_limiter import IRateLimiter
+from app.connectors.core.interfaces.sync_service.isync_service import ISyncService
 from app.connectors.core.interfaces.token_service.itoken_service import ITokenService
+from app.connectors.core.interfaces.user_service.iuser_service import IUserService
 from app.connectors.enums.enums import ConnectorType
 from app.connectors.sources.s3.const.const import (
     AWS_S3_API_VERSION,
@@ -34,10 +37,14 @@ class S3ConnectorService(BaseConnectorService):
         data_processor: IDataProcessor,
         error_service: IErrorHandlingService,
         event_service: IEventService,
+        sync_service: ISyncService,
+        user_service: IUserService,
+        rate_limiter: IRateLimiter,
     ) -> None:
         super().__init__(
             logger, connector_type, config, token_service,
-            data_service, data_processor, error_service, event_service
+            data_service, data_processor, error_service, event_service,
+            rate_limiter, user_service, sync_service
         )
 
     async def test_connection(self) -> bool:

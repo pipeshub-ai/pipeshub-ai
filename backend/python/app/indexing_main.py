@@ -1,6 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+from typing import AsyncGenerator, List
 
 import httpx
 import uvicorn
@@ -8,12 +8,21 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from app.config.constants.http_status_code import HttpStatusCode
+from app.services.messaging.kafka.rate_limiter.rate_limiter import RateLimiter
+from app.services.messaging.kafka.utils.utils import (
+    create_record_kafka_consumer_config,
+    create_record_message_handler,
+)
+from app.services.messaging.messaging_factory import MessagingFactory
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.containers.indexing import IndexingAppContainer, initialize_container
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 container = IndexingAppContainer.init("indexing_service")
 container_lock = asyncio.Lock()
+
+MAX_CONCURRENT_TASKS = 5  # Maximum number of messages to process concurrently
+RATE_LIMIT_PER_SECOND = 2  # Maximum number of new tasks to start per second
 
 async def get_initialized_container() -> IndexingAppContainer:
     """Dependency provider for initialized container"""
@@ -27,27 +36,84 @@ async def get_initialized_container() -> IndexingAppContainer:
                 get_initialized_container.initialized = True
     return container
 
+async def start_kafka_consumers(app_container: IndexingAppContainer) -> List:
+    """Start all Kafka consumers at application level"""
+    logger = app_container.logger()
+    consumers = []
+
+    try:
+        # 1. Create Entity Consumer
+        logger.info("🚀 Starting Entity Kafka Consumer...")
+        record_kafka_consumer_config = await create_record_kafka_consumer_config(app_container)
+
+        rate_limiter = RateLimiter(RATE_LIMIT_PER_SECOND)
+
+        record_kafka_consumer = MessagingFactory.create_consumer(
+            broker_type="kafka",
+            logger=logger,
+            config=record_kafka_consumer_config,
+            rate_limiter=rate_limiter
+        )
+        record_message_handler = await create_record_message_handler(app_container)
+        await record_kafka_consumer.start(record_message_handler)
+        consumers.append(("record", record_kafka_consumer))
+        logger.info("✅ Record Kafka consumer started")
+
+        return consumers
+
+    except Exception as e:
+        logger.error(f"❌ Error starting Kafka consumers: {str(e)}")
+        # Cleanup any started consumers
+        for name, consumer in consumers:
+            try:
+                await consumer.stop()
+                logger.info(f"Stopped {name} consumer during cleanup")
+            except Exception as cleanup_error:
+                logger.error(f"Error stopping {name} consumer during cleanup: {cleanup_error}")
+        raise
+
+
+async def stop_kafka_consumers(container) -> None:
+    """Stop all Kafka consumers"""
+
+    logger = container.logger()
+    consumers = getattr(container, 'kafka_consumers', [])
+    for name, consumer in consumers:
+        try:
+            await consumer.stop()
+            logger.info(f"✅ {name.title()} Kafka consumer stopped")
+        except Exception as e:
+            logger.error(f"❌ Error stopping {name} consumer: {str(e)}")
+
+    # Clear the consumers list
+    if hasattr(container, 'kafka_consumers'):
+        container.kafka_consumers = []
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context manager for FastAPI"""
 
-    container = await get_initialized_container()
-    app.container = container
+    app_container = await get_initialized_container()
+    app.container = app_container
     logger = app.container.logger()
     logger.info("🚀 Starting application")
-    consumer = await container.kafka_consumer()
-    consume_task = asyncio.create_task(consumer.consume_messages())
+    # Start all Kafka consumers centrally
+    try:
+        consumers = await start_kafka_consumers(app_container)
+        app_container.kafka_consumers = consumers
+        logger.info("✅ All Kafka consumers started successfully")
+    except Exception as e:
+        logger.error(f"❌ Failed to start Kafka consumers: {str(e)}")
+        raise
 
     yield
     # Shutdown
     logger.info("🔄 Shutting down application")
-    consumer.stop()
-    # Cancel the consume task
-    consume_task.cancel()
+    # Stop Kafka consumers
     try:
-        await consume_task
-    except asyncio.CancelledError:
-        logger.info("Kafka consumer task cancelled")
+        await stop_kafka_consumers(app_container)
+    except Exception as e:
+        logger.error(f"❌ Error during application shutdown: {str(e)}")
 
 
 app = FastAPI(

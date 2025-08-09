@@ -3,7 +3,7 @@ from abc import ABC
 from datetime import datetime
 from typing import Any, Dict, List
 
-from app.connectors.core.interfaces.event_service.event_service import IEventService
+from app.connectors.core.interfaces.event_service.ievent_service import IEventService
 
 
 class BaseEventService(IEventService, ABC):
@@ -50,4 +50,14 @@ class BaseEventService(IEventService, ABC):
             return True
         except Exception as e:
             self.logger.error(f"Failed to unsubscribe from events: {str(e)}")
+            return False
+
+    async def process_event(self, event_type: str, payload: Dict[str, Any]) -> bool:
+        """Handle connector-specific events"""
+        try:
+            self.logger.info(f"Processing event: {event_type}")
+            # This should be implemented by specific event services
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to process event: {str(e)}")
             return False

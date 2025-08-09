@@ -45,7 +45,7 @@ from app.connectors.api.middleware import WebhookAuthVerifier
 from app.connectors.sources.google.admin.admin_webhook_handler import (
     AdminWebhookHandler,
 )
-from app.connectors.sources.google.common.google_token_handler import CredentialKeys
+from app.connectors.sources.google.common.google_token_handler import CredentialKeys, GoogleTokenHandler
 from app.connectors.sources.google.common.scopes import (
     GOOGLE_CONNECTOR_ENTERPRISE_SCOPES,
     GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES,
@@ -63,6 +63,7 @@ from app.modules.parsers.google_files.google_sheets_parser import GoogleSheetsPa
 from app.modules.parsers.google_files.google_slides_parser import GoogleSlidesParser
 from app.utils.llm import get_llm
 from app.utils.logger import create_logger
+from app.config.configuration_service import ConfigurationService
 
 logger = create_logger("connector_service")
 
@@ -305,16 +306,11 @@ async def download_file(
     connector: str,
     token: str,
     signed_url_handler=Depends(Provide[ConnectorAppContainer.signed_url_handler]),
+    arango_service: ArangoService = Depends(Provide[ConnectorAppContainer.arango_service]),
+    google_token_handler: GoogleTokenHandler = Depends(Provide[ConnectorAppContainer.google_token_handler]),
+    config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
 ) -> Optional[dict | StreamingResponse]:
     try:
-        try:
-            config_service = request.app.state.config_service
-            google_token_handler = request.app.state.google_token_handler
-            arango_service = request.app.state.arango_service
-        except Exception as e:
-            logger.error(f"Error getting dependencies: {str(e)}")
-            raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error getting dependencies")
-
         logger.info(f"Downloading file {record_id} with connector {connector}")
         # Verify signed URL using the handler
 
@@ -709,15 +705,14 @@ async def stream_record(
     request: Request,
     record_id: str,
     convertTo: Optional[str] = None,
+    arango_service: ArangoService = Depends(Provide[ConnectorAppContainer.arango_service]),
+    google_token_handler: GoogleTokenHandler = Depends(Provide[ConnectorAppContainer.google_token_handler]),
+    config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
 ) -> Optional[dict | StreamingResponse]:
+    """
+    Stream a record to the client.
+    """
     try:
-        try:
-            config_service = request.app.state.config_service
-            google_token_handler = request.app.state.google_token_handler
-            arango_service = request.app.state.arango_service
-        except Exception as e:
-            logger.error(f"Error getting dependencies: {str(e)}")
-            raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error getting dependencies")
         try:
             logger.info(f"Stream Record Start: {time.time()}")
             auth_header = request.headers.get("Authorization")
