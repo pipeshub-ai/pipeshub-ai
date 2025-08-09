@@ -339,7 +339,8 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
     elif provider == LLMProvider.OPENAI.value:
         from langchain_community.chat_models import ChatOpenAI
 
-        temperature = 1 if "gpt-5" in model_name  or configuration.get("isReasoning", False) is True else configuration.get("temperature", 0.2)
+        is_reasoning_model = "gpt-5" in model_name or configuration.get("isReasoning")
+        temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
         return ChatOpenAI(
                 model=model_name,
                 temperature=temperature,
