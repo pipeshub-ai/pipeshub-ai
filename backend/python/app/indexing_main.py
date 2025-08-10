@@ -11,10 +11,7 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.containers.indexing import IndexingAppContainer, initialize_container
 from app.services.messaging.kafka.rate_limiter.rate_limiter import RateLimiter
-from app.services.messaging.kafka.utils.utils import (
-    create_record_kafka_consumer_config,
-    create_record_message_handler,
-)
+from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -44,7 +41,7 @@ async def start_kafka_consumers(app_container: IndexingAppContainer) -> List:
     try:
         # 1. Create Entity Consumer
         logger.info("🚀 Starting Entity Kafka Consumer...")
-        record_kafka_consumer_config = await create_record_kafka_consumer_config(app_container)
+        record_kafka_consumer_config = await KafkaUtils.create_record_kafka_consumer_config(app_container)
 
         rate_limiter = RateLimiter(RATE_LIMIT_PER_SECOND)
 
@@ -54,7 +51,7 @@ async def start_kafka_consumers(app_container: IndexingAppContainer) -> List:
             config=record_kafka_consumer_config,
             rate_limiter=rate_limiter
         )
-        record_message_handler = await create_record_message_handler(app_container)
+        record_message_handler = await KafkaUtils.create_record_message_handler(app_container)
         await record_kafka_consumer.start(record_message_handler)
         consumers.append(("record", record_kafka_consumer))
         logger.info("✅ Record Kafka consumer started")

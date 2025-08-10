@@ -17,10 +17,7 @@ from app.api.routes.search import router as search_router
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.containers.query import QueryAppContainer
-from app.services.messaging.kafka.utils.utils import (
-    create_aiconfig_kafka_consumer_config,
-    create_aiconfig_message_handler,
-)
+from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -74,13 +71,13 @@ async def start_kafka_consumers(app_container: QueryAppContainer) -> List:
     try:
     # 1. Create AI Config Consumer
         logger.info("🚀 Starting AI Config Kafka Consumer...")
-        aiconfig_kafka_config = await create_aiconfig_kafka_consumer_config(app_container)
+        aiconfig_kafka_config = await KafkaUtils.create_aiconfig_kafka_consumer_config(app_container)
         aiconfig_kafka_consumer = MessagingFactory.create_consumer(
             broker_type="kafka",
             logger=logger,
             config=aiconfig_kafka_config
         )
-        aiconfig_message_handler = await create_aiconfig_message_handler(app_container)
+        aiconfig_message_handler = await KafkaUtils.create_aiconfig_message_handler(app_container)
         await aiconfig_kafka_consumer.start(aiconfig_message_handler)
         consumers.append(("aiconfig", aiconfig_kafka_consumer))
         logger.info("✅ AI Config Kafka consumer started")

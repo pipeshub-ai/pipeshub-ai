@@ -17,13 +17,7 @@ from app.containers.connector import (
     initialize_enterprise_account_services_fn,
     initialize_individual_account_services_fn,
 )
-from app.services.messaging.kafka.utils.utils import (
-    create_entity_kafka_consumer_config,
-    create_entity_message_handler,
-    create_producer_config,
-    create_sync_kafka_consumer_config,
-    create_sync_message_handler,
-)
+from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -155,7 +149,7 @@ async def start_messaging_producer(app_container: ConnectorAppContainer) -> None
     try:
         logger.info("🚀 Starting Messaging Producer...")
 
-        producer_config = await create_producer_config(app_container)
+        producer_config = await KafkaUtils.create_producer_config(app_container)
 
         # Create and initialize producer
         messaging_producer = MessagingFactory.create_producer(
@@ -182,26 +176,26 @@ async def start_kafka_consumers(app_container: ConnectorAppContainer) -> List:
     try:
         # 1. Create Entity Consumer
         logger.info("🚀 Starting Entity Kafka Consumer...")
-        entity_kafka_config = await create_entity_kafka_consumer_config(app_container)
+        entity_kafka_config = await KafkaUtils.create_entity_kafka_consumer_config(app_container)
         entity_kafka_consumer = MessagingFactory.create_consumer(
             broker_type="kafka",
             logger=logger,
             config=entity_kafka_config
         )
-        entity_message_handler = await create_entity_message_handler(app_container)
+        entity_message_handler = await KafkaUtils.create_entity_message_handler(app_container)
         await entity_kafka_consumer.start(entity_message_handler)
         consumers.append(("entity", entity_kafka_consumer))
         logger.info("✅ Entity Kafka consumer started")
 
         # 2. Create Sync Consumer
         logger.info("🚀 Starting Sync Kafka Consumer...")
-        sync_kafka_config = await create_sync_kafka_consumer_config(app_container)
+        sync_kafka_config = await KafkaUtils.create_sync_kafka_consumer_config(app_container)
         sync_kafka_consumer = MessagingFactory.create_consumer(
             broker_type="kafka",
             logger=logger,
             config=sync_kafka_config
         )
-        sync_message_handler = await create_sync_message_handler(app_container)
+        sync_message_handler = await KafkaUtils.create_sync_message_handler(app_container)
         await sync_kafka_consumer.start(sync_message_handler)
         consumers.append(("sync", sync_kafka_consumer))
         logger.info("✅ Sync Kafka consumer started")
