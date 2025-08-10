@@ -398,6 +398,7 @@ export const configurationSchema = z.object({
   endpoint: z.string().optional().describe("Endpoint URL for the model"),
   organizationId: z.string().optional().describe("Organization ID"),
   deploymentName: z.string().optional().describe("Azure deployment name"),
+  provider: z.string().optional().describe("Provider name"),
   awsAccessKeyId: z.string().optional().describe("AWS access key ID"),
   awsAccessSecretKey: z.string().optional().describe("AWS secret access key"),
   region: z.string().optional().describe("AWS region"),

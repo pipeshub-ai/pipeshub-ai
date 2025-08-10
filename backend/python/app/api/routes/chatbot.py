@@ -104,44 +104,68 @@ def get_model_config_for_mode(chat_mode: str) -> Dict[str, Any]:
 
     return mode_configs.get(chat_mode, mode_configs["standard"])
 
+async def get_model_config(config_service: ConfigurationService, model_key: str) -> Dict[str, Any]:
+    """Get model configuration based on user selection or fallback to default"""
+
+    ai_models = await config_service.get_config(
+            config_node_constants.AI_MODELS.value
+        )
+    llm_configs = ai_models["llm"]
+
+    for config in llm_configs:
+        target_model_key = config.get("modelKey")
+        if target_model_key == model_key:
+            return config
+
+    new_ai_models = await config_service.get_config(
+        config_node_constants.AI_MODELS.value,
+        use_cache=False
+    )
+
+    llm_configs = new_ai_models["llm"]
+
+    for config in llm_configs:
+        target_model_key = config.get("modelKey")
+        if target_model_key == model_key:
+            return config
+
+    if not llm_configs:
+        raise ValueError("No LLM configurations found")
+
+    # If user specified a model, try to find it
+    return llm_configs
 
 async def get_llm_for_chat(config_service: ConfigurationService, model_key: str = None, model_name: str = None, chat_mode: str = "standard") -> BaseChatModel:
     """Get LLM instance based on user selection or fallback to default"""
     try:
-        ai_models = await config_service.get_config(
-                config_node_constants.AI_MODELS.value
-            )
-        llm_configs = ai_models["llm"]
+        llm_config = await get_model_config(config_service, model_key)
 
-        if not llm_configs:
+        if not llm_config:
             raise ValueError("No LLM configurations found")
 
         # If user specified a model, try to find it
         if model_key and model_name:
-            for config in llm_configs:
-                model_string = config.get("configuration", {}).get("model")
-                model_names = [name.strip() for name in model_string.split(",") if name.strip()]
-                if (config.get("modelKey") == model_key and model_name in model_names):
-                    model_provider = config.get("provider")
-                    return get_generator_model(model_provider, config, model_name)
+            model_string = llm_config.get("configuration", {}).get("model")
+            model_names = [name.strip() for name in model_string.split(",") if name.strip()]
+            if (llm_config.get("modelKey") == model_key and model_name in model_names):
+                model_provider = llm_config.get("provider")
+                return get_generator_model(model_provider, llm_config, model_name)
 
         # If user specified only provider, find first matching model
         if model_key:
-            for config in llm_configs:
-                model_string = config.get("configuration", {}).get("model")
-                model_names = [name.strip() for name in model_string.split(",") if name.strip()]
-                if config.get("modelKey") == model_key:
-                    model_provider = config.get("provider")
-                    default_model_name = model_names[0]
-                    return get_generator_model(model_provider, config, default_model_name)
+            model_string = llm_config.get("configuration", {}).get("model")
+            model_names = [name.strip() for name in model_string.split(",") if name.strip()]
+            default_model_name = model_names[0]
+            model_provider = llm_config.get("provider")
+            return get_generator_model(model_provider, llm_config, default_model_name)
 
         # Fallback to first available model
-        config = llm_configs[0]
-        model_provider = config.get("provider")
-        model_string = config.get("configuration", {}).get("model")
+
+        model_string = llm_config.get("configuration", {}).get("model")
         model_names = [name.strip() for name in model_string.split(",") if name.strip()]
         default_model_name = model_names[0]
-        return get_generator_model(model_provider, config, default_model_name)
+        model_provider = llm_config.get("provider")
+        return get_generator_model(model_provider, llm_config, default_model_name)
 
     except Exception as e:
             raise ValueError(f"Failed to initialize LLM: {str(e)}")

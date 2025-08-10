@@ -485,10 +485,7 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
             disabled={!canSubmit || isSubmitting}
             startIcon={isSubmitting ? <CircularProgress size={16} /> : undefined}
             sx={{
-              bgcolor: 'white',
-              '&:hover': {
-                bgcolor: 'white',
-              },
+              bgcolor: 'primary.main',
             }}
           >
             {isSubmitting

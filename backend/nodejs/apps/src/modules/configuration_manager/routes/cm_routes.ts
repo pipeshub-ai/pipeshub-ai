@@ -696,7 +696,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
     userAdminCheck,
     metricsMiddleware(container),
     ValidationMiddleware.validate(addProviderRequestSchema),
-    addAIModelProvider(keyValueStoreService, appConfig),
+    addAIModelProvider(keyValueStoreService, entityEventService, appConfig),
   );
 
   /**
@@ -712,7 +712,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
     userAdminCheck,
     metricsMiddleware(container),
     ValidationMiddleware.validate(updateProviderRequestSchema),
-    updateAIModelProvider(keyValueStoreService, appConfig),
+    updateAIModelProvider(keyValueStoreService, entityEventService, appConfig),
   );
 
   /**
@@ -728,7 +728,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
     userAdminCheck,
     metricsMiddleware(container),
     ValidationMiddleware.validate(deleteProviderSchema),
-    deleteAIModelProvider(keyValueStoreService),
+    deleteAIModelProvider(keyValueStoreService, entityEventService, appConfig),
   );
 
   /**
@@ -744,7 +744,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
     userAdminCheck,
     metricsMiddleware(container),
     ValidationMiddleware.validate(updateDefaultModelSchema),
-    updateDefaultAIModel(keyValueStoreService),
+    updateDefaultAIModel(keyValueStoreService, entityEventService, appConfig),
   );
 
   router.get(
