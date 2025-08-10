@@ -243,6 +243,9 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
         if model_name not in model_names:
             raise ValueError(f"Model name {model_name} not found in {configuration['model']}")
 
+    print(f"Provider: {provider}")
+    print(f"Model name: {model_name}")
+    print(f"Is default: {is_default}")
 
 
     if provider == LLMProvider.ANTHROPIC.value:

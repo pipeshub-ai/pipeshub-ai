@@ -2103,7 +2103,7 @@ export const addAIModelProvider =
 
       if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
         throw new InternalServerError(
-          'Failed to do health check of embedding configuration, check credentials again',
+          `Failed to do health check of ${modelType} configuration, check credentials again`,
           aiResponseData?.data,
         );
       }
@@ -2247,7 +2247,7 @@ export const updateAIModelProvider =
 
       if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
         throw new InternalServerError(
-          'Failed to do health check of embedding configuration, check credentials again',
+          `Failed to do health check of ${modelType} configuration, check credentials again`,
           aiResponseData?.data,
         );
       }

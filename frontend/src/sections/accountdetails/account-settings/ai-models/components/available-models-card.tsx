@@ -23,18 +23,24 @@ interface ProviderCardsProps {
 
 // Compact capabilities mapping - only show most important ones
 const PROVIDER_CAPABILITIES = {
-  openAI: ['TEXT', 'EMBEDDING', 'TTS'],
+  openAI: ['TEXT', 'EMBEDDING'],
   anthropic: ['TEXT', 'REASONING'],
   gemini: ['TEXT', 'EMBEDDING', 'MULTIMODAL'],
-  azureOpenAI: ['TEXT', 'EMBEDDING', 'ENTERPRISE'],
-  cohere: ['TEXT', 'EMBEDDING', 'RERANK'],
-  ollama: ['TEXT', 'EMBEDDING', 'LOCAL'],
-  mistral: ['TEXT', 'MULTILINGUAL'],
+  azureOpenAI: ['TEXT', 'EMBEDDING'],
+  cohere: ['TEXT', 'EMBEDDING'],
+  ollama: ['TEXT', 'EMBEDDING'],
+  mistral: ['TEXT'],
   huggingface: ['EMBEDDING', 'TRANSFORMERS'],
   xai: ['TEXT', 'REASONING'],
   together: ['TEXT', 'EMBEDDING'],
   groq: ['TEXT', 'HIGH SPEED'],
-  fireworks: ['TEXT', 'FAST INFERENCE'],
+  fireworks: ['TEXT'],
+  openAICompatible: ['TEXT', 'EMBEDDING'],
+  bedrock: ['TEXT', 'EMBEDDING'],
+  sentenceTransformers: ['EMBEDDING'],
+  jinaAI: ['EMBEDDING'],
+  voyage: ['EMBEDDING'],
+  default: ['EMBEDDING'],
 } as const;
 
 const ProviderCards: React.FC<ProviderCardsProps> = ({ onProviderSelect, configuredProviders }) => {
@@ -107,6 +113,7 @@ const ProviderCards: React.FC<ProviderCardsProps> = ({ onProviderSelect, configu
             <Card
               sx={{
                 height: '100%',
+                minHeight: '300px',
                 display: 'flex',
                 flexDirection: 'column',
                 borderRadius: '10px',
@@ -198,35 +205,6 @@ const ProviderCards: React.FC<ProviderCardsProps> = ({ onProviderSelect, configu
                         height: 18,
                         fontSize: '0.65rem',
                         fontWeight: 500,
-                        bgcolor: theme.palette.grey[200],
-                        color: theme.palette.grey[800],
-                        '&:hover': {
-                          bgcolor: theme.palette.grey[300],
-                          color: theme.palette.grey[900],
-                        },
-                      }}
-                    />
-                  ))}
-                </Box>
-
-                {/* Model Type Support */}
-                <Box
-                  sx={{
-                    display: 'flex',
-                    justifyContent: 'center',
-                    gap: 0.5,
-                    mb: 1.5,
-                  }}
-                >
-                  {provider.supportedTypes.map((type) => (
-                    <Chip
-                      key={type}
-                      label={type.toUpperCase()}
-                      size="small"
-                      sx={{
-                        height: 20,
-                        fontSize: '0.65rem',
-                        fontWeight: 600,
                         bgcolor: theme.palette.grey[200],
                         color: theme.palette.grey[800],
                         '&:hover': {

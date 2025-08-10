@@ -32,6 +32,8 @@ import {
 } from '@mui/material';
 import { Iconify } from 'src/components/iconify';
 import robotIcon from '@iconify-icons/mdi/robot';
+import generativeIcon from '@iconify-icons/mdi/brain';
+import embeddingIcon from '@iconify-icons/mdi/vector-polygon';
 import magnifyIcon from '@iconify-icons/mdi/magnify';
 import deleteIcon from '@iconify-icons/mdi/delete';
 import starIcon from '@iconify-icons/mdi/star';   
@@ -135,13 +137,13 @@ const ConfiguredModelsDisplay: React.FC<ConfiguredModelsDisplayProps> = ({
     ({
       llm: {
         name: 'Generative Models',
-        icon: robotIcon,
+        icon: generativeIcon,
         color: '#059669',
         description: 'Text generation and comprehension models',
       },
       embedding: {
         name: 'Embedding Models',
-        icon: magnifyIcon,
+        icon: embeddingIcon,
         color: '#7c3aed',
         description: 'Vectorization for semantic search',
       },

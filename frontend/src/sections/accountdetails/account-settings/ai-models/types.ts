@@ -1,4 +1,3 @@
-
 export type ModelType = 'llm' | 'embedding';
 export type ProviderId = string;
 
@@ -22,8 +21,8 @@ export interface ModelProvider {
   description: string;
   supportedTypes: ModelType[];
   isPopular?: boolean;
-  src:string;
-  color:string;
+  src: string;
+  color: string;
 }
 
 export interface ModelData {
@@ -43,15 +42,6 @@ export const AVAILABLE_MODEL_PROVIDERS: ModelProvider[] = [
     supportedTypes: ['llm', 'embedding'],
     isPopular: true,
     color: '#10A37F',
-  },
-  {
-    id: 'anthropic',
-    name: 'Anthropic',
-    description: 'Claude models for advanced text processing',
-    src: '/assets/icons/ai-models/claude-color.svg',
-    supportedTypes: ['llm'],
-    isPopular: true,
-    color: '#D97706',
   },
   {
     id: 'gemini',
@@ -79,12 +69,45 @@ export const AVAILABLE_MODEL_PROVIDERS: ModelProvider[] = [
     color: '#39C5BB',
   },
   {
+    id: 'bedrock',
+    name: 'Bedrock',
+    description: 'AWS Bedrock models',
+    src: '/public/assets/icons/ai-models/bedrock-color.svg',
+    supportedTypes: ['llm', 'embedding'],
+    color: '#0078D4',
+  },
+  {
     id: 'ollama',
     name: 'Ollama',
     description: 'Local open-source models',
     src: '/assets/icons/ai-models/ollama.svg',
     supportedTypes: ['llm', 'embedding'],
     color: '#4A90E2',
+  },
+  {
+    id: 'openAICompatible',
+    name: 'OpenAI Compatible',
+    description: 'OpenAI-compatible models',
+    src: '/public/assets/icons/ai-models/openai.svg',
+    supportedTypes: ['llm', 'embedding'],
+    color: '#0078D4',
+  },
+  {
+    id: 'together',
+    name: 'Together',
+    description: 'Open-source models at scale',
+    src: '/public/assets/icons/ai-models/together-color.svg',
+    supportedTypes: ['llm', 'embedding'],
+    color: '#7C3AED',
+  },
+  {
+    id: 'anthropic',
+    name: 'Anthropic',
+    description: 'Claude models for advanced text processing',
+    src: '/public/assets/icons/ai-models/claude-color.svg',
+    supportedTypes: ['llm'],
+    isPopular: true,
+    color: '#D97706',
   },
   {
     id: 'groq',
@@ -103,14 +126,6 @@ export const AVAILABLE_MODEL_PROVIDERS: ModelProvider[] = [
     color: '#1DA1F2',
   },
   {
-    id: 'together',
-    name: 'Together',
-    description: 'Open-source models at scale',
-    src: '/assets/icons/ai-models/together-color.svg',
-    supportedTypes: ['llm', 'embedding'],
-    color: '#7C3AED',
-  },
-  {
     id: 'fireworks',
     name: 'Fireworks',
     description: 'Fast inference for generative AI',
@@ -126,9 +141,34 @@ export const AVAILABLE_MODEL_PROVIDERS: ModelProvider[] = [
     supportedTypes: ['llm'],
     color: '#FF7000',
   },
+
+  {
+    id: 'sentenceTransformers',
+    name: 'Sentence Transformers',
+    description: 'Sentence Transformers models',
+    src: '/public/assets/icons/ai-models/sentence-transformers.png',
+    supportedTypes: ['embedding'],
+    color: '#0078D4',
+  },
+  {
+    id: 'jinaAI',
+    name: 'Jina AI',
+    description: 'Jina AI models',
+    src: '/public/assets/icons/ai-models/jina.svg',
+    supportedTypes: ['embedding'],
+    color: '#0078D4',
+  },
+  {
+    id: 'voyage',
+    name: 'Voyage',
+    description: 'Voyage models',
+    src: '/public/assets/icons/ai-models/voyage-color.svg',
+    supportedTypes: ['embedding'],
+    color: '#0078D4',
+  },
   {
     id: 'huggingface',
-    name: 'HuggingFace',
+    name: 'HuggingFace (System Provided)',
     description: 'Open-source transformer models',
     supportedTypes: ['embedding'],
     src: '/assets/icons/ai-models/huggingface-color.svg',
