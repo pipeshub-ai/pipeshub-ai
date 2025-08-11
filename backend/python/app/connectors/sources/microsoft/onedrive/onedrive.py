@@ -991,7 +991,7 @@ class OneDriveConnector:
         await self.onedrive_client.get_all_user_groups()
 
         all_active_users = await self.data_entities_processor.get_all_active_users()
-        active_user_emails = [active_user.email.lower() for active_user in all_active_users]
+        active_user_emails = {active_user.email.lower() for active_user in all_active_users}
 
         for user in users:
             if user.email.lower() in active_user_emails:
