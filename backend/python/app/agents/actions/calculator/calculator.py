@@ -1,6 +1,8 @@
 import logging
 
 from app.agents.tool.decorator import tool
+from app.agents.tool.enums import ParameterType
+from app.agents.tool.models import ToolParameter
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +29,24 @@ class Calculator:
             """
         return ["add", "subtract", "multiply", "divide", "power", "square root", "cube root"]
 
-    @tool(app_name="calculator", tool_name="calculate_single_operand")
+    @tool(
+        app_name="calculator",
+        tool_name="calculate_single_operand",
+        parameters=[
+            ToolParameter(
+                name="a",
+                type=ParameterType.NUMBER,
+                description="The first number",
+                required=True
+                ),
+            ToolParameter(
+                name="operation",
+                type=ParameterType.STRING,
+                description="The operation to use",
+                required=True
+                )
+            ]
+        )
     def calculate_single_operand(self, a: float, operation: str) -> float:
         """Calculate the result of a mathematical operation"""
         """
@@ -44,7 +63,30 @@ class Calculator:
         else:
             raise ValueError(f"Invalid operation: {operation}")
 
-    @tool(app_name="calculator", tool_name="calculate_two_operands")
+    @tool(
+        app_name="calculator",
+        tool_name="calculate_two_operands",
+        parameters=[
+            ToolParameter(
+                name="a",
+                type=ParameterType.NUMBER,
+                description="The first number",
+                required=True
+                ),
+            ToolParameter(
+                name="b",
+                type=ParameterType.NUMBER,
+                description="The second number",
+                required=True
+                ),
+            ToolParameter(
+                name="operation",
+                type=ParameterType.STRING,
+                description="The operation to use",
+                required=True
+                )
+        ]
+    )
     def calculate_two_operands(self, a: float, b: float, operation: str) -> float:
         """Calculate the result of a mathematical operation"""
         """

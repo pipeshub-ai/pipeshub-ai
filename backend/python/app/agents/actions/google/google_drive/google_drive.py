@@ -122,7 +122,7 @@ class GoogleDrive:
         try:
             file = self.service.files().get_media(fileId=file_id).execute() # type: ignore
             return True, file
-        except Exception as e:
+        except Exception:
             return False, None
 
     @drive_auth()

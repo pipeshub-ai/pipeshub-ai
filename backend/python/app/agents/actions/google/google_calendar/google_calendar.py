@@ -6,8 +6,8 @@ from googleapiclient.discovery import Resource
 
 from app.agents.actions.google.auth.auth import calendar_auth
 from app.agents.actions.google.google_calendar.config import GoogleCalendarConfig
-from app.utils.time_conversion import parse_timestamp
 from app.agents.tool.decorator import tool
+from app.utils.time_conversion import parse_timestamp
 
 
 class GoogleCalendar:

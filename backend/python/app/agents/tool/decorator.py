@@ -21,7 +21,7 @@ def tool(
     examples: Optional[List[Dict]] = None,
     tags: Optional[List[str]] = None,
     registry: Optional[ToolRegistry] = None
-):
+) -> Callable:
     """
     Decorator to register a function as a tool for LLM use
     Args:
@@ -67,7 +67,7 @@ def tool(
         setattr(func, '_tool_metadata', tool_obj)
 
         @functools.wraps(func)
-        def wrapper(*args, **kwargs):
+        def wrapper(*args, **kwargs) -> object:
             return func(*args, **kwargs)
 
         # Also add metadata to the wrapper

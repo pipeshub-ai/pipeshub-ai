@@ -19,9 +19,9 @@ How to Get These Credentials:
 4. Create OAuth 2.0 credentials and set environment variables
 """
 import functools
-from os import getenv
+import logging
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from google.auth.external_account_authorized_user import (
     Credentials as ExternalAccountCredential,
@@ -36,6 +36,8 @@ from app.agents.actions.google.auth.config import GoogleAuthConfig
 from app.agents.actions.google.gmail.config import GoogleGmailConfig
 from app.agents.actions.google.google_calendar.config import GoogleCalendarConfig
 from app.agents.actions.google.google_drive.config import GoogleDriveConfig
+
+logger = logging.getLogger(__name__)
 
 
 class GoogleAuthenticator:
@@ -67,7 +69,15 @@ class GoogleAuthenticator:
         ],
     }
 
-    def __init__(self, config: GoogleAuthConfig):
+    def __init__(self, config: GoogleAuthConfig) -> None:
+        """Initialize the Google Authenticator"""
+        """
+        Args:
+            config: Google authentication configuration
+        Returns:
+            None
+        """
+        logger.info("🚀 Initializing Google Authenticator")
         self.config = config
         self.credentials: Optional[OAuth2Credentials | ExternalAccountCredential] = None
         self.service = None
@@ -115,9 +125,9 @@ class GoogleAuthenticator:
         # Client configuration from environment variables
         client_config = {
             "installed": {
-                "client_id": getenv("GOOGLE_CLIENT_ID"),
-                "client_secret": getenv("GOOGLE_CLIENT_SECRET"),
-                "project_id": getenv("GOOGLE_PROJECT_ID"),
+                "client_id": "x",
+                "client_secret": "x",
+                "project_id": "x",
                 "auth_uri":"https://accounts.google.com/o/oauth2/auth",
                 "token_uri":"https://oauth2.googleapis.com/token",
                 "auth_provider_x509_cert_url":"https://www.googleapis.com/oauth2/v1/certs",
@@ -146,7 +156,7 @@ def google_auth(
     version: str = "v3",
     scopes: Optional[List[str]] = None,
     config: Optional[GoogleAuthConfig] = None
-):
+) -> Callable:
     """
     Decorator for Google API authentication
     Args:
@@ -155,9 +165,9 @@ def google_auth(
         scopes (Optional[List[str]]): OAuth scopes (uses defaults if None)
         config (Optional[GoogleAuthConfig]): Authentication configuration
     """
-    def decorator(func):
+    def decorator(func) -> Callable:
         @functools.wraps(func)
-        def wrapper(self, *args, **kwargs):
+        def wrapper(self, *args, **kwargs) -> object:
             # Get or create authenticator
             if not hasattr(self, '_google_authenticator'):
                 # Use provided config or create default
@@ -203,16 +213,16 @@ def google_auth(
         return wrapper
     return decorator
 
-def gmail_auth(scopes: Optional[List[str]] = None, config: Optional[GoogleGmailConfig] = None):
+def gmail_auth(scopes: Optional[List[str]] = None, config: Optional[GoogleGmailConfig] = None) -> Callable:
     """Decorator specifically for Gmail authentication"""
     return google_auth("gmail", "v3", scopes, config)
 
 
-def calendar_auth(scopes: Optional[List[str]] = None, config: Optional[GoogleCalendarConfig] = None):
+def calendar_auth(scopes: Optional[List[str]] = None, config: Optional[GoogleCalendarConfig] = None) -> Callable:
     """Decorator specifically for Google Calendar authentication"""
     return google_auth("calendar", "v3", scopes, config)
 
 
-def drive_auth(scopes: Optional[List[str]] = None, config: Optional[GoogleDriveConfig] = None):
+def drive_auth(scopes: Optional[List[str]] = None, config: Optional[GoogleDriveConfig] = None) -> Callable:
     """Decorator specifically for Google Drive authentication"""
     return google_auth("drive", "v3", scopes, config)

@@ -27,3 +27,9 @@ class Tool:
     returns: Optional[str] = None
     examples: List[Dict] = field(default_factory=list)
     tags: List[str] = field(default_factory=list)
+
+
+    @property
+    def name(self) -> str:
+        """Full tool name: app_name.tool_name"""
+        return f"{self.app_name}.{self.tool_name}"
