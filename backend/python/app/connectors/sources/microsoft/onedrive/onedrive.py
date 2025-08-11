@@ -14,9 +14,6 @@ from kiota_abstractions.request_information import RequestInformation
 from kiota_abstractions.serialization import Parsable, ParseNode, SerializationWriter
 from kiota_abstractions.serialization.parsable_factory import ParsableFactory
 from msgraph import GraphServiceClient
-from msgraph.generated.drives.item.items.item.create_link.create_link_post_request_body import (
-    CreateLinkPostRequestBody,
-)
 from msgraph.generated.groups.groups_request_builder import GroupsRequestBuilder
 from msgraph.generated.models.base_delta_function_response import (
     BaseDeltaFunctionResponse,
@@ -609,7 +606,7 @@ class OneDriveClient:
             async with self.rate_limiter:
                 item = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(item_id).get()
                 signed_url = item.additional_data.get("@microsoft.graph.downloadUrl")
-                
+
                 return signed_url
 
         except Exception as ex:
