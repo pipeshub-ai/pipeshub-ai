@@ -446,7 +446,7 @@ async def perform_embedding_health_check(
         try:
             test_embeddings = await asyncio.wait_for(
                 asyncio.to_thread(embedding_model.embed_documents, test_texts),
-                timeout=120.0  # 60 second timeout
+                timeout=120.0  # 120 second timeout
             )
 
             if not test_embeddings or len(test_embeddings) == 0:
