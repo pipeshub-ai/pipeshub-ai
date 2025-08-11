@@ -114,7 +114,6 @@ class DataSourceEntitiesProcessor:
         )
         await self.messaging_producer.initialize()
         orgs = await self.arango_service.get_all_orgs()
-        orgs = await self.arango_service.get_all_orgs()
         if not orgs:
             raise Exception("No organizations found in the database. Cannot initialize DataSourceEntitiesProcessor.")
         self.org_id = orgs[0]["_key"]
@@ -353,8 +352,6 @@ class DataSourceEntitiesProcessor:
 
     async def on_record_deleted(self, record_id: str) -> None:
         await self.arango_service.delete_record(record_id)
-        pass
-
 
     async def on_new_record_groups(self, record_groups: List[RecordGroup], permissions: List[Permission]) -> None:
         # Create a transaction

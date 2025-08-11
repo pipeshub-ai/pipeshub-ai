@@ -606,22 +606,11 @@ class OneDriveClient:
             str: The signed URL.
         """
         try:
-            # Import the required data model
-
-            expiration_datetime = datetime.now(timezone.utc) + timedelta(minutes=duration_minutes)
-
-            # Create the proper request body object
-            link_request_body = CreateLinkPostRequestBody()
-            link_request_body.type = "view"  # Other types: "edit", "embed", etc.
-            link_request_body.scope = "users"  # Anonymous link does not require authentication
-            link_request_body.expiration_date_time = expiration_datetime
-
             async with self.rate_limiter:
-                # Use the correct method chain
                 item = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(item_id).get()
                 signed_url = item.additional_data.get("@microsoft.graph.downloadUrl")
-            self.logger.info(f"Created signed URL for item {item_id} in drive {drive_id}, valid until {expiration_datetime}.")
-            return signed_url
+                
+                return signed_url
 
         except Exception as ex:
             self.logger.error(f"Error creating signed URL for item {item_id} in drive {drive_id}: {ex}")

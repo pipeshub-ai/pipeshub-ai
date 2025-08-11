@@ -37,7 +37,7 @@ class User(Node):
         return self.email is not None and self.email != ""
 
     def key(self) -> str:
-        return self._key
+        return self.email
 
     @staticmethod
     def from_arango_user(data: Dict[str, Any]) -> 'User':
