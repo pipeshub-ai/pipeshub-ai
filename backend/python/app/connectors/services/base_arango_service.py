@@ -3147,28 +3147,17 @@ class BaseArangoService:
         try:
             self.logger.info("🚀 Fetching all users from database")
 
-            if active:
-                # Updated query to check for belongsTo edge with organization
-                query = """
+            query = """
                 FOR edge IN belongsTo
                     FILTER edge._to == CONCAT('organizations/', @org_id)
                     AND edge.entityType == 'ORGANIZATION'
                     LET user = DOCUMENT(edge._from)
-                    FILTER user.isActive == true
-                    RETURN user
-                """
-
-            else:
-                query = """
-                FOR edge IN belongsTo
-                    FILTER edge._to == CONCAT('organizations/', @org_id)
-                    AND edge.entityType == 'ORGANIZATION'
-                    LET user = DOCUMENT(edge._from)
+                    FILTER @active == false OR user.isActive == true
                     RETURN user
                 """
 
             # Execute query with organization parameter
-            cursor = self.db.aql.execute(query, bind_vars={"org_id": org_id})
+            cursor = self.db.aql.execute(query, bind_vars={"org_id": org_id, "active": active})
             users = list(cursor)
 
             self.logger.info("✅ Successfully fetched %s users", len(users))

@@ -8,6 +8,7 @@ from typing import Union
 import dotenv
 from cachetools import LRUCache
 
+from app.config.constants.service import config_node_constants
 from app.config.key_value_store import KeyValueStore
 from app.utils.encryption.encryption_service import EncryptionService
 
@@ -81,7 +82,7 @@ class ConfigurationService:
 
     def _get_env_fallback(self, key: str) -> Union[dict, None]:
         """Get environment variable fallback for specific configuration keys"""
-        if key == "/services/kafka":
+        if key == config_node_constants.KAFKA.value:
             # Kafka configuration fallback
             kafka_brokers = os.getenv("KAFKA_BROKERS")
             if kafka_brokers:
@@ -93,7 +94,7 @@ class ConfigurationService:
                     "bootstrap_servers": brokers_list,
                     "brokers": brokers_list
                 }
-        elif key == "/services/arangodb":
+        elif key == config_node_constants.ARANGO.value:
             # ArangoDB configuration fallback
             arango_url = os.getenv("ARANGO_URL")
             if arango_url:
@@ -103,7 +104,7 @@ class ConfigurationService:
                     "password": os.getenv("ARANGO_PASSWORD", "your_password"),
                     "db": os.getenv("ARANGO_DB_NAME", "es")
                 }
-        elif key == "/services/redis":
+        elif key == config_node_constants.REDIS.value:
             # Redis configuration fallback
             redis_host = os.getenv("REDIS_HOST")
             if redis_host:
@@ -112,7 +113,7 @@ class ConfigurationService:
                     "port": int(os.getenv("REDIS_PORT", "6379")),
                     "password": os.getenv("REDIS_PASSWORD", "")
                 }
-        elif key == "/services/qdrant":
+        elif key == config_node_constants.QDRANT.value:
             # Qdrant configuration fallback
             qdrant_host = os.getenv("QDRANT_HOST")
             if qdrant_host:

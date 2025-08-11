@@ -112,7 +112,7 @@ class Record(BaseModel):
         )
 
     def to_kafka_record(self) -> Dict:
-        pass
+        raise NotImplementedError("Implement this method in the subclass")
 
 class FileRecord(Record):
     is_file: bool

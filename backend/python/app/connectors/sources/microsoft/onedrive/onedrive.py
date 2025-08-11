@@ -35,7 +35,7 @@ from app.connectors.sources.microsoft.onedrive.data_source_entities_processor im
     App,
     DataSourceEntitiesProcessor,
 )
-from app.models.entities import FileRecord, Record, RecordStatus, RecordType
+from app.models.entities import FileRecord, RecordStatus, RecordType
 from app.models.permission import EntityType, Permission, PermissionType
 from app.models.users import User, UserGroup
 from app.services.kafka_consumer import KafkaConsumerManager
@@ -843,9 +843,7 @@ class OneDriveConnector:
                 if hasattr(item, 'deleted') and item.deleted is not None:
                     # Handle deleted item
                     self.logger.info(f"Item {item.id} has been deleted")
-                    await self.data_entities_processor.on_record_deleted(Record(
-                        record_id=item.id,
-                    ))
+                    await self.data_entities_processor.on_record_deleted(record_id=item.id)
                     continue
 
                 # Process existing or new item

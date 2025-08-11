@@ -447,4 +447,5 @@ class DataSourceEntitiesProcessor:
 
     async def get_all_active_users(self) -> List[User]:
         users = await self.arango_service.get_users(self.org_id, active=True)
+
         return [User.from_arango_user(user) for user in users]
