@@ -114,6 +114,9 @@ class DataSourceEntitiesProcessor:
         )
         await self.messaging_producer.initialize()
         orgs = await self.arango_service.get_all_orgs()
+        orgs = await self.arango_service.get_all_orgs()
+        if not orgs:
+            raise Exception("No organizations found in the database. Cannot initialize DataSourceEntitiesProcessor.")
         self.org_id = orgs[0]["_key"]
 
 
