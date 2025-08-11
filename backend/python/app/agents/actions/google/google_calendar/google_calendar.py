@@ -7,6 +7,7 @@ from googleapiclient.discovery import Resource
 from app.agents.actions.google.auth.auth import calendar_auth
 from app.agents.actions.google.google_calendar.config import GoogleCalendarConfig
 from app.utils.time_conversion import parse_timestamp
+from app.agents.tool.decorator import tool
 
 
 class GoogleCalendar:
@@ -25,6 +26,7 @@ class GoogleCalendar:
         self.credentials: Optional[Credentials] = None
 
     @calendar_auth()
+    @tool(app_name="google_calendar", tool_name="get_calendar_events")
     def get_calendar_events(
         self,
     ) -> tuple[bool, str]:
@@ -44,6 +46,7 @@ class GoogleCalendar:
 
 
     @calendar_auth()
+    @tool(app_name="google_calendar", tool_name="create_calendar_event")
     def create_calendar_event(
         self,
         event_start_time: str,
@@ -101,25 +104,23 @@ class GoogleCalendar:
                     }
                     for attendee in event_attendees_emails or []
                 ],
-                "hangoutLink": event_meeting_link,
-                "timezone": event_timezone,
-                "allDay": event_all_day,
+                "conferenceData": {
+                    "createRequest": {
+                        "requestId": event_meeting_link,
+                        "conferenceSolutionKey": {
+                            "type": "hangoutsMeet",
+                        },
+                    },
+                } if event_meeting_link else None,
             }
 
-            if event_all_day:
-                event_config["start"]["date"] = event_start_time
-                event_config["end"]["date"] = event_end_time
-            else:
-                event_config["start"]["dateTime"] = event_start_time
-                event_config["end"]["dateTime"] = event_end_time
-
-            response = self.service.events().insert(calendarId=self.calendar_id, body=event_config).execute() # type: ignore
-
-            return True, json.dumps(response)
+            event = self.service.events().insert(calendarId=self.calendar_id, body=event_config).execute() # type: ignore
+            return True, json.dumps(event)
         except Exception as e:
             return False, json.dumps(str(e))
 
     @calendar_auth()
+    @tool(app_name="google_calendar", tool_name="update_calendar_event")
     def update_calendar_event(
         self,
         event_id: str,
@@ -137,7 +138,7 @@ class GoogleCalendar:
         """Update a calendar event"""
         """
         Args:
-            event_id: The id of the event
+            event_id: The ID of the event to update
             event_title: The title of the event
             event_description: The description of the event
             event_start_time: The start time of the event
@@ -152,51 +153,50 @@ class GoogleCalendar:
             tuple[bool, str]: True if the event is updated, False otherwise
         """
         try:
-            if not event_id:
-                return False, json.dumps({"error": "Event ID is required"})
-            existing_event = self.service.events().get(calendarId=self.calendar_id, eventId=event_id).execute() # type: ignore
+            event_config = {}
 
-            if not existing_event:
-                return False, json.dumps({"error": "Event not found"})
-
-            event_config = {
-                "summary": event_title or existing_event.get("summary"),
-                "description": event_description or existing_event.get("description"),
-                "start": {
-                    "dateTime": str(parse_timestamp(event_start_time or existing_event.get("start").get("dateTime"))),
-                },
-                "end": {
-                    "dateTime": str(parse_timestamp(event_end_time or existing_event.get("end").get("dateTime"))),
-                },
-                "location": event_location or existing_event.get("location"),
-                "organizer": {
-                    "email": event_organizer or existing_event.get("organizer").get("email"),
-                },
-                "attendees": [
+            if event_title:
+                event_config["summary"] = event_title
+            if event_description:
+                event_config["description"] = event_description
+            if event_start_time:
+                event_config["start"] = {
+                    "dateTime": str(parse_timestamp(event_start_time)),
+                }
+            if event_end_time:
+                event_config["end"] = {
+                    "dateTime": str(parse_timestamp(event_end_time)),
+                }
+            if event_location:
+                event_config["location"] = event_location
+            if event_organizer:
+                event_config["organizer"] = {
+                    "email": event_organizer,
+                }
+            if event_attendees_emails:
+                event_config["attendees"] = [
                     {
                         "email": attendee,
                     }
-                    for attendee in event_attendees_emails or [attendee.get("email") for attendee in existing_event.get("attendees", [])]
-                ],
-                "hangoutLink": event_meeting_link or existing_event.get("hangoutLink"),
-                "timezone": event_timezone or existing_event.get("start").get("timeZone"),
-                "allDay": event_all_day or existing_event.get("allDay"),
-            }
+                    for attendee in event_attendees_emails
+                ]
+            if event_meeting_link:
+                event_config["conferenceData"] = {
+                    "createRequest": {
+                        "requestId": event_meeting_link,
+                        "conferenceSolutionKey": {
+                            "type": "hangoutsMeet",
+                        },
+                    },
+                }
 
-            if event_all_day:
-                event_config["start"]["date"] = event_start_time
-                event_config["end"]["date"] = event_end_time
-            else:
-                event_config["start"]["dateTime"] = event_start_time
-                event_config["end"]["dateTime"] = event_end_time
-
-            response = self.service.events().update(calendarId=self.calendar_id, eventId=event_id, body=event_config).execute() # type: ignore
-            return True, json.dumps(response)
+            event = self.service.events().update(calendarId=self.calendar_id, eventId=event_id, body=event_config).execute() # type: ignore
+            return True, json.dumps(event)
         except Exception as e:
             return False, json.dumps(str(e))
 
-
     @calendar_auth()
+    @tool(app_name="google_calendar", tool_name="delete_calendar_event")
     def delete_calendar_event(
         self,
         event_id: str,
@@ -204,43 +204,42 @@ class GoogleCalendar:
         """Delete a calendar event"""
         """
         Args:
-            event_id: The id of the event
+            event_id: The ID of the event to delete
         Returns:
             tuple[bool, str]: True if the event is deleted, False otherwise
         """
         try:
-            if not event_id:
-                return False, json.dumps({"error": "Event ID is required"})
-            response = self.service.events().delete(calendarId=self.calendar_id, eventId=event_id).execute() # type: ignore
-            return True, json.dumps(response)
+            self.service.events().delete(calendarId=self.calendar_id, eventId=event_id).execute() # type: ignore
+            return True, json.dumps({"message": "Event deleted successfully"})
         except Exception as e:
             return False, json.dumps(str(e))
 
-
     @calendar_auth()
+    @tool(app_name="google_calendar", tool_name="get_calendar_list")
     def get_calendar_list(self) -> tuple[bool, str]:
-        """Get a list of calendars"""
+        """Get list of calendars"""
         """
         Returns:
             tuple[bool, str]: True if the calendars are fetched, False otherwise
         """
         try:
-            calendars = self.service.events().calendarList().list().execute() # type: ignore
+            calendars = self.service.calendarList().list().execute() # type: ignore
             return True, json.dumps(calendars)
         except Exception as e:
             return False, json.dumps(str(e))
 
     @calendar_auth()
+    @tool(app_name="google_calendar", tool_name="get_calendar_list_by_id")
     def get_calendar_list_by_id(
         self
     ) -> tuple[bool, str]:
-        """Get a calendar by id"""
+        """Get calendar by ID"""
         """
         Returns:
             tuple[bool, str]: True if the calendar is fetched, False otherwise
         """
         try:
-            calendar = self.service.events().calendarList().get(calendarId=self.calendar_id).execute() # type: ignore
+            calendar = self.service.calendars().get(calendarId=self.calendar_id).execute() # type: ignore
             return True, json.dumps(calendar)
         except Exception as e:
             return False, json.dumps(str(e))

@@ -7,6 +7,7 @@ from googleapiclient.discovery import Resource
 from app.agents.actions.google.auth.auth import gmail_auth
 from app.agents.actions.google.gmail.config import GoogleGmailConfig
 from app.agents.actions.google.gmail.utils import GmailUtils
+from app.agents.tool.decorator import tool
 
 
 class Gmail:
@@ -24,6 +25,7 @@ class Gmail:
         self.credentials: Optional[Credentials] = None
 
     @gmail_auth()
+    @tool(app_name="gmail", tool_name="reply")
     def reply(
         self,
         message_id: str,
@@ -73,6 +75,7 @@ class Gmail:
             return False, json.dumps(str(e))
 
     @gmail_auth()
+    @tool(app_name="gmail", tool_name="draft_email")
     def draft_email(
         self,
         mail_to: List[str],
@@ -116,6 +119,7 @@ class Gmail:
             return False, json.dumps(str(e))
 
     @gmail_auth()
+    @tool(app_name="gmail", tool_name="send_email")
     def send_email(
         self,
         mail_to: List[str],
@@ -163,6 +167,7 @@ class Gmail:
             return False, json.dumps(str(e))
 
     @gmail_auth()
+    @tool(app_name="gmail", tool_name="search_emails")
     def search_emails(
         self,
         query: str,
@@ -195,6 +200,7 @@ class Gmail:
             return False, json.dumps(str(e))
 
     @gmail_auth()
+    @tool(app_name="gmail", tool_name="get_email_details")
     def get_email_details(
         self,
         message_id: str,
@@ -208,7 +214,6 @@ class Gmail:
         """
         try:
             message = self.service.users().messages().get( # type: ignore
-                userId="me",
                 id=message_id,
                 format="full",
             ).execute() # type: ignore
@@ -224,6 +229,7 @@ class Gmail:
             return False, json.dumps(str(e))
 
     @gmail_auth()
+    @tool(app_name="gmail", tool_name="get_email_attachments")
     def get_email_attachments(
         self,
         message_id: str,
@@ -237,7 +243,6 @@ class Gmail:
         """
         try:
             message = self.service.users().messages().get( # type: ignore
-                userId="me",
                 id=message_id,
                 format="metadata",
             ).execute() # type: ignore

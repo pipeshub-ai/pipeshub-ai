@@ -6,6 +6,7 @@ from googleapiclient.discovery import Resource
 
 from app.agents.actions.google.auth.auth import drive_auth
 from app.agents.actions.google.google_drive.config import GoogleDriveConfig
+from app.agents.tool.decorator import tool
 
 
 class GoogleDrive:
@@ -23,6 +24,7 @@ class GoogleDrive:
         self.credentials: Optional[Credentials] = None
 
     @drive_auth()
+    @tool(app_name="google_drive", tool_name="get_files_list")
     def get_files_list(self, folder_id: Optional[str] = None, page_token: Optional[str] = None) -> tuple[bool, str]:
         """Get the list of files in the Google Drive"""
         """
@@ -50,6 +52,7 @@ class GoogleDrive:
             return False, json.dumps(str(e))
 
     @drive_auth()
+    @tool(app_name="google_drive", tool_name="create_folder")
     def create_folder(self, folder_name: str) -> tuple[bool, str]:
         """Create a folder in the Google Drive"""
         """
@@ -75,6 +78,7 @@ class GoogleDrive:
             return False, json.dumps(str(e))
 
     @drive_auth()
+    @tool(app_name="google_drive", tool_name="upload_file")
     def upload_file(self, file_name: str, file_content: BinaryIO, folder_id: Optional[str] = None) -> tuple[bool, str]:
         """Upload a file to the Google Drive
         """
@@ -105,26 +109,30 @@ class GoogleDrive:
             return False, json.dumps(str(e))
 
     @drive_auth()
+    @tool(app_name="google_drive", tool_name="download_file")
     def download_file(self, file_id: str) -> tuple[bool, Optional[BinaryIO]]:
-        """Download a file from the Google Drive"""
+        """Download a file from the Google Drive
+        """
         """
         Args:
-            file_id: The id of the file
+            file_id: The id of the file to download
         Returns:
             tuple[bool, Optional[BinaryIO]]: True if the file is downloaded, False otherwise
         """
         try:
             file = self.service.files().get_media(fileId=file_id).execute() # type: ignore
-            return True, file.content
-        except Exception:
+            return True, file
+        except Exception as e:
             return False, None
 
     @drive_auth()
+    @tool(app_name="google_drive", tool_name="delete_file")
     def delete_file(self, file_id: str) -> tuple[bool, str]:
-        """Delete a file from the Google Drive"""
+        """Delete a file from the Google Drive
+        """
         """
         Args:
-            file_id: The id of the file
+            file_id: The id of the file to delete
         Returns:
             tuple[bool, str]: True if the file is deleted, False otherwise
         """
@@ -135,13 +143,15 @@ class GoogleDrive:
             return False, json.dumps(str(e))
 
     @drive_auth()
+    @tool(app_name="google_drive", tool_name="get_file_details")
     def get_file_details(self, file_id: str) -> tuple[bool, str]:
-        """Get the details of a file in the Google Drive"""
+        """Get the details of a file in the Google Drive
+        """
         """
         Args:
-            file_id: The id of the file
+            file_id: The id of the file to get the details of
         Returns:
-            tuple[bool, str]: True if the file is retrieved, False otherwise
+            tuple[bool, str]: True if the file details are retrieved, False otherwise
         """
         try:
             file = self.service.files().get(fileId=file_id).execute() # type: ignore

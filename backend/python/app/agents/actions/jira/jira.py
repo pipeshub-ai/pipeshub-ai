@@ -7,6 +7,7 @@ from app.agents.actions.jira.config import (
     JiraTokenConfig,
     JiraUsernamePasswordConfig,
 )
+from app.agents.tool.decorator import tool
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ class Jira:
             logger.error(f"Failed to initialize JIRA: {e}")
             raise ValueError(f"Failed to initialize JIRA: {e}")
 
+    @tool(app_name="jira", tool_name="create_issue")
     def create_issue(self, issue_type: str, summary: str, description: str, project_key: str) -> tuple[bool, str]:
         """Create a new issue in JIRA"""
         """Args:
@@ -68,6 +70,7 @@ class Jira:
             logger.error(f"Failed to create issue: {e}")
             return (False, json.dumps({"error": str(e)}))
 
+    @tool(app_name="jira", tool_name="get_issue")
     def get_issue(self, issue_id: str) -> tuple[bool, str]:
         """Get an issue from JIRA"""
         """
@@ -93,6 +96,7 @@ class Jira:
             logger.error(f"Failed to get issue: {e}")
             return (False, json.dumps({"error": str(e)}))
 
+    @tool(app_name="jira", tool_name="update_issue")
     def update_issue(self, issue_id: str, summary: str, description: str) -> tuple[bool, str]:
         """Update an issue in JIRA"""
         """
@@ -120,6 +124,7 @@ class Jira:
             logger.error(f"Failed to update issue: {e}")
             return (False, json.dumps({"error": str(e)}))
 
+    @tool(app_name="jira", tool_name="delete_issue")
     def delete_issue(self, issue_id: str) -> tuple[bool, str]:
         """Delete an issue from JIRA"""
         """
@@ -138,6 +143,7 @@ class Jira:
             logger.error(f"Failed to delete issue: {e}")
             return (False, json.dumps({"error": str(e)}))
 
+    @tool(app_name="jira", tool_name="get_issue_comments")
     def get_issue_comments(self, issue_id: str) -> tuple[bool, str]:
         """Get comments for an issue"""
         """
@@ -157,6 +163,7 @@ class Jira:
             logger.error(f"Failed to get comments: {e}")
             return (False, json.dumps({"error": str(e)}))
 
+    @tool(app_name="jira", tool_name="add_comment")
     def add_comment(self, issue_id: str, comment: str) -> tuple[bool, str]:
         """Add a comment to an issue"""
         """
@@ -177,6 +184,7 @@ class Jira:
             logger.error(f"Failed to add comment: {e}")
             return (False, json.dumps({"error": str(e)}))
 
+    @tool(app_name="jira", tool_name="get_issue_attachments")
     def get_issue_attachments(self, issue_id: str) -> tuple[bool, str]:
         """Get attachments for an issue"""
         """
@@ -196,6 +204,7 @@ class Jira:
             logger.error(f"Failed to get attachments: {e}")
             return (False, json.dumps({"error": str(e)}))
 
+    @tool(app_name="jira", tool_name="assign_issue")
     def assign_issue(self, issue_id: str, assignee_id: str) -> tuple[bool, str]:
         """Assign an issue to a user"""
         """
@@ -216,6 +225,7 @@ class Jira:
             logger.error(f"Failed to assign issue: {e}")
             return (False, json.dumps({"error": str(e)}))
 
+    @tool(app_name="jira", tool_name="get_issue_assignee")
     def get_issue_assignee(self, issue_id: str) -> tuple[bool, str]:
         """Get the assignee of an issue"""
         """
@@ -235,6 +245,7 @@ class Jira:
             logger.error(f"Failed to get assignee: {e}")
             return (False, json.dumps({"error": str(e)}))
 
+    @tool(app_name="jira", tool_name="get_issue_status")
     def get_issue_status(self, issue_id: str) -> tuple[bool, str]:
         """Get the status of an issue"""
         """
@@ -254,6 +265,7 @@ class Jira:
             logger.error(f"Failed to get status: {e}")
             return (False, json.dumps({"error": str(e)}))
 
+    @tool(app_name="jira", tool_name="get_issue_priority")
     def get_issue_priority(self, issue_id: str) -> tuple[bool, str]:
         """Get the priority of an issue"""
         """
@@ -273,6 +285,7 @@ class Jira:
             logger.error(f"Failed to get priority: {e}")
             return (False, json.dumps({"error": str(e)}))
 
+    @tool(app_name="jira", tool_name="search_issues")
     def search_issues(self, query: str, expand: Optional[str] = None, limit: Optional[int] = None) -> tuple[bool, str]:
         """Search for issues in JIRA"""
         """

@@ -7,6 +7,7 @@ from app.agents.actions.confluence.config import (
     ConfluenceTokenConfig,
     ConfluenceUsernamePasswordConfig,
 )
+from app.agents.tool.decorator import tool
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ class Confluence:
             logger.error(f"Failed to initialize Confluence: {e}")
             raise
 
+    @tool(app_name="confluence", tool_name="create_page")
     def create_page(self, space: str, page_title: str, page_content: str, parent_id: Optional[str] = None) -> tuple[bool, str]:
         """Create a new page in Confluence
         """
@@ -65,6 +67,7 @@ class Confluence:
             logger.error(f"Failed to create page: {e}")
             return (False, json.dumps({"error": str(e)}))
 
+    @tool(app_name="confluence", tool_name="get_page")
     def get_page(self, page_id: str) -> tuple[bool, str]:
         """Get a page from Confluence
         """
@@ -81,6 +84,7 @@ class Confluence:
             logger.error(f"Failed to get page: {e}")
             return (False, json.dumps({"error": str(e)}))
 
+    @tool(app_name="confluence", tool_name="update_page")
     def update_page(self, page_id: str, page_title: str, page_content: str) -> tuple[bool, str]:
         """Update a page in Confluence
         """
@@ -99,6 +103,7 @@ class Confluence:
             logger.error(f"Failed to update page: {e}")
             return (False, json.dumps({"error": str(e)}))
 
+    @tool(app_name="confluence", tool_name="delete_page")
     def delete_page(self, page_id: str) -> tuple[bool, str]:
         """Delete a page from Confluence
         """
@@ -115,6 +120,7 @@ class Confluence:
             logger.error(f"Failed to delete page: {e}")
             return (False, json.dumps({"error": str(e)}))
 
+    @tool(app_name="confluence", tool_name="get_page_children")
     def get_page_children(self, page_id: str) -> tuple[bool, str]:
         """Get the children of a page in Confluence
         """
@@ -131,6 +137,7 @@ class Confluence:
             logger.error(f"Failed to get page children: {e}")
             return (False, json.dumps({"error": str(e)}))
 
+    @tool(app_name="confluence", tool_name="get_page_ancestors")
     def get_page_ancestors(self, page_id: str) -> tuple[bool, str]:
         """Get the ancestors of a page in Confluence
         """
@@ -147,6 +154,7 @@ class Confluence:
             logger.error(f"Failed to get page ancestors: {e}")
             return (False, json.dumps({"error": str(e)}))
 
+    @tool(app_name="confluence", tool_name="get_page_descendants")
     def get_page_descendants(self, page_id: str) -> tuple[bool, str]:
         """Get the descendants of a page in Confluence
         """
@@ -163,6 +171,7 @@ class Confluence:
             logger.error(f"Failed to get page descendants: {e}")
             return (False, json.dumps({"error": str(e)}))
 
+    @tool(app_name="confluence", tool_name="get_page_parent")
     def get_page_parent(self, page_id: str) -> tuple[bool, str]:
         """Get the parent of a page in Confluence
         """
@@ -179,6 +188,7 @@ class Confluence:
             logger.error(f"Failed to get page parent: {e}")
             return (False, json.dumps({"error": str(e)}))
 
+    @tool(app_name="confluence", tool_name="search_pages")
     def search_pages(self, query: str, expand: Optional[str] = None, limit: Optional[int] = None) -> tuple[bool, str]:
         """Search for pages in Confluence
         """

@@ -2,6 +2,7 @@ import json
 from typing import Optional
 
 from app.agents.actions.github.config import GithubConfig
+from app.agents.tool.decorator import tool
 
 
 class Github:
@@ -17,6 +18,7 @@ class Github:
         self.config = config
         self.client = config.create_client()
 
+    @tool(app_name="github", tool_name="create_repo")
     def create_repo(
         self,
         repo_name: str,

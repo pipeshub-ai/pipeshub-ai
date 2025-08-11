@@ -3,6 +3,7 @@ import logging
 from typing import Optional
 
 from app.agents.actions.slack.config import SlackTokenConfig
+from app.agents.tool.decorator import tool
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,7 @@ class Slack:
         self.config = config
         self.client = config.create_client()
 
+    @tool(app_name="slack", tool_name="send_message")
     def send_message(self, channel: str, message: str) -> tuple[bool, str]:
         """Send a message to a channel"""
         """
@@ -35,6 +37,7 @@ class Slack:
             logger.error(f"Failed to send message: {e}")
             return (False, json.dumps({"error": str(e)}))
 
+    @tool(app_name="slack", tool_name="get_channel_history")
     def get_channel_history(self, channel: str) -> tuple[bool, str]:
         """Get the history of a channel"""
         """
@@ -50,6 +53,7 @@ class Slack:
             logger.error(f"Failed to get channel history: {e}")
             return (False, json.dumps({"error": str(e)}))
 
+    @tool(app_name="slack", tool_name="get_channel_info")
     def get_channel_info(self, channel: str) -> tuple[bool, str]:
         """Get the info of a channel"""
         """
@@ -65,6 +69,7 @@ class Slack:
             logger.error(f"Failed to get channel info: {e}")
             return (False, json.dumps({"error": str(e)}))
 
+    @tool(app_name="slack", tool_name="get_user_info")
     def get_user_info(self, user: str) -> tuple[bool, str]:
         """Get the info of a user"""
         """
@@ -80,6 +85,7 @@ class Slack:
             logger.error(f"Failed to get user info: {e}")
             return (False, json.dumps({"error": str(e)}))
 
+    @tool(app_name="slack", tool_name="fetch_channels")
     def fetch_channels(self) -> tuple[bool, str]:
         """Fetch all channels"""
         """
@@ -93,6 +99,7 @@ class Slack:
             logger.error(f"Failed to fetch channels: {e}")
             return (False, json.dumps({"error": str(e)}))
 
+    @tool(app_name="slack", tool_name="search_messages")
     def search_messages(self, query: str, limit: Optional[int] = None) -> tuple[bool, str]:
         """Search for messages in a channel"""
         """
@@ -109,6 +116,7 @@ class Slack:
             logger.error(f"Failed to search messages: {e}")
             return (False, json.dumps({"error": str(e)}))
 
+    @tool(app_name="slack", tool_name="get_user_presence")
     def get_user_presence(self, user: str) -> tuple[bool, str]:
         """Get the presence of a user"""
         """
@@ -124,6 +132,7 @@ class Slack:
             logger.error(f"Failed to get user presence: {e}")
             return (False, json.dumps({"error": str(e)}))
 
+    @tool(app_name="slack", tool_name="get_channel_users")
     def get_channel_users(self, channel: str) -> tuple[bool, str]:
         """Get the list of users in a channel"""
         """
@@ -139,6 +148,7 @@ class Slack:
             logger.error(f"Failed to get channel users: {e}")
             return (False, json.dumps({"error": str(e)}))
 
+    @tool(app_name="slack", tool_name="get_channel_members")
     def get_channel_members(self, channel: str) -> tuple[bool, str]:
         """Get the list of members in a channel"""
         """
@@ -154,6 +164,7 @@ class Slack:
             logger.error(f"Failed to get channel members: {e}")
             return (False, json.dumps({"error": str(e)}))
 
+    @tool(app_name="slack", tool_name="get_channel_members_by_id")
     def get_channel_members_by_id(self, channel_id: str) -> tuple[bool, str]:
         """Get the list of members in a channel using the conversations.members method"""
         """
@@ -169,6 +180,7 @@ class Slack:
             logger.error(f"Failed to get channel members using conversations.members: {e}")
             return (False, json.dumps({"error": str(e)}))
 
+    @tool(app_name="slack", tool_name="get_channel_members_by_name")
     def get_channel_members_by_name(self, channel_name: str) -> tuple[bool, str]:
         """Get the list of members in a channel using the conversations.members method"""
         """
@@ -184,11 +196,13 @@ class Slack:
             logger.error(f"Failed to get channel members using conversations.members: {e}")
             return (False, json.dumps({"error": str(e)}))
 
+    @tool(app_name="slack", tool_name="get_channel_members_by_id_and_name")
     def get_channel_members_by_id_and_name(self, channel_id: str, channel_name: str) -> tuple[bool, str]:
         """Get the list of members in a channel using the conversations.members method"""
         """
         Args:
             channel_id: The channel to get the list of members in
+            channel_name: The channel name
         Returns:
             A tuple with a boolean indicating success/failure and a JSON string with the list of members
         """

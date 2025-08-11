@@ -1,5 +1,7 @@
 import logging
 
+from app.agents.tool.decorator import tool
+
 logger = logging.getLogger(__name__)
 
 
@@ -25,6 +27,7 @@ class Calculator:
             """
         return ["add", "subtract", "multiply", "divide", "power", "square root", "cube root"]
 
+    @tool(app_name="calculator", tool_name="calculate_single_operand")
     def calculate_single_operand(self, a: float, operation: str) -> float:
         """Calculate the result of a mathematical operation"""
         """
@@ -41,6 +44,7 @@ class Calculator:
         else:
             raise ValueError(f"Invalid operation: {operation}")
 
+    @tool(app_name="calculator", tool_name="calculate_two_operands")
     def calculate_two_operands(self, a: float, b: float, operation: str) -> float:
         """Calculate the result of a mathematical operation"""
         """
