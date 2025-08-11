@@ -19,7 +19,8 @@ class ToolParameter:
 @dataclass
 class Tool:
     """Represents a tool that can be called by an LLM"""
-    name: str
+    app_name: str
+    tool_name: str
     description: str
     function: Callable[[Any], Any]
     parameters: List[ToolParameter] = field(default_factory=list)

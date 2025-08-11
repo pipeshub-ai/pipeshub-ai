@@ -11,13 +11,13 @@ class ToolRegistry:
 
     def register(self, tool: Tool):
         """Register a tool in the registry"""
-        if tool.name in self._tools:
-            raise ValueError(f"Tool '{tool.name}' is already registered")
-        self._tools[tool.name] = tool
+        if f"{tool.app_name}.{tool.tool_name}" in self._tools:
+            raise ValueError(f"Tool '{tool.tool_name}' is already registered")
+        self._tools[f"{tool.app_name}.{tool.tool_name}"] = tool
 
-    def get_tool(self, name: str) -> Optional[Tool]:
+    def get_tool(self, app_name: str, tool_name: str) -> Optional[Tool]:
         """Get a tool by name"""
-        return self._tools.get(name)
+        return self._tools.get(f"{app_name}.{tool_name}")
 
     def list_tools(self) -> List[str]:
         """List all registered tool names"""
@@ -34,7 +34,7 @@ class ToolRegistry:
             schema = {
                 "type": "function",
                 "function": {
-                    "name": tool.name,
+                    "name": f"{tool.app_name}.{tool.tool_name}",
                     "description": tool.description,
                     "parameters": {
                         "type": "object",
@@ -68,7 +68,7 @@ class ToolRegistry:
         schemas = []
         for tool in self._tools.values():
             schema = {
-                "name": tool.name,
+                "name": f"{tool.app_name}.{tool.tool_name}",
                 "description": tool.description,
                 "input_schema": {
                     "type": "object",

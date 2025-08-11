@@ -13,7 +13,8 @@ from app.agents.tool.registry import ToolRegistry, _global_tools_registry
 
 
 def tool(
-    name: Optional[str] = None,
+    app_name: str,
+    tool_name: str,
     description: Optional[str] = None,
     parameters: Optional[List[ToolParameter]] = None,
     returns: Optional[str] = None,
@@ -24,7 +25,8 @@ def tool(
     """
     Decorator to register a function as a tool for LLM use
     Args:
-        name: Tool name (defaults to function name)
+        app_name: Tool app name
+        tool_name: Tool name
         description: Tool description (defaults to docstring)
         parameters: List of ToolParameter objects defining the function parameters
         returns: Description of what the tool returns
@@ -34,7 +36,10 @@ def tool(
     """
     def decorator(func: Callable) -> Callable:
         # Extract metadata
-        tool_name = name or func.__name__
+        if not app_name:
+            raise ValueError("app_name must be provided")
+        if not tool_name:
+            raise ValueError("tool_name must be provided")
         tool_description = description or (func.__doc__ or "").strip()
 
         # Auto-generate parameters from function signature if not provided
@@ -44,7 +49,8 @@ def tool(
 
         # Create and register the tool
         tool_obj = Tool(
-            name=tool_name,
+            app_name=app_name,
+            tool_name=tool_name,
             description=tool_description,
             function=func,
             parameters=tool_parameters or [],

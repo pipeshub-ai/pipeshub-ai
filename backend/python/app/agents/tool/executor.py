@@ -1,4 +1,3 @@
-import json
 from typing import Any, Dict, Optional
 
 from app.agents.tool.registry import ToolRegistry, _global_tools_registry
@@ -10,7 +9,7 @@ class ToolExecutor:
     def __init__(self, registry: Optional[ToolRegistry] = None):
         self.registry = registry or _global_tools_registry
 
-    def execute(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
+    def execute(self, app_name: str, tool_name: str, arguments: Dict[str, Any]) -> Any:
         """
         Execute a tool with the given arguments
         Args:
@@ -19,7 +18,7 @@ class ToolExecutor:
         Returns:
             The result of the tool execution
         """
-        tool = self.registry.get_tool(tool_name)
+        tool = self.registry.get_tool(app_name, tool_name)
         if not tool:
             raise ValueError(f"Tool '{tool_name}' not found")
 
@@ -43,10 +42,8 @@ class ToolExecutor:
         Returns:
             The result of the tool execution
         """
+        app_name = llm_response.get("name") or llm_response.get("function", {}).get("name")
         tool_name = llm_response.get("name") or llm_response.get("function", {}).get("name")
         arguments = llm_response.get("arguments") or llm_response.get("function", {}).get("arguments")
 
-        if isinstance(arguments, str):
-            arguments = json.loads(arguments)
-
-        return self.execute(tool_name, arguments)
+        return self.execute(app_name, tool_name, arguments)
