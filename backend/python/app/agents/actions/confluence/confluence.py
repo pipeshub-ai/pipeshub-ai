@@ -8,6 +8,8 @@ from app.agents.actions.confluence.config import (
     ConfluenceUsernamePasswordConfig,
 )
 from app.agents.tool.decorator import tool
+from app.agents.tool.enums import ParameterType
+from app.agents.tool.models import ToolParameter
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +34,36 @@ class Confluence:
             logger.error(f"Failed to initialize Confluence: {e}")
             raise
 
-    @tool(app_name="confluence", tool_name="create_page")
+    @tool(
+        app_name="confluence",
+        tool_name="create_page",
+        parameters=[
+            ToolParameter(
+                name="space",
+                type=ParameterType.STRING,
+                description="The space key where the page will be created",
+                required=True
+            ),
+            ToolParameter(
+                name="page_title",
+                type=ParameterType.STRING,
+                description="The title of the page to create",
+                required=True
+            ),
+            ToolParameter(
+                name="page_content",
+                type=ParameterType.STRING,
+                description="The content of the page in Confluence markup",
+                required=True
+            ),
+            ToolParameter(
+                name="parent_id",
+                type=ParameterType.STRING,
+                description="The ID of the parent page (optional)",
+                required=False
+            )
+        ]
+    )
     def create_page(self, space: str, page_title: str, page_content: str, parent_id: Optional[str] = None) -> tuple[bool, str]:
         """Create a new page in Confluence
         """
@@ -67,7 +98,18 @@ class Confluence:
             logger.error(f"Failed to create page: {e}")
             return (False, json.dumps({"error": str(e)}))
 
-    @tool(app_name="confluence", tool_name="get_page")
+    @tool(
+        app_name="confluence",
+        tool_name="get_page",
+        parameters=[
+            ToolParameter(
+                name="page_id",
+                type=ParameterType.STRING,
+                description="The ID of the page to retrieve",
+                required=True
+            )
+        ]
+    )
     def get_page(self, page_id: str) -> tuple[bool, str]:
         """Get a page from Confluence
         """
@@ -84,7 +126,30 @@ class Confluence:
             logger.error(f"Failed to get page: {e}")
             return (False, json.dumps({"error": str(e)}))
 
-    @tool(app_name="confluence", tool_name="update_page")
+    @tool(
+        app_name="confluence",
+        tool_name="update_page",
+        parameters=[
+            ToolParameter(
+                name="page_id",
+                type=ParameterType.STRING,
+                description="The ID of the page to update",
+                required=True
+            ),
+            ToolParameter(
+                name="page_title",
+                type=ParameterType.STRING,
+                description="The new title for the page",
+                required=True
+            ),
+            ToolParameter(
+                name="page_content",
+                type=ParameterType.STRING,
+                description="The new content for the page in Confluence markup",
+                required=True
+            )
+        ]
+    )
     def update_page(self, page_id: str, page_title: str, page_content: str) -> tuple[bool, str]:
         """Update a page in Confluence
         """
@@ -98,12 +163,28 @@ class Confluence:
         """
         try:
             page = self.confluence.update_page(page_id, page_title, page_content)
-            return (True, json.dumps(page))
+            return (True, json.dumps({
+                "confluence_url": f"{self.config.base_url}/display/{page.id}",
+                "page_id": page.id,
+                "page_title": page.title,
+                "page_content": page.body
+            }))
         except Exception as e:
             logger.error(f"Failed to update page: {e}")
             return (False, json.dumps({"error": str(e)}))
 
-    @tool(app_name="confluence", tool_name="delete_page")
+    @tool(
+        app_name="confluence",
+        tool_name="delete_page",
+        parameters=[
+            ToolParameter(
+                name="page_id",
+                type=ParameterType.STRING,
+                description="The ID of the page to delete",
+                required=True
+            )
+        ]
+    )
     def delete_page(self, page_id: str) -> tuple[bool, str]:
         """Delete a page from Confluence
         """
@@ -111,24 +192,37 @@ class Confluence:
         Args:
             page_id: The ID of the page
         Returns:
-            A tuple with a boolean indicating success/failure and a JSON string with the page details
+            A tuple with a boolean indicating success/failure and a JSON string with the deletion result
         """
         try:
             self.confluence.delete_page(page_id)
-            return (True, json.dumps({"message": "Page deleted successfully"}))
+            return (True, json.dumps({
+                "message": f"Page {page_id} deleted successfully"
+            }))
         except Exception as e:
             logger.error(f"Failed to delete page: {e}")
             return (False, json.dumps({"error": str(e)}))
 
-    @tool(app_name="confluence", tool_name="get_page_children")
+    @tool(
+        app_name="confluence",
+        tool_name="get_page_children",
+        parameters=[
+            ToolParameter(
+                name="page_id",
+                type=ParameterType.STRING,
+                description="The ID of the parent page to get children for",
+                required=True
+            )
+        ]
+    )
     def get_page_children(self, page_id: str) -> tuple[bool, str]:
-        """Get the children of a page in Confluence
+        """Get the children of a page
         """
         """
         Args:
             page_id: The ID of the page
         Returns:
-            A tuple with a boolean indicating success/failure and a JSON string with the page details
+            A tuple with a boolean indicating success/failure and a JSON string with the children pages
         """
         try:
             children = self.confluence.get_page_children(page_id)
@@ -137,15 +231,26 @@ class Confluence:
             logger.error(f"Failed to get page children: {e}")
             return (False, json.dumps({"error": str(e)}))
 
-    @tool(app_name="confluence", tool_name="get_page_ancestors")
+    @tool(
+        app_name="confluence",
+        tool_name="get_page_ancestors",
+        parameters=[
+            ToolParameter(
+                name="page_id",
+                type=ParameterType.STRING,
+                description="The ID of the page to get ancestors for",
+                required=True
+            )
+        ]
+    )
     def get_page_ancestors(self, page_id: str) -> tuple[bool, str]:
-        """Get the ancestors of a page in Confluence
+        """Get the ancestors of a page
         """
         """
         Args:
             page_id: The ID of the page
         Returns:
-            A tuple with a boolean indicating success/failure and a JSON string with the page details
+            A tuple with a boolean indicating success/failure and a JSON string with the ancestor pages
         """
         try:
             ancestors = self.confluence.get_page_ancestors(page_id)
@@ -154,15 +259,26 @@ class Confluence:
             logger.error(f"Failed to get page ancestors: {e}")
             return (False, json.dumps({"error": str(e)}))
 
-    @tool(app_name="confluence", tool_name="get_page_descendants")
+    @tool(
+        app_name="confluence",
+        tool_name="get_page_descendants",
+        parameters=[
+            ToolParameter(
+                name="page_id",
+                type=ParameterType.STRING,
+                description="The ID of the page to get descendants for",
+                required=True
+            )
+        ]
+    )
     def get_page_descendants(self, page_id: str) -> tuple[bool, str]:
-        """Get the descendants of a page in Confluence
+        """Get the descendants of a page
         """
         """
         Args:
             page_id: The ID of the page
         Returns:
-            A tuple with a boolean indicating success/failure and a JSON string with the page details
+            A tuple with a boolean indicating success/failure and a JSON string with the descendant pages
         """
         try:
             descendants = self.confluence.get_page_descendants(page_id)
@@ -171,15 +287,26 @@ class Confluence:
             logger.error(f"Failed to get page descendants: {e}")
             return (False, json.dumps({"error": str(e)}))
 
-    @tool(app_name="confluence", tool_name="get_page_parent")
+    @tool(
+        app_name="confluence",
+        tool_name="get_page_parent",
+        parameters=[
+            ToolParameter(
+                name="page_id",
+                type=ParameterType.STRING,
+                description="The ID of the page to get the parent for",
+                required=True
+            )
+        ]
+    )
     def get_page_parent(self, page_id: str) -> tuple[bool, str]:
-        """Get the parent of a page in Confluence
+        """Get the parent of a page
         """
         """
         Args:
             page_id: The ID of the page
         Returns:
-            A tuple with a boolean indicating success/failure and a JSON string with the page details
+            A tuple with a boolean indicating success/failure and a JSON string with the parent page
         """
         try:
             parent = self.confluence.get_page_parent(page_id)
@@ -188,40 +315,53 @@ class Confluence:
             logger.error(f"Failed to get page parent: {e}")
             return (False, json.dumps({"error": str(e)}))
 
-    @tool(app_name="confluence", tool_name="search_pages")
+    @tool(
+        app_name="confluence",
+        tool_name="search_pages",
+        parameters=[
+            ToolParameter(
+                name="query",
+                type=ParameterType.STRING,
+                description="The search query to find pages",
+                required=True
+            ),
+            ToolParameter(
+                name="expand",
+                type=ParameterType.STRING,
+                description="Fields to expand in search results",
+                required=False
+            ),
+            ToolParameter(
+                name="limit",
+                type=ParameterType.INTEGER,
+                description="Maximum number of pages to return",
+                required=False
+            )
+        ]
+    )
     def search_pages(self, query: str, expand: Optional[str] = None, limit: Optional[int] = None) -> tuple[bool, str]:
         """Search for pages in Confluence
         """
         """
         Args:
-            query: The query to search for
-            expand: The expand to search for
-            limit: The limit of the search results
+            query: The search query to find pages
+            expand: Fields to expand in search results
+            limit: Maximum number of pages to return
         Returns:
             A tuple with a boolean indicating success/failure and a JSON string with the search results
         """
         try:
-            search_results = self.confluence.search_pages(query=query, expand=expand, limit=limit) # type: ignore
-            return (True, json.dumps(search_results))
+            results = self.confluence.search_pages(query, expand=expand, limit=limit)
+            return (True, json.dumps(results))
         except Exception as e:
             logger.error(f"Failed to search pages: {e}")
             return (False, json.dumps({"error": str(e)}))
 
     def __get_space_id(self, space: str) -> Optional[str]:
-        """Get the ID of a space in Confluence
-        """
-        """
-        Args:
-            space: The name of the space
-        Returns:
-            The ID of the space
-        """
+        """Get the space ID from the space key"""
         try:
-            spaces = self.confluence.get_spaces()
-            for space in spaces:
-                if space.name == space: # type: ignore
-                    return space.id # type: ignore
-            return None
+            space_info = self.confluence.get_space(space)
+            return space_info['id']
         except Exception as e:
-            logger.error(f"Failed to get space: {e}")
+            logger.error(f"Failed to get space ID: {e}")
             return None

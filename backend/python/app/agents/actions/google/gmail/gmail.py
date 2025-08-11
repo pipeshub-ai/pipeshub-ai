@@ -8,6 +8,8 @@ from app.agents.actions.google.auth.auth import gmail_auth
 from app.agents.actions.google.gmail.config import GoogleGmailConfig
 from app.agents.actions.google.gmail.utils import GmailUtils
 from app.agents.tool.decorator import tool
+from app.agents.tool.enums import ParameterType
+from app.agents.tool.models import ToolParameter
 
 
 class Gmail:
@@ -25,7 +27,64 @@ class Gmail:
         self.credentials: Optional[Credentials] = None
 
     @gmail_auth()
-    @tool(app_name="gmail", tool_name="reply")
+    @tool(
+        app_name="gmail",
+        tool_name="reply",
+        parameters=[
+            ToolParameter(
+                name="message_id",
+                type=ParameterType.STRING,
+                description="The ID of the email to reply to",
+                required=True
+            ),
+            ToolParameter(
+                name="mail_to",
+                type=ParameterType.ARRAY,
+                description="List of email addresses to send the reply to",
+                required=True,
+                items={"type": "string"}
+            ),
+            ToolParameter(
+                name="mail_subject",
+                type=ParameterType.STRING,
+                description="The subject of the reply email",
+                required=True
+            ),
+            ToolParameter(
+                name="mail_cc",
+                type=ParameterType.ARRAY,
+                description="List of email addresses to CC",
+                required=False,
+                items={"type": "string"}
+            ),
+            ToolParameter(
+                name="mail_bcc",
+                type=ParameterType.ARRAY,
+                description="List of email addresses to BCC",
+                required=False,
+                items={"type": "string"}
+            ),
+            ToolParameter(
+                name="mail_body",
+                type=ParameterType.STRING,
+                description="The body content of the reply email",
+                required=False
+            ),
+            ToolParameter(
+                name="mail_attachments",
+                type=ParameterType.ARRAY,
+                description="List of file paths to attach",
+                required=False,
+                items={"type": "string"}
+            ),
+            ToolParameter(
+                name="thread_id",
+                type=ParameterType.STRING,
+                description="The thread ID to maintain conversation context",
+                required=False
+            )
+        ]
+    )
     def reply(
         self,
         message_id: str,
@@ -75,7 +134,52 @@ class Gmail:
             return False, json.dumps(str(e))
 
     @gmail_auth()
-    @tool(app_name="gmail", tool_name="draft_email")
+    @tool(
+        app_name="gmail",
+        tool_name="draft_email",
+        parameters=[
+            ToolParameter(
+                name="mail_to",
+                type=ParameterType.ARRAY,
+                description="List of email addresses to send the email to",
+                required=True,
+                items={"type": "string"}
+            ),
+            ToolParameter(
+                name="mail_subject",
+                type=ParameterType.STRING,
+                description="The subject of the email",
+                required=True
+            ),
+            ToolParameter(
+                name="mail_cc",
+                type=ParameterType.ARRAY,
+                description="List of email addresses to CC",
+                required=False,
+                items={"type": "string"}
+            ),
+            ToolParameter(
+                name="mail_bcc",
+                type=ParameterType.ARRAY,
+                description="List of email addresses to BCC",
+                required=False,
+                items={"type": "string"}
+            ),
+            ToolParameter(
+                name="mail_body",
+                type=ParameterType.STRING,
+                description="The body content of the email",
+                required=False
+            ),
+            ToolParameter(
+                name="mail_attachments",
+                type=ParameterType.ARRAY,
+                description="List of file paths to attach",
+                required=False,
+                items={"type": "string"}
+            )
+        ]
+    )
     def draft_email(
         self,
         mail_to: List[str],
@@ -106,20 +210,77 @@ class Gmail:
                 mail_body,
                 mail_attachments,
             )
-            message = self.service.users().drafts().create( # type: ignore
-                userId="me",
-                body=message_body,
-            ).execute() # type: ignore
 
+            draft = self.service.users().drafts().create( # type: ignore
+                userId="me",
+                body={"message": message_body},
+            ).execute() # type: ignore
             return True, json.dumps({
-                "message_id": message.get("id", ""),
-                "message" : message,
+                "draft_id": draft.get("id", ""),
+                "draft": draft,
             })
         except Exception as e:
             return False, json.dumps(str(e))
 
     @gmail_auth()
-    @tool(app_name="gmail", tool_name="send_email")
+    @tool(
+        app_name="gmail",
+        tool_name="send_email",
+        parameters=[
+            ToolParameter(
+                name="mail_to",
+                type=ParameterType.ARRAY,
+                description="List of email addresses to send the email to",
+                required=True,
+                items={"type": "string"}
+            ),
+            ToolParameter(
+                name="mail_subject",
+                type=ParameterType.STRING,
+                description="The subject of the email",
+                required=True
+            ),
+            ToolParameter(
+                name="mail_cc",
+                type=ParameterType.ARRAY,
+                description="List of email addresses to CC",
+                required=False,
+                items={"type": "string"}
+            ),
+            ToolParameter(
+                name="mail_bcc",
+                type=ParameterType.ARRAY,
+                description="List of email addresses to BCC",
+                required=False,
+                items={"type": "string"}
+            ),
+            ToolParameter(
+                name="mail_body",
+                type=ParameterType.STRING,
+                description="The body content of the email",
+                required=False
+            ),
+            ToolParameter(
+                name="mail_attachments",
+                type=ParameterType.ARRAY,
+                description="List of file paths to attach",
+                required=False,
+                items={"type": "string"}
+            ),
+            ToolParameter(
+                name="thread_id",
+                type=ParameterType.STRING,
+                description="The thread ID to maintain conversation context",
+                required=False
+            ),
+            ToolParameter(
+                name="message_id",
+                type=ParameterType.STRING,
+                description="The message ID for threading",
+                required=False
+            )
+        ]
+    )
     def send_email(
         self,
         mail_to: List[str],
@@ -140,13 +301,12 @@ class Gmail:
             mail_subject: The subject of the email
             mail_body: The body of the email
             mail_attachments: List of attachments to send with the email (file paths)
+            thread_id: The thread id of the email
+            message_id: The message id of the email
         Returns:
             tuple[bool, str]: True if the email is sent, False otherwise
         """
         try:
-            if not GmailUtils.validate_email_list(mail_to + (mail_cc or []) + (mail_bcc or [])):
-                return False, json.dumps({"error": "Invalid email addresses"})
-
             message_body = GmailUtils.transform_message_body(
                 mail_to,
                 mail_subject,
@@ -158,27 +318,54 @@ class Gmail:
                 message_id,
             )
 
-            message = self.service.users().messages().send(userId="me", body=message_body).execute() # type: ignore
+            message = self.service.users().messages().send( # type: ignore
+                userId="me",
+                body=message_body,
+            ).execute() # type: ignore
             return True, json.dumps({
                 "message_id": message.get("id", ""),
-                "message" : message,
+                "message": message,
             })
         except Exception as e:
             return False, json.dumps(str(e))
 
     @gmail_auth()
-    @tool(app_name="gmail", tool_name="search_emails")
+    @tool(
+        app_name="gmail",
+        tool_name="search_emails",
+        parameters=[
+            ToolParameter(
+                name="query",
+                type=ParameterType.STRING,
+                description="The search query to find emails (Gmail search syntax)",
+                required=True
+            ),
+            ToolParameter(
+                name="max_results",
+                type=ParameterType.INTEGER,
+                description="Maximum number of emails to return",
+                required=False
+            ),
+            ToolParameter(
+                name="page_token",
+                type=ParameterType.STRING,
+                description="Token for pagination to get next page of results",
+                required=False
+            )
+        ]
+    )
     def search_emails(
         self,
         query: str,
         max_results: Optional[int] = 10,
         page_token: Optional[str] = None,
     ) -> tuple[bool, str]:
-        """Search for emails"""
+        """Search for emails in Gmail"""
         """
         Args:
-            query: The query to search for
-            max_results: The maximum number of results to return
+            query: The search query to find emails
+            max_results: Maximum number of emails to return
+            page_token: Token for pagination to get next page of results
         Returns:
             tuple[bool, str]: True if the emails are searched, False otherwise
         """
@@ -189,69 +376,87 @@ class Gmail:
                 maxResults=max_results,
                 pageToken=page_token,
             ).execute() # type: ignore
-
-            return True, json.dumps({
-                "messages": messages.get("messages", []),
-                "nextPageToken": messages.get("nextPageToken", None),
-                "totalResults": messages.get("resultSizeEstimate", 0),
-                "pageToken": messages.get("nextPageToken", None),
-            })
+            return True, json.dumps(messages)
         except Exception as e:
             return False, json.dumps(str(e))
 
     @gmail_auth()
-    @tool(app_name="gmail", tool_name="get_email_details")
+    @tool(
+        app_name="gmail",
+        tool_name="get_email_details",
+        parameters=[
+            ToolParameter(
+                name="message_id",
+                type=ParameterType.STRING,
+                description="The ID of the email to get details for",
+                required=True
+            )
+        ]
+    )
     def get_email_details(
         self,
         message_id: str,
     ) -> tuple[bool, str]:
-        """Get the details of an email"""
+        """Get detailed information about a specific email"""
         """
         Args:
-            message_id: The id of the email
+            message_id: The ID of the email
         Returns:
-            tuple[bool, str]: True if the email is retrieved, False otherwise
+            tuple[bool, str]: True if the email details are retrieved, False otherwise
         """
         try:
             message = self.service.users().messages().get( # type: ignore
+                userId="me",
                 id=message_id,
                 format="full",
             ).execute() # type: ignore
-
-            return True, json.dumps({
-                "message": message,
-                "message_id": message.get("id", ""),
-                "message_body": message.get("payload", {}).get("body", {}).get("data", ""),
-                "message_headers": message.get("payload", {}).get("headers", []),
-                "message_attachments": message.get("payload", {}).get("parts", []),
-            })
+            return True, json.dumps(message)
         except Exception as e:
             return False, json.dumps(str(e))
 
     @gmail_auth()
-    @tool(app_name="gmail", tool_name="get_email_attachments")
+    @tool(
+        app_name="gmail",
+        tool_name="get_email_attachments",
+        parameters=[
+            ToolParameter(
+                name="message_id",
+                type=ParameterType.STRING,
+                description="The ID of the email to get attachments for",
+                required=True
+            )
+        ]
+    )
     def get_email_attachments(
         self,
         message_id: str,
     ) -> tuple[bool, str]:
-        """Get the attachments of an email"""
+        """Get attachments from a specific email"""
         """
         Args:
-            message_id: The id of the email
+            message_id: The ID of the email
         Returns:
-            tuple[bool, str]: True if the attachments are retrieved, False otherwise
+            tuple[bool, str]: True if the email attachments are retrieved, False otherwise
         """
         try:
             message = self.service.users().messages().get( # type: ignore
+                userId="me",
                 id=message_id,
-                format="metadata",
+                format="full",
             ).execute() # type: ignore
 
-            return True, json.dumps({
-                "message": message,
-                "message_id": message.get("id", ""),
-                "message_attachments": message.get("payload", {}).get("parts", []),
-            })
+            attachments = []
+            if "payload" in message and "parts" in message["payload"]:
+                for part in message["payload"]["parts"]:
+                    if part.get("filename"):
+                        attachments.append({
+                            "attachment_id": part["body"]["attachmentId"],
+                            "filename": part["filename"],
+                            "mime_type": part["mimeType"],
+                            "size": part["body"]["size"]
+                        })
+
+            return True, json.dumps(attachments)
         except Exception as e:
             return False, json.dumps(str(e))
 

@@ -7,6 +7,8 @@ from googleapiclient.discovery import Resource
 from app.agents.actions.google.auth.auth import drive_auth
 from app.agents.actions.google.google_drive.config import GoogleDriveConfig
 from app.agents.tool.decorator import tool
+from app.agents.tool.enums import ParameterType
+from app.agents.tool.models import ToolParameter
 
 
 class GoogleDrive:
@@ -24,7 +26,24 @@ class GoogleDrive:
         self.credentials: Optional[Credentials] = None
 
     @drive_auth()
-    @tool(app_name="google_drive", tool_name="get_files_list")
+    @tool(
+        app_name="google_drive",
+        tool_name="get_files_list",
+        parameters=[
+            ToolParameter(
+                name="folder_id",
+                type=ParameterType.STRING,
+                description="The ID of the folder to list files from (optional, defaults to root)",
+                required=False
+            ),
+            ToolParameter(
+                name="page_token",
+                type=ParameterType.STRING,
+                description="Token for pagination to get next page of files",
+                required=False
+            )
+        ]
+    )
     def get_files_list(self, folder_id: Optional[str] = None, page_token: Optional[str] = None) -> tuple[bool, str]:
         """Get the list of files in the Google Drive"""
         """
@@ -35,8 +54,9 @@ class GoogleDrive:
             tuple[bool, str]: True if the file list is retrieved, False otherwise
         """
         try:
+            query = f"'{folder_id}' in parents and trashed=false" if folder_id else "trashed=false"
             files = self.service.files().list( # type: ignore
-                q=f"'{folder_id}' in parents and trashed=false",
+                q=query,
                 spaces="drive",
                 fields="nextPageToken, files(id, name, mimeType, size, webViewLink, md5Checksum, sha1Checksum, sha256Checksum, headRevisionId, parents, createdTime, modifiedTime, trashed, trashedTime, fileExtension)",
                 pageToken=page_token,
@@ -52,7 +72,18 @@ class GoogleDrive:
             return False, json.dumps(str(e))
 
     @drive_auth()
-    @tool(app_name="google_drive", tool_name="create_folder")
+    @tool(
+        app_name="google_drive",
+        tool_name="create_folder",
+        parameters=[
+            ToolParameter(
+                name="folder_name",
+                type=ParameterType.STRING,
+                description="The name of the folder to create",
+                required=True
+            )
+        ]
+    )
     def create_folder(self, folder_name: str) -> tuple[bool, str]:
         """Create a folder in the Google Drive"""
         """
@@ -78,7 +109,30 @@ class GoogleDrive:
             return False, json.dumps(str(e))
 
     @drive_auth()
-    @tool(app_name="google_drive", tool_name="upload_file")
+    @tool(
+        app_name="google_drive",
+        tool_name="upload_file",
+        parameters=[
+            ToolParameter(
+                name="file_name",
+                type=ParameterType.STRING,
+                description="The name to give the uploaded file",
+                required=True
+            ),
+            ToolParameter(
+                name="file_content",
+                type=ParameterType.STRING,
+                description="The content of the file to upload (file path or content)",
+                required=True
+            ),
+            ToolParameter(
+                name="folder_id",
+                type=ParameterType.STRING,
+                description="The ID of the folder to upload the file to (optional)",
+                required=False
+            )
+        ]
+    )
     def upload_file(self, file_name: str, file_content: BinaryIO, folder_id: Optional[str] = None) -> tuple[bool, str]:
         """Upload a file to the Google Drive
         """
@@ -95,7 +149,7 @@ class GoogleDrive:
                 media_body=file_content,
                 body={
                     "name": file_name,
-                    "parents": [folder_id],
+                    "parents": [folder_id] if folder_id else [],
                     "mimeType": "application/vnd.google-apps.file",
                 },
             ).execute() # type: ignore
@@ -104,12 +158,24 @@ class GoogleDrive:
                 "file_name": file.get("name", ""),
                 "file_parents": file.get("parents", []),
                 "file_mimeType": file.get("mimeType", ""),
+                "file_size": file.get("size", ""),
             })
         except Exception as e:
             return False, json.dumps(str(e))
 
     @drive_auth()
-    @tool(app_name="google_drive", tool_name="download_file")
+    @tool(
+        app_name="google_drive",
+        tool_name="download_file",
+        parameters=[
+            ToolParameter(
+                name="file_id",
+                type=ParameterType.STRING,
+                description="The ID of the file to download",
+                required=True
+            )
+        ]
+    )
     def download_file(self, file_id: str) -> tuple[bool, Optional[BinaryIO]]:
         """Download a file from the Google Drive
         """
@@ -120,13 +186,24 @@ class GoogleDrive:
             tuple[bool, Optional[BinaryIO]]: True if the file is downloaded, False otherwise
         """
         try:
-            file = self.service.files().get_media(fileId=file_id).execute() # type: ignore
+            file = self.service.files().get_media(fileId=file_id) # type: ignore
             return True, file
         except Exception:
             return False, None
 
     @drive_auth()
-    @tool(app_name="google_drive", tool_name="delete_file")
+    @tool(
+        app_name="google_drive",
+        tool_name="delete_file",
+        parameters=[
+            ToolParameter(
+                name="file_id",
+                type=ParameterType.STRING,
+                description="The ID of the file to delete",
+                required=True
+            )
+        ]
+    )
     def delete_file(self, file_id: str) -> tuple[bool, str]:
         """Delete a file from the Google Drive
         """
@@ -138,23 +215,46 @@ class GoogleDrive:
         """
         try:
             self.service.files().delete(fileId=file_id).execute() # type: ignore
-            return True, json.dumps({"message": "File deleted successfully"})
+            return True, json.dumps({
+                "message": f"File {file_id} deleted successfully"
+            })
         except Exception as e:
             return False, json.dumps(str(e))
 
     @drive_auth()
-    @tool(app_name="google_drive", tool_name="get_file_details")
+    @tool(
+        app_name="google_drive",
+        tool_name="get_file_details",
+        parameters=[
+            ToolParameter(
+                name="file_id",
+                type=ParameterType.STRING,
+                description="The ID of the file to get details for",
+                required=True
+            )
+        ]
+    )
     def get_file_details(self, file_id: str) -> tuple[bool, str]:
-        """Get the details of a file in the Google Drive
+        """Get the details of a file from the Google Drive
         """
         """
         Args:
-            file_id: The id of the file to get the details of
+            file_id: The id of the file to get details for
         Returns:
             tuple[bool, str]: True if the file details are retrieved, False otherwise
         """
         try:
             file = self.service.files().get(fileId=file_id).execute() # type: ignore
-            return True, json.dumps(file)
+            return True, json.dumps({
+                "file_id": file.get("id", ""),
+                "file_name": file.get("name", ""),
+                "file_mimeType": file.get("mimeType", ""),
+                "file_size": file.get("size", ""),
+                "file_webViewLink": file.get("webViewLink", ""),
+                "file_parents": file.get("parents", []),
+                "file_createdTime": file.get("createdTime", ""),
+                "file_modifiedTime": file.get("modifiedTime", ""),
+                "file_trashed": file.get("trashed", False),
+            })
         except Exception as e:
             return False, json.dumps(str(e))
