@@ -101,7 +101,7 @@ class ConfigurationService:
                 return {
                     "url": arango_url,
                     "username": os.getenv("ARANGO_USERNAME", "root"),
-                    "password": os.getenv("ARANGO_PASSWORD", "your_password"),
+                    "password": os.getenv("ARANGO_PASSWORD"),
                     "db": os.getenv("ARANGO_DB_NAME", "es")
                 }
         elif key == config_node_constants.REDIS.value:
