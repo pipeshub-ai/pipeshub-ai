@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 class SyncStatus(Enum):
@@ -30,7 +30,7 @@ class ISyncService(ABC):
     """Base interface for synchronization operations for a data source"""
 
     @abstractmethod
-    async def initialize(self, org_id: str, sync_config: Dict[str, Any] = None) -> bool:
+    async def initialize(self, org_id: str, sync_config: Optional[Dict[str, Any]] = None) -> bool:
         """Initialize the sync service"""
         pass
 
@@ -45,27 +45,27 @@ class ISyncService(ABC):
         pass
 
     @abstractmethod
-    async def start_sync(self, org_id: str, sync_config: Dict[str, Any] = None) -> bool:
+    async def start_sync(self, org_id: str, sync_config: Optional[Dict[str, Any]] = None) -> bool:
         """Start a sync operation"""
         pass
 
     @abstractmethod
-    async def pause_sync(self, org_id: str, sync_id: str = None) -> bool:
+    async def pause_sync(self, org_id: str, sync_id: Optional[str] = None) -> bool:
         """Pause a sync operation"""
         pass
 
     @abstractmethod
-    async def resume_sync(self, org_id: str, sync_id: str = None) -> bool:
+    async def resume_sync(self, org_id: str, sync_id: Optional[str] = None) -> bool:
         """Resume a sync operation"""
         pass
 
     @abstractmethod
-    async def stop_sync(self, org_id: str, sync_id: str = None) -> bool:
+    async def stop_sync(self, org_id: str, sync_id: Optional[str] = None) -> bool:
         """Stop a sync operation"""
         pass
 
     @abstractmethod
-    async def get_sync_progress(self, org_id: str, sync_id: str = None) -> SyncProgress:
+    async def get_sync_progress(self, org_id: str, sync_id: Optional[str] = None) -> SyncProgress:
         """Get sync progress"""
         pass
 

@@ -5,7 +5,7 @@ from typing import Any, Dict, List
 from app.connectors.core.interfaces.batch_service.ibatch_service import (
     IBatchOperationsService,
 )
-from app.connectors.core.interfaces.data_service.data_service import IDataService
+from app.connectors.core.interfaces.data_service.idata_service import IDataService
 
 
 class BaseBatchOperationsService(IBatchOperationsService, ABC):

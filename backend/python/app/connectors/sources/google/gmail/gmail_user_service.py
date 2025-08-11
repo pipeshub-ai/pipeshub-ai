@@ -733,7 +733,7 @@ class GmailUserService:
                 creds_data = await self.google_token_handler.get_enterprise_token(
                     self.org_id
                 )
-            self.logger.info(f"🚀 Google workspace config: {creds_data}")
+
             enable_real_time_updates = creds_data.get("enableRealTimeUpdates", False)
             self.logger.info(f"🚀 Enable real time updates: {enable_real_time_updates}")
             if not enable_real_time_updates:

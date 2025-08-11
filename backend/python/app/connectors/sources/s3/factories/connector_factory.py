@@ -2,6 +2,9 @@
 
 import logging
 
+from app.connectors.core.base.error.error import BaseErrorHandlingService
+from app.connectors.core.base.event_service.event_service import BaseEventService
+from app.connectors.core.base.rate_limiter.rate_limiter import BaseRateLimiter
 from app.connectors.core.factory.connector_factory import UniversalConnectorFactory
 from app.connectors.core.interfaces.connector.iconnector_service import (
     IConnectorService,
@@ -11,7 +14,9 @@ from app.connectors.sources.s3.config.config import S3_CONFIG
 from app.connectors.sources.s3.services.connector_service import S3ConnectorService
 from app.connectors.sources.s3.services.data_processor import S3DataProcessor
 from app.connectors.sources.s3.services.data_service import S3DataService
+from app.connectors.sources.s3.services.sync_service import S3SyncService
 from app.connectors.sources.s3.services.token_service import S3TokenService
+from app.connectors.sources.s3.services.user_service import S3UserService
 
 
 class S3ConnectorFactory:
@@ -26,6 +31,11 @@ class S3ConnectorFactory:
             token_service_class=S3TokenService,
             data_service_class=S3DataService,
             data_processor_class=S3DataProcessor,
+            sync_service_class=S3SyncService,
+            user_service_class=S3UserService,
+            error_service_class=BaseErrorHandlingService,
+            event_service_class=BaseEventService,
+            rate_limiter_class=BaseRateLimiter,
             config=S3_CONFIG
         )
 

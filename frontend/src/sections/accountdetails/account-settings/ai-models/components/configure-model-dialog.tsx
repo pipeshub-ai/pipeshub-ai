@@ -31,7 +31,6 @@ import DynamicForm, { DynamicFormRef } from 'src/components/dynamic-form/compone
 import { ModelProvider, ConfiguredModel, ModelType } from '../types';
 import { modelService } from '../services/universal-config';
 
-
 interface ModelConfigurationDialogProps {
   open: boolean;
   onClose: () => void;
@@ -264,7 +263,7 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
       <Dialog
         open={open}
         onClose={onClose}
-        maxWidth="lg"
+        maxWidth="md"
         fullWidth
         PaperProps={{
           sx: {
@@ -296,7 +295,12 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
               }}
             >
               {selectedProvider.src ? (
-                <img src={selectedProvider.src} alt={selectedProvider.name} width={22} height={22} />
+                <img
+                  src={selectedProvider.src}
+                  alt={selectedProvider.name}
+                  width={22}
+                  height={22}
+                />
               ) : (
                 <Iconify icon={robotIcon} width={22} height={22} />
               )}
@@ -481,10 +485,7 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
             disabled={!canSubmit || isSubmitting}
             startIcon={isSubmitting ? <CircularProgress size={16} /> : undefined}
             sx={{
-              bgcolor: 'white',
-              '&:hover': {
-                bgcolor: 'white',
-              },
+              bgcolor: 'primary.main',
             }}
           >
             {isSubmitting

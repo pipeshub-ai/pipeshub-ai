@@ -175,7 +175,6 @@ record_schema = {
                     "AUTO_INDEX_OFF"
                 ],
             },
-            "mimeType": {"type": ["string", "null"]},
             "isLatestVersion": {"type": "boolean", "default": True},
             "isDirty": {"type": "boolean", "default": False},  # needs re indexing
             "reason": {"type": ["string", "null"]},  # fail reason, didn't index reason

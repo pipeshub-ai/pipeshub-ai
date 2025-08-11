@@ -35,7 +35,6 @@ export const modelService = {
         configuration: modelData.configuration,
         isMultimodal: modelData.isMultimodal || false,
         isDefault: modelData.isDefault || false,
-        name: modelData.name,
       };
 
       const response = await axios.post(
@@ -63,7 +62,6 @@ export const modelService = {
         configuration: modelData.configuration,
         isMultimodal: modelData.isMultimodal || false,
         isDefault: modelData.isDefault || false,
-        name: modelData.name,
       };
 
       const response = await axios.put(
@@ -161,14 +159,12 @@ export const modelService = {
         provider,
         configuration: cleanConfig,
         isDefault: true,
-        name: existingModel.name,
       });
     }
     return this.addModel('llm', {
       provider,
       configuration: cleanConfig,
       isDefault: true,
-      name: `${provider} LLM Model`,
     });
   },
 
@@ -189,14 +185,12 @@ export const modelService = {
         provider,
         configuration: cleanConfig,
         isDefault: true,
-        name: existingModel.name,
       });
     }
     return this.addModel('embedding', {
       provider,
       configuration: cleanConfig,
       isDefault: true,
-      name: `${provider} Embedding Model`,
     });
   },
 };

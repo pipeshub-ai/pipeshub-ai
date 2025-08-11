@@ -98,6 +98,8 @@ class KafkaService:
         try:
             # Ensure producer is ready
             await self._ensure_producer()
+
+            # Standardize event format
             formatted_event = {
                 "eventType": event_data.get("eventType", EventTypes.NEW_RECORD.value),
                 "timestamp": get_epoch_timestamp_in_ms(),

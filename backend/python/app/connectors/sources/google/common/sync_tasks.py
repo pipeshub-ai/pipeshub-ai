@@ -151,7 +151,7 @@ class SyncTasks:
         """
         Manual task to control sync operations
         Args:
-            action: 'start', 'pause', or 'resume'
+            action: 'start', 'pause', 'resume', 'init', 'user', 'resync', 'reindex', 'stop'
             org_id: Organization ID
         """
         try:
@@ -201,14 +201,14 @@ class SyncTasks:
             return {"status": "error", "message": f"Invalid action: {action}"}
 
         except Exception as e:
-            self.logger.error(f"Error in manual sync control: {str(e)}")
+            self.logger.error(f"OLDDDDDDDDD Error in manual sync control: {str(e)}")
             return {"status": "error", "message": str(e)}
 
     async def gmail_manual_sync_control(self, action: str, org_id) -> dict:
         """
         Manual task to control sync operations
         Args:
-            action: 'start', 'pause', or 'resume'
+            action: 'start', 'pause', 'resume', 'init', 'user', 'resync', 'reindex', 'stop'
             org_id: Organization ID
         """
         try:
@@ -258,5 +258,5 @@ class SyncTasks:
             return {"status": "error", "message": f"Invalid action: {action}"}
 
         except Exception as e:
-            self.logger.error(f"Error in manual sync control: {str(e)}")
+            self.logger.error(f"OLDDDDDDDDD Error in manual sync control: {str(e)}")
             return {"status": "error", "message": str(e)}

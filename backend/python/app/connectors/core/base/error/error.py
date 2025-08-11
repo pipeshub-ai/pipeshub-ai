@@ -2,7 +2,7 @@ import logging
 from abc import ABC
 from typing import Any, Dict
 
-from app.connectors.core.interfaces.error.error import IErrorHandlingService
+from app.connectors.core.interfaces.error.ierror import IErrorHandlingService
 
 
 class BaseErrorHandlingService(IErrorHandlingService, ABC):

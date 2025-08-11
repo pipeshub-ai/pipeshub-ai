@@ -1,216 +1,57 @@
 import asyncio
-import json
-from typing import Dict, List
 from uuid import uuid4
 
-from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
-from dependency_injector.wiring import inject
-
-from app.config.constants.arangodb import (
+from app.config.utils.named_constants.arangodb_constants import (
     AccountType,
     CollectionNames,
     Connectors,
 )
-from app.config.constants.service import KafkaConfig, config_node_constants
-
-# Import required services
+from app.connectors.core.base.event_service.event_service import BaseEventService
+from app.connectors.sources.google.common.arango_service import ArangoService
 from app.containers.connector import (
+    ConnectorAppContainer,
     initialize_enterprise_account_services_fn,
     initialize_individual_account_services_fn,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
-class EntityKafkaRouteConsumer:
-    def __init__(
-        self, logger, config_service, arango_service, routes=[], app_container=None
-    ) -> None:
+class EntityEventService(BaseEventService):
+    def __init__(self, logger,
+                arango_service: ArangoService,
+                app_container: ConnectorAppContainer) -> None:
         self.logger = logger
-        self.producer = None
-        self.consumer = None
-        self.running = False
-        self.config_service = config_service
         self.arango_service = arango_service
-        self.routes = routes
-        self.processed_messages: Dict[str, List[int]] = {}
-        self.app_container = app_container  # Store the app container reference
-        self.route_mapping = {
-            "entity-events": {
-                "orgCreated": self.handle_org_created,
-                "orgUpdated": self.handle_org_updated,
-                "orgDeleted": self.handle_org_deleted,
-                "userAdded": self.handle_user_added,
-                "userUpdated": self.handle_user_updated,
-                "userDeleted": self.handle_user_deleted,
-                "appEnabled": self.handle_app_enabled,
-                "appDisabled": self.handle_app_disabled,
-                "llmConfigured": self.handle_llm_configured,
-                "embeddingModelConfigured": self.handle_embedding_configured,
-            },
-        }
+        self.app_container = app_container
 
-    async def create_consumer_and_producer(self) -> None:
-        """Initialize the Kafka consumer and producer"""
+    async def process_event(self, event_type: str, payload: dict) -> bool:
+        """Handle entity-related events by calling appropriate handlers"""
         try:
-            async def get_kafka_config() -> dict:
-                kafka_config = await self.config_service.get_config(
-                    config_node_constants.KAFKA.value
-                )
-                brokers = kafka_config['brokers']
-                return {
-                    'bootstrap_servers': ",".join(brokers),
-                    'group_id': 'record_consumer_group',
-                    'auto_offset_reset': 'earliest',
-                    'enable_auto_commit': True,
-                    'client_id': KafkaConfig.CLIENT_ID_RECORDS.value
-                }
-
-            kafka_config = await get_kafka_config()
-
-            # Initialize consumer with aiokafka
-            self.consumer = AIOKafkaConsumer(
-                'entity-events',
-                **kafka_config
-            )
-
-            # Initialize producer with aiokafka
-            producer_config = {
-                'bootstrap_servers': kafka_config['bootstrap_servers'],
-                'client_id': 'entity_producer'
-            }
-            self.producer = AIOKafkaProducer(**producer_config)
-
-            # Start consumer and producer
-            await self.consumer.start()
-            await self.producer.start()
-
-            self.logger.info("Successfully initialized aiokafka consumer and producer for topics: entity-events")
+            self.logger.info(f"Processing entity event: {event_type}")
+            if event_type == "orgCreated":
+                return await self.__handle_org_created(payload)
+            elif event_type == "orgUpdated":
+                return await self.__handle_org_updated(payload)
+            elif event_type == "orgDeleted":
+                return await self.__handle_org_deleted(payload)
+            elif event_type == "userAdded":
+                return await self.__handle_user_added(payload)
+            elif event_type == "userUpdated":
+                return await self.__handle_user_updated(payload)
+            elif event_type == "userDeleted":
+                return await self.__handle_user_deleted(payload)
+            elif event_type == "appEnabled":
+                return await self.__handle_app_enabled(payload)
+            elif event_type == "appDisabled":
+                return await self.__handle_app_disabled(payload)
+            else:
+                self.logger.error(f"Unknown entity event type: {event_type}")
+                return False
         except Exception as e:
-            self.logger.error(f"Failed to create consumer and producer: {e}")
-            raise
-
-    def is_message_processed(self, message_id: str) -> bool:
-        """Check if a message has already been processed."""
-        topic_partition = "-".join(message_id.split("-")[:-1])
-        offset = int(message_id.split("-")[-1])
-        return (
-            topic_partition in self.processed_messages
-            and offset in self.processed_messages[topic_partition]
-        )
-
-    def mark_message_processed(self, message_id: str) -> None:
-        """Mark a message as processed."""
-        topic_partition = "-".join(message_id.split("-")[:-1])
-        offset = int(message_id.split("-")[-1])
-        if topic_partition not in self.processed_messages:
-            self.processed_messages[topic_partition] = []
-        self.processed_messages[topic_partition].append(offset)
-
-    @inject
-    async def process_message(self, message) -> bool:
-        """Process incoming Kafka messages and route them to appropriate handlers"""
-        message_id = None
-        try:
-            message_id = f"{message.topic}-{message.partition}-{message.offset}"
-            self.logger.debug(f"Processing message {message_id}")
-
-            if self.is_message_processed(message_id):
-                self.logger.info(f"Message {message_id} already processed, skipping")
-                return True
-
-            topic = message.topic
-            message_value = message.value
-            value = None
-            event_type = None
-
-            # Message decoding and parsing
-            try:
-                if isinstance(message_value, bytes):
-                    message_value = message_value.decode("utf-8")
-                    self.logger.debug(f"Decoded bytes message for {message_id}")
-
-                if isinstance(message_value, str):
-                    try:
-                        value = json.loads(message_value)
-                        # Handle double-encoded JSON
-                        if isinstance(value, str):
-                            value = json.loads(value)
-                            self.logger.debug("Handled double-encoded JSON message")
-
-                        event_type = value.get("eventType")
-                        self.logger.debug(
-                            f"Parsed message {message_id}: type={type(value)}, event_type={event_type}"
-                        )
-                    except json.JSONDecodeError as e:
-                        self.logger.error(
-                            f"JSON parsing failed for message {message_id}: {str(e)}\n"
-                            f"Raw message: {message_value[:1000]}..."  # Log first 1000 chars
-                        )
-                        return False
-                else:
-                    self.logger.error(
-                        f"Unexpected message value type for {message_id}: {type(message_value)}"
-                    )
-                    return False
-
-            except UnicodeDecodeError as e:
-                self.logger.error(
-                    f"Failed to decode message {message_id}: {str(e)}\n"
-                    f"Raw bytes: {message_value[:100]}..."  # Log first 100 bytes
-                )
-                return False
-
-            # Validation
-            if not event_type:
-                self.logger.error(f"Missing event_type in message {message_id}")
-                return False
-
-            if topic not in self.route_mapping:
-                self.logger.error(f"Unknown topic {topic} for message {message_id}")
-                return False
-
-            # Route and handle message
-            try:
-                if topic == "sync-events":
-                    self.logger.info(f"Processing sync event: {event_type}")
-                    return await self._handle_sync_event(event_type, value)
-                elif topic == "entity-events":
-                    self.logger.info(f"Processing entity event: {event_type}")
-                    return await self._handle_entity_event(event_type, value)
-                else:
-                    self.logger.warning(
-                        f"Unhandled topic {topic} for message {message_id}"
-                    )
-                    return False
-
-            except asyncio.TimeoutError:
-                self.logger.error(
-                    f"Timeout while processing {event_type} event in message {message_id}"
-                )
-                return False
-            except ValueError as e:
-                self.logger.error(
-                    f"Validation error processing {event_type} event: {str(e)}"
-                )
-                return False
-            except Exception as e:
-                self.logger.error(
-                    f"Error processing {event_type} event in message {message_id}: {str(e)}",
-                    exc_info=True,
-                )
-                return False
-
-        except Exception as e:
-            self.logger.error(
-                f"Unexpected error processing message {message_id if message_id else 'unknown'}: {str(e)}",
-                exc_info=True,
-            )
+            self.logger.error(f"Error processing entity event: {str(e)}")
             return False
-        finally:
-            if message_id:
-                self.mark_message_processed(message_id)
 
-    async def _handle_sync_event(self, event_type: str, value: dict) -> bool:
+    async def __handle_sync_event(self,event_type: str, value: dict) -> bool:
         """Handle sync-related events by sending them to the sync-events topic"""
         try:
             # Prepare the message
@@ -220,13 +61,10 @@ class EntityKafkaRouteConsumer:
                 'timestamp': get_epoch_timestamp_in_ms()
             }
 
-            # Convert message to JSON string and encode to bytes
-            message_bytes = json.dumps(message).encode('utf-8')
-
             # Send the message to sync-events topic using aiokafka
-            await self.producer.send_and_wait(
+            await self.app_container.messaging_producer.send_message(
                 topic='sync-events',
-                value=message_bytes
+                message=message
             )
 
             self.logger.info(f"Successfully sent sync event: {event_type}")
@@ -236,112 +74,8 @@ class EntityKafkaRouteConsumer:
             self.logger.error(f"Error sending sync event: {str(e)}")
             return False
 
-    async def _handle_entity_event(self, event_type: str, value: dict) -> bool:
-        """Handle entity-related events by calling appropriate ArangoDB methods"""
-        handler = self.route_mapping["entity-events"].get(event_type)
-        if not handler:
-            self.logger.error(f"Unknown entity event type: {event_type}")
-            return False
-
-        return await handler(value["payload"])
-
-    async def _get_or_create_knowledge_base(
-        self,
-        user_key: str,
-        userId: str,
-        orgId: str,
-        name: str = "Default"
-    ) -> Dict:
-        """Get or create a knowledge base for a user, with root folder and permissions."""
-        try:
-            if not userId or not orgId:
-                self.logger.error("Both User ID and Organization ID are required to get or create a knowledge base")
-                return None
-
-            # Check if a knowledge base already exists for this user in this organization
-            query = f"""
-            FOR kb IN {CollectionNames.RECORD_GROUPS.value}
-                FILTER kb.createdBy == @userId AND kb.orgId == @orgId AND kb.groupType == @kb_type AND kb.connectorName == @kb_connector AND (kb.isDeleted == false OR kb.isDeleted == null)
-                RETURN kb
-            """
-            bind_vars = {
-                "userId": userId,
-                "orgId": orgId,
-                "kb_type": Connectors.KNOWLEDGE_BASE.value,
-                "kb_connector": Connectors.KNOWLEDGE_BASE.value,
-            }
-            cursor = self.arango_service.db.aql.execute(query, bind_vars=bind_vars)
-            existing_kbs = [doc for doc in cursor]
-
-            if existing_kbs:
-                self.logger.info(f"Found existing knowledge base for user {userId} in organization {orgId}")
-                return existing_kbs[0]
-
-            # Create a new knowledge base with root folder and permissions in a transaction
-            current_timestamp = get_epoch_timestamp_in_ms()
-            kb_key = str(uuid4())
-            folder_id = str(uuid4())
-
-            kb_data = {
-                "_key": kb_key,
-                "createdBy": userId,
-                "orgId": orgId,
-                "groupName": name,
-                "groupType": Connectors.KNOWLEDGE_BASE.value,
-                "connectorName": Connectors.KNOWLEDGE_BASE.value,
-                "createdAtTimestamp": current_timestamp,
-                "updatedAtTimestamp": current_timestamp,
-            }
-            root_folder_data = {
-                "_key": folder_id,
-                "orgId": orgId,
-                "name": name,
-                "isFile": False,
-                "extension": None,
-                "mimeType": "application/vnd.folder",
-                "sizeInBytes": 0,
-                "webUrl": f"/kb/{kb_key}/folder/{folder_id}",
-                "path": f"/{name}"
-            }
-            permission_edge = {
-                "_from": f"{CollectionNames.USERS.value}/{user_key}",
-                "_to": f"{CollectionNames.RECORD_GROUPS.value}/{kb_key}",
-                "externalPermissionId": "",
-                "type": "USER",
-                "role": "OWNER",
-                "createdAtTimestamp": current_timestamp,
-                "updatedAtTimestamp": current_timestamp,
-                "lastUpdatedTimestampAtSource": current_timestamp,
-            }
-            folder_edge = {
-                "_from": f"{CollectionNames.FILES.value}/{folder_id}",
-                "_to": f"{CollectionNames.RECORD_GROUPS.value}/{kb_key}",
-                "entityType": Connectors.KNOWLEDGE_BASE.value,
-                "createdAtTimestamp": current_timestamp,
-                "updatedAtTimestamp": current_timestamp,
-            }
-            # Insert all in transaction
-            await self.arango_service.batch_upsert_nodes([kb_data], CollectionNames.RECORD_GROUPS.value)
-            await self.arango_service.batch_upsert_nodes([root_folder_data], CollectionNames.FILES.value)
-            await self.arango_service.batch_create_edges([permission_edge], CollectionNames.PERMISSIONS_TO_KB.value)
-            await self.arango_service.batch_create_edges([folder_edge], CollectionNames.BELONGS_TO.value)
-
-            self.logger.info(f"Created new knowledge base for user {userId} in organization {orgId}")
-            return {
-                "kb_id": kb_key,
-                "name": name,
-                "root_folder_id": folder_id,
-                "created_at": current_timestamp,
-                "updated_at": current_timestamp,
-                "success": True
-            }
-
-        except Exception as e:
-            self.logger.error(f"Failed to get or create knowledge base: {str(e)}")
-            return None
-
     # ORG EVENTS
-    async def handle_org_created(self, payload: dict) -> bool:
+    async def __handle_org_created(self, payload: dict) -> bool:
         """Handle organization creation event"""
 
         accountType = (
@@ -370,8 +104,8 @@ class EntityKafkaRouteConsumer:
                 FILTER d.orgId == null
                 RETURN d
             """
-            cursor = self.arango_service.db.aql.execute(query)
-            departments = list(cursor)
+            cursor = self.arango_service.db.aql.execute(query) # type: ignore
+            departments = list(cursor) # type: ignore
 
             # Create relationships between org and departments
             org_department_relations = []
@@ -402,7 +136,7 @@ class EntityKafkaRouteConsumer:
             self.logger.error(f"❌ Error creating organization: {str(e)}")
             return False
 
-    async def handle_org_updated(self, payload: dict) -> bool:
+    async def __handle_org_updated(self, payload: dict) -> bool:
         """Handle organization update event"""
         try:
             self.logger.info(f"📥 Processing org updated event: {payload}")
@@ -425,7 +159,7 @@ class EntityKafkaRouteConsumer:
             self.logger.error(f"❌ Error updating organization: {str(e)}")
             return False
 
-    async def handle_org_deleted(self, payload: dict) -> bool:
+    async def __handle_org_deleted(self, payload: dict) -> bool:
         """Handle organization deletion event"""
         try:
             self.logger.info(f"📥 Processing org deleted event: {payload}")
@@ -449,7 +183,7 @@ class EntityKafkaRouteConsumer:
             return False
 
     # USER EVENTS
-    async def handle_user_added(self, payload: dict) -> bool:
+    async def __handle_user_added(self, payload: dict) -> bool:
         """Handle user creation event"""
         try:
             self.logger.info(f"📥 Processing user added event: {payload}")
@@ -514,7 +248,7 @@ class EntityKafkaRouteConsumer:
             )
 
             # Get or create knowledge base for the user
-            await self._get_or_create_knowledge_base(user_key,payload["userId"], payload["orgId"])
+            await self.__get_or_create_knowledge_base(user_key,payload["userId"], payload["orgId"])
 
             # Only proceed with app connections if syncAction is 'immediate'
             if payload["syncAction"] == "immediate":
@@ -527,9 +261,12 @@ class EntityKafkaRouteConsumer:
                         continue
 
                     # Start sync for the specific user
-                    await self._handle_sync_event(
+                    await self.__handle_sync_event(
                         event_type=f'{app["name"].lower()}.user',
-                        value={"email": payload["email"]},
+                        value={
+                            "email": payload["email"],
+                            "connector":app["name"]
+                        },
                     )
 
             self.logger.info(
@@ -541,7 +278,7 @@ class EntityKafkaRouteConsumer:
             self.logger.error(f"❌ Error creating/updating user: {str(e)}")
             return False
 
-    async def handle_user_updated(self, payload: dict) -> bool:
+    async def __handle_user_updated(self, payload: dict) -> bool:
         """Handle user update event"""
         try:
             self.logger.info(f"📥 Processing user updated event: {payload}")
@@ -596,7 +333,7 @@ class EntityKafkaRouteConsumer:
             self.logger.error(f"❌ Error updating user: {str(e)}")
             return False
 
-    async def handle_user_deleted(self, payload: dict) -> bool:
+    async def __handle_user_deleted(self, payload: dict) -> bool:
         """Handle user deletion event"""
         try:
             self.logger.info(f"📥 Processing user deleted event: {payload}")
@@ -628,7 +365,7 @@ class EntityKafkaRouteConsumer:
             return False
 
     # APP EVENTS
-    async def handle_app_enabled(self, payload: dict) -> bool:
+    async def __handle_app_enabled(self, payload: dict) -> bool:
         """Handle app enabled event"""
         try:
             self.logger.info(f"📥 Processing app enabled event: {payload}")
@@ -728,19 +465,27 @@ class EntityKafkaRouteConsumer:
                             continue
 
                         # Initialize app (this will fetch and create users)
-                        await self._handle_sync_event(
+                        await self.__handle_sync_event(
                             event_type=f"{app_name.lower()}.init",
-                            value={"orgId": org_id},
+                            value={
+                                "orgId": org_id,
+                                "connector":app_name
+                            },
                         )
 
+                        # TODO: Remove this sleep
                         await asyncio.sleep(5)
 
                         if sync_action == "immediate":
                             # Start sync for all users
-                            await self._handle_sync_event(
+                            await self.__handle_sync_event(
                                 event_type=f"{app_name.lower()}.start",
-                                value={"orgId": org_id},
+                                value={
+                                    "orgId": org_id,
+                                    "connector":app_name
+                                },
                             )
+                            # TODO: Remove this sleep
                             await asyncio.sleep(5)
 
                 # For individual accounts, create edges between existing active users and apps
@@ -756,11 +501,14 @@ class EntityKafkaRouteConsumer:
                             continue
 
                         # Initialize app
-                        await self._handle_sync_event(
+                        await self.__handle_sync_event(
                             event_type=f"{app_name.lower()}.init",
-                            value={"orgId": org_id},
+                            value={
+                                "orgId": org_id,
+                                "connector":app_name
+                            },
                         )
-
+                        # TODO: Remove this sleep
                         await asyncio.sleep(5)
 
                     # Then create edges and start sync if needed
@@ -772,13 +520,15 @@ class EntityKafkaRouteConsumer:
                                     self.logger.info("Skipping start")
                                     continue
 
-                                await self._handle_sync_event(
+                                await self.__handle_sync_event(
                                     event_type=f'{app["name"].lower()}.start',
                                     value={
                                         "orgId": org_id,
                                         "email": user["email"],
+                                        "connector":app["name"]
                                     },
                                 )
+                                # TODO: Remove this sleep
                                 await asyncio.sleep(5)
 
             self.logger.info(f"✅ Successfully enabled apps for org: {org_id}")
@@ -788,11 +538,15 @@ class EntityKafkaRouteConsumer:
             self.logger.error(f"❌ Error enabling apps: {str(e)}")
             return False
 
-    async def handle_app_disabled(self, payload: dict) -> bool:
+    async def __handle_app_disabled(self, payload: dict) -> bool:
         """Handle app disabled event"""
         try:
             org_id = payload["orgId"]
             apps = payload["apps"]
+
+            if not org_id or not apps:
+                self.logger.error("Both orgId and apps are required to disable apps")
+                return False
 
             # Stop sync for each app
             self.logger.info(f"📥 Processing app disabled event: {payload}")
@@ -803,6 +557,9 @@ class EntityKafkaRouteConsumer:
                 app_doc = await self.arango_service.get_document(
                     f"{org_id}_{app_name}", CollectionNames.APPS.value
                 )
+                if not app_doc:
+                    self.logger.error(f"App not found: {app_name}")
+                    return False
                 app_data = {
                     "_key": f"{org_id}_{app_name}",  # Construct the app _key
                     "name": app_doc["name"],
@@ -827,90 +584,98 @@ class EntityKafkaRouteConsumer:
             self.logger.error(f"❌ Error disabling apps: {str(e)}")
             return False
 
-    async def handle_llm_configured(self, payload: dict) -> bool:
-        """Handle LLM configured event"""
+    async def __get_or_create_knowledge_base(
+        self,
+        user_key: str,
+        userId: str,
+        orgId: str,
+        name: str = "Default"
+    ) -> dict:
+        """Get or create a knowledge base for a user, with root folder and permissions."""
         try:
-            self.logger.info("📥 Processing LLM configured event in Query Service")
-            return True
+            if not userId or not orgId:
+                self.logger.error("Both User ID and Organization ID are required to get or create a knowledge base")
+                return {}
+
+            # Check if a knowledge base already exists for this user in this organization
+            query = f"""
+            FOR kb IN {CollectionNames.RECORD_GROUPS.value}
+                FILTER kb.createdBy == @userId AND kb.orgId == @orgId AND kb.groupType == @kb_type AND kb.connectorName == @kb_connector AND (kb.isDeleted == false OR kb.isDeleted == null)
+                RETURN kb
+            """
+            bind_vars = {
+                "userId": userId,
+                "orgId": orgId,
+                "kb_type": Connectors.KNOWLEDGE_BASE.value,
+                "kb_connector": Connectors.KNOWLEDGE_BASE.value,
+            }
+            cursor = self.arango_service.db.aql.execute(query, bind_vars=bind_vars) # type: ignore
+            existing_kbs = [doc for doc in cursor] # type: ignore
+
+            if existing_kbs:
+                self.logger.info(f"Found existing knowledge base for user {userId} in organization {orgId}")
+                return existing_kbs[0]
+
+            # Create a new knowledge base with root folder and permissions in a transaction
+            current_timestamp = get_epoch_timestamp_in_ms()
+            kb_key = str(uuid4())
+            folder_id = str(uuid4())
+
+            kb_data = {
+                "_key": kb_key,
+                "createdBy": userId,
+                "orgId": orgId,
+                "groupName": name,
+                "groupType": Connectors.KNOWLEDGE_BASE.value,
+                "connectorName": Connectors.KNOWLEDGE_BASE.value,
+                "createdAtTimestamp": current_timestamp,
+                "updatedAtTimestamp": current_timestamp,
+            }
+            root_folder_data = {
+                "_key": folder_id,
+                "orgId": orgId,
+                "name": name,
+                "isFile": False,
+                "extension": None,
+                "mimeType": "application/vnd.folder",
+                "sizeInBytes": 0,
+                "webUrl": f"/kb/{kb_key}/folder/{folder_id}",
+                "path": f"/{name}"
+            }
+            permission_edge = {
+                "_from": f"{CollectionNames.USERS.value}/{user_key}",
+                "_to": f"{CollectionNames.RECORD_GROUPS.value}/{kb_key}",
+                "externalPermissionId": "",
+                "type": "USER",
+                "role": "OWNER",
+                "createdAtTimestamp": current_timestamp,
+                "updatedAtTimestamp": current_timestamp,
+                "lastUpdatedTimestampAtSource": current_timestamp,
+            }
+            folder_edge = {
+                "_from": f"{CollectionNames.FILES.value}/{folder_id}",
+                "_to": f"{CollectionNames.RECORD_GROUPS.value}/{kb_key}",
+                "entityType": Connectors.KNOWLEDGE_BASE.value,
+                "createdAtTimestamp": current_timestamp,
+                "updatedAtTimestamp": current_timestamp,
+            }
+            # Insert all in transaction
+            # TODO: Use transaction instead of batch upsert
+            await self.arango_service.batch_upsert_nodes([kb_data], CollectionNames.RECORD_GROUPS.value)
+            await self.arango_service.batch_upsert_nodes([root_folder_data], CollectionNames.FILES.value)
+            await self.arango_service.batch_create_edges([permission_edge], CollectionNames.PERMISSIONS_TO_KB.value)
+            await self.arango_service.batch_create_edges([folder_edge], CollectionNames.BELONGS_TO.value)
+
+            self.logger.info(f"Created new knowledge base for user {userId} in organization {orgId}")
+            return {
+                "kb_id": kb_key,
+                "name": name,
+                "root_folder_id": folder_id,
+                "created_at": current_timestamp,
+                "updated_at": current_timestamp,
+                "success": True
+            }
+
         except Exception as e:
-            self.logger.error(f"❌ Error handling LLM configured event: {str(e)}")
-            return False
-
-    async def handle_embedding_configured(self, payload: dict) -> bool:
-        """Handle embedding configured event"""
-        try:
-            self.logger.info(
-                "📥 Processing embedding configured event in Query Service"
-            )
-            return True
-        except Exception as e:
-            self.logger.error(f"❌ Error handling embedding configured event: {str(e)}")
-            return False
-
-    async def consume_messages(self) -> None:
-        """Main consumption loop."""
-        try:
-            self.logger.info("Starting Kafka consumer loop")
-            while self.running:
-                try:
-                    # Get messages asynchronously with timeout
-                    message_batch = await self.consumer.getmany(timeout_ms=1000, max_records=1)
-
-                    if not message_batch:
-                        await asyncio.sleep(0.1)
-                        continue
-
-                    # Process messages from all topic partitions
-                    for topic_partition, messages in message_batch.items():
-                        for message in messages:
-                            try:
-                                self.logger.info(f"Received message: topic={message.topic}, partition={message.partition}, offset={message.offset}")
-                                success = await self.process_message(message)
-
-                                if success:
-                                    # Commit the offset for this message
-                                    await self.consumer.commit({topic_partition: message.offset + 1})
-                                    self.logger.info(
-                                        f"Committed offset for topic-partition {message.topic}-{message.partition} at offset {message.offset}"
-                                    )
-                                else:
-                                    self.logger.warning(f"Failed to process message at offset {message.offset}")
-
-                            except Exception as e:
-                                self.logger.error(f"Error processing individual message: {e}")
-                                continue
-
-                except asyncio.CancelledError:
-                    self.logger.info("Kafka consumer task cancelled")
-                    break
-                except Exception as e:
-                    self.logger.error(f"Error in consume_messages loop: {e}")
-                    await asyncio.sleep(1)
-
-        except Exception as e:
-            self.logger.error(f"Fatal error in consume_messages: {e}")
-        finally:
-            await self._cleanup()
-
-    async def _cleanup(self) -> None:
-        """Clean up resources"""
-        try:
-            if self.consumer:
-                await self.consumer.stop()
-                self.logger.info("Kafka consumer stopped")
-
-            if self.producer:
-                await self.producer.stop()
-                self.logger.info("Kafka producer stopped")
-        except Exception as e:
-            self.logger.error(f"Error during cleanup: {e}")
-
-    async def start(self) -> None:
-        """Start the consumer."""
-        self.running = True
-        await self.create_consumer_and_producer()
-
-    async def stop(self) -> None:
-        """Stop the consumer."""
-        self.running = False
-        await self._cleanup()
+            self.logger.error(f"Failed to get or create knowledge base: {str(e)}")
+            return {}

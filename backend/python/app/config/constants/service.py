@@ -71,6 +71,7 @@ class KafkaConfig(Enum):
     CLIENT_ID_RECORDS = "record-processor"
     CLIENT_ID_MAIN = "enterprise-search"
     CLIENT_ID_LLM = "llm-configuration"
+    CLIENT_ID_ENTITY = "entity-producer"
 
 
 class CeleryConfig(Enum):

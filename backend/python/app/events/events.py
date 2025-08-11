@@ -273,6 +273,7 @@ class EventProcessor:
                             if in_progress:
                                 self.logger.info(f"🚀 Duplicate file {in_progress.get('_key')} is being processed, waiting...")
                                 self.logger.info(f"Retried {attempt} times")
+                                # TODO: Remove this sleep
                                 await asyncio.sleep(5)
                                 # Refresh duplicate files list
                                 duplicate_files = await self.arango_service.find_duplicate_files(

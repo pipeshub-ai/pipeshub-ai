@@ -6,7 +6,7 @@ import { Controller } from 'react-hook-form';
 import robotIcon from '@iconify-icons/mdi/robot';
 import eyeIcon from '@iconify-icons/eva/eye-fill';
 import eyeOffIcon from '@iconify-icons/eva/eye-off-fill';
-import React, { memo, useState, useCallback } from 'react';
+import React, { memo, useState, useCallback, useEffect, useRef } from 'react';
 import deleteIcon from '@iconify-icons/ri/delete-bin-line';
 import fileTextIcon from '@iconify-icons/ri/file-text-line';
 import infoOutlineIcon from '@iconify-icons/eva/info-outline';
@@ -40,8 +40,8 @@ import { Iconify } from 'src/components/iconify';
 interface DynamicFieldProps {
   name: string;
   label: string;
- control: Control<FieldValues>;
-   required?: boolean;
+  control: Control<FieldValues>;
+  required?: boolean;
   isEditing: boolean;
   isDisabled?: boolean;
   type?: 'text' | 'password' | 'email' | 'number' | 'url' | 'select' | 'file' | 'checkbox';
@@ -85,6 +85,10 @@ const DynamicField = memo(({
   const [isProcessing, setIsProcessing] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [uploadError, setUploadError] = useState<string>('');
+  
+  // Add refs to track autofill detection
+  const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
+  const autofillCheckInterval = useRef<NodeJS.Timeout | null>(null);
 
   // Field type detection
   const isPasswordField = type === 'password';
@@ -102,7 +106,71 @@ const DynamicField = memo(({
     keyIcon
   );
 
-  // File upload handlers
+  // Enhanced autofill detection function
+  const detectAutofill = useCallback((inputElement: HTMLInputElement | HTMLTextAreaElement, onChange: (value: any) => void) => {
+    if (!inputElement) return undefined;
+
+    const checkAutofill = () => {
+      // Method 1: Check if input has value but React doesn't know about it
+      if (inputElement.value && inputElement.value !== inputElement.getAttribute('data-react-value')) {
+        onChange(isNumberField && inputElement.value !== '' ? Number(inputElement.value) : inputElement.value);
+        inputElement.setAttribute('data-react-value', inputElement.value);
+      }
+
+      // Method 2: Check for browser-specific autofill indicators
+      const computedStyle = window.getComputedStyle(inputElement);
+      const isAutofilled = 
+        computedStyle.backgroundColor === 'rgb(250, 255, 189)' || // Chrome
+        computedStyle.backgroundColor.includes('rgba(250, 255, 189') || // Chrome with alpha
+        inputElement.matches(':-webkit-autofill') || // Webkit browsers
+        inputElement.matches(':autofill'); // Standard
+
+      if (isAutofilled && inputElement.value) {
+        onChange(isNumberField && inputElement.value !== '' ? Number(inputElement.value) : inputElement.value);
+        inputElement.setAttribute('data-react-value', inputElement.value);
+      }
+    };
+
+    // Check immediately
+    checkAutofill();
+
+    // Set up polling for autofill detection
+    if (autofillCheckInterval.current) {
+      clearInterval(autofillCheckInterval.current);
+    }
+    
+    autofillCheckInterval.current = setInterval(checkAutofill, 200);
+
+    // Also listen for specific events that might indicate autofill
+    const events = ['input', 'change', 'blur', 'focus', 'animationstart'];
+    
+    const handleEvent = () => {
+      setTimeout(checkAutofill, 10);
+    };
+
+    events.forEach(eventType => {
+      inputElement.addEventListener(eventType, handleEvent);
+    });
+
+    // Cleanup function
+    return () => {
+      if (autofillCheckInterval.current) {
+        clearInterval(autofillCheckInterval.current);
+      }
+      events.forEach(eventType => {
+        inputElement.removeEventListener(eventType, handleEvent);
+      });
+    };
+  }, [isNumberField]);
+
+  // Cleanup interval on unmount
+  useEffect(() => () => {
+    if (autofillCheckInterval.current) {
+      clearInterval(autofillCheckInterval.current);
+    }
+  }, []);
+
+  // File upload handlers (unchanged)
   const validateFileType = useCallback((file: File): boolean => {
     const fileExtension = file.name.toLowerCase().substring(file.name.lastIndexOf('.'));
     return acceptedFileTypes.includes(fileExtension);
@@ -112,14 +180,12 @@ const DynamicField = memo(({
     setIsProcessing(true);
     setUploadError('');
 
-    // Check file size
     if (file.size > maxFileSize) {
       setUploadError(`File is too large. Maximum size is ${maxFileSize / (1024 * 1024)} MB.`);
       setIsProcessing(false);
       return;
     }
 
-    // Check file type
     if (!validateFileType(file)) {
       setUploadError(`Only ${acceptedFileTypes.join(', ')} files are supported.`);
       setIsProcessing(false);
@@ -134,7 +200,6 @@ const DynamicField = memo(({
         try {
           const jsonData = JSON.parse(e.target.result);
           
-          // Use custom file processor if provided
           if (fileProcessor) {
             try {
               const extractedData = fileProcessor(jsonData);
@@ -148,7 +213,6 @@ const DynamicField = memo(({
               return;
             }
           } else if (onFileProcessed) {
-            // Fallback to basic processing
             onFileProcessed(jsonData, file.name);
           }
           
@@ -177,7 +241,6 @@ const DynamicField = memo(({
     if (files && files[0]) {
       processFile(files[0]);
     }
-    // Reset input
     event.target.value = '';
   }, [processFile]);
 
@@ -223,7 +286,7 @@ const DynamicField = memo(({
     setUploadError('');
   }, []);
 
-  // Checkbox field renderer
+  // Checkbox field renderer (unchanged)
   if (isCheckboxField) {
     return (
       <Box>
@@ -272,7 +335,7 @@ const DynamicField = memo(({
     );
   }
 
-  // File upload field renderer
+  // File upload field renderer (unchanged)
   if (isFileField) {
     const uploadAreaStyles = {
       border: `2px dashed ${
@@ -530,21 +593,18 @@ const DynamicField = memo(({
           </Box>
         </Tooltip>
 
-        {/* Error message */}
         {uploadError && (
           <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
             {uploadError}
           </Typography>
         )}
 
-        {/* Helper text */}
         {placeholder && !uploadError && (
           <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
             {placeholder}
           </Typography>
         )}
 
-        {/* Hidden file input */}
         <input
           id={`file-upload-${name}`}
           type="file"
@@ -557,7 +617,7 @@ const DynamicField = memo(({
     );
   }
 
-  // Select field renderer
+  // Select field renderer (unchanged)
   if (isSelectField && options) {
     return (
       <Box>
@@ -607,7 +667,7 @@ const DynamicField = memo(({
     );
   }
 
-  // Regular input field renderer (text, password, email, url, number, multiline)
+  // Enhanced regular input field renderer with autofill detection
   return (
     <Box>
       <Controller
@@ -616,6 +676,14 @@ const DynamicField = memo(({
         render={({ field, fieldState }) => (
           <TextField
             {...field}
+            inputRef={(ref) => {
+              // Set up autofill detection when ref is attached
+              if (ref) {
+                setTimeout(() => {
+                  detectAutofill(ref, field.onChange);
+                }, 100);
+              }
+            }}
             label={label}
             fullWidth
             size="small"
@@ -665,8 +733,18 @@ const DynamicField = memo(({
                 minHeight: '1.25rem',
                 margin: '4px 0 0',
               },
+              // Enhanced autofill detection styles
+              '& input:-webkit-autofill': {
+                WebkitBoxShadow: `0 0 0 1000px ${theme.palette.background.paper} inset`,
+                WebkitTextFillColor: theme.palette.text.primary,
+                caretColor: theme.palette.text.primary,
+              },
+              '& input:-webkit-autofill:focus': {
+                WebkitBoxShadow: `0 0 0 1000px ${theme.palette.background.paper} inset`,
+                WebkitTextFillColor: theme.palette.text.primary,
+              },
             }}
-            // Handle number field conversion
+            // Enhanced change handler for autofill detection
             onChange={(e) => {
               if (isNumberField) {
                 const {value} = e.target;
@@ -674,9 +752,31 @@ const DynamicField = memo(({
               } else {
                 field.onChange(e);
               }
+              
+              // Update the data attribute to track React's awareness of the value
+              if (inputRef.current) {
+                inputRef.current.setAttribute('data-react-value', e.target.value);
+              }
             }}
             // Convert number values back to string for display
             value={isNumberField && field.value !== undefined ? String(field.value) : field.value || ''}
+            // Additional event handlers for autofill detection
+            onFocus={() => {
+              // Check for autofill on focus
+              setTimeout(() => {
+                if (inputRef.current) {
+                  detectAutofill(inputRef.current, field.onChange);
+                }
+              }, 50);
+            }}
+            onBlur={() => {
+              // Final check on blur
+              setTimeout(() => {
+                if (inputRef.current) {
+                  detectAutofill(inputRef.current, field.onChange);
+                }
+              }, 50);
+            }}
           />
         )}
       />
@@ -703,5 +803,4 @@ const DynamicField = memo(({
 
 DynamicField.displayName = 'DynamicField';
 
-// 🔥 FIX: Export the component directly, not as an object
 export default DynamicField;

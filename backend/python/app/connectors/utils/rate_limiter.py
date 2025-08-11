@@ -11,7 +11,7 @@ class GoogleAPIRateLimiter:
 
         Args:
             max_rate (int): Maximum requests per 100 seconds (default: 10000)
-                          Based on Google Drive API quotas
+            Based on Google Drive API quotas
         """
         # Single limiter for all Drive API operations
         # Converting max_rate to per-second rate

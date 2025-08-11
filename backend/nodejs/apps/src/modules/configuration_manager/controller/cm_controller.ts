@@ -1673,6 +1673,16 @@ export const setMetricsCollectionRemoteServer =
     }
   };
 
+async function sendEvent(eventService: EntitiesEventProducer, event: Event) {
+  try {
+    await eventService.start();
+    await eventService.publishEvent(event);
+    await eventService.stop();
+  } catch (error) {
+    logger.error('Error sending event', { error });
+  }
+}
+
 export const createAIModelsConfig =
   (
     keyValueStoreService: KeyValueStoreService,
@@ -1735,7 +1745,7 @@ export const createAIModelsConfig =
       }
 
       if (aiConfig.llm.length > 0) {
-        aiConfig.llm.forEach((llm: any,index:number) => {
+        aiConfig.llm.forEach((llm: any, index: number) => {
           const modelKey = uuidv4();
           llm.modelKey = modelKey;
           llm.isMultimodal = false;
@@ -1744,7 +1754,7 @@ export const createAIModelsConfig =
       }
 
       if (aiConfig.embedding.length > 0) {
-        aiConfig.embedding.forEach((embedding: any,index:number) => {
+        aiConfig.embedding.forEach((embedding: any, index: number) => {
           const modelKey = uuidv4();
           embedding.modelKey = modelKey;
           embedding.isMultimodal = false;
@@ -1764,8 +1774,7 @@ export const createAIModelsConfig =
         encryptedAIConfig,
       );
 
-      // Handle event publication
-      await eventService.start();
+      // Send event to notify other services about the new AI config
       const event: Event = {
         eventType: EventType.LLMConfiguredEvent,
         timestamp: Date.now(),
@@ -1773,8 +1782,9 @@ export const createAIModelsConfig =
           credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
         } as LLMConfiguredEvent,
       };
-      await eventService.publishEvent(event);
-      await eventService.stop();
+
+      await sendEvent(eventService, event);
+
       res.status(200).json({ message: 'AI config created successfully' }).end();
     } catch (error: any) {
       logger.error('Error creating ai models config', { error });
@@ -2044,7 +2054,11 @@ export const getAvailableModelsByType =
   };
 
 export const addAIModelProvider =
-  (keyValueStoreService: KeyValueStoreService, appConfig: AppConfig) =>
+  (
+    keyValueStoreService: KeyValueStoreService,
+    eventService: EntitiesEventProducer,
+    appConfig: AppConfig,
+  ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const {
@@ -2103,7 +2117,7 @@ export const addAIModelProvider =
 
       if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
         throw new InternalServerError(
-          'Failed to do health check of embedding configuration, check credentials again',
+          `Failed to do health check of ${modelType} configuration, check credentials again`,
           aiResponseData?.data,
         );
       }
@@ -2178,6 +2192,15 @@ export const addAIModelProvider =
         encryptedUpdatedConfig,
       );
 
+      const event: Event = {
+        eventType: EventType.LLMConfiguredEvent,
+        timestamp: Date.now(),
+        payload: {
+          credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
+        } as LLMConfiguredEvent,
+      };
+      await sendEvent(eventService, event);
+
       res.status(200).json({
         status: 'success',
         message: `${modelType.toUpperCase()} provider added successfully`,
@@ -2196,7 +2219,11 @@ export const addAIModelProvider =
   };
 
 export const updateAIModelProvider =
-  (keyValueStoreService: KeyValueStoreService, appConfig: AppConfig) =>
+  (
+    keyValueStoreService: KeyValueStoreService,
+    eventService: EntitiesEventProducer,
+    appConfig: AppConfig,
+  ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const { modelType, modelKey } = req.params;
@@ -2247,7 +2274,7 @@ export const updateAIModelProvider =
 
       if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
         throw new InternalServerError(
-          'Failed to do health check of embedding configuration, check credentials again',
+          `Failed to do health check of ${modelType} configuration, check credentials again`,
           aiResponseData?.data,
         );
       }
@@ -2329,6 +2356,14 @@ export const updateAIModelProvider =
         encryptedUpdatedConfig,
       );
 
+      const event: Event = {
+        eventType: EventType.LLMConfiguredEvent,
+        timestamp: Date.now(),
+        payload: {
+          credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
+        } as LLMConfiguredEvent,
+      };
+      await sendEvent(eventService, event);
       res.status(200).json({
         status: 'success',
         message: `${targetModelType.toUpperCase()} provider updated successfully`,
@@ -2346,7 +2381,11 @@ export const updateAIModelProvider =
   };
 
 export const deleteAIModelProvider =
-  (keyValueStoreService: KeyValueStoreService) =>
+  (
+    keyValueStoreService: KeyValueStoreService,
+    eventService: EntitiesEventProducer,
+    appConfig: AppConfig,
+  ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const { modelType, modelKey } = req.params;
@@ -2433,6 +2472,15 @@ export const deleteAIModelProvider =
         encryptedUpdatedConfig,
       );
 
+      const event: Event = {
+        eventType: EventType.LLMConfiguredEvent,
+        timestamp: Date.now(),
+        payload: {
+          credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
+        } as LLMConfiguredEvent,
+      };
+      await sendEvent(eventService, event);
+
       res.status(200).json({
         status: 'success',
         message: `${targetModelType.toUpperCase()} provider deleted successfully`,
@@ -2451,7 +2499,11 @@ export const deleteAIModelProvider =
   };
 
 export const updateDefaultAIModel =
-  (keyValueStoreService: KeyValueStoreService) =>
+  (
+    keyValueStoreService: KeyValueStoreService,
+    eventService: EntitiesEventProducer,
+    appConfig: AppConfig,
+  ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const { modelType, modelKey } = req.params;
@@ -2526,6 +2578,15 @@ export const updateDefaultAIModel =
         configPaths.aiModels,
         encryptedUpdatedConfig,
       );
+
+      const event: Event = {
+        eventType: EventType.LLMConfiguredEvent,
+        timestamp: Date.now(),
+        payload: {
+          credentialsRoute: `${appConfig.cmBackend}/${aiModelRoute}`,
+        } as LLMConfiguredEvent,
+      };
+      await sendEvent(eventService, event);
 
       res.status(200).json({
         status: 'success',

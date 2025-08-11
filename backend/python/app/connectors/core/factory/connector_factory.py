@@ -3,12 +3,15 @@
 import logging
 from typing import Any, Dict, List, Optional, Type
 
+from app.connectors.core.base.connector.connector_service import BaseConnectorService
 from app.connectors.core.base.data_processor.data_processor import BaseDataProcessor
 from app.connectors.core.base.data_service.data_service import BaseDataService
 from app.connectors.core.base.error.error import BaseErrorHandlingService
 from app.connectors.core.base.event_service.event_service import BaseEventService
+from app.connectors.core.base.rate_limiter.rate_limiter import BaseRateLimiter
 from app.connectors.core.base.sync_service.sync_service import BaseSyncService
 from app.connectors.core.base.token_service.token_service import BaseTokenService
+from app.connectors.core.base.user_service.user_service import BaseUserService
 from app.connectors.core.base.webhook.webhook_service import BaseWebhookService
 from app.connectors.core.interfaces.connector.iconnector_config import ConnectorConfig
 from app.connectors.core.interfaces.connector.iconnector_factory import (
@@ -24,29 +27,44 @@ class ConnectorRegistry:
     """Registry for connector implementations"""
 
     def __init__(self) -> None:
-        self._connectors: Dict[ConnectorType, Type[IConnectorService]] = {}
+        self._connectors: Dict[ConnectorType, Type[BaseConnectorService]] = {}
         self._token_services: Dict[ConnectorType, Type[BaseTokenService]] = {}
         self._data_services: Dict[ConnectorType, Type[BaseDataService]] = {}
         self._data_processors: Dict[ConnectorType, Type[BaseDataProcessor]] = {}
+        self._user_services: Dict[ConnectorType, Type[BaseUserService]] = {}
+        self._sync_services: Dict[ConnectorType, Type[BaseSyncService]] = {}
+        self._rate_limiter_classes: Dict[ConnectorType, Type[BaseRateLimiter]] = {}
+        self._error_service_classes: Dict[ConnectorType, Type[BaseErrorHandlingService]] = {}
+        self._event_service_classes: Dict[ConnectorType, Type[BaseEventService]] = {}
         self._configs: Dict[ConnectorType, ConnectorConfig] = {}
 
     def register_connector(
         self,
         connector_type: ConnectorType,
-        connector_class: Type[IConnectorService],
+        connector_class: Type[BaseConnectorService],
         token_service_class: Type[BaseTokenService],
         data_service_class: Type[BaseDataService],
         data_processor_class: Type[BaseDataProcessor],
+        sync_service_class: Type[BaseSyncService],
+        user_service_class: Type[BaseUserService],
+        error_service_class: Type[BaseErrorHandlingService],
+        event_service_class: Type[BaseEventService],
+        rate_limiter_class: Type[BaseRateLimiter],
         config: ConnectorConfig,
     ) -> None:
         """Register a connector implementation"""
-        self._connectors[connector_type] = connector_class
         self._token_services[connector_type] = token_service_class
         self._data_services[connector_type] = data_service_class
         self._data_processors[connector_type] = data_processor_class
+        self._sync_services[connector_type] = sync_service_class
+        self._user_services[connector_type] = user_service_class
+        self._error_service_classes[connector_type] = error_service_class
+        self._event_service_classes[connector_type] = event_service_class
+        self._rate_limiter_classes[connector_type] = rate_limiter_class
+        self._connectors[connector_type] = connector_class
         self._configs[connector_type] = config
 
-    def get_connector_class(self, connector_type: ConnectorType) -> Optional[Type[IConnectorService]]:
+    def get_connector_class(self, connector_type: ConnectorType) -> Optional[Type[BaseConnectorService]]:
         """Get connector class for a type"""
         return self._connectors.get(connector_type)
 
@@ -62,6 +80,14 @@ class ConnectorRegistry:
         """Get data processor class for a type"""
         return self._data_processors.get(connector_type)
 
+    def get_sync_service_class(self, connector_type: ConnectorType) -> Optional[Type[BaseSyncService]]:
+        """Get sync service class for a type"""
+        return self._sync_services.get(connector_type)
+
+    def get_user_service_class(self, connector_type: ConnectorType) -> Optional[Type[BaseUserService]]:
+        """Get user service class for a type"""
+        return self._user_services.get(connector_type)
+
     def get_config(self, connector_type: ConnectorType) -> Optional[ConnectorConfig]:
         """Get config for a connector type"""
         return self._configs.get(connector_type)
@@ -74,6 +100,17 @@ class ConnectorRegistry:
         """Check if connector type is supported"""
         return connector_type in self._connectors
 
+    def get_rate_limiter_class(self, connector_type: ConnectorType) -> Optional[Type[BaseRateLimiter]]:
+        """Get rate limiter class for a type"""
+        return self._rate_limiter_classes.get(connector_type)
+
+    def get_error_service_class(self, connector_type: ConnectorType) -> Optional[Type[BaseErrorHandlingService]]:
+        """Get error service class for a type"""
+        return self._error_service_classes.get(connector_type)
+
+    def get_event_service_class(self, connector_type: ConnectorType) -> Optional[Type[BaseEventService]]:
+        """Get event service class for a type"""
+        return self._event_service_classes.get(connector_type)
 
 class UniversalConnectorFactory(IConnectorFactory):
     """Universal factory for creating any connector type"""
@@ -97,21 +134,27 @@ class UniversalConnectorFactory(IConnectorFactory):
     def register_connector_implementation(
         self,
         connector_type: ConnectorType,
-        connector_class: Type[IConnectorService],
+        connector_class: Type[BaseConnectorService],
         token_service_class: Type[BaseTokenService],
         data_service_class: Type[BaseDataService],
         data_processor_class: Type[BaseDataProcessor],
+        sync_service_class: Type[BaseSyncService],
+        user_service_class: Type[BaseUserService],
+        error_service_class: Type[BaseErrorHandlingService],
+        event_service_class: Type[BaseEventService],
+        rate_limiter_class: Type[BaseRateLimiter],
         config: ConnectorConfig,
     ) -> None:
         """Register a new connector implementation"""
         self.registry.register_connector(
-            connector_type, connector_class, token_service_class, data_service_class, data_processor_class, config
+            connector_type, connector_class, token_service_class, data_service_class, data_processor_class, sync_service_class, user_service_class, error_service_class, event_service_class, rate_limiter_class, config
         )
         self.logger.info(f"Registered connector: {connector_type.value}")
 
     def create_connector(self, connector_type: ConnectorType, config: ConnectorConfig) -> IConnectorService:
         """Create a connector instance"""
         try:
+            self.logger.info(f"Creating connector for {connector_type.value} with config: {config}")
             if not self.registry.is_supported(connector_type):
                 raise ValueError(f"Connector type {connector_type.value} is not supported")
 
@@ -120,14 +163,27 @@ class UniversalConnectorFactory(IConnectorFactory):
             token_service_class = self.registry.get_token_service_class(connector_type)
             data_service_class = self.registry.get_data_service_class(connector_type)
             data_processor_class = self.registry.get_data_processor_class(connector_type)
-
-            if not all([connector_class, token_service_class, data_service_class, data_processor_class]):
-                raise ValueError(f"Incomplete registration for connector type {connector_type.value}")
+            sync_service_class = self.registry.get_sync_service_class(connector_type)
+            user_service_class = self.registry.get_user_service_class(connector_type)
+            error_service_class = self.registry.get_error_service_class(connector_type)
+            event_service_class = self.registry.get_event_service_class(connector_type)
+            rate_limiter_class = self.registry.get_rate_limiter_class(connector_type)
 
             # Create service instances
+            if (connector_class is None or token_service_class is None or data_service_class is None or
+                data_processor_class is None or sync_service_class is None or user_service_class is None or
+                error_service_class is None or event_service_class is None or rate_limiter_class is None):
+                raise ValueError(f"Incomplete registration for connector type {connector_type.value}")
+
             token_service = token_service_class(self.logger, config)
             data_service = data_service_class(self.logger, token_service)
             data_processor = data_processor_class(self.logger)
+            sync_service = sync_service_class(self.logger)
+            rate_limiter = rate_limiter_class(self.logger, config.rate_limits['max_rate'], config.rate_limits['time_window'])
+            user_service = user_service_class(self.logger, rate_limiter, config)
+            error_service = error_service_class(self.logger)
+            event_service = event_service_class(self.logger)
+
             # Create connector instance
             connector = connector_class(
                 logger=self.logger,
@@ -136,8 +192,11 @@ class UniversalConnectorFactory(IConnectorFactory):
                 token_service=token_service,
                 data_service=data_service,
                 data_processor=data_processor,
-                error_service=self.default_error_service,
-                event_service=self.default_event_service,
+                error_service=error_service,
+                event_service=event_service,
+                rate_limiter=rate_limiter,
+                user_service=user_service,
+                sync_service=sync_service,
             )
 
             self.logger.info(f"Created connector instance for {connector_type.value}")
@@ -154,6 +213,18 @@ class UniversalConnectorFactory(IConnectorFactory):
     def validate_connector_type(self, connector_type: ConnectorType) -> bool:
         """Validate if connector type is supported"""
         return self.registry.is_supported(connector_type)
+
+    def get_rate_limiter_class(self, connector_type: ConnectorType) -> Optional[Type[BaseRateLimiter]]:
+        """Get rate limiter class for a type"""
+        return self.registry.get_rate_limiter_class(connector_type)
+
+    def get_error_service_class(self, connector_type: ConnectorType) -> Optional[Type[BaseErrorHandlingService]]:
+        """Get error service class for a type"""
+        return self.registry.get_error_service_class(connector_type)
+
+    def get_event_service_class(self, connector_type: ConnectorType) -> Optional[Type[BaseEventService]]:
+        """Get event service class for a type"""
+        return self.registry.get_event_service_class(connector_type)
 
     def get_connector_info(self, connector_type: ConnectorType) -> Dict[str, Any]:
         """Get information about a connector type"""
@@ -222,17 +293,6 @@ class ConnectorBuilder:
 
         # Create connector using factory
         connector = self.factory.create_connector(self._connector_type, self._config)
-
-        # Apply custom services if provided
-        if 'token_service' in self._custom_services:
-            connector.token_service = self._custom_services['token_service']
-
-        if 'data_service' in self._custom_services:
-            connector.data_service = self._custom_services['data_service']
-
-        if 'error_service' in self._custom_services:
-            connector.error_service = self._custom_services['error_service']
-
         return connector
 
 
