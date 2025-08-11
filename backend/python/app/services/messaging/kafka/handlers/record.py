@@ -161,7 +161,8 @@ class RecordEventHandler(BaseEventService):
             if extension is None and mime_type != "text/gmail_content":
                 extension = payload.get("extension", None)
                 if extension is None:
-                    if payload.get("recordName").find(".") != -1:
+                    record_name = payload.get("recordName")
+                    if record_name and "." in record_name:
                         extension = payload["recordName"].split(".")[-1]
 
 
