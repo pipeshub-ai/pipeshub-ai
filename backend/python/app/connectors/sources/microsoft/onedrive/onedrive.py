@@ -14,6 +14,9 @@ from kiota_abstractions.request_information import RequestInformation
 from kiota_abstractions.serialization import Parsable, ParseNode, SerializationWriter
 from kiota_abstractions.serialization.parsable_factory import ParsableFactory
 from msgraph import GraphServiceClient
+from msgraph.generated.drives.item.items.item.create_link.create_link_post_request_body import (
+    CreateLinkPostRequestBody,
+)
 from msgraph.generated.groups.groups_request_builder import GroupsRequestBuilder
 from msgraph.generated.models.base_delta_function_response import (
     BaseDeltaFunctionResponse,
@@ -32,7 +35,7 @@ from app.connectors.sources.microsoft.onedrive.data_source_entities_processor im
     App,
     DataSourceEntitiesProcessor,
 )
-from app.models.entities import FileRecord, RecordStatus, RecordType
+from app.models.entities import FileRecord, Record, RecordStatus, RecordType
 from app.models.permission import EntityType, Permission, PermissionType
 from app.models.users import User, UserGroup
 from app.services.kafka_consumer import KafkaConsumerManager
@@ -140,7 +143,7 @@ class OneDriveClient:
                 groups.extend(result.value)
 
             user_groups: List[UserGroup] = []
-            self.logger.info(groups, "... groups ...")
+            self.logger.info(f"... groups {groups}...")
             for group in groups:
                 user_groups.append(UserGroup(
                     source_user_group_id=group.id,
@@ -202,7 +205,6 @@ class OneDriveClient:
                     title=user.job_title,
                 ))
 
-            print(user_list, "... users ...")
             return user_list
 
         except ODataError as e:
@@ -255,7 +257,6 @@ class OneDriveClient:
                     response['delta_link'] = result.odata_delta_link
 
                 self.logger.info(f"Retrieved delta response for URL: {url}")
-                # print(response, "response.......")
                 return response
 
         except Exception as ex:
@@ -401,7 +402,6 @@ class OneDriveClient:
                 async with self.rate_limiter:
                     result = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(item_id).permissions.get_next_page(result.odata_next_link)
                 permissions.extend(result.value)
-            # print(permissions, "permissions...")
             self.logger.info(f"Retrieved {len(permissions)} permissions for file ID {item_id}.")
             return permissions
         except ODataError as e:
@@ -593,7 +593,6 @@ class OneDriveClient:
         except Exception as ex:
             self.logger.error(f"Error performing delta query for drive {drive_id}: {ex}")
             raise ex
-
     async def create_signed_url(self, drive_id: str, item_id: str, duration_minutes: int) -> str:
         """
         Creates a signed URL (sharing link) for a file or folder, valid for the specified duration.
@@ -607,25 +606,26 @@ class OneDriveClient:
             str: The signed URL.
         """
         try:
+            # Import the required data model
+
             expiration_datetime = datetime.now(timezone.utc) + timedelta(minutes=duration_minutes)
-            link_payload = {
-                "type": "view",  # Other types: "view", "embed", etc.
-                "scope": "anonymous",  # Anonymous link does not require authentication
-                "expirationDateTime": expiration_datetime.isoformat() + "Z"
-            }
+
+            # Create the proper request body object
+            link_request_body = CreateLinkPostRequestBody()
+            link_request_body.type = "view"  # Other types: "edit", "embed", etc.
+            link_request_body.scope = "users"  # Anonymous link does not require authentication
+            link_request_body.expiration_date_time = expiration_datetime
 
             async with self.rate_limiter:
-                response = await self.client.drives.by_drive_id(drive_id).items[item_id].create_link.post(link_payload)
-
-            signed_url = response.link.web_url
+                # Use the correct method chain
+                item = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(item_id).get()
+                signed_url = item.additional_data.get("@microsoft.graph.downloadUrl")
             self.logger.info(f"Created signed URL for item {item_id} in drive {drive_id}, valid until {expiration_datetime}.")
             return signed_url
 
         except Exception as ex:
             self.logger.error(f"Error creating signed URL for item {item_id} in drive {drive_id}: {ex}")
             raise ex
-
-    # Todo: Handle Pagination
 
     async def get_subscriptions(self) -> List[dict]:
         """
@@ -774,7 +774,6 @@ class OneDriveAdminClient:
                     users.extend(result.value)
                 self.logger.info(f"Retrieved {len(users)} users.")
 
-            print(users, "... users ...")
             return users
 
         except ODataError as e:
@@ -844,12 +843,18 @@ class OneDriveConnector:
                 if hasattr(item, 'deleted') and item.deleted is not None:
                     # Handle deleted item
                     self.logger.info(f"Item {item.id} has been deleted")
+                    await self.data_entities_processor.on_record_deleted(Record(
+                        record_id=item.id,
+                    ))
                     continue
 
                 # Process existing or new item
                 # Handle file
                 self.logger.info(f"Processing item: {item}")
-
+                signed_url = None
+                fetch_signed_url = None
+                if item.file is not None:
+                    signed_url = await self.onedrive_client.create_signed_url(item.parent_reference.drive_id, item.id, 100)
                 # Create FileRecord with all metadata (inherits from Record)
                 file_record = FileRecord(
                     record_name=item.name,
@@ -867,6 +872,8 @@ class OneDriveConnector:
                     source_created_at=int(item.created_date_time.timestamp() * 1000),
                     source_updated_at=int(item.last_modified_date_time.timestamp() * 1000),
                     weburl=item.web_url,
+                    signed_url=signed_url,
+                    fetch_signed_url=fetch_signed_url,
                     mime_type=item.file is not None and item.file.mime_type or None,
                     md5_hash=None,
                     parent_external_record_id=item.parent_reference.id,
@@ -894,8 +901,6 @@ class OneDriveConnector:
                     entity_type=EntityType.USER
                 ) for permission in permission_result]
 
-                # print(permission_result, "permissions")
-                # print(item, "item")
                 file_records.append((file_record, permissions))
                 #self.drive_item_service.upsert(item, permissions=permission_result)
 
@@ -920,7 +925,6 @@ class OneDriveConnector:
             # Start URL - use deltaLink if available, otherwise start fresh
             root_url = f"/users/{user_id}/drive/root/delta"
             url = sync_state.get('deltaLink') if sync_state else ("{+baseurl}" + root_url)
-            print(url, "url....")
 
             while True:
                 # Fetch delta changes
@@ -951,7 +955,6 @@ class OneDriveConnector:
                     break
 
             self.logger.info(f"Completed delta sync for user {user_id}")
-            #print("Subscribing with url", self.notification_url)
             #await self.onedrive_client.subscribe_to_webhook(user_id=user_id, notification_url=self.notification_url)
 
         except Exception as ex:
@@ -980,8 +983,6 @@ class OneDriveConnector:
         self.sync_state_service.upsert(user_id, state_data)
 
     async def run(self) -> None:
-        print("Running OneDrive Connector")
-        print("Getting all users")
         # Todo: Get all users from our platform
         # For each of platform user get all drives
         # For each of drive get all files
@@ -989,15 +990,16 @@ class OneDriveConnector:
         users = await self.onedrive_client.get_all_users()
         await self.data_entities_processor.on_new_users(users)
 
-        print("Getting all user groups")
         await self.onedrive_client.get_all_user_groups()
-        print("Getting all drives")
-        for user in users:
-            await self._run_sync(user.source_user_id)
 
-        # print("Getting all subscriptions")
+        all_active_users = await self.data_entities_processor.get_all_active_users()
+        active_user_emails = [active_user.email.lower() for active_user in all_active_users]
+
+        for user in users:
+            if user.email.lower() in active_user_emails:
+                await self._run_sync(user.source_user_id)
+
         # await self.onedrive_client.get_all_subscriptions()
-        # print("Getting all drives")
 
 async def test_run() -> None:
     logger = create_logger("onedrive_connector")
@@ -1005,9 +1007,9 @@ async def test_run() -> None:
     config_service = ConfigurationService(logger, key_value_store)
     kafka_service = KafkaConsumerManager(logger, config_service, None, None)
     arango_service = ArangoService(logger, config_service, kafka_service)
-    data_entities_processor = DataSourceEntitiesProcessor(logger, OneDriveApp(), arango_service)
-
     await arango_service.connect()
+    data_entities_processor = DataSourceEntitiesProcessor(logger, OneDriveApp(), arango_service, config_service)
+    await data_entities_processor.initialize()
     onedrive_connector = OneDriveConnector(logger, data_entities_processor)
     await onedrive_connector.run()
 

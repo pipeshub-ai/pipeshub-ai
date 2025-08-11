@@ -345,7 +345,7 @@ async def perform_llm_health_check(
         try:
             test_response = await asyncio.wait_for(
                 asyncio.to_thread(llm_model.invoke, test_prompt),
-                timeout=30.0  # 30 second timeout
+                timeout=120.0  # 120 second timeout
             )
 
             return JSONResponse(
@@ -367,7 +367,7 @@ async def perform_llm_health_check(
                     "details": {
                         "provider": llm_config.get("provider"),
                         "model": model_name,
-                        "timeout_seconds": 30
+                        "timeout_seconds": 120
                     },
                 },
             )
@@ -446,7 +446,7 @@ async def perform_embedding_health_check(
         try:
             test_embeddings = await asyncio.wait_for(
                 asyncio.to_thread(embedding_model.embed_documents, test_texts),
-                timeout=30.0  # 30 second timeout
+                timeout=120.0  # 60 second timeout
             )
 
             if not test_embeddings or len(test_embeddings) == 0:
@@ -486,7 +486,7 @@ async def perform_embedding_health_check(
                     "details": {
                         "provider": embedding_config.get("provider"),
                     "model": model_name,
-                    "timeout_seconds": 30
+                    "timeout_seconds": 120
                 },
             },
         )

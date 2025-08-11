@@ -243,11 +243,6 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
         if model_name not in model_names:
             raise ValueError(f"Model name {model_name} not found in {configuration['model']}")
 
-    print(f"Provider: {provider}")
-    print(f"Model name: {model_name}")
-    print(f"Is default: {is_default}")
-
-
     if provider == LLMProvider.ANTHROPIC.value:
         from langchain_anthropic import ChatAnthropic
 
@@ -267,7 +262,7 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
                 aws_access_key_id=configuration["awsAccessKeyId"],
                 aws_secret_access_key=configuration["awsAccessSecretKey"],
                 region_name=configuration["region"],
-                provider=configuration["provider"],
+                provider=configuration.get("provider", "anthropic"),
             )
     elif provider == LLMProvider.AZURE_OPENAI.value:
         from langchain_community.chat_models import AzureChatOpenAI

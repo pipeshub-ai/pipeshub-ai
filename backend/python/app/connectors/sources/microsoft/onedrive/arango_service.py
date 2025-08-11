@@ -8,9 +8,6 @@ class ArangoService(BaseArangoService):
         super().__init__(logger, ArangoClient(), config_service, kafka_service)
         self.logger = logger
 
-    async def get_all_users(self) -> None:
-        pass
-
     async def get_all_user_groups(self) -> None:
         pass
 

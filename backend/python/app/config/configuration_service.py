@@ -50,7 +50,7 @@ class ConfigurationService:
         self.logger.debug("✅ ConfigurationService initialized successfully")
 
     async def get_config(self, key: str, default: Union[str, int, float, bool, dict, list, None] = None, use_cache: bool = True) -> Union[str, int, float, bool, dict, list, None]:
-        """Get configuration value with LRU cache"""
+        """Get configuration value with LRU cache and environment variable fallback"""
         try:
             # Check cache first
             if use_cache and key in self.cache:
@@ -59,14 +59,69 @@ class ConfigurationService:
 
             value = await self.store.get_key(key)
             if value is None:
+                # Try environment variable fallback for specific services
+                env_fallback = self._get_env_fallback(key)
+                if env_fallback is not None:
+                    self.logger.debug("📦 Using environment variable fallback for key: %s", key)
+                    self.cache[key] = env_fallback
+                    return env_fallback
+
                 self.logger.debug("📦 Cache miss for key: %s", key)
                 return default
             self.cache[key] = value
             return value
         except Exception as e:
             self.logger.error("❌ Failed to get config %s: %s", key, str(e))
-            self.logger.exception("Detailed error:")
+            # Try environment variable fallback on error
+            env_fallback = self._get_env_fallback(key)
+            if env_fallback is not None:
+                self.logger.debug("📦 Using environment variable fallback due to error for key: %s", key)
+                return env_fallback
             return default
+
+    def _get_env_fallback(self, key: str) -> Union[dict, None]:
+        """Get environment variable fallback for specific configuration keys"""
+        if key == "/services/kafka":
+            # Kafka configuration fallback
+            kafka_brokers = os.getenv("KAFKA_BROKERS")
+            if kafka_brokers:
+                brokers_list = [broker.strip() for broker in kafka_brokers.split(",")]
+                return {
+                    "host": brokers_list[0].split(":")[0] if ":" in brokers_list[0] else brokers_list[0],
+                    "port": int(brokers_list[0].split(":")[1]) if ":" in brokers_list[0] else 9092,
+                    "topic": "records",
+                    "bootstrap_servers": brokers_list,
+                    "brokers": brokers_list
+                }
+        elif key == "/services/arangodb":
+            # ArangoDB configuration fallback
+            arango_url = os.getenv("ARANGO_URL")
+            if arango_url:
+                return {
+                    "url": arango_url,
+                    "username": os.getenv("ARANGO_USERNAME", "root"),
+                    "password": os.getenv("ARANGO_PASSWORD", "your_password"),
+                    "db": os.getenv("ARANGO_DB_NAME", "es")
+                }
+        elif key == "/services/redis":
+            # Redis configuration fallback
+            redis_host = os.getenv("REDIS_HOST")
+            if redis_host:
+                return {
+                    "host": redis_host,
+                    "port": int(os.getenv("REDIS_PORT", "6379")),
+                    "password": os.getenv("REDIS_PASSWORD", "")
+                }
+        elif key == "/services/qdrant":
+            # Qdrant configuration fallback
+            qdrant_host = os.getenv("QDRANT_HOST")
+            if qdrant_host:
+                return {
+                    "host": qdrant_host,
+                    "grpcPort": int(os.getenv("QDRANT_GRPC_PORT", "6333")),
+                    "apiKey": os.getenv("QDRANT_API_KEY", "qdrant")
+                }
+        return None
 
     def _start_watch(self) -> None:
         """Start watching etcd changes in a background thread"""

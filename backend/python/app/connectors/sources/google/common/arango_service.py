@@ -1004,50 +1004,6 @@ class ArangoService(BaseArangoService):
             self.logger.error("❌ Failed to get organizations: %s", str(e))
             return []
 
-    async def get_users(self, org_id, active=True) -> List[Dict]:
-        """
-        Fetch all active users from the database who belong to the organization.
-
-        Args:
-            org_id (str): Organization ID
-            active (bool): Filter for active users only if True
-
-        Returns:
-            List[Dict]: List of user documents with their details
-        """
-        try:
-            self.logger.info("🚀 Fetching all users from database")
-
-            if active:
-                # Updated query to check for belongsTo edge with organization
-                query = """
-                FOR edge IN belongsTo
-                    FILTER edge._to == CONCAT('organizations/', @org_id)
-                    AND edge.entityType == 'ORGANIZATION'
-                    LET user = DOCUMENT(edge._from)
-                    FILTER user.isActive == true
-                    RETURN user
-                """
-
-            else:
-                query = """
-                FOR edge IN belongsTo
-                    FILTER edge._to == CONCAT('organizations/', @org_id)
-                    AND edge.entityType == 'ORGANIZATION'
-                    LET user = DOCUMENT(edge._from)
-                    RETURN user
-                """
-
-            # Execute query with organization parameter
-            cursor = self.db.aql.execute(query, bind_vars={"org_id": org_id})
-            users = list(cursor)
-
-            self.logger.info("✅ Successfully fetched %s users", len(users))
-            return users
-
-        except Exception as e:
-            self.logger.error("❌ Failed to fetch users: %s", str(e))
-            return []
 
     async def save_to_people_collection(self, entity_id: str, email: str) -> bool:
         """Save an entity to the people collection if it doesn't already exist"""

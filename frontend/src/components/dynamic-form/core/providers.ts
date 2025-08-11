@@ -120,7 +120,7 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
   },
   {
     id: 'xai',
-    label: 'XAI',
+    label: 'xAI',
     description: 'Enter your XAI API credentials to get started.',
     modelPlaceholder: 'e.g. grok-3-latest',
     fields: ['apiKey', 'model'],

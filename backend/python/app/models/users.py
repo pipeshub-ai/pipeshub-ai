@@ -7,9 +7,8 @@ from app.models.graph import Node
 @dataclass
 class User(Node):
     email: str
-    source_user_id: str
-    is_active: bool
-    _key: Optional[str] = None
+    source_user_id: Optional[str] = None
+    is_active: Optional[bool] = None
     first_name: Optional[str] = None
     middle_name: Optional[str] = None
     last_name: Optional[str] = None
@@ -28,11 +27,29 @@ class User(Node):
             "is_active": self.is_active
         }
 
+    def to_arango_base_record(self) -> Dict[str, Any]:
+        return {
+            "email": self.email,
+            "fullName": self.full_name,
+        }
+
     def validate(self) -> bool:
         return self.email is not None and self.email != ""
 
     def key(self) -> str:
         return self._key
+
+    @staticmethod
+    def from_arango_user(data: Dict[str, Any]) -> 'User':
+        return User(
+            email=data.get("email", ""),
+            is_active=data.get("isActive", False),
+            first_name=data.get("firstName", None),
+            middle_name=data.get("middleName", None),
+            last_name=data.get("lastName", None),
+            full_name=data.get("fullName", None),
+            title=data.get("title", None),
+        )
 
 @dataclass
 class UserGroup(Node):

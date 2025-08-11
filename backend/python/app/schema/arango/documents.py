@@ -45,7 +45,7 @@ user_schema = {
         "additionalProperties": False,  # disallow extra fields
     },
     "level": "strict",  # Strict validation (reject invalid documents)
-    "message": "Document does not match the record schema.",
+    "message": "Document does not match the user schema.",
 }
 
 user_group_schema = {

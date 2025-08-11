@@ -27,6 +27,28 @@ from app.services.scheduler.scheduler_factory import SchedulerFactory
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=15))
+async def make_signed_url_api_call(signed_url: str) -> dict:
+    """
+    Make an API call with the JWT token.
+
+    Args:
+        signed_url (str): The signed URL to send the request to
+
+    Returns:
+        dict: The response from the API
+    """
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = signed_url
+            # Make the request
+            async with session.get(url) as response:
+                data = await response.read()
+                return data
+    except Exception:
+        raise
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=15))
 async def make_api_call(signed_url_route: str, token: str) -> dict:
     """
     Make an API call with the JWT token.
@@ -137,7 +159,11 @@ class RecordEventHandler(BaseEventService):
                 return True
 
             if extension is None and mime_type != "text/gmail_content":
-                extension = payload["recordName"].split(".")[-1]
+                extension = payload.get("extension", None)
+                if extension is None:
+                    if payload.get("recordName").find(".") != -1:
+                        extension = payload["recordName"].split(".")[-1]
+
 
             self.logger.info("🚀 Checking for mime_type")
             self.logger.info("🚀 mime_type: %s", mime_type)
@@ -250,9 +276,30 @@ class RecordEventHandler(BaseEventService):
                     error_occurred = True
                     error_msg = f"Failed to process signed URL: {str(e)}"
                     raise
+
+            elif payload and payload.get("signedUrl"):
+                try:
+                    response = await make_signed_url_api_call(payload["signedUrl"])
+                    if response:
+                        payload["buffer"] = response
+                    event_data_for_processor = {
+                        "eventType": event_type,
+                        "payload": payload # The original payload
+                    }
+                    await self.event_processor.on_event(event_data_for_processor)
+                    processing_time = (datetime.now() - start_time).total_seconds()
+                    self.logger.info(
+                        f"✅ Successfully processed document for event: {event_type}. "
+                        f"Record: {record_id}, Time: {processing_time:.2f}s"
+                    )
+                    return True
+                except Exception as e:
+                    error_occurred = True
+                    error_msg = f"Failed to process signed URL: {str(e)}"
+                    raise
             else:
                 raise ValueError(
-                    f"No signedUrlRoute found in payload for message {message_id}"
+                    f"No signedUrlRoute or signedUrl found in payload for message {message_id}"
                 )
         except IndexingError as e:
             error_occurred = True
