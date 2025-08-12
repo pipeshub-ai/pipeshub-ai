@@ -1,16 +1,18 @@
-import json
+
 import logging
-from typing import Optional
+from typing import Optional, Any
 
 from app.agents.actions.slack.config import SlackTokenConfig
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.agents.actions.slack.config import SlackTokenConfig, SlackResponse
 
 logger = logging.getLogger(__name__)
 
 class Slack:
     """Slack tool exposed to the agents"""
+    
     def __init__(self, config: SlackTokenConfig) -> None:
         """Initialize the Slack tool"""
         """
@@ -21,6 +23,31 @@ class Slack:
         """
         self.config = config
         self.client = config.create_client()
+    
+    def _handle_slack_response(self, response: Any, success: bool = True) -> SlackResponse:
+        """Handle Slack API response and convert to standardized format"""
+        try:
+            if success and response:
+                # Extract data from SlackResponse object
+                if hasattr(response, 'data'):
+                    data = response.data
+                elif hasattr(response, 'get'):
+                    data = dict(response)
+                else:
+                    data = {"raw_response": str(response)}
+                
+                return SlackResponse(success=True, data=data)
+            else:
+                return SlackResponse(success=False, error=str(response))
+        except Exception as e:
+            logger.error(f"Error handling Slack response: {e}")
+            return SlackResponse(success=False, error=str(e))
+    
+    def _handle_slack_error(self, error: Exception) -> SlackResponse:
+        """Handle Slack API errors and convert to standardized format"""
+        error_msg = str(error)
+        logger.error(f"Slack API error: {error_msg}")
+        return SlackResponse(success=False, error=error_msg)
 
     @tool(
         app_name="slack",
@@ -51,10 +78,11 @@ class Slack:
         """
         try:
             response = self.client.chat_postMessage(channel=channel, text=message)
-            return (True, json.dumps(response))
+            slack_response = self._handle_slack_response(response)
+            return (slack_response.success, slack_response.to_json())
         except Exception as e:
-            logger.error(f"Failed to send message: {e}")
-            return (False, json.dumps({"error": str(e)}))
+            slack_response = self._handle_slack_error(e)
+            return (slack_response.success, slack_response.to_json())
 
     @tool(
         app_name="slack",
@@ -65,10 +93,16 @@ class Slack:
                 type=ParameterType.STRING,
                 description="The channel to get the history of",
                 required=True
+            ),
+            ToolParameter(
+                name="limit",
+                type=ParameterType.INTEGER,
+                description="Maximum number of messages to return",
+                required=False
             )
         ]
     )
-    def get_channel_history(self, channel: str) -> tuple[bool, str]:
+    def get_channel_history(self, channel: str, limit: Optional[int] = None) -> tuple[bool, str]:
         """Get the history of a channel"""
         """
         Args:
@@ -77,11 +111,12 @@ class Slack:
             A tuple with a boolean indicating success/failure and a JSON string with the history details
         """
         try:
-            response = self.client.conversations_history(channel=channel) # type: ignore
-            return (True, json.dumps(response))
+            response = self.client.conversations_history(channel=channel, limit=limit) # type: ignore
+            slack_response = self._handle_slack_response(response)
+            return (slack_response.success, slack_response.to_json())
         except Exception as e:
-            logger.error(f"Failed to get channel history: {e}")
-            return (False, json.dumps({"error": str(e)}))
+            slack_response = self._handle_slack_error(e)
+            return (slack_response.success, slack_response.to_json())
 
     @tool(
         app_name="slack",
@@ -105,10 +140,11 @@ class Slack:
         """
         try:
             response = self.client.conversations_info(channel=channel) # type: ignore
-            return (True, json.dumps(response))
+            slack_response = self._handle_slack_response(response)
+            return (slack_response.success, slack_response.to_json())
         except Exception as e:
-            logger.error(f"Failed to get channel info: {e}")
-            return (False, json.dumps({"error": str(e)}))
+            slack_response = self._handle_slack_error(e)
+            return (slack_response.success, slack_response.to_json())
 
     @tool(
         app_name="slack",
@@ -132,10 +168,11 @@ class Slack:
         """
         try:
             response = self.client.users_info(user=user) # type: ignore
-            return (True, json.dumps(response))
+            slack_response = self._handle_slack_response(response)
+            return (slack_response.success, slack_response.to_json())
         except Exception as e:
-            logger.error(f"Failed to get user info: {e}")
-            return (False, json.dumps({"error": str(e)}))
+            slack_response = self._handle_slack_error(e)
+            return (slack_response.success, slack_response.to_json())
 
     @tool(
         app_name="slack",
@@ -149,44 +186,46 @@ class Slack:
         """
         try:
             response = self.client.conversations_list() # type: ignore
-            return (True, json.dumps(response))
+            slack_response = self._handle_slack_response(response)
+            return (slack_response.success, slack_response.to_json())
         except Exception as e:
-            logger.error(f"Failed to fetch channels: {e}")
-            return (False, json.dumps({"error": str(e)}))
+            slack_response = self._handle_slack_error(e)
+            return (slack_response.success, slack_response.to_json())
 
     @tool(
         app_name="slack",
-        tool_name="search_messages",
+        tool_name="search_all",
         parameters=[
             ToolParameter(
                 name="query",
                 type=ParameterType.STRING,
-                description="The search query to find messages",
+                description="The search query to find messages, files, and channels",
                 required=True
             ),
             ToolParameter(
                 name="limit",
                 type=ParameterType.INTEGER,
-                description="Maximum number of messages to return",
+                description="Maximum number of results to return",
                 required=False
             )
         ]
     )
-    def search_messages(self, query: str, limit: Optional[int] = None) -> tuple[bool, str]:
-        """Search messages in Slack"""
+    def search_all(self, query: str, limit: Optional[int] = None) -> tuple[bool, str]:
+        """Search messages, files, and channels in Slack"""
         """
         Args:
-            query: The search query to find messages
-            limit: Maximum number of messages to return
+            query: The search query to find messages, files, and channels
+            limit: Maximum number of results to return
         Returns:
             A tuple with a boolean indicating success/failure and a JSON string with the search results
         """
         try:
-            response = self.client.search_messages(query=query, count=limit) # type: ignore
-            return (True, json.dumps(response))
+            response = self.client.search_all(query=query, count=limit) # type: ignore
+            slack_response = self._handle_slack_response(response)
+            return (slack_response.success, slack_response.to_json())
         except Exception as e:
-            logger.error(f"Failed to search messages: {e}")
-            return (False, json.dumps({"error": str(e)}))
+            slack_response = self._handle_slack_error(e)
+            return (slack_response.success, slack_response.to_json())
 
     @tool(
         app_name="slack",
@@ -210,10 +249,11 @@ class Slack:
         """
         try:
             response = self.client.conversations_members(channel=channel) # type: ignore
-            return (True, json.dumps(response))
+            slack_response = self._handle_slack_response(response)
+            return (slack_response.success, slack_response.to_json())
         except Exception as e:
-            logger.error(f"Failed to get channel members: {e}")
-            return (False, json.dumps({"error": str(e)}))
+            slack_response = self._handle_slack_error(e)
+            return (slack_response.success, slack_response.to_json())
 
     @tool(
         app_name="slack",
@@ -237,7 +277,8 @@ class Slack:
         """
         try:
             response = self.client.conversations_members(channel=channel_id) # type: ignore
-            return (True, json.dumps(response))
+            slack_response = self._handle_slack_response(response)
+            return (slack_response.success, slack_response.to_json())
         except Exception as e:
-            logger.error(f"Failed to get channel members by ID: {e}")
-            return (False, json.dumps({"error": str(e)}))
+            slack_response = self._handle_slack_error(e)
+            return (slack_response.success, slack_response.to_json())
