@@ -1,6 +1,6 @@
 import functools
 import inspect
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, get_origin
 
 try:
     from typing import get_type_hints
@@ -97,9 +97,9 @@ def _extract_parameters(func: Callable) -> List[ToolParameter]:
                 param_type = ParameterType.NUMBER
             elif isinstance(type_hint, type) and type_hint is bool:
                 param_type = ParameterType.BOOLEAN
-            elif isinstance(type_hint, type) and type_hint is list or str(type_hint).startswith('typing.List'):
+            elif get_origin(type_hint) is list:
                 param_type = ParameterType.ARRAY
-            elif isinstance(type_hint, type) and type_hint is dict or str(type_hint).startswith('typing.Dict'):
+            elif get_origin(type_hint) is dict:
                 param_type = ParameterType.OBJECT
 
         # Check if required

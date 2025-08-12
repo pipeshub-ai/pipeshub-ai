@@ -216,33 +216,173 @@ class ArangoService(IGraphService):
             return False
 
     async def upsert_document(self, collection_name: str, document: Dict[str, Any]) -> bool:
-        """Insert or update a document in a collection"""
+        """Insert or update a document in a collection using atomic AQL UPSERT"""
         try:
             if not self.db:
                 self.logger.error("Database not connected")
                 return False
 
-            collection = self.db.collection(collection_name)
+            # Ensure document has a _key for upsert operation
+            if "_key" not in document:
+                self.logger.error("Document must have a _key for upsert operation")
+                return False
 
-            # Check if document exists
-            if "_key" in document:
-                try:
-                    # Try to update existing document
-                    collection.update(document, merge=True)
-                    self.logger.debug(f"Updated document {document['_key']} in {collection_name}")
-                except Exception:
-                    # Document doesn't exist, insert it
-                    collection.insert(document)
-                    self.logger.debug(f"Inserted document {document['_key']} in {collection_name}")
+            # Use AQL UPSERT for atomic operation
+            upsert_query = f"""
+            UPSERT {{ _key: @_key }}
+            INSERT @document
+            UPDATE @document
+            IN {collection_name}
+            """
+
+            bind_vars = {
+                "_key": document["_key"],
+                "document": document
+            }
+
+            result = await self.execute_query(upsert_query, bind_vars)
+
+            if result:
+                self.logger.debug(f"Upserted document {document['_key']} in {collection_name}")
+                return True
             else:
-                # Insert new document
-                collection.insert(document)
-                self.logger.debug(f"Inserted new document in {collection_name}")
-
-            return True
+                self.logger.error(f"Upsert operation failed for document {document['_key']} in {collection_name}")
+                return False
 
         except Exception as e:
             self.logger.error(f"Failed to upsert document in {collection_name}: {e}")
+            return False
+
+    async def upsert_document_with_merge(self, collection_name: str, document: Dict[str, Any], merge_strategy: str = "merge") -> Optional[Dict[str, Any]]:
+        """
+        Insert or update a document with custom merge strategy using AQL UPSERT
+        Args:
+            collection_name: Name of the collection
+            document: Document to upsert
+            merge_strategy: Merge strategy - 'merge', 'replace', or 'keep'
+        Returns:
+            The upserted document or None if failed
+        """
+        try:
+            if not self.db:
+                self.logger.error("Database not connected")
+                return None
+
+            # Ensure document has a _key for upsert operation
+            if "_key" not in document:
+                self.logger.error("Document must have a _key for upsert operation")
+                return None
+
+            # Build merge logic based on strategy
+            if merge_strategy == "merge":
+                # Merge: combine existing and new fields
+                upsert_query = f"""
+                UPSERT {{ _key: @_key }}
+                INSERT @document
+                UPDATE MERGE(OLD, @document)
+                IN {collection_name}
+                RETURN NEW
+                """
+            elif merge_strategy == "replace":
+                # Replace: completely replace existing document
+                upsert_query = f"""
+                UPSERT {{ _key: @_key }}
+                INSERT @document
+                UPDATE @document
+                IN {collection_name}
+                RETURN NEW
+                """
+            elif merge_strategy == "keep":
+                # Keep: only insert if doesn't exist, don't update
+                upsert_query = f"""
+                UPSERT {{ _key: @_key }}
+                INSERT @document
+                UPDATE OLD
+                IN {collection_name}
+                RETURN NEW
+                """
+            else:
+                self.logger.error(f"Invalid merge strategy: {merge_strategy}")
+                return None
+
+            bind_vars = {
+                "_key": document["_key"],
+                "document": document
+            }
+
+            result = await self.execute_query(upsert_query, bind_vars)
+
+            if result and len(result) > 0:
+                self.logger.debug(f"Upserted document {document['_key']} in {collection_name} with strategy '{merge_strategy}'")
+                return result[0]  # Return the upserted document
+            else:
+                self.logger.error(f"Upsert operation failed for document {document['_key']} in {collection_name}")
+                return None
+
+        except Exception as e:
+            self.logger.error(f"Failed to upsert document in {collection_name}: {e}")
+            return None
+
+    async def batch_upsert_documents(self, collection_name: str, documents: List[Dict[str, Any]], merge_strategy: str = "merge") -> bool:
+        """
+        Batch upsert multiple documents using AQL UPSERT for better performance
+        Args:
+            collection_name: Name of the collection
+            documents: List of documents to upsert
+            merge_strategy: Merge strategy - 'merge', 'replace', or 'keep'
+        Returns:
+            True if all documents were upserted successfully, False otherwise
+        """
+        try:
+            if not self.db:
+                self.logger.error("Database not connected")
+                return False
+
+            if not documents:
+                self.logger.warning("No documents provided for batch upsert")
+                return True
+
+            # Validate all documents have _key
+            for doc in documents:
+                if "_key" not in doc:
+                    self.logger.error(f"Document missing _key: {doc}")
+                    return False
+
+            # Build merge logic based on strategy
+            if merge_strategy == "merge":
+                update_logic = "UPDATE MERGE(OLD, doc)"
+            elif merge_strategy == "replace":
+                update_logic = "UPDATE doc"
+            elif merge_strategy == "keep":
+                update_logic = "UPDATE OLD"
+            else:
+                self.logger.error(f"Invalid merge strategy: {merge_strategy}")
+                return False
+
+            # Use AQL UPSERT with FOR loop for batch processing
+            batch_upsert_query = f"""
+            FOR doc IN @documents
+            UPSERT {{ _key: doc._key }}
+            INSERT doc
+            {update_logic}
+            IN {collection_name}
+            """
+
+            bind_vars = {
+                "documents": documents
+            }
+
+            result = await self.execute_query(batch_upsert_query, bind_vars)
+
+            if result is not None:
+                self.logger.debug(f"Batch upserted {len(documents)} documents in {collection_name} with strategy '{merge_strategy}'")
+                return True
+            else:
+                self.logger.error(f"Batch upsert operation failed for {len(documents)} documents in {collection_name}")
+                return False
+
+        except Exception as e:
+            self.logger.error(f"Failed to batch upsert documents in {collection_name}: {e}")
             return False
 
     async def get_document(self, collection_name: str, document_key: str) -> Optional[Dict[str, Any]]:

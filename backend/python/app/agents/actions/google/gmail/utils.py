@@ -1,4 +1,5 @@
 import base64
+import logging
 import mimetypes
 import re
 from email.mime.application import MIMEApplication
@@ -7,6 +8,7 @@ from email.mime.text import MIMEText
 from pathlib import Path
 from typing import List, Optional
 
+logger = logging.getLogger(__name__)
 
 class GmailUtils:
     @staticmethod
@@ -102,7 +104,7 @@ class GmailUtils:
                     message.attach(attachment)
                 except Exception as e:
                     # Log error but continue with other attachments
-                    print(f"Failed to attach file {file_path}: {e}")
+                    logger.error(f"Failed to attach file {file_path}: {e}")
                     continue
         else:
             # Simple text message without attachments

@@ -6,9 +6,9 @@ from googleapiclient.discovery import Resource
 
 from app.agents.actions.google.auth.auth import calendar_auth
 from app.agents.actions.google.google_calendar.config import GoogleCalendarConfig
-from app.agents.tool.decorator import tool
-from app.agents.tool.enums import ParameterType
-from app.agents.tool.models import ToolParameter
+from app.agents.tools.decorator import tool
+from app.agents.tools.enums import ParameterType
+from app.agents.tools.models import ToolParameter
 from app.utils.time_conversion import parse_timestamp
 
 
@@ -23,7 +23,7 @@ class GoogleCalendar:
             None
         """
         self.config = config
-        self.calendar_id = config.calendar_id
+        self.calendar_id = config.calendar_id or 'primary'
         self.service: Optional[Resource] = None
         self.credentials: Optional[Credentials] = None
 
@@ -47,7 +47,7 @@ class GoogleCalendar:
             events = self.service.events().list(calendarId=self.calendar_id).execute() # type: ignore
             return True, json.dumps(events)
         except Exception as e:
-            return False, json.dumps(str(e))
+            return False, json.dumps({"error": str(e)})
 
 
     @calendar_auth()
@@ -170,16 +170,18 @@ class GoogleCalendar:
                     "email": event_organizer,
                 },
                 "attendees": [{"email": email} for email in event_attendees_emails] if event_attendees_emails else [],
-                "conferenceData": {
-                    "entryPoints": [
-                        {
-                            "entryPointType": "video",
-                            "uri": event_meeting_link,
-                        }
-                    ],
-                } if event_meeting_link else None,
                 "timeZone": event_timezone,
             }
+
+            if event_meeting_link:
+                event_config["conferenceData"] = {
+                    "createRequest": {
+                        "requestId": event_meeting_link,
+                        "conferenceSolutionKey": {
+                            "type": "hangoutsMeet",
+                        },
+                    },
+                }
 
             if event_all_day:
                 event_config["start"] = {"date": event_start_time.split("T")[0]}
@@ -203,7 +205,7 @@ class GoogleCalendar:
                 "event_all_day": event_all_day,
             })
         except Exception as e:
-            return False, json.dumps(str(e))
+            return False, json.dumps({"error": str(e)})
 
     @calendar_auth()
     @tool(
@@ -368,7 +370,7 @@ class GoogleCalendar:
                 "event_all_day": event_all_day,
             })
         except Exception as e:
-            return False, json.dumps(str(e))
+            return False, json.dumps({"error": str(e)})
 
     @calendar_auth()
     @tool(
@@ -404,7 +406,7 @@ class GoogleCalendar:
                 "message": f"Event {event_id} deleted successfully"
             })
         except Exception as e:
-            return False, json.dumps(str(e))
+            return False, json.dumps({"error": str(e)})
 
     @calendar_auth()
     @tool(
@@ -421,7 +423,7 @@ class GoogleCalendar:
             calendars = self.service.calendarList().list().execute() # type: ignore
             return True, json.dumps(calendars)
         except Exception as e:
-            return False, json.dumps(str(e))
+            return False, json.dumps({"error": str(e)})
 
     @calendar_auth()
     @tool(
@@ -440,4 +442,4 @@ class GoogleCalendar:
             calendar = self.service.calendars().get(calendarId=self.calendar_id).execute() # type: ignore
             return True, json.dumps(calendar)
         except Exception as e:
-            return False, json.dumps(str(e))
+            return False, json.dumps({"error": str(e)})

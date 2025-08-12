@@ -7,9 +7,9 @@ from googleapiclient.discovery import Resource
 from app.agents.actions.google.auth.auth import gmail_auth
 from app.agents.actions.google.gmail.config import GoogleGmailConfig
 from app.agents.actions.google.gmail.utils import GmailUtils
-from app.agents.tool.decorator import tool
-from app.agents.tool.enums import ParameterType
-from app.agents.tool.models import ToolParameter
+from app.agents.tools.decorator import tool
+from app.agents.tools.enums import ParameterType
+from app.agents.tools.models import ToolParameter
 
 
 class Gmail:
@@ -131,7 +131,7 @@ class Gmail:
                 "message" : message,
             })
         except Exception as e:
-            return False, json.dumps(str(e))
+            return False, json.dumps({"error": str(e)})
 
     @gmail_auth()
     @tool(
@@ -220,7 +220,7 @@ class Gmail:
                 "draft": draft,
             })
         except Exception as e:
-            return False, json.dumps(str(e))
+            return False, json.dumps({"error": str(e)})
 
     @gmail_auth()
     @tool(
@@ -327,7 +327,7 @@ class Gmail:
                 "message": message,
             })
         except Exception as e:
-            return False, json.dumps(str(e))
+            return False, json.dumps({"error": str(e)})
 
     @gmail_auth()
     @tool(
@@ -378,7 +378,7 @@ class Gmail:
             ).execute() # type: ignore
             return True, json.dumps(messages)
         except Exception as e:
-            return False, json.dumps(str(e))
+            return False, json.dumps({"error": str(e)})
 
     @gmail_auth()
     @tool(
@@ -412,7 +412,7 @@ class Gmail:
             ).execute() # type: ignore
             return True, json.dumps(message)
         except Exception as e:
-            return False, json.dumps(str(e))
+            return False, json.dumps({"error": str(e)})
 
     @gmail_auth()
     @tool(
@@ -458,5 +458,5 @@ class Gmail:
 
             return True, json.dumps(attachments)
         except Exception as e:
-            return False, json.dumps(str(e))
+            return False, json.dumps({"error": str(e)})
 

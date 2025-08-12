@@ -1,4 +1,5 @@
 import json
+import logging
 from typing import BinaryIO, Optional
 
 from google.oauth2.credentials import Credentials
@@ -6,9 +7,11 @@ from googleapiclient.discovery import Resource
 
 from app.agents.actions.google.auth.auth import drive_auth
 from app.agents.actions.google.google_drive.config import GoogleDriveConfig
-from app.agents.tool.decorator import tool
-from app.agents.tool.enums import ParameterType
-from app.agents.tool.models import ToolParameter
+from app.agents.tools.decorator import tool
+from app.agents.tools.enums import ParameterType
+from app.agents.tools.models import ToolParameter
+
+logger = logging.getLogger(__name__)
 
 
 class GoogleDrive:
@@ -54,7 +57,7 @@ class GoogleDrive:
             tuple[bool, str]: True if the file list is retrieved, False otherwise
         """
         try:
-            query = f"'{folder_id}' in parents and trashed=false" if folder_id else "trashed=false"
+            query = f"'{folder_id or 'root'}' in parents and trashed=false"
             files = self.service.files().list( # type: ignore
                 q=query,
                 spaces="drive",
@@ -69,7 +72,7 @@ class GoogleDrive:
                 "pageToken": files.get("nextPageToken", None),
             })
         except Exception as e:
-            return False, json.dumps(str(e))
+            return False, json.dumps({"error": str(e)})
 
     @drive_auth()
     @tool(
@@ -106,7 +109,7 @@ class GoogleDrive:
                 "folder_mimeType": folder.get("mimeType", ""),
             })
         except Exception as e:
-            return False, json.dumps(str(e))
+            return False, json.dumps({"error": str(e)})
 
     @drive_auth()
     @tool(
@@ -121,7 +124,7 @@ class GoogleDrive:
             ),
             ToolParameter(
                 name="file_content",
-                type=ParameterType.STRING,
+                type=ParameterType.BINARY_IO,
                 description="The content of the file to upload (file path or content)",
                 required=True
             ),
@@ -161,7 +164,7 @@ class GoogleDrive:
                 "file_size": file.get("size", ""),
             })
         except Exception as e:
-            return False, json.dumps(str(e))
+            return False, json.dumps({"error": str(e)})
 
     @drive_auth()
     @tool(
@@ -186,9 +189,10 @@ class GoogleDrive:
             tuple[bool, Optional[BinaryIO]]: True if the file is downloaded, False otherwise
         """
         try:
-            file = self.service.files().get_media(fileId=file_id) # type: ignore
+            file = self.service.files().get_media(fileId=file_id).execute() # type: ignore
             return True, file
-        except Exception:
+        except Exception as e:
+            logger.error(f"Failed to download file {file_id}: {e}")
             return False, None
 
     @drive_auth()
@@ -219,7 +223,7 @@ class GoogleDrive:
                 "message": f"File {file_id} deleted successfully"
             })
         except Exception as e:
-            return False, json.dumps(str(e))
+            return False, json.dumps({"error": str(e)})
 
     @drive_auth()
     @tool(
@@ -257,4 +261,4 @@ class GoogleDrive:
                 "file_trashed": file.get("trashed", False),
             })
         except Exception as e:
-            return False, json.dumps(str(e))
+            return False, json.dumps({"error": str(e)})

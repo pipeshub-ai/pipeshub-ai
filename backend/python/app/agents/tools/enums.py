@@ -9,3 +9,4 @@ class ParameterType(Enum):
     BOOLEAN = "boolean"
     ARRAY = "array"
     OBJECT = "object"
+    BINARY_IO = "binary_io"

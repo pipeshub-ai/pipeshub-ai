@@ -5,7 +5,7 @@ from atlassian import Confluence  # type: ignore
 
 class ConfluenceConfigBase:
     def create_client(self) -> Confluence: # type: ignore
-        raise NotImplementedError
+        raise NotImplementedError # pragma: no cover
 
 @dataclass
 class ConfluenceUsernamePasswordConfig(ConfluenceConfigBase):
@@ -17,6 +17,10 @@ class ConfluenceUsernamePasswordConfig(ConfluenceConfigBase):
     def create_client(self) -> Confluence:
         return Confluence(url=self.base_url, username=self.username, password=self.password, ssl=self.ssl)
 
+    def to_dict(self) -> dict:
+        """Convert the configuration to a dictionary"""
+        return asdict(self)
+
 @dataclass
 class ConfluenceTokenConfig(ConfluenceConfigBase):
     base_url: str
@@ -25,6 +29,10 @@ class ConfluenceTokenConfig(ConfluenceConfigBase):
 
     def create_client(self) -> Confluence:
         return Confluence(url=self.base_url, token=self.token, ssl=self.ssl)
+
+    def to_dict(self) -> dict:
+        """Convert the configuration to a dictionary"""
+        return asdict(self)
 
 @dataclass
 class ConfluenceApiKeyConfig(ConfluenceConfigBase):

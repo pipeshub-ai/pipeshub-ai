@@ -7,9 +7,9 @@ from app.agents.actions.jira.config import (
     JiraTokenConfig,
     JiraUsernamePasswordConfig,
 )
-from app.agents.tool.decorator import tool
-from app.agents.tool.enums import ParameterType
-from app.agents.tool.models import ToolParameter
+from app.agents.tools.decorator import tool
+from app.agents.tools.enums import ParameterType
+from app.agents.tools.models import ToolParameter
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ class Jira:
             self.jira = config.create_client()
         except Exception as e:
             logger.error(f"Failed to initialize JIRA: {e}")
-            raise ValueError(f"Failed to initialize JIRA: {e}")
+            raise ValueError(f"Failed to initialize JIRA: {e}") from e
 
     @tool(
         app_name="jira",
@@ -131,8 +131,8 @@ class Jira:
                 "description": issue.fields.description,
                 "project_key": issue.fields.project.key,
                 "status": issue.fields.status.name,
-                "assignee": issue.fields.assignee.name,
-                "priority": issue.fields.priority.name,
+                "assignee": issue.fields.assignee.name if issue.fields.assignee else None,
+                "priority": issue.fields.priority.name if issue.fields.priority else None,
             }))
         except Exception as e:
             logger.error(f"Failed to get issue: {e}")
@@ -504,7 +504,7 @@ class Jira:
             A tuple with a boolean indicating success/failure and a JSON string with the search results
         """
         try:
-            issues = self.jira.search_issues(query, expand=expand, maxResults=limit)
+            issues = self.jira.search_issues(jql=query, expand=expand, maxResults=limit)
             return (True, json.dumps([{
                 "key": issue.key,
                 "summary": issue.fields.summary,

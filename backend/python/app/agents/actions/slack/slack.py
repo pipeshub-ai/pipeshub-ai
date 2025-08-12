@@ -3,9 +3,9 @@ import logging
 from typing import Optional
 
 from app.agents.actions.slack.config import SlackTokenConfig
-from app.agents.tool.decorator import tool
-from app.agents.tool.enums import ParameterType
-from app.agents.tool.models import ToolParameter
+from app.agents.tools.decorator import tool
+from app.agents.tools.enums import ParameterType
+from app.agents.tools.models import ToolParameter
 
 logger = logging.getLogger(__name__)
 
@@ -190,60 +190,6 @@ class Slack:
 
     @tool(
         app_name="slack",
-        tool_name="get_user_presence",
-        parameters=[
-            ToolParameter(
-                name="user",
-                type=ParameterType.STRING,
-                description="The user to get the presence of",
-                required=True
-            )
-        ]
-    )
-    def get_user_presence(self, user: str) -> tuple[bool, str]:
-        """Get the presence of a user"""
-        """
-        Args:
-            user: The user to get the presence of
-        Returns:
-            A tuple with a boolean indicating success/failure and a JSON string with the user presence
-        """
-        try:
-            response = self.client.users_getPresence(user=user) # type: ignore
-            return (True, json.dumps(response))
-        except Exception as e:
-            logger.error(f"Failed to get user presence: {e}")
-            return (False, json.dumps({"error": str(e)}))
-
-    @tool(
-        app_name="slack",
-        tool_name="get_channel_users",
-        parameters=[
-            ToolParameter(
-                name="channel",
-                type=ParameterType.STRING,
-                description="The channel to get the users of",
-                required=True
-            )
-        ]
-    )
-    def get_channel_users(self, channel: str) -> tuple[bool, str]:
-        """Get the users of a channel"""
-        """
-        Args:
-            channel: The channel to get the users of
-        Returns:
-            A tuple with a boolean indicating success/failure and a JSON string with the channel users
-        """
-        try:
-            response = self.client.conversations_members(channel=channel) # type: ignore
-            return (True, json.dumps(response))
-        except Exception as e:
-            logger.error(f"Failed to get channel users: {e}")
-            return (False, json.dumps({"error": str(e)}))
-
-    @tool(
-        app_name="slack",
         tool_name="get_channel_members",
         parameters=[
             ToolParameter(
@@ -294,73 +240,4 @@ class Slack:
             return (True, json.dumps(response))
         except Exception as e:
             logger.error(f"Failed to get channel members by ID: {e}")
-            return (False, json.dumps({"error": str(e)}))
-
-    @tool(
-        app_name="slack",
-        tool_name="get_channel_members_by_name",
-        parameters=[
-            ToolParameter(
-                name="channel_name",
-                type=ParameterType.STRING,
-                description="The channel name to get the members of",
-                required=True
-            )
-        ]
-    )
-    def get_channel_members_by_name(self, channel_name: str) -> tuple[bool, str]:
-        """Get the members of a channel by name"""
-        """
-        Args:
-            channel_name: The channel name to get the members of
-        Returns:
-            A tuple with a boolean indicating success/failure and a JSON string with the channel members
-        """
-        try:
-            # First get channel info by name
-            channel_info = self.client.conversations_info(channel=channel_name) # type: ignore
-            channel_id = channel_info['channel']['id']
-            response = self.client.conversations_members(channel=channel_id) # type: ignore
-            return (True, json.dumps(response))
-        except Exception as e:
-            logger.error(f"Failed to get channel members by name: {e}")
-            return (False, json.dumps({"error": str(e)}))
-
-    @tool(
-        app_name="slack",
-        tool_name="get_channel_members_by_id_and_name",
-        parameters=[
-            ToolParameter(
-                name="channel_id",
-                type=ParameterType.STRING,
-                description="The channel ID to get the members of",
-                required=True
-            ),
-            ToolParameter(
-                name="channel_name",
-                type=ParameterType.STRING,
-                description="The channel name for verification",
-                required=True
-            )
-        ]
-    )
-    def get_channel_members_by_id_and_name(self, channel_id: str, channel_name: str) -> tuple[bool, str]:
-        """Get the members of a channel by ID and verify with name"""
-        """
-        Args:
-            channel_id: The channel ID to get the members of
-            channel_name: The channel name for verification
-        Returns:
-            A tuple with a boolean indicating success/failure and a JSON string with the channel members
-        """
-        try:
-            # Verify channel name matches ID
-            channel_info = self.client.conversations_info(channel=channel_id) # type: ignore
-            if channel_info['channel']['name'] != channel_name:
-                return (False, json.dumps({"error": "Channel name does not match ID"}))
-
-            response = self.client.conversations_members(channel=channel_id) # type: ignore
-            return (True, json.dumps(response))
-        except Exception as e:
-            logger.error(f"Failed to get channel members by ID and name: {e}")
             return (False, json.dumps({"error": str(e)}))

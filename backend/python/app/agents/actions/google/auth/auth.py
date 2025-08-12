@@ -177,7 +177,7 @@ def google_auth(
                 if scopes is None:
                     auth_config.scopes = GoogleAuthenticator.DEFAULT_SCOPES.get(
                         service_name,
-                        GoogleAuthenticator.DEFAULT_SCOPES.get(service_name)
+                        GoogleAuthenticator.DEFAULT_SCOPES.get(service_name, [])
                     )
                 else:
                     auth_config.scopes = scopes
@@ -208,7 +208,7 @@ def google_auth(
             except HttpError as error:
                 raise error
             except Exception as error:
-                raise Exception(f"Authentication failed for {service_name}: {error}")
+                raise Exception(f"Authentication failed for {service_name}: {error}") from error
 
         return wrapper
     return decorator

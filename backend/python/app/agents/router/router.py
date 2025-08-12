@@ -120,6 +120,7 @@ async def get_all_tools(
 
 
 @router.get("/{app_name}/{tool_name}", response_model=Dict[str, Any])
+@inject
 async def get_tool_by_name(
     app_name: str,
     tool_name: str,
@@ -174,6 +175,7 @@ async def get_tool_by_name(
 
 
 @router.get("/apps", response_model=List[str])
+@inject
 async def get_app_names(
     tools_db: ToolsDBManager = Depends(get_tools_db)
 ) -> List[str]:
@@ -197,6 +199,7 @@ async def get_app_names(
 
 
 @router.get("/stats", response_model=Dict[str, Any])
+@inject
 async def get_tools_stats(
     tools_db: ToolsDBManager = Depends(get_tools_db)
 ) -> Dict[str, Any]:

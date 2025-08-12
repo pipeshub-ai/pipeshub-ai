@@ -2,7 +2,7 @@ import json
 from typing import Optional
 
 from app.agents.actions.github.config import GithubConfig
-from app.agents.tool.decorator import tool
+from app.agents.tools.decorator import tool
 
 
 class Github:

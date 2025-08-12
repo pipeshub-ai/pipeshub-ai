@@ -7,9 +7,9 @@ from app.agents.actions.confluence.config import (
     ConfluenceTokenConfig,
     ConfluenceUsernamePasswordConfig,
 )
-from app.agents.tool.decorator import tool
-from app.agents.tool.enums import ParameterType
-from app.agents.tool.models import ToolParameter
+from app.agents.tools.decorator import tool
+from app.agents.tools.enums import ParameterType
+from app.agents.tools.models import ToolParameter
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ class Confluence:
         """
         self.config = config
         try:
-            logger.info(f"Initializing Confluence with config: {config}")
+            logger.info("Initializing Confluence")
             self.confluence = config.create_client()
         except Exception as e:
             logger.error(f"Failed to initialize Confluence: {e}")
@@ -351,7 +351,7 @@ class Confluence:
             A tuple with a boolean indicating success/failure and a JSON string with the search results
         """
         try:
-            results = self.confluence.search_pages(query, expand=expand, limit=limit)
+            results = self.confluence.cql(cql=query, expand=expand, limit=limit)
             return (True, json.dumps(results))
         except Exception as e:
             logger.error(f"Failed to search pages: {e}")
@@ -359,9 +359,20 @@ class Confluence:
 
     def __get_space_id(self, space: str) -> Optional[str]:
         """Get the space ID from the space key"""
+        """Get the ID of a space in Confluence
+        """
+        """
+        Args:
+            space: The name of the space
+        Returns:
+            The ID of the space
+        """
         try:
-            space_info = self.confluence.get_space(space)
-            return space_info['id']
+            spaces = self.confluence.get_spaces()
+            for space_obj in spaces:
+                if space_obj.name == space: # type: ignore
+                    return space_obj.id # type: ignore
+            return None
         except Exception as e:
             logger.error(f"Failed to get space ID: {e}")
             return None
