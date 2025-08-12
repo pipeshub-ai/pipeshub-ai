@@ -7,7 +7,8 @@ from arango.database import TransactionDatabase
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames, OriginTypes
 from app.config.constants.service import config_node_constants
-from app.connectors.sources.microsoft.onedrive.arango_service import ArangoService
+from app.connectors.core.interfaces.connector.apps import App, AppGroup
+from app.connectors.services.base_arango_service import BaseArangoService
 from app.models.entities import (
     FileRecord,
     MailRecord,
@@ -36,22 +37,6 @@ class RecordGroupWithPermissions:
 class UserGroupWithMembers:
     user_group: UserGroup
     users: List[Tuple[User, Permission]]
-
-class App:
-    def __init__(self, app_name: str) -> None:
-        self.app_name = app_name
-
-    def get_app_name(self) -> str:
-        return self.app_name
-
-class AppGroup:
-    def __init__(self, app_group_name: str, apps: List[App]) -> None:
-        self.app_group_name = app_group_name
-        self.apps = apps
-
-    def get_app_group_name(self) -> str:
-        return self.app_group_name
-
 
 read_collections = [
     CollectionNames.RECORDS.value,
@@ -92,10 +77,10 @@ write_collections = [
 ]
 
 class DataSourceEntitiesProcessor:
-    def __init__(self, logger, app: App, arango_service: ArangoService, config_service: ConfigurationService) -> None:
+    def __init__(self, logger, app: App, arango_service: BaseArangoService, config_service: ConfigurationService) -> None:
         self.logger = logger
         self.app = app
-        self.arango_service: ArangoService = arango_service
+        self.arango_service: BaseArangoService = arango_service
         self.config_service: ConfigurationService = config_service
         self.org_id = ""
 
@@ -361,12 +346,19 @@ class DataSourceEntitiesProcessor:
             )
         for record_group in record_groups:
             self.logger.info(f"Processing record group: {record_group}")
-            # Create record group if it doesn't exist
-            # Create a permission edge between the record group and the org if it doesn't exist
-            # Create a permission edge between the record group and the user if it doesn't exist
-            # Create a permission edge between the record group and the user group if it doesn't exist
-            # Create a permission edge between the record group and the org if it doesn't exist
-            # Create a edge between the record group and the app with sync status if it doesn't exist
+            existing_record_group = await self.arango_service.get_record_group_by_external_id(connector_name=record_group.connector_name,
+                                                                                            external_id=record_group.external_group_id, transaction=transaction)
+            if existing_record_group is None:
+                record_group.id = str(uuid.uuid4())
+                record_group.org_id = self.org_id
+                await self.arango_service.batch_upsert_nodes(
+                    [record_group.to_arango_base_record_group()], collection=CollectionNames.RECORD_GROUPS.value, transaction=transaction
+                )
+                # Create a permission edge between the record group and the org if it doesn't exist
+                # Create a permission edge between the record group and the user if it doesn't exist
+                # Create a permission edge between the record group and the user group if it doesn't exist
+                # Create a permission edge between the record group and the org if it doesn't exist
+                # Create a edge between the record group and the app with sync status if it doesn't exist
             await self.arango_service.batch_upsert_nodes(
                 [record_group.to_arango_base_record_group()], collection=CollectionNames.RECORD_GROUPS.value, transaction=transaction
             )
@@ -444,5 +436,10 @@ class DataSourceEntitiesProcessor:
 
     async def get_all_active_users(self) -> List[User]:
         users = await self.arango_service.get_users(self.org_id, active=True)
+
+        return [User.from_arango_user(user) for user in users]
+
+    async def get_all_active_users_by_app(self, app: App) -> List[User]:
+        users = await self.arango_service.get_users_by_app(self.org_id, app)
 
         return [User.from_arango_user(user) for user in users]

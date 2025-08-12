@@ -35,10 +35,15 @@ class Connectors(Enum):
     KNOWLEDGE_BASE = "KB"
     NOTION = "NOTION"
     ONEDRIVE = "ONEDRIVE"
+    SHAREPOINT_ONLINE = "SHAREPOINT_ONLINE"
+    CONFLUENCE = "CONFLUENCE"
+    JIRA = "JIRA"
 
 class AppGroups(Enum):
     GOOGLE_WORKSPACE = "Google Workspace"
     NOTION = "Notion"
+    ATLASSIAN = "Atlassian"
+    MICROSOFT = "Microsoft"
 
 class RecordTypes(Enum):
     FILE = "FILE"

@@ -8,6 +8,13 @@ from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
+class RecordGroupType(str, Enum):
+    SLACK_CHANNEL = "SLACK_CHANNEL"
+    CONFLUENCE_SPACES = "CONFLUENCE_SPACES"
+    KB = "KB"
+    NOTION_WORKSPACE = "NOTION_WORKSPACE"
+    DRIVE = "DRIVE"
+
 class RecordType(str, Enum):
     FILE = "FILE"
     DRIVE = "DRIVE"
@@ -268,7 +275,7 @@ class RecordGroup(BaseModel):
     name: str = Field(description="Name of the record group")
     external_group_id: Optional[str] = Field(description="External identifier for the record group")
     connector_name: Optional[str] = Field(description="Name of the connector used to create the record group")
-    group_type: Optional[str] = Field(description="Type of the record group")
+    group_type: Optional[RecordGroupType] = Field(description="Type of the record group")
     created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record group creation")
     updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record group update")
     source_created_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the record group creation in the source system")
@@ -280,7 +287,7 @@ class RecordGroup(BaseModel):
             "groupName": self.name,
             "externalGroupId": self.external_group_id,
             "connectorName": self.connector_name,
-            "groupType": self.group_type,
+            "groupType": self.group_type.value,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
             "sourceCreatedAtTimestamp": self.source_created_at,

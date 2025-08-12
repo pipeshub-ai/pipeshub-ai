@@ -1,4 +1,3 @@
-
 import asyncio
 import os
 from dataclasses import dataclass
@@ -7,6 +6,7 @@ from logging import Logger
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from aiolimiter import AsyncLimiter
+from arango import ArangoClient
 from azure.identity.aio import ClientSecretCredential
 from kiota_abstractions.base_request_configuration import RequestConfiguration
 from kiota_abstractions.method import Method
@@ -27,25 +27,17 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors, OriginTypes
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.providers.in_memory_store import InMemoryKeyValueStore
-from app.connectors.sources.microsoft.onedrive.arango_service import ArangoService
-from app.connectors.sources.microsoft.onedrive.data_source_entities_processor import (
-    App,
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
+from app.connectors.services.base_arango_service import BaseArangoService
+from app.connectors.sources.microsoft.common.apps import OneDriveApp
 from app.models.entities import FileRecord, RecordStatus, RecordType
 from app.models.permission import EntityType, Permission, PermissionType
 from app.models.users import User, UserGroup
 from app.services.kafka_consumer import KafkaConsumerManager
 from app.utils.logger import create_logger
 
-
-class OneDriveApp(App):
-    def __init__(self) -> None:
-        super().__init__(Connectors.ONEDRIVE.value)
-
-# class MicrosoftAppGroup(AppGroup):
-#     def __init__(self):
-#         super().__init__(Connectors.ONEDRIVE.value)
 
 # Map Microsoft Graph roles to permission type
 def map_msgraph_role_to_permission_type(role: str) -> PermissionType:
@@ -990,7 +982,8 @@ async def test_run() -> None:
     key_value_store = InMemoryKeyValueStore(logger, "app/config/default_config.json")
     config_service = ConfigurationService(logger, key_value_store)
     kafka_service = KafkaConsumerManager(logger, config_service, None, None)
-    arango_service = ArangoService(logger, config_service, kafka_service)
+    arango_client = ArangoClient()
+    arango_service = BaseArangoService(logger, arango_client, config_service, kafka_service)
     await arango_service.connect()
     data_entities_processor = DataSourceEntitiesProcessor(logger, OneDriveApp(), arango_service, config_service)
     await data_entities_processor.initialize()
