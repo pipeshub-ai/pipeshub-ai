@@ -8,6 +8,7 @@ from app.connectors.core.base.token_service.oauth_service import (
     OAuthProvider,
     OAuthToken,
 )
+from app.connectors.services.base_arango_service import BaseArangoService
 
 
 class AtlassianScope(Enum):
@@ -124,6 +125,7 @@ class AtlassianOAuthProvider(OAuthProvider):
         client_secret: str,
         redirect_uri: str,
         key_value_store: KeyValueStore,
+        base_arango_service: BaseArangoService,
         scopes: Optional[List[str]] = None,
     ) -> None:
         """
@@ -151,7 +153,7 @@ class AtlassianOAuthProvider(OAuthProvider):
             }
         )
 
-        super().__init__(config, key_value_store)
+        super().__init__(config, key_value_store, base_arango_service)
         self._accessible_resources: Optional[List[AtlassianCloudResource]] = None
 
     def get_provider_name(self) -> str:
@@ -169,8 +171,15 @@ class AtlassianOAuthProvider(OAuthProvider):
     async def handle_callback(self, code: str, state: str) -> OAuthToken:
         token = await super().handle_callback(code, state, save_token=False)
         identity = await self.get_identity(token)
-        id = identity['email'] if 'email' in identity else identity['account_id']
-        await self.key_value_store.create_key(f"{self.get_provider_name()}/{id}", token.to_dict())
+        email = identity['email']
+        user = await self.base_arango_service.get_user_by_email(email)
+        if not user:
+            raise Exception(f"User {email} not found")
+        org_id = user.org_id
+        if not org_id:
+            raise Exception(f"User {email} does not have an org_id")
+
+        await self.key_value_store.create_key(f"{self.get_provider_name()}/{org_id}", token.to_dict())
 
         return token
 

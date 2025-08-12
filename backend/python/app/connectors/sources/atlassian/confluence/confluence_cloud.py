@@ -1,12 +1,19 @@
-
 import json
+import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from logging import Logger
 from typing import Any, Dict, List, Optional
 
 import aiohttp
 
 from app.config.configuration_service import ConfigurationService
+from app.config.constants.arangodb import (
+    Connectors,
+    MimeTypes,
+    OriginTypes,
+    RecordTypes,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -15,7 +22,7 @@ from app.connectors.sources.atlassian.core.oauth import (
     AtlassianOAuthProvider,
     AtlassianScope,
 )
-from app.models.entities import User
+from app.models.entities import RecordGroupType, RecordType, User, WebpageRecord
 
 RESOURCE_URL = "https://api.atlassian.com/oauth/token/accessible-resources"
 BASE_URL = "https://api.atlassian.com/ex/confluence"
@@ -30,9 +37,8 @@ class AtlassianCloudResource:
     avatar_url: Optional[str] = None
 
 class ConfluenceClient:
-    def __init__(self, logger: Logger, user: User, token: OAuthToken) -> None:
+    def __init__(self, logger: Logger, token: OAuthToken) -> None:
         self.logger = logger
-        self.user = user
         self.token = token
         self.base_url = "https://api.atlassian.com/ex/confluence"
         self.headers = {
@@ -179,24 +185,47 @@ class ConfluenceClient:
 
         return permissions
 
-
     async def fetch_pages_with_permissions(
         self,
         space_id: str,
-    ) -> Dict[str, Any]:
+    ) -> List[WebpageRecord]:
         base_url = f"{BASE_URL}/{self.cloud_id}"
         limit = 25
         pages_url = f"{base_url}/wiki/api/v2/spaces/{space_id}/pages"
-        pages = []
+        records = []
         while True:
             pages_batch = await self.make_authenticated_json_request("GET", pages_url, params={"limit": limit})
-            pages = pages + pages_batch.get("results", [])
+            for page in pages_batch.get("results", []):
+                # page_permissions = await self._fetch_page_permission(page["id"])
+                # page["permissions"] = page_permissions
+                print("Processing page", page["title"], page["id"], page["createdAt"])
+                dt = datetime.strptime(page["createdAt"], "%Y-%m-%dT%H:%M:%S.%fZ")
+
+                record = WebpageRecord(
+                    id=str(uuid.uuid4()),
+                    external_record_id=page["id"],
+                    version=0,
+                    record_name=page["title"],
+                    record_type=RecordTypes.WEBPAGE,
+                    origin=OriginTypes.CONNECTOR,
+                    connector_name=Connectors.CONFLUENCE.value,
+                    record_group_type=RecordGroupType.CONFLUENCE_SPACES.value,
+                    external_record_group_id=space_id,
+                    parent_record_type=RecordType.WEBPAGE,
+                    parent_external_record_id=page['parentId'],
+                    web_url=page["_links"]["webui"],
+                    mime_type=MimeTypes.HTML.value,
+                    source_created_at=int(dt.timestamp() * 1000),
+                )
+                records.append(record)
             next_url = pages_batch.get("_links", {}).get("next", None)
             if not next_url:
                 break
             pages_url = f"{base_url}/{next_url}"
 
-        return pages
+        print(json.dumps(records, indent=4), "records")
+
+        return records
 
 
 class ConfluenceConnector:
@@ -204,41 +233,44 @@ class ConfluenceConnector:
         self.logger = logger
         self.data_entities_processor = data_entities_processor
         self.config_service = config_service
-
+        self.provider = None
 
     async def initialize(self) -> None:
         await self.data_entities_processor.initialize()
-
-    async def run(self) -> None:
         config = await self.config_service.get_config("atlassian_oauth_provider")
         self.provider = AtlassianOAuthProvider(
             client_id=config["client_id"],
             client_secret=config["client_secret"],
             redirect_uri=config["redirect_uri"],
             scopes=AtlassianScope.get_full_access(),
-            key_value_store=self.config_service.store
+            key_value_store=self.config_service.store,
+            base_arango_service=self.data_entities_processor.arango_service
         )
 
-
+    async def run(self) -> None:
         users = await self.data_entities_processor.get_all_active_users()
         # users = await self.data_entities_processor.get_all_active_users_by_app(ConfluenceApp())
+        if not users:
+            self.logger.info("No users found")
+            return
 
+        user = users[0]
+        confluence_client = await self.get_confluence_client(user)
         for user in users:
-            async with await self.get_confluence_client(user) as confluence_client:
-                try:
-                    spaces = await confluence_client.fetch_spaces_with_permissions()
-                    for space in spaces:
-                        pages = await confluence_client.fetch_pages_with_permissions(space["id"])
-                        self.logger.info(f"Found {len(pages)} pages in space {space['name']}")
-                except Exception as e:
-                    self.logger.error(f"Error processing user {user.email}: {e}")
+            try:
+                spaces = await confluence_client.fetch_spaces_with_permissions()
+                for space in spaces:
+                    page_records = await confluence_client.fetch_pages_with_permissions(space["id"])
+                    await self.data_entities_processor.on_new_records((page_records, []))
+            except Exception as e:
+                self.logger.error(f"Error processing user {user.email}: {e}")
 
 
     async def get_confluence_client(self, user: User) -> ConfluenceClient:
-        token = await self.provider.get_token(user.email)
+        token = await self.provider.get_token(user.org_id)
         if not token:
             raise Exception(f"Token for user {user.email} not found")
-        confluence_client = ConfluenceClient(self.logger, user, token)
+        confluence_client = ConfluenceClient(self.logger, token)
         await confluence_client.initialize()
 
         return confluence_client

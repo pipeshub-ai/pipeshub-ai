@@ -253,10 +253,6 @@ class MailRecord(Record):
         }
 
 class WebpageRecord(Record):
-    webpage_url: Optional[str] = None
-    webpage_title: Optional[str] = None
-    webpage_description: Optional[str] = None
-
 
     def to_kafka_record(self) -> Dict:
         return {
@@ -269,6 +265,9 @@ class WebpageRecord(Record):
             "sourceCreatedAtTimestamp": self.source_created_at,
             "sourceLastModifiedTimestamp": self.source_updated_at,
         }
+
+    def to_arango_base_record(self) -> Dict:
+        return super().to_arango_base_record()
 
 class RecordGroup(BaseModel):
     id: str = Field(description="Unique identifier for the record group", default_factory=lambda: str(uuid4()))
@@ -316,11 +315,13 @@ class User(BaseModel):
     updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the user update")
     source_created_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the user creation in the source system")
     source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the user update in the source system")
+    org_id: str = Field(default="", description="Unique identifier for the organization")
 
     @staticmethod
     def from_arango_base_user(arango_base_user: Dict) -> "User":
         return User(
             id=arango_base_user["_key"],
+            org_id=arango_base_user["orgId"],
             email=arango_base_user["email"],
             name=arango_base_user["fullName"],
             created_at=arango_base_user["createdAtTimestamp"],

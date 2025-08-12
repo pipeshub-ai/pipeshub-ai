@@ -15,6 +15,7 @@ from app.models.entities import (
     MessageRecord,
     Record,
     RecordGroup,
+    WebpageRecord,
 )
 from app.models.permission import EntityType, Permission
 from app.models.users import User, UserGroup
@@ -174,56 +175,67 @@ class DataSourceEntitiesProcessor:
             )
 
     async def _handle_new_record(self, record: Record, transaction: TransactionDatabase) -> None:
-        is_of_type_record = None
+        # Set org_id for the record
         record.org_id = self.org_id
-        if isinstance(record, FileRecord):
-            is_of_type_record = {
-                "_from": f"{CollectionNames.RECORDS.value}/{record.id}",
-                "_to": f"{CollectionNames.FILES.value}/{record.id}",
-                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                }
-            await self.arango_service.batch_upsert_nodes(
-                [record.to_arango_base_record()], collection=CollectionNames.RECORDS.value, transaction=transaction
-            )
-            await self.arango_service.batch_upsert_nodes(
-                [record.to_arango_file_record()], collection=CollectionNames.FILES.value, transaction=transaction
-            )
-            await self.arango_service.batch_create_edges(
-                [is_of_type_record], collection=CollectionNames.IS_OF_TYPE.value, transaction=transaction
-            )
-        if isinstance(record, MailRecord):
-            is_of_type_record = {
-                "_from": f"{CollectionNames.RECORDS.value}/{record.id}",
-                "_to": f"{CollectionNames.MAILS.value}/{record.id}",
-                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+
+        # Define record type configurations
+        record_type_config = {
+            FileRecord: {
+                "collection": CollectionNames.FILES.value,
+                "to_arango_method": "to_arango_file_record"
+            },
+            MailRecord: {
+                "collection": CollectionNames.MAILS.value,
+                "to_arango_method": "to_arango_mail_record"
+            },
+            MessageRecord: {
+                "collection": CollectionNames.MESSAGES.value,
+                "to_arango_method": "to_arango_message_record"
+            },
+            WebpageRecord: {
+                "collection": CollectionNames.WEBPAGES.value,
+                "to_arango_method": None  # WebpageRecord doesn't have a specific to_arango method
             }
+        }
+
+        # Get the configuration for the current record type
+        record_type = type(record)
+        if record_type not in record_type_config:
+            self.logger.warning(f"Unsupported record type: {record_type}")
+            return
+
+        config = record_type_config[record_type]
+
+        # Create the IS_OF_TYPE edge
+        is_of_type_record = {
+            "_from": f"{CollectionNames.RECORDS.value}/{record.id}",
+            "_to": f"{config['collection']}/{record.id}",
+            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+        }
+
+        # Upsert base record
+        await self.arango_service.batch_upsert_nodes(
+            [record.to_arango_base_record()],
+            collection=CollectionNames.RECORDS.value,
+            transaction=transaction
+        )
+
+        # Upsert specific record type if it has a specific method
+        if config["to_arango_method"]:
+            specific_record_method = getattr(record, config["to_arango_method"])
             await self.arango_service.batch_upsert_nodes(
-                [record.to_arango_base_record()], collection=CollectionNames.RECORDS.value, transaction=transaction
+                [specific_record_method()],
+                collection=config["collection"],
+                transaction=transaction
             )
-            await self.arango_service.batch_upsert_nodes(
-                [record.to_arango_mail_record()], collection=CollectionNames.MAILS.value, transaction=transaction
-            )
-            await self.arango_service.batch_create_edges(
-                [is_of_type_record], collection=CollectionNames.IS_OF_TYPE.value, transaction=transaction
-            )
-        if isinstance(record, MessageRecord):
-            is_of_type_record = {
-                "_from": f"{CollectionNames.RECORDS.value}/{record.id}",
-                "_to": f"{CollectionNames.MESSAGES.value}/{record.id}",
-                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-            }
-            await self.arango_service.batch_upsert_nodes(
-                [record.to_arango_base_record()], collection=CollectionNames.RECORDS.value, transaction=transaction
-            )
-            await self.arango_service.batch_upsert_nodes(
-                [record.to_arango_message_record()], collection=CollectionNames.MESSAGES.value, transaction=transaction
-            )
-            await self.arango_service.batch_create_edges(
-                [is_of_type_record], collection=CollectionNames.IS_OF_TYPE.value, transaction=transaction
-            )
+
+        # Create IS_OF_TYPE edge
+        await self.arango_service.batch_create_edges(
+            [is_of_type_record],
+            collection=CollectionNames.IS_OF_TYPE.value,
+            transaction=transaction
+        )
 
 
     async def _handle_record_permissions(self, record: Record, permissions: List[Permission], transaction: TransactionDatabase) -> None:

@@ -17,10 +17,6 @@ from app.connectors.sources.atlassian.confluence.confluence_cloud import (
     ConfluenceConnector,
 )
 from app.connectors.sources.atlassian.core.apps import ConfluenceApp
-from app.connectors.sources.atlassian.core.oauth import (
-    AtlassianOAuthProvider,
-    AtlassianScope,
-)
 from app.services.kafka_consumer import KafkaConsumerManager
 from app.utils.logger import create_logger
 
@@ -28,7 +24,14 @@ app = FastAPI()
 
 async def test_run() -> None:
     logger = create_logger("confluence_connector")
+
     key_value_store = InMemoryKeyValueStore(logger, "app/config/default_config.json")
+    await key_value_store.create_key("atlassian_oauth_provider", {
+        "client_id":os.getenv("ATLASSIAN_CLIENT_ID"),
+        "client_secret": os.getenv("ATLASSIAN_CLIENT_SECRET"),
+        "redirect_uri": os.getenv("ATLASSIAN_REDIRECT_URI")
+    })
+
     config_service = ConfigurationService(logger, key_value_store)
     kafka_service = KafkaConsumerManager(logger, config_service, None, None)
 
@@ -37,30 +40,16 @@ async def test_run() -> None:
     data_entities_processor = DataSourceEntitiesProcessor(logger, ConfluenceApp(), arango_service, config_service)
     await data_entities_processor.initialize()
     confluence_connector = ConfluenceConnector(logger, data_entities_processor, config_service)
+    await confluence_connector.initialize()
 
-    logger = create_logger("atlassian_oauth_provider")
-    await key_value_store.create_key("atlassian_oauth_provider", {
-        "client_id":os.getenv("ATLASSIAN_CLIENT_ID"),
-        "client_secret": os.getenv("ATLASSIAN_CLIENT_SECRET"),
-        "redirect_uri": os.getenv("ATLASSIAN_REDIRECT_URI")
-    })
 
-    config = await config_service.get_config("atlassian_oauth_provider")
-    provider = AtlassianOAuthProvider(
-        client_id=config["client_id"],
-        client_secret=config["client_secret"],
-        redirect_uri=config["redirect_uri"],
-        scopes=AtlassianScope.get_full_access(),
-        key_value_store=key_value_store
-    )
-    app.provider = provider
     app.connector = confluence_connector
 
 router = APIRouter(prefix="/oauth")
 
 @router.get("/atlassian/start")
 async def oauth_start(return_to: Optional[str] = None) -> RedirectResponse:
-    url = await app.provider.start_authorization(return_to=return_to, use_pkce=True)
+    url = await app.connector.provider.start_authorization(return_to=return_to, use_pkce=True)
     return RedirectResponse(url)
 
 @router.get("/atlassian/callback")
@@ -72,7 +61,7 @@ async def oauth_callback(request: Request) -> RedirectResponse:
     state = request.query_params.get("state")
     if not code or not state:
         raise HTTPException(400, detail="Missing code/state")
-    await app.provider.handle_callback(code, state)
+    await app.connector.provider.handle_callback(code, state)
     await app.connector.run()
 
     # Optionally pull saved return_to from state store before deletion,
