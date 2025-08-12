@@ -7,9 +7,9 @@ try:
 except ImportError:
     from typing_extensions import get_type_hints
 
-from app.agents.tool.enums import ParameterType
-from app.agents.tool.models import Tool, ToolParameter
-from app.agents.tool.registry import ToolRegistry, _global_tools_registry
+from app.agents.tools.enums import ParameterType
+from app.agents.tools.models import Tool, ToolParameter
+from app.agents.tools.registry import ToolRegistry, _global_tools_registry
 
 
 def tool(

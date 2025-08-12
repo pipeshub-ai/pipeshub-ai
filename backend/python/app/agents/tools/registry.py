@@ -1,6 +1,6 @@
 from typing import Any, Dict, List, Optional
 
-from app.agents.tool.models import Tool
+from app.agents.tools.models import Tool
 
 
 class ToolRegistry:

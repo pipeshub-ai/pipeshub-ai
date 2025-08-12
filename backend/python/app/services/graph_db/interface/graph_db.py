@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import List
+from typing import Any, Dict, List, Optional
 
 from app.models.graph import Edge, Node
 
@@ -60,4 +60,35 @@ class IGraphService(ABC):
 
     @abstractmethod
     async def get_edges(self, edge_type: str) -> List[Edge]:
+        pass
+
+    # Additional methods for document operations
+    @abstractmethod
+    async def create_collection(self, collection_name: str) -> bool:
+        """Create a new collection"""
+        pass
+
+    @abstractmethod
+    async def upsert_document(self, collection_name: str, document: Dict[str, Any]) -> bool:
+        """Insert or update a document in a collection"""
+        pass
+
+    @abstractmethod
+    async def get_document(self, collection_name: str, document_key: str) -> Optional[Dict[str, Any]]:
+        """Get a document by key from a collection"""
+        pass
+
+    @abstractmethod
+    async def delete_document(self, collection_name: str, document_key: str) -> bool:
+        """Delete a document by key from a collection"""
+        pass
+
+    @abstractmethod
+    async def execute_query(self, query: str, bind_vars: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """Execute an AQL query"""
+        pass
+
+    @abstractmethod
+    async def create_index(self, collection_name: str, fields: List[str], index_type: str = "persistent") -> bool:
+        """Create an index on a collection"""
         pass

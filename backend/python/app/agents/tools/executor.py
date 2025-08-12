@@ -1,6 +1,6 @@
 from typing import Dict, Optional
 
-from app.agents.tool.registry import ToolRegistry, _global_tools_registry
+from app.agents.tools.registry import ToolRegistry, _global_tools_registry
 
 
 class ToolExecutor:
