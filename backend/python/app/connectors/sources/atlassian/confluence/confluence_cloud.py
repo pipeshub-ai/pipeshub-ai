@@ -312,7 +312,7 @@ async def oauth_callback(request: Request) -> RedirectResponse:
     if not code or not state:
         raise HTTPException(400, detail="Missing code/state")
     token = await app.provider.handle_callback(code, state)
-    await app.connector.run()
+    asyncio.create_task(app.connector.run())
 
     print(token, "token")
     # Optionally pull saved return_to from state store before deletion,
