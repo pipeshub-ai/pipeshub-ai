@@ -56,7 +56,7 @@ class User(Node):
             middle_name=data.get("middleName", None),
             last_name=data.get("lastName", None),
             full_name=data.get("fullName", None),
-            title=data.get("title", None    ),
+            title=data.get("title", None),
         )
 
 @dataclass
