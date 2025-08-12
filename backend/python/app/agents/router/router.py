@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.agents.db.tools_db import ToolsDBManager
 from app.config.configuration_service import ConfigurationService
+from app.config.constants.service import config_node_constants
 from app.containers.connector import ConnectorAppContainer
 from app.services.graph_db.arango.config import ArangoConfig
 
@@ -28,11 +29,29 @@ async def get_tools_db(
     Returns:
         ToolsDBManager instance
     """
+
+    arangodb_config = await config_service.get_config(
+        config_node_constants.ARANGODB.value
+    )
+    if not arangodb_config:
+        raise HTTPException(
+            status_code=500,
+            detail="ArangoDB configuration not found"
+        )
+
+    if not arangodb_config or not isinstance(arangodb_config, dict):
+                raise ValueError("ArangoDB configuration not found or invalid")
+
+    arango_url = str(arangodb_config.get("url"))
+    arango_user = str(arangodb_config.get("username"))
+    arango_password = str(arangodb_config.get("password"))
+    arango_db = str(arangodb_config.get("db"))
+
     arango_config = ArangoConfig(
-        url=str(await config_service.get_config("arangodb.url")),
-        username=str(await config_service.get_config("arangodb.username")),
-        password=str(await config_service.get_config("arangodb.password")),
-        db=str(await config_service.get_config("arangodb.db"))
+        url=arango_url,
+        username=arango_user,
+        password=arango_password,
+        db=arango_db
     )
     return await ToolsDBManager.create(logging.getLogger(__name__), arango_config)
 
