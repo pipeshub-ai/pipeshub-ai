@@ -212,7 +212,7 @@ class ConfluenceClient:
                     record_group_type=RecordGroupType.CONFLUENCE_SPACES.value,
                     external_record_group_id=space_id,
                     parent_record_type=RecordType.WEBPAGE,
-                    parent_external_record_id=page['parentId'],
+                    parent_external_record_id=page.get('parentId'),
                     web_url=page["_links"]["webui"],
                     mime_type=MimeTypes.HTML.value,
                     source_created_at=int(dt.timestamp() * 1000),
