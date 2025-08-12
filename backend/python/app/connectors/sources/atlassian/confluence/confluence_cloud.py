@@ -176,7 +176,7 @@ class ConfluenceClient:
         url = f"{base_url}/wiki/api/v2/spaces/{space_id}/permissions"
         while True:
             permissions_batch = await self.make_authenticated_json_request("GET", url)
-            print(json.dumps(permissions_batch, indent=4), "permissions_batch")
+            # print(json.dumps(permissions_batch, indent=4), "permissions_batch")
             permissions = permissions + permissions_batch.get("results", [])
             next_url = permissions_batch.get("_links", {}).get("next", None)
             if not next_url:
@@ -193,12 +193,13 @@ class ConfluenceClient:
         limit = 25
         pages_url = f"{base_url}/wiki/api/v2/spaces/{space_id}/pages"
         records = []
+        permissions = []
         while True:
             pages_batch = await self.make_authenticated_json_request("GET", pages_url, params={"limit": limit})
             for page in pages_batch.get("results", []):
                 # page_permissions = await self._fetch_page_permission(page["id"])
                 # page["permissions"] = page_permissions
-                print("Processing page", page["title"], page["id"], page["createdAt"])
+                # print("Processing page", page["title"], page["id"], page["createdAt"])
                 dt = datetime.strptime(page["createdAt"], "%Y-%m-%dT%H:%M:%S.%fZ")
 
                 record = WebpageRecord(
@@ -216,14 +217,15 @@ class ConfluenceClient:
                     web_url=page["_links"]["webui"],
                     mime_type=MimeTypes.HTML.value,
                     source_created_at=int(dt.timestamp() * 1000),
+                    
                 )
-                records.append(record)
+                records.append((record, permissions))
             next_url = pages_batch.get("_links", {}).get("next", None)
             if not next_url:
                 break
             pages_url = f"{base_url}/{next_url}"
 
-        print(json.dumps(records, indent=4), "records")
+        # print(json.dumps(records, indent=4), "records")
 
         return records
 
@@ -261,7 +263,7 @@ class ConfluenceConnector:
                 spaces = await confluence_client.fetch_spaces_with_permissions()
                 for space in spaces:
                     page_records = await confluence_client.fetch_pages_with_permissions(space["id"])
-                    await self.data_entities_processor.on_new_records((page_records, []))
+                    await self.data_entities_processor.on_new_records(page_records)
             except Exception as e:
                 self.logger.error(f"Error processing user {user.email}: {e}")
 

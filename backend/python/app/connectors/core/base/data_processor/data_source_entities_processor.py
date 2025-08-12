@@ -63,6 +63,8 @@ write_collections = [
     CollectionNames.RECORD_GROUPS.value,
     CollectionNames.FILES.value,
     CollectionNames.MAILS.value,
+    CollectionNames.WEBPAGES.value,
+    # CollectionNames.MESSAGES.value,
     # CollectionNames.MESSAGES.value,
     CollectionNames.USERS.value,
     # CollectionNames.USER_GROUPS.value,
@@ -182,19 +184,15 @@ class DataSourceEntitiesProcessor:
         record_type_config = {
             FileRecord: {
                 "collection": CollectionNames.FILES.value,
-                "to_arango_method": "to_arango_file_record"
             },
             MailRecord: {
                 "collection": CollectionNames.MAILS.value,
-                "to_arango_method": "to_arango_mail_record"
             },
             MessageRecord: {
                 "collection": CollectionNames.MESSAGES.value,
-                "to_arango_method": "to_arango_message_record"
             },
             WebpageRecord: {
                 "collection": CollectionNames.WEBPAGES.value,
-                "to_arango_method": None  # WebpageRecord doesn't have a specific to_arango method
             }
         }
 
@@ -222,13 +220,11 @@ class DataSourceEntitiesProcessor:
         )
 
         # Upsert specific record type if it has a specific method
-        if config["to_arango_method"]:
-            specific_record_method = getattr(record, config["to_arango_method"])
-            await self.arango_service.batch_upsert_nodes(
-                [specific_record_method()],
-                collection=config["collection"],
-                transaction=transaction
-            )
+        await self.arango_service.batch_upsert_nodes(
+            [record.to_arango_record()],
+            collection=config["collection"],
+            transaction=transaction
+        )
 
         # Create IS_OF_TYPE edge
         await self.arango_service.batch_create_edges(

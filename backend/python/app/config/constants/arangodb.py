@@ -99,6 +99,7 @@ class CollectionNames(Enum):
     LINKS = "links"
     MAILS = "mails"
     MESSAGES = "messages"
+    WEBPAGES = "webpages"
 
     # Users and groups
     PEOPLE = "people"

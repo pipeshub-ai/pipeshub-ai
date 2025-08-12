@@ -133,7 +133,7 @@ class FileRecord(Record):
     sha1_hash: Optional[str] = None
     sha256_hash: Optional[str] = None
 
-    def to_arango_file_record(self) -> Dict:
+    def to_arango_record(self) -> Dict:
         return {
             "_key": self.id,
             "orgId": self.org_id,
@@ -231,7 +231,7 @@ class MailRecord(Record):
     bcc_emails: Optional[List[str]] = None
 
 
-    def to_arango_mail_record(self) -> Dict:
+    def to_arango_record(self) -> Dict:
         return {
             "_key": self.id,
             "orgId": self.org_id,
@@ -260,14 +260,18 @@ class WebpageRecord(Record):
             "orgId": self.org_id,
             "recordName": self.record_name,
             "recordType": self.record_type.value,
+            "mimeType": self.mime_type,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
             "sourceCreatedAtTimestamp": self.source_created_at,
             "sourceLastModifiedTimestamp": self.source_updated_at,
         }
 
-    def to_arango_base_record(self) -> Dict:
-        return super().to_arango_base_record()
+    def to_arango_record(self) -> Dict:
+        return {
+            "_key": self.id,
+            "orgId": self.org_id,
+        }
 
 class RecordGroup(BaseModel):
     id: str = Field(description="Unique identifier for the record group", default_factory=lambda: str(uuid4()))
