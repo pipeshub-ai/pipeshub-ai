@@ -1,5 +1,5 @@
 """
-Tools Warmup Class
+Tools Discovery Class
 Ensures all tools are imported and registered in the tool registry during application startup.
 """
 
@@ -11,49 +11,49 @@ from typing import Any, Dict, List
 from app.agents.tools.registry import _global_tools_registry
 
 
-class ToolsWarmup:
-    """Warmup class to ensure all tools are imported and registered"""
+class ToolsDiscovery:
+    """Discovery class to ensure all tools are imported and registered"""
 
-    def __init__(self, logger: logging.Logger):
-        """Initialize the warmup class"""
+    def __init__(self, logger: logging.Logger) -> None:
+        """Initialize the discovery class"""
         self.logger = logger
         self.imported_modules: List[str] = []
         self.failed_imports: List[str] = []
         self.registered_tools: List[str] = []
 
-    def warmup_all_tools(self) -> Dict[str, Any]:
+    def discover_all_tools(self) -> Dict[str, Any]:
         """
         Import all available tool modules to ensure tools are registered
         Returns:
-            Dict containing warmup results
+            Dict containing discovery results
         """
-        self.logger.info("🚀 Starting tools warmup process...")
+        self.logger.info("Starting tools discovery process")
 
         # Get the actions directory path
         actions_dir = Path(__file__).parent.parent / "actions"
 
         if not actions_dir.exists():
             self.logger.error(f"Actions directory not found: {actions_dir}")
-            return self._get_warmup_results()
+            return self._get_discovery_results()
 
         # Discover and import all action modules
         self._discover_and_import_actions(actions_dir)
 
         # Log results
-        self._log_warmup_results()
+        self._log_discovery_results()
 
-        return self._get_warmup_results()
+        return self._get_discovery_results()
 
     def _discover_and_import_actions(self, actions_dir: Path) -> None:
         """Discover and import all action modules"""
-        self.logger.info(f"🔍 Discovering actions in: {actions_dir}")
+        self.logger.info(f"Discovering actions in: {actions_dir}")
 
         # Get all subdirectories (each represents an app)
         app_dirs = [d for d in actions_dir.iterdir() if d.is_dir() and not d.name.startswith('__')]
 
         for app_dir in app_dirs:
             app_name = app_dir.name
-            self.logger.info(f"📱 Processing app: {app_name}")
+            self.logger.info(f"Processing app: {app_name}")
 
             # Import the main app module if it exists
             main_module_path = app_dir / f"{app_name}.py"
@@ -92,46 +92,41 @@ class ToolsWarmup:
     def _import_module(self, module_path: str) -> None:
         """Import a specific module and handle any errors"""
         try:
-            self.logger.debug(f"📦 Importing module: {module_path}")
+            self.logger.debug(f"Importing module: {module_path}")
             importlib.import_module(module_path)
             self.imported_modules.append(module_path)
-            self.logger.info(f"✅ Successfully imported: {module_path}")
+            self.logger.info(f"Successfully imported: {module_path}")
         except ImportError as e:
-            self.logger.warning(f"⚠️  Failed to import {module_path}: {e}")
+            self.logger.warning(f"Failed to import {module_path}: {e}")
             self.failed_imports.append(f"{module_path}: {e}")
         except Exception as e:
-            self.logger.error(f"❌ Error importing {module_path}: {e}")
+            self.logger.error(f"Error importing {module_path}: {e}")
             self.failed_imports.append(f"{module_path}: {e}")
 
-    def _log_warmup_results(self) -> None:
-        """Log the results of the warmup process"""
+    def _log_discovery_results(self) -> None:
+        """Log the results of the discovery process"""
         # Get registered tools
         self.registered_tools = _global_tools_registry.list_tools()
 
-        self.logger.info("🎯 Warmup Results:")
-        self.logger.info(f"   📦 Successfully imported modules: {len(self.imported_modules)}")
-        self.logger.info(f"   ⚠️  Failed imports: {len(self.failed_imports)}")
-        self.logger.info(f"   🛠️  Registered tools: {len(self.registered_tools)}")
-
         if self.imported_modules:
-            self.logger.info("   ✅ Imported modules:")
+            self.logger.info("Imported modules:")
             for module in self.imported_modules:
                 self.logger.info(f"      - {module}")
 
         if self.failed_imports:
-            self.logger.info("   ❌ Failed imports:")
+            self.logger.info("Failed imports:")
             for failure in self.failed_imports:
                 self.logger.info(f"      - {failure}")
 
         if self.registered_tools:
-            self.logger.info("   🛠️  Registered tools:")
+            self.logger.info("Registered tools:")
             for tool in self.registered_tools:
                 self.logger.info(f"      - {tool}")
 
-        self.logger.info("🎉 Tools warmup completed!")
+        self.logger.info("Tools discovery completed!")
 
-    def _get_warmup_results(self) -> Dict[str, Any]:
-        """Get the warmup results as a dictionary"""
+    def _get_discovery_results(self) -> Dict[str, Any]:
+        """Get the discovery results as a dictionary"""
         return {
             "imported_modules": self.imported_modules,
             "failed_imports": self.failed_imports,
@@ -153,13 +148,13 @@ class ToolsWarmup:
         return _global_tools_registry.get_tool(app_name, tool_name) is not None
 
 
-def warmup_tools(logger: logging.Logger) -> Dict[str, Any]:
+def discover_tools(logger: logging.Logger) -> Dict[str, Any]:
     """
-    Convenience function to warmup all tools
+    Convenience function to discover all tools
     Args:
         logger: Optional logger instance
     Returns:
         Dict containing warmup results
     """
-    warmup = ToolsWarmup(logger)
-    return warmup.warmup_all_tools()
+    discovery = ToolsDiscovery(logger)
+    return discovery.discover_all_tools()

@@ -33,7 +33,7 @@ class ToolNode:
         ctag: str,
         created_at: str,
         updated_at: str
-    ):
+    ) -> None:
         self.tool_id = tool_id
         self.app_name = app_name
         self.tool_name = tool_name
@@ -100,7 +100,7 @@ class ToolNode:
 class ConnectorCtag:
     """Manages ctags for connectors to track tool changes"""
 
-    def __init__(self, connector_name: str, ctag: str, last_updated: str):
+    def __init__(self, connector_name: str, ctag: str, last_updated: str) -> None:
         self.connector_name = connector_name
         self.ctag = ctag
         self.last_updated = last_updated
@@ -140,7 +140,7 @@ class ConnectorCtag:
 class ToolsDBManager:
     """Manages tools storage and retrieval in ArangoDB with ctag support"""
 
-    def __init__(self, graph_service: IGraphService, logger: logging.Logger):
+    def __init__(self, graph_service: IGraphService, logger: logging.Logger) -> None:
         self.graph_service = graph_service
         self.logger = logger
         self.collection_name = "tools"
@@ -154,7 +154,7 @@ class ToolsDBManager:
             raise RuntimeError("Failed to create ArangoDB service")
         return cls(graph_service, logger)
 
-    async def _initialize_collections(self) -> None:
+    async def initialize_collections(self) -> None:
         """Initialize ArangoDB collections for tools and ctags"""
         try:
             # connect to db

@@ -5,8 +5,8 @@ Simple integration script to warmup tools during application startup.
 
 import logging
 
-from app.agents.db.warmup import ToolsWarmup
 from app.agents.tools.registry import _global_tools_registry
+from app.agents.tools.tools_discovery import ToolsDiscovery
 from app.utils.logger import create_logger
 
 
@@ -26,23 +26,23 @@ def startup_tools_warmup(
         - failed_imports: List of failed imports
         - registered_tools: List of registered tool names
     """
-    logger.info("🚀 Starting tools warmup during application startup...")
+    logger.info("Starting tools discovery during application startup...")
 
     try:
-        # Create warmup instance and run
-        warmup = ToolsWarmup(logger)
-        results = warmup.warmup_all_tools()
+        # Create discovery instance and run
+        discovery = ToolsDiscovery(logger)
+        results = discovery.discover_all_tools()
 
         # Log startup summary
-        logger.info(f"✅ Tools startup completed: {results['total_tools']} tools registered")
+        logger.info(f"Tools startup completed: {results['total_tools']} tools registered")
 
         if results['failed_imports']:
-            logger.warning(f"⚠️  {len(results['failed_imports'])} imports failed during startup")
+            logger.warning(f"{len(results['failed_imports'])} imports failed during startup")
 
         return results
 
     except Exception as e:
-        logger.error(f"❌ Error during tools startup: {e}")
+        logger.error(f"Error during tools startup: {e}")
         # Return empty results on error
         return {
             "total_tools": 0,
