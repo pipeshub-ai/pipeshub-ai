@@ -1,18 +1,17 @@
 
 import logging
-from typing import Optional, Any
+from typing import Any, Optional
 
-from app.agents.actions.slack.config import SlackTokenConfig
+from app.agents.actions.slack.config import SlackResponse, SlackTokenConfig
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
-from app.agents.actions.slack.config import SlackTokenConfig, SlackResponse
 
 logger = logging.getLogger(__name__)
 
 class Slack:
     """Slack tool exposed to the agents"""
-    
+
     def __init__(self, config: SlackTokenConfig) -> None:
         """Initialize the Slack tool"""
         """
@@ -23,26 +22,25 @@ class Slack:
         """
         self.config = config
         self.client = config.create_client()
-    
-    def _handle_slack_response(self, response: Any, success: bool = True) -> SlackResponse:
+
+    def _handle_slack_response(self, response: Any) -> SlackResponse:  # noqa: ANN401
         """Handle Slack API response and convert to standardized format"""
         try:
-            if success and response:
-                # Extract data from SlackResponse object
-                if hasattr(response, 'data'):
-                    data = response.data
-                elif hasattr(response, 'get'):
-                    data = dict(response)
-                else:
-                    data = {"raw_response": str(response)}
-                
-                return SlackResponse(success=True, data=data)
+            if not response:
+                return SlackResponse(success=False, error="Empty response from Slack API")
+            # Extract data from SlackResponse object
+            if hasattr(response, 'data'):
+                data = response.data
+            elif hasattr(response, 'get'):
+                data = dict(response)
             else:
-                return SlackResponse(success=False, error=str(response))
+                data = {"raw_response": str(response)}
+
+            return SlackResponse(success=True, data=data)
         except Exception as e:
             logger.error(f"Error handling Slack response: {e}")
             return SlackResponse(success=False, error=str(e))
-    
+
     def _handle_slack_error(self, error: Exception) -> SlackResponse:
         """Handle Slack API errors and convert to standardized format"""
         error_msg = str(error)

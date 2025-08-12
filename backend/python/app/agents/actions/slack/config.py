@@ -1,7 +1,6 @@
-from dataclasses import dataclass
-from typing import Optional, Dict, Any, List
 import json
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
+from typing import Any, Dict, List, Optional
 
 from slack_sdk import WebClient  # type: ignore
 
@@ -23,11 +22,11 @@ class SlackResponse:
     data: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
     message: Optional[str] = None
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
         return asdict(self)
-    
+
     def to_json(self) -> str:
         """Convert to JSON string"""
         return json.dumps(self.to_dict())
@@ -43,19 +42,19 @@ class SlackUser:
     is_bot: bool = False
     is_admin: bool = False
     deleted: bool = False
-    
+
     @classmethod
     def from_slack_response(cls, user_data: Dict[str, Any]) -> 'SlackUser':
         """Create SlackUser from Slack API response"""
         return cls(
-            id=user_data.get('id', ''),
-            name=user_data.get('name', ''),
-            real_name=user_data.get('real_name'),
-            display_name=user_data.get('display_name'),
-            email=user_data.get('profile', {}).get('email'),
-            is_bot=user_data.get('is_bot', False),
-            is_admin=user_data.get('is_admin', False),
-            deleted=user_data.get('deleted', False)
+            id=user_data['id'],
+            name=user_data['name'],
+            real_name=user_data['real_name'],
+            display_name=user_data['display_name'],
+            email=user_data['profile']['email'],
+            is_bot=user_data['is_bot'],
+            is_admin=user_data['is_admin'],
+            deleted=user_data['deleted']
         )
 
 @dataclass
@@ -69,7 +68,7 @@ class SlackChannel:
     num_members: Optional[int] = None
     topic: Optional[str] = None
     purpose: Optional[str] = None
-    
+
     @classmethod
     def from_slack_response(cls, channel_data: Dict[str, Any]) -> 'SlackChannel':
         """Create SlackChannel from Slack API response"""
@@ -80,8 +79,8 @@ class SlackChannel:
             is_archived=channel_data.get('is_archived', False),
             is_general=channel_data.get('is_general', False),
             num_members=channel_data.get('num_members'),
-            topic=channel_data.get('topic', {}).get('value') if channel_data.get('topic') else None,
-            purpose=channel_data.get('purpose', {}).get('value') if channel_data.get('purpose') else None
+            topic=channel_data.get('topic', {}).get('value'),
+            purpose=channel_data.get('purpose', {}).get('value')
         )
 
 @dataclass
@@ -94,7 +93,7 @@ class SlackMessage:
     type: str = 'message'
     attachments: Optional[List[Dict[str, Any]]] = None
     blocks: Optional[List[Dict[str, Any]]] = None
-    
+
     @classmethod
     def from_slack_response(cls, message_data: Dict[str, Any]) -> 'SlackMessage':
         """Create SlackMessage from Slack API response"""
