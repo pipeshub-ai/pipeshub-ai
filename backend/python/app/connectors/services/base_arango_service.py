@@ -28,11 +28,11 @@ from app.schema.arango.documents import (
     department_schema,
     file_record_schema,
     mail_record_schema,
-    webpage_record_schema,
     orgs_schema,
     record_group_schema,
     record_schema,
     user_schema,
+    webpage_record_schema,
 )
 from app.schema.arango.edges import (
     basic_edge_schema,

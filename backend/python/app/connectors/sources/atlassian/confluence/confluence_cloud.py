@@ -1,4 +1,3 @@
-import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -217,7 +216,7 @@ class ConfluenceClient:
                     web_url=page["_links"]["webui"],
                     mime_type=MimeTypes.HTML.value,
                     source_created_at=int(dt.timestamp() * 1000),
-                    
+
                 )
                 records.append((record, permissions))
             next_url = pages_batch.get("_links", {}).get("next", None)
