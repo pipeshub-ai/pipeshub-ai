@@ -11,5 +11,5 @@ class SharePointOnlineApp(App):
         super().__init__(Connectors.SHAREPOINT_ONLINE.value)
 
 class MicrosoftAppGroup(AppGroup):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__(AppGroups.MICROSOFT.value, [OneDriveApp(), SharePointOnlineApp()])

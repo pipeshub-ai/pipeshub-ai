@@ -98,7 +98,7 @@ class OAuthToken:
 class OAuthProvider(ABC):
     """Abstract OAuth Provider interface"""
 
-    def __init__(self, config: OAuthConfig, key_value_store: KeyValueStore):
+    def __init__(self, config: OAuthConfig, key_value_store: KeyValueStore) -> None:
         self.config = config
         self.key_value_store = key_value_store
         self._session: Optional[ClientSession] = None
@@ -110,16 +110,16 @@ class OAuthProvider(ABC):
             self._session = ClientSession()
         return self._session
 
-    async def close(self):
+    async def close(self) -> None:
         """Close the aiohttp session"""
         if self._session and not self._session.closed:
             await self._session.close()
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> "OAuthProvider":
         """Async context manager entry"""
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         """Async context manager exit"""
         await self.close()
 

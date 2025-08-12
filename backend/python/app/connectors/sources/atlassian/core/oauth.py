@@ -125,7 +125,7 @@ class AtlassianOAuthProvider(OAuthProvider):
         redirect_uri: str,
         key_value_store: KeyValueStore,
         scopes: Optional[List[str]] = None,
-    ):
+    ) -> None:
         """
         Initialize Atlassian OAuth Provider
         Args:

@@ -42,7 +42,7 @@ class AtlassianCloudResource:
     avatar_url: Optional[str] = None
 
 class ConfluenceClient:
-    def __init__(self, logger: Logger, user: User, token: OAuthToken):
+    def __init__(self, logger: Logger, user: User, token: OAuthToken) -> None:
         self.logger = logger
         self.user = user
         self.token = token
@@ -54,28 +54,28 @@ class ConfluenceClient:
         self.accessible_resources = None
         self.cloud_id = None
 
-    async def _ensure_session(self):
+    async def _ensure_session(self) -> aiohttp.ClientSession:
         """Ensure session is created and available"""
         if self.session is None:
             self.session = aiohttp.ClientSession()
         return self.session
 
-    async def close(self):
+    async def close(self) -> None:
         """Close the session"""
         if self.session:
             await self.session.close()
             self.session = None
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> "ConfluenceClient":
         """Async context manager entry"""
         await self._ensure_session()
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         """Async context manager exit"""
         await self.close()
 
-    async def initialize(self):
+    async def initialize(self) -> None:
         await self._ensure_session()
         self.accessible_resources = await self.get_accessible_resources()
         if self.accessible_resources:
@@ -216,16 +216,16 @@ class ConfluenceClient:
 
 
 class ConfluenceConnector:
-    def __init__(self, logger: Logger, data_entities_processor: DataSourceEntitiesProcessor, config_service: ConfigurationService):
+    def __init__(self, logger: Logger, data_entities_processor: DataSourceEntitiesProcessor, config_service: ConfigurationService) -> None:
         self.logger = logger
         self.data_entities_processor = data_entities_processor
         self.config_service = config_service
 
 
-    async def initialize(self):
+    async def initialize(self) -> None:
         await self.data_entities_processor.initialize()
 
-    async def run(self):
+    async def run(self) -> None:
         config = await self.config_service.get_config("atlassian_oauth_provider")
         self.provider = AtlassianOAuthProvider(
             client_id=config["client_id"],
@@ -298,12 +298,12 @@ async def test_run() -> None:
 router = APIRouter(prefix="/oauth")
 
 @router.get("/atlassian/start")
-async def oauth_start(return_to: Optional[str] = None):
+async def oauth_start(return_to: Optional[str] = None) -> RedirectResponse:
     url = await app.provider.start_authorization(return_to=return_to, use_pkce=True)
     return RedirectResponse(url)
 
 @router.get("/atlassian/callback")
-async def oauth_callback(request: Request):
+async def oauth_callback(request: Request) -> RedirectResponse:
     error = request.query_params.get("error")
     if error:
         raise HTTPException(400, detail=request.query_params.get("error_description", error))
@@ -322,7 +322,7 @@ async def oauth_callback(request: Request):
 app.include_router(router)
 
 @app.on_event("startup")
-async def startup_event():
+async def startup_event() -> None:
     asyncio.create_task(test_run())
 
 
