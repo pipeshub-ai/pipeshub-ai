@@ -1,33 +1,21 @@
 
-import asyncio
 import json
-import os
 from dataclasses import dataclass
 from logging import Logger
 from typing import Any, Dict, List, Optional
 
 import aiohttp
-import uvicorn
-from fastapi import APIRouter, FastAPI, HTTPException, Request
-from fastapi.responses import RedirectResponse
 
 from app.config.configuration_service import ConfigurationService
-from app.config.providers.in_memory_store import InMemoryKeyValueStore
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.token_service.oauth_service import OAuthToken
-from app.connectors.services.base_arango_service import BaseArangoService
-from app.connectors.sources.atlassian.core.apps import ConfluenceApp
 from app.connectors.sources.atlassian.core.oauth import (
     AtlassianOAuthProvider,
     AtlassianScope,
 )
 from app.models.entities import User
-from app.services.kafka_consumer import KafkaConsumerManager
-from app.utils.logger import create_logger
-
-app = FastAPI()
 
 RESOURCE_URL = "https://api.atlassian.com/oauth/token/accessible-resources"
 BASE_URL = "https://api.atlassian.com/ex/confluence"
@@ -171,8 +159,6 @@ class ConfluenceClient:
             space_permissions = await self._fetch_space_permission(space["id"])
             space["permissions"] = space_permissions
 
-        print(json.dumps(spaces, indent=4), "spaces")
-
         return spaces
 
     async def _fetch_space_permission(
@@ -191,7 +177,6 @@ class ConfluenceClient:
                 break
             url = f"{base_url}/{next_url}"
 
-        print(json.dumps(permissions, indent=4), "permissions")
         return permissions
 
 
@@ -211,7 +196,6 @@ class ConfluenceClient:
                 break
             pages_url = f"{base_url}/{next_url}"
 
-        print(json.dumps(pages, indent=4), "pages")
         return pages
 
 
@@ -240,14 +224,12 @@ class ConfluenceConnector:
         # users = await self.data_entities_processor.get_all_active_users_by_app(ConfluenceApp())
 
         for user in users:
-            print(user, "user")
             async with await self.get_confluence_client(user) as confluence_client:
                 try:
                     spaces = await confluence_client.fetch_spaces_with_permissions()
                     for space in spaces:
                         pages = await confluence_client.fetch_pages_with_permissions(space["id"])
-                        print(json.dumps(pages, indent=4), "pages")
-                    print(json.dumps(spaces, indent=4), "spaces")
+                        self.logger.info(f"Found {len(pages)} pages in space {space['name']}")
                 except Exception as e:
                     self.logger.error(f"Error processing user {user.email}: {e}")
 
@@ -260,74 +242,3 @@ class ConfluenceConnector:
         await confluence_client.initialize()
 
         return confluence_client
-
-
-
-
-async def test_run() -> None:
-    logger = create_logger("confluence_connector")
-    key_value_store = InMemoryKeyValueStore(logger, "app/config/default_config.json")
-    config_service = ConfigurationService(logger, key_value_store)
-    from arango import ArangoClient
-    kafka_service = KafkaConsumerManager(logger, config_service, None, None)
-
-    arango_service = BaseArangoService(logger, ArangoClient(), config_service, kafka_service)
-    await arango_service.connect()
-    data_entities_processor = DataSourceEntitiesProcessor(logger, ConfluenceApp(), arango_service, config_service)
-    await data_entities_processor.initialize()
-    confluence_connector = ConfluenceConnector(logger, data_entities_processor, config_service)
-
-    logger = create_logger("atlassian_oauth_provider")
-    await key_value_store.create_key("atlassian_oauth_provider", {
-        "client_id":os.getenv("ATLASSIAN_CLIENT_ID"),
-        "client_secret": os.getenv("ATLASSIAN_CLIENT_SECRET"),
-        "redirect_uri": os.getenv("ATLASSIAN_REDIRECT_URI")
-    })
-
-    config = await config_service.get_config("atlassian_oauth_provider")
-    provider = AtlassianOAuthProvider(
-        client_id=config["client_id"],
-        client_secret=config["client_secret"],
-        redirect_uri=config["redirect_uri"],
-        scopes=AtlassianScope.get_full_access(),
-        key_value_store=key_value_store
-    )
-    app.provider = provider
-    app.connector = confluence_connector
-
-router = APIRouter(prefix="/oauth")
-
-@router.get("/atlassian/start")
-async def oauth_start(return_to: Optional[str] = None) -> RedirectResponse:
-    url = await app.provider.start_authorization(return_to=return_to, use_pkce=True)
-    return RedirectResponse(url)
-
-@router.get("/atlassian/callback")
-async def oauth_callback(request: Request) -> RedirectResponse:
-    error = request.query_params.get("error")
-    if error:
-        raise HTTPException(400, detail=request.query_params.get("error_description", error))
-    code = request.query_params.get("code")
-    state = request.query_params.get("state")
-    if not code or not state:
-        raise HTTPException(400, detail="Missing code/state")
-    token = await app.provider.handle_callback(code, state)
-    asyncio.create_task(app.connector.run())
-
-    print(token, "token")
-    # Optionally pull saved return_to from state store before deletion,
-    # or stash it in a short-lived cookie at /start.
-    return RedirectResponse(url="http://localhost:3001")
-
-app.include_router(router)
-
-@app.on_event("startup")
-async def startup_event() -> None:
-    asyncio.create_task(test_run())
-
-
-if __name__ == "__main__":
-    # asyncio.run(test_run())
-    uvicorn.run(app, host="0.0.0.0", port=8088)
-
-

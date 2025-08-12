@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from app.config.key_value_store import KeyValueStore
 from app.connectors.core.base.token_service.oauth_service import (
@@ -157,10 +157,18 @@ class AtlassianOAuthProvider(OAuthProvider):
     def get_provider_name(self) -> str:
         return "atlassian"
 
+    async def get_identity(self, token: OAuthToken) -> Dict[str, Any]:
+        session = await self.session
+        async with session.get(
+            "https://api.atlassian.com/me",
+            headers={"Authorization": f"Bearer {token.access_token}"}
+        ) as resp:
+            resp.raise_for_status()
+            return await resp.json()
+
     async def handle_callback(self, code: str, state: str) -> OAuthToken:
         token = await super().handle_callback(code, state, save_token=False)
         identity = await self.get_identity(token)
-        print(identity, "identity")
         id = identity['email'] if 'email' in identity else identity['account_id']
         await self.key_value_store.create_key(f"{self.get_provider_name()}/{id}", token.to_dict())
 

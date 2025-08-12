@@ -164,7 +164,6 @@ class OAuthProvider(ABC):
             response.raise_for_status()
             token_data = await response.json()
 
-        print(token_data, "token_data")
         token = OAuthToken(**token_data)
         return token
 
@@ -234,22 +233,9 @@ class OAuthProvider(ABC):
                 "code_challenge_method": "S256"
             })
         await self.key_value_store.create_key(f"oauth_state/{self.get_provider_name()}/{state}", session_data)
-        value = await self.key_value_store.get_key(f"oauth_state/{self.get_provider_name()}/{state}")
-        print(value, "value")
-        print(state, "state")
         return self._get_authorization_url(state=state, **extra)
 
-    async def get_identity(self, token: OAuthToken) -> Dict[str, Any]:
-        session = await self.session
-        async with session.get(
-            "https://api.atlassian.com/me",
-            headers={"Authorization": f"Bearer {token.access_token}"}
-        ) as resp:
-            resp.raise_for_status()
-            return await resp.json()
-
     async def handle_callback(self, code: str, state: str, token_prefix: str="", save_token: bool = True) -> OAuthToken:
-        print(state, "callbackstate")
         data = await self.key_value_store.get_key(f"oauth_state/{self.get_provider_name()}/{state}")
         if not data:
             raise ValueError("Invalid or expired state")
