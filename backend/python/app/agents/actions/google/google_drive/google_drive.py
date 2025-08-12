@@ -5,7 +5,7 @@ from typing import BinaryIO, Optional
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import Resource
 
-from app.agents.actions.google.auth.auth import drive_auth
+from app.agents.actions.google.auth.token import drive_auth
 from app.agents.actions.google.google_drive.config import GoogleDriveConfig
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType

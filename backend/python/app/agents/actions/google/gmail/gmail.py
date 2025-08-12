@@ -4,7 +4,7 @@ from typing import List, Optional
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import Resource
 
-from app.agents.actions.google.auth.auth import gmail_auth
+from app.agents.actions.google.auth.token import gmail_auth
 from app.agents.actions.google.gmail.config import GoogleGmailConfig
 from app.agents.actions.google.gmail.utils import GmailUtils
 from app.agents.tools.decorator import tool

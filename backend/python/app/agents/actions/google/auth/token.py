@@ -20,15 +20,10 @@ How to Get These Credentials:
 """
 import functools
 import logging
-from pathlib import Path
 from typing import Callable, List, Optional
 
-from google.auth.external_account_authorized_user import (
-    Credentials as ExternalAccountCredential,
-)
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials as OAuth2Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
+from fastapi import Depends
+from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
@@ -36,12 +31,16 @@ from app.agents.actions.google.auth.config import GoogleAuthConfig
 from app.agents.actions.google.gmail.config import GoogleGmailConfig
 from app.agents.actions.google.google_calendar.config import GoogleCalendarConfig
 from app.agents.actions.google.google_drive.config import GoogleDriveConfig
+from app.config.configuration_service import ConfigurationService
+from app.containers.connector import ConnectorAppContainer
+from app.containers.query import QueryAppContainer
+from app.modules.retrieval.retrieval_arango import ArangoService
 
 logger = logging.getLogger(__name__)
 
 
-class GoogleAuthenticator:
-    """Google Authenticator class for handling authentication"""
+class GoogleToken:
+    """Google Token class for fetching tokens"""
 
     ADMIN_SCOPES = [
         "https://www.googleapis.com/auth/admin.directory.user.readonly",
@@ -69,93 +68,50 @@ class GoogleAuthenticator:
         ],
     }
 
-    def __init__(self, config: GoogleAuthConfig) -> None:
-        """Initialize the Google Authenticator"""
+    def __init__(
+        self, config: GoogleAuthConfig,
+        config_service: Optional[ConfigurationService] = Depends(QueryAppContainer.config_service),
+        arango_service: Optional[ArangoService] = Depends(QueryAppContainer.arango_service)) -> None:
+        """Initialize the Google Token"""
         """
         Args:
             config: Google authentication configuration
         Returns:
             None
         """
-        logger.info("🚀 Initializing Google Authenticator")
+        logger.info("🚀 Initializing Google Token")
         self.config = config
-        self.credentials: Optional[OAuth2Credentials | ExternalAccountCredential] = None
+        self.credentials: Optional[Credentials] = None
         self.service = None
+        self.config_service = config_service
+        self.arango_service = arango_service
 
-    def authenticate(self, service_name: str, version: str = "v3") -> None:
+    def get_token(self, service_name: str, version: str = "v3") -> Optional[Credentials]:
         """
         Authenticate with Google API and build service
         Args:
             service_name (str): Name of the Google service (gmail, calendar, drive)
             version (str): API version (default: v3)
         """
-        if not self.credentials or not self.credentials.valid:
-            self._perform_auth()
+        #TODO:
+        # fetch org and user id from arango or request
 
-        if not self.service:
-            self.service = build(service_name, version, credentials=self.credentials)
 
-    def _perform_auth(self) -> None:
-        """Perform OAuth2 authentication flow"""
-        token_file = Path(self.config.token_file_path or "token.json")
-        credentials_file = Path(self.config.credentials_file_path or "credentials.json")
+        # if individual, fetch token using get_individual_token
 
-        # Load existing credentials from token file
-        if token_file.exists():
-            self.credentials = OAuth2Credentials.from_authorized_user_file(
-                str(token_file),
-                self.config.scopes
-            )
+        # if enterprise, fetch token using get_enterprise_token
 
-        # If credentials are invalid, refresh or perform new authentication
-        if not self.credentials or not self.credentials.valid:
-            if self.credentials and self.credentials.expired and self.credentials.refresh_token:
-                # Refresh expired credentials
-                self.credentials.refresh(Request())
-            else:
-                # Perform new authentication
-                self._new_authentication(credentials_file)
+        # return credentials
 
-        # Save credentials for future use
-        if self.credentials and self.credentials.valid:
-            token_file.write_text(self.credentials.to_json())
-
-    def _new_authentication(self, credentials_file: Path) -> None:
-        """Perform new OAuth2 authentication"""
-        # Client configuration from environment variables
-        client_config = {
-            "installed": {
-                "client_id": "x",
-                "client_secret": "x",
-                "project_id": "x",
-                "auth_uri":"https://accounts.google.com/o/oauth2/auth",
-                "token_uri":"https://oauth2.googleapis.com/token",
-                "auth_provider_x509_cert_url":"https://www.googleapis.com/oauth2/v1/certs",
-                "redirect_uris":["http://localhost:8080/","http://localhost:8090/"]
-            }
-        }
-
-        # Create OAuth flow from file or config
-        if credentials_file.exists():
-            flow = InstalledAppFlow.from_client_secrets_file(
-                str(credentials_file),
-                self.config.scopes
-            )
-        else:
-            flow = InstalledAppFlow.from_client_config(
-                client_config,
-                self.config.scopes
-            )
-
-        # Run OAuth flow
-        self.credentials = flow.run_local_server(port=self.config.oauth_port or 8080)
 
 
 def google_auth(
     service_name: str,
     version: str = "v3",
     scopes: Optional[List[str]] = None,
-    config: Optional[GoogleAuthConfig] = None
+    config: Optional[GoogleAuthConfig] = None,
+    config_service: Optional[ConfigurationService] = Depends(ConnectorAppContainer.config_service),
+    arango_service: Optional[ArangoService] = Depends(ConnectorAppContainer.arango_service)
 ) -> Callable:
     """
     Decorator for Google API authentication
@@ -169,15 +125,15 @@ def google_auth(
         @functools.wraps(func)
         def wrapper(self, *args, **kwargs) -> object:
             # Get or create authenticator
-            if not hasattr(self, '_google_authenticator'):
+            if not hasattr(self, '_google_token'):
                 # Use provided config or create default
                 auth_config = config or GoogleAuthConfig()
 
                 # Set default scopes if not provided
                 if scopes is None:
-                    auth_config.scopes = GoogleAuthenticator.DEFAULT_SCOPES.get(
+                    auth_config.scopes = GoogleToken.DEFAULT_SCOPES.get(
                         service_name,
-                        GoogleAuthenticator.DEFAULT_SCOPES.get(service_name, [])
+                        GoogleToken.DEFAULT_SCOPES.get(service_name, [])
                     )
                 else:
                     auth_config.scopes = scopes
@@ -192,15 +148,14 @@ def google_auth(
                 if hasattr(self, 'scopes') and self.scopes:
                     auth_config.scopes = self.scopes
 
-                self._google_authenticator = GoogleAuthenticator(auth_config)
+                self._google_token = GoogleToken(auth_config, config_service, arango_service)
 
             try:
-                # Perform authentication
-                self._google_authenticator.authenticate(service_name, version)
+                # get token
+                self.credentials = self._google_token.get_token(service_name, version)
 
                 # Set service and credentials on the instance
-                self.service = self._google_authenticator.service
-                self.credentials = self._google_authenticator.credentials
+                self.service = build(service_name, version, credentials=self.credentials)
 
                 # Call the original function
                 return func(self, *args, **kwargs)
@@ -213,16 +168,27 @@ def google_auth(
         return wrapper
     return decorator
 
-def gmail_auth(scopes: Optional[List[str]] = None, config: Optional[GoogleGmailConfig] = None) -> Callable:
+def gmail_auth(
+    scopes: Optional[List[str]] = None,
+    config: Optional[GoogleGmailConfig] = None,
+    config_service: Optional[ConfigurationService] = Depends(ConnectorAppContainer.config_service)) -> Callable:
     """Decorator specifically for Gmail authentication"""
     return google_auth("gmail", "v3", scopes, config)
 
 
-def calendar_auth(scopes: Optional[List[str]] = None, config: Optional[GoogleCalendarConfig] = None) -> Callable:
+def calendar_auth(
+    scopes: Optional[List[str]] = None,
+    config: Optional[GoogleCalendarConfig] = None,
+    config_service: Optional[ConfigurationService] = Depends(ConnectorAppContainer.config_service),
+    arango_service: Optional[ArangoService] = Depends(ConnectorAppContainer.arango_service)) -> Callable:
     """Decorator specifically for Google Calendar authentication"""
-    return google_auth("calendar", "v3", scopes, config)
+    return google_auth("calendar", "v3", scopes, config, config_service, arango_service)
 
 
-def drive_auth(scopes: Optional[List[str]] = None, config: Optional[GoogleDriveConfig] = None) -> Callable:
+def drive_auth(
+    scopes: Optional[List[str]] = None,
+    config: Optional[GoogleDriveConfig] = None,
+    config_service: Optional[ConfigurationService] = Depends(ConnectorAppContainer.config_service),
+    arango_service: Optional[ArangoService] = Depends(ConnectorAppContainer.arango_service)) -> Callable:
     """Decorator specifically for Google Drive authentication"""
-    return google_auth("drive", "v3", scopes, config)
+    return google_auth("drive", "v3", scopes, config, config_service, arango_service)

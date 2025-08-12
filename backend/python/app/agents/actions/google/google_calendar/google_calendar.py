@@ -4,7 +4,7 @@ from typing import List, Optional
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import Resource
 
-from app.agents.actions.google.auth.auth import calendar_auth
+from app.agents.actions.google.auth.token import calendar_auth
 from app.agents.actions.google.google_calendar.config import GoogleCalendarConfig
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType

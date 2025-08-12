@@ -12,5 +12,6 @@ class GoogleAuthConfig:
     token_file_path: Optional[str] = "token.json"
     credentials_file_path: Optional[str] = "credentials.json"
     admin_scopes: Optional[List[str]] = None
+    is_individual: Optional[bool] = False
 
 
