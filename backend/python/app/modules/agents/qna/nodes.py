@@ -1,146 +1,96 @@
-# Create node functions properly designed for LangGraph
+# Clean Intelligent Agent System - LLM-Driven Tool Selection
 import asyncio
+from datetime import datetime
+from typing import Literal
 
 from langgraph.types import StreamWriter
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
-from app.config.constants.arangodb import (
-    AccountType,
-    CollectionNames,
-)
+from app.config.constants.arangodb import AccountType, CollectionNames
 from app.modules.agents.qna.chat_state import ChatState
 from app.modules.qna.prompt_templates import qna_prompt
 from app.utils.citations import process_citations
-from app.utils.query_transform import setup_query_transformation
-from app.utils.streaming import stream_llm_response
 
 
-# 1. Decomposition Node (OPTIMIZED - reduced streaming overhead)
-async def decompose_query_node(
+# 1. Query Analysis Node - Simple analysis for conditional retrieval only
+async def analyze_query_node(
     state: ChatState,
     writer: StreamWriter
 ) -> ChatState:
-    """Node to decompose the query into sub-queries"""
+    """Simple analysis to determine if internal data retrieval is needed"""
     try:
         logger = state["logger"]
-        llm = state["llm"]
-
-        if state["quick_mode"]:
-            state["decomposed_queries"] = [{"query": state["query"]}]
-            return state
-
-        logger.info("Writing status event: Decomposing query...")
-        writer({"event": "status", "data": {"status": "decomposing", "message": "Decomposing query..."}})
-
-        # Import here to avoid circular imports
-        from app.utils.query_decompose import QueryDecompositionExpansionService
-
-        # Call the async function directly
-        decomposition_service = QueryDecompositionExpansionService(llm=llm, logger=logger)
-        decomposition_result = await decomposition_service.transform_query(state["query"])
-
-        decomposed_queries = decomposition_result.get("queries", [])
-
-        if not decomposed_queries:
-            state["decomposed_queries"] = [{"query": state["query"]}]
-        else:
-            state["decomposed_queries"] = decomposed_queries
-
-        logger.debug(f"decomposed_queries {state['decomposed_queries']}")
+        
+        writer({"event": "status", "data": {"status": "analyzing", "message": "Analyzing query requirements..."}})
+        
+        # Simple logic: check for explicit filters or keywords that suggest internal data need
+        has_kb_filter = bool(state.get("filters", {}).get("kb"))
+        has_app_filter = bool(state.get("filters", {}).get("apps"))
+        
+        # Keywords that suggest internal data need
+        internal_keywords = [
+            "our", "my", "company", "organization", "internal", "knowledge base", 
+            "documents", "files", "emails", "data", "records"
+        ]
+        
+        query_lower = state["query"].lower()
+        needs_internal_data = (
+            has_kb_filter or 
+            has_app_filter or 
+            any(keyword in query_lower for keyword in internal_keywords)
+        )
+        
+        state["query_analysis"] = {
+            "needs_internal_data": needs_internal_data,
+            "reasoning": f"KB filter: {has_kb_filter}, App filter: {has_app_filter}, Internal keywords detected: {any(keyword in query_lower for keyword in internal_keywords)}"
+        }
+        
+        logger.info(f"Query analysis: needs_internal_data = {needs_internal_data}")
         return state
+        
     except Exception as e:
-        logger.error(f"Error in decomposition node: {str(e)}", exc_info=True)
+        logger.error(f"Error in query analysis node: {str(e)}", exc_info=True)
         state["error"] = {"status_code": 400, "detail": str(e)}
         return state
 
-# 2. Query Transformation Node (OPTIMIZED - parallel processing)
-async def transform_query_node(
+
+# 2. Conditional Retrieval Node - Only retrieves if analysis suggests it's needed
+async def conditional_retrieve_node(
     state: ChatState,
     writer: StreamWriter
 ) -> ChatState:
-    """Node to transform and expand the queries"""
+    """Conditionally retrieve data based on simple analysis"""
     try:
         logger = state["logger"]
-        llm = state["llm"]
-
-
-        # Only send streaming event if streaming service exists
-        writer({"event": "status", "data": {"status": "transforming", "message": "Transforming queries..."}})
-
-        rewrite_chain, expansion_chain = setup_query_transformation(llm=llm)
-
-        transformed_queries = []
-        expanded_queries_set = set()
-
-        # Process all queries in parallel for better performance
-        query_tasks = []
-        for query_dict in state["decomposed_queries"]:
-            query = query_dict.get("query")
-            task = asyncio.gather(
-                rewrite_chain.ainvoke(query),
-                expansion_chain.ainvoke(query)
-            )
-            query_tasks.append((query, task))
-
-        # Wait for all transformations to complete
-        for query, task in query_tasks:
-            rewritten_query, expanded_queries = await task
-
-            # Process rewritten query
-            if rewritten_query.strip():
-                transformed_queries.append(rewritten_query.strip())
-
-            # Process expanded queries
-            expanded_queries_list = [q.strip() for q in expanded_queries.split("\n") if q.strip()]
-            for q in expanded_queries_list:
-                if q.lower() not in expanded_queries_set:
-                    expanded_queries_set.add(q.lower())
-                    transformed_queries.append(q)
-
-        # Remove duplicates while preserving order
-        unique_queries = []
-        seen = set()
-        for q in transformed_queries:
-            if q.lower() not in seen:
-                seen.add(q.lower())
-                unique_queries.append(q)
-
-        state["rewritten_queries"] = unique_queries
-        return state
-    except Exception as e:
-        logger.error(f"Error in transformation node: {str(e)}", exc_info=True)
-        state["error"] = {"status_code": 400, "detail": str(e)}
-        return state
-
-# 3. Document Retrieval Node (OPTIMIZED - simplified)
-async def retrieve_documents_node(
-    state: ChatState,
-    writer: StreamWriter
-) -> ChatState:
-    """Node to retrieve documents based on queries"""
-    try:
-        logger = state["logger"]
-        retrieval_service = state["retrieval_service"]
-        arango_service = state["arango_service"]
-
-        # Only send streaming event if streaming service exists
-        writer({"event": "status", "data": {"status": "retrieving", "message": "Retrieving documents..."}})
-
+        
         if state.get("error"):
             return state
-
-        unique_queries = state.get("rewritten_queries", [])
-        if not unique_queries:
-            unique_queries = [state["query"]]  # Fallback to original query
-
+            
+        analysis = state.get("query_analysis", {})
+        
+        # Skip retrieval if not needed
+        if not analysis.get("needs_internal_data", False):
+            logger.info("Skipping data retrieval - not needed for this query")
+            state["search_results"] = []
+            state["final_results"] = []
+            return state
+        
+        logger.info("Internal data retrieval needed - proceeding with retrieval")
+        writer({"event": "status", "data": {"status": "retrieving", "message": "Retrieving relevant data..."}})
+        
+        # Use original query for retrieval
+        retrieval_service = state["retrieval_service"]
+        arango_service = state["arango_service"]
+        
         results = await retrieval_service.search_with_filters(
-            queries=unique_queries,
+            queries=[state["query"]],
             org_id=state["org_id"],
             user_id=state["user_id"],
             limit=state["limit"],
             filter_groups=state["filters"],
             arango_service=arango_service,
         )
-
+        
         status_code = results.get("status_code", 200)
         if status_code in [202, 500, 503]:
             state["error"] = {
@@ -149,31 +99,40 @@ async def retrieve_documents_node(
                 "message": results.get("message", "No results found"),
             }
             return state
-
+        
         search_results = results.get("searchResults", [])
-        logger.debug(f"Retrieved {len(search_results)} documents")
-
+        logger.info(f"Retrieved {len(search_results)} documents from internal data")
+        
+        # Simple deduplication
+        seen_ids = set()
+        final_results = []
+        for result in search_results:
+            result_id = result["metadata"].get("_id")
+            if result_id not in seen_ids:
+                seen_ids.add(result_id)
+                final_results.append(result)
+        
         state["search_results"] = search_results
+        state["final_results"] = final_results[:state["limit"]]
+        
         return state
+        
     except Exception as e:
-        logger.error(f"Error in retrieval node: {str(e)}", exc_info=True)
+        logger.error(f"Error in conditional retrieval node: {str(e)}", exc_info=True)
         state["error"] = {"status_code": 400, "detail": str(e)}
         return state
 
-# 4. User Data Node (OPTIMIZED - conditional execution)
-async def get_user_info_node(
-    state: ChatState,
-) -> ChatState:
-    """Node to fetch user and organization information"""
+
+# 3. User Info Node (unchanged)
+async def get_user_info_node(state: ChatState) -> ChatState:
+    """Fetch user info if needed"""
     try:
         logger = state["logger"]
         arango_service = state["arango_service"]
 
-        # Skip if there's an error or user info is not needed
         if state.get("error") or not state["send_user_info"]:
             return state
 
-        # Fetch user and org info in parallel
         user_task = arango_service.get_user_by_user_id(state["user_id"])
         org_task = arango_service.get_document(state["org_id"], CollectionNames.ORGS.value)
 
@@ -184,160 +143,335 @@ async def get_user_info_node(
         return state
     except Exception as e:
         logger.error(f"Error in user info node: {str(e)}", exc_info=True)
-        # Don't fail the whole process if user info can't be fetched
         return state
 
-# 5. Reranker Node (OPTIMIZED - simplified)
-async def rerank_results_node(
+
+# 4. Clean Prompt Creation - Let LLM decide on tools naturally
+def prepare_clean_prompt_node(
     state: ChatState,
     writer: StreamWriter
 ) -> ChatState:
-    """Node to rerank the search results"""
+    """Create a clean prompt that lets the LLM decide on tool usage naturally"""
     try:
         logger = state["logger"]
-        reranker_service = state["reranker_service"]
-
-        # Only send streaming event if streaming service exists
-        writer({"event": "status", "data": {"status": "reranking", "message": "Reranking results..."}})
-
         if state.get("error"):
             return state
 
-        search_results = state.get("search_results", [])
-
-        # Deduplicate results based on document ID
-        seen_ids = set()
-        flattened_results = []
-        for result in search_results:
-            result_id = result["metadata"].get("_id")
-            if result_id not in seen_ids:
-                seen_ids.add(result_id)
-                flattened_results.append(result)
-
-        # Rerank if we have multiple results and not in quick mode
-        if len(flattened_results) > 1 and not state["quick_mode"]:
-            final_results = await reranker_service.rerank(
-                query=state["query"],  # Use original query for final ranking
-                documents=flattened_results,
-                top_k=state["limit"],
+        # Build context based on available data
+        context_parts = []
+        
+        # Add internal data context if retrieved
+        if state.get("final_results"):
+            from jinja2 import Template
+            template = Template(qna_prompt)
+            
+            # Format user info
+            user_data = ""
+            if state["send_user_info"] and state.get("user_info") and state.get("org_info"):
+                if state["org_info"].get("accountType") in [AccountType.ENTERPRISE.value, AccountType.BUSINESS.value]:
+                    user_data = (
+                        f"User: {state['user_info'].get('fullName', 'a user')} "
+                        f"({state['user_info'].get('designation', '')}) "
+                        f"from {state['org_info'].get('name', 'the organization')}"
+                    )
+            
+            internal_context = template.render(
+                user_data=user_data,
+                query=state["query"],
+                rephrased_queries=[],
+                chunks=state["final_results"],
             )
-        else:
-            final_results = flattened_results
+            context_parts.append(internal_context)
+        
+        # Build clean system message
+        system_content = state.get("system_prompt") or "You are an intelligent AI assistant"
+        
+        # Add natural tool guidance (no forced logic)
+        tools_config = state.get("tools", [])
+        if tools_config:
+            from app.modules.agents.qna.tools import get_agent_tools
+            tools = get_agent_tools(state)
+            if tools:
+                tool_descriptions = []
+                for tool in tools:
+                    tool_descriptions.append(f"- {tool.name}: {tool.description}")
+                
+                system_content += f"""
 
-        logger.debug(f"Final reranked results: {len(final_results)} documents")
-        state["final_results"] = final_results
-        return state
-    except Exception as e:
-        logger.error(f"Error in reranking node: {str(e)}", exc_info=True)
-        state["error"] = {"status_code": 400, "detail": str(e)}
-        return state
+You have access to the following tools that you can use when appropriate:
+{chr(10).join(tool_descriptions)}
 
-# 6. Prompt Creation Node (OPTIMIZED - simplified)
-def prepare_prompt_node(
-    state: ChatState,
-    writer: StreamWriter
-) -> ChatState:
-    """Node to prepare the prompt for the LLM"""
-    try:
-        logger = state["logger"]
-        if state.get("error"):
-            return state
-
-        # Format user info if available
-        user_data = ""
-        if state["send_user_info"] and state["user_info"] and state["org_info"]:
-            if state["org_info"].get("accountType") in [AccountType.ENTERPRISE.value, AccountType.BUSINESS.value]:
-                user_data = (
-                    "I am the user of the organization. "
-                    f"My name is {state['user_info'].get('fullName', 'a user')} "
-                    f"({state['user_info'].get('designation', '')}) "
-                    f"from {state['org_info'].get('name', 'the organization')}. "
-                    "Please provide accurate and relevant information based on the available context."
-                )
-            else:
-                user_data = (
-                    "I am the user. "
-                    f"My name is {state['user_info'].get('fullName', 'a user')} "
-                    f"({state['user_info'].get('designation', '')}) "
-                    "Please provide accurate and relevant information based on the available context."
-                )
-
-        from jinja2 import Template
-        template = Template(qna_prompt)
-        rendered_prompt = template.render(
-            user_data=user_data,
-            query=state["query"],
-            rephrased_queries=[],  # This keeps all query results for reference
-            chunks=state["final_results"],
-        )
-
-        # Add conversation history to the messages
-        messages = [{"role": "system", "content": "You are an enterprise questions answering expert"}]
-
-        for conversation in state["previous_conversations"]:
+Use these tools when they would be helpful to better answer the user's question or fulfill their request. Think about what the user is asking for and choose the right tools for the job."""
+        
+        # Create messages
+        messages = [SystemMessage(content=system_content)]
+        
+        # Add conversation history
+        for conversation in state.get("previous_conversations", []):
             if conversation.get("role") == "user_query":
-                messages.append({"role": "user", "content": conversation.get("content")})
+                messages.append(HumanMessage(content=conversation.get("content")))
             elif conversation.get("role") == "bot_response":
-                messages.append({"role": "assistant", "content": conversation.get("content")})
-
+                messages.append(AIMessage(content=conversation.get("content")))
+        
         # Add current query with context
-        messages.append({"role": "user", "content": rendered_prompt})
-
+        if context_parts:
+            full_prompt = "\n\n".join(context_parts)
+        else:
+            full_prompt = f"User Query: {state['query']}\n\nPlease provide a helpful response."
+        
+        messages.append(HumanMessage(content=full_prompt))
+        
         state["messages"] = messages
+        logger.debug(f"Prepared clean prompt with {len(messages)} messages")
+        
         return state
     except Exception as e:
-        logger.error(f"Error in prompt preparation node: {str(e)}", exc_info=True)
+        logger.error(f"Error in clean prompt preparation: {str(e)}", exc_info=True)
         state["error"] = {"status_code": 400, "detail": str(e)}
         return state
 
-# 7. Answer Generation Node (OPTIMIZED - simplified streaming)
-async def generate_answer_node(
+
+# 5. Clean Agent Node - No forced tool logic, pure LLM decision making
+async def clean_agent_node(
     state: ChatState,
     writer: StreamWriter
 ) -> ChatState:
-    """Node to generate the answer from the LLM"""
+    """Clean agent that lets LLM naturally decide on tool usage"""
     try:
         logger = state["logger"]
         llm = state["llm"]
 
-        # Only send streaming event if streaming service exists
-        writer({"event": "status", "data": {"status": "generating", "message": "Generating answer..."}})
+        writer({"event": "status", "data": {"status": "thinking", "message": "Processing your request..."}})
 
         if state.get("error"):
             return state
 
-        if hasattr(llm, "astream"):
-            # Check if we should stream the response
-            # Stream the LLM response similar to chatbot
-            full_response = ""
-            async for chunk in stream_llm_response(llm, state["messages"], final_results=state["final_results"]):
-                if chunk["event"] == "answer_chunk":
-                    # Send chunk to client
-                    writer({"event": "answer_chunk", "data": chunk["data"]})
-                    full_response += chunk["data"]["chunk"]
-                elif chunk["event"] == "complete":
-                    # Final response with citations
-                    writer({"event": "complete", "data": chunk["data"]})
-                    full_response = chunk["data"]["answer"]
-                    break
-                elif chunk["event"] == "error":
-                    state["error"] = {"status_code": 400, "detail": chunk["data"]["error"]}
-                    return state
-
-            state["response"] = full_response
+        # Get all available tools (no filtering)
+        tools_config = state.get("tools", [])
+        
+        if tools_config:
+            from app.modules.agents.qna.tools import get_agent_tools
+            tools = get_agent_tools(state)
+            
+            logger.debug(f"Available tools: {[tool.name for tool in tools]}")
+            
+            try:
+                llm_with_tools = llm.bind_tools(tools)
+            except (NotImplementedError, AttributeError) as e:
+                logger.warning(f"LLM does not support tool binding: {e}")
+                llm_with_tools = llm
+                tools = []
         else:
-            # Non-streaming fallback
-            response = await llm.ainvoke(state["messages"])
-            processed_response = process_citations(response, state["final_results"])
-            state["response"] = processed_response
+            llm_with_tools = llm
+            tools = []
+            logger.debug("No tools available")
+
+        # Call the LLM - let it decide naturally
+        cleaned_messages = _clean_message_history(state["messages"])
+        response = await llm_with_tools.ainvoke(cleaned_messages)
+        
+        # Add the response to messages
+        state["messages"].append(response)
+        
+        # Check if the response contains tool calls
+        if hasattr(response, 'tool_calls') and response.tool_calls:
+            logger.debug(f"Agent decided to call {len(response.tool_calls)} tools")
+            for tool_call in response.tool_calls:
+                tool_name = tool_call.get("name") if isinstance(tool_call, dict) else getattr(tool_call, 'name', 'unknown')
+                logger.debug(f"  - {tool_name}")
+            state["pending_tool_calls"] = True
+        else:
+            logger.debug("Agent decided to provide final response without tools")
+            state["pending_tool_calls"] = False
+            
+            if hasattr(response, 'content'):
+                state["response"] = response.content
+            else:
+                state["response"] = str(response)
 
         return state
+        
     except Exception as e:
-        logger.error(f"Error in answer generation node: {str(e)}", exc_info=True)
+        logger.error(f"Error in clean agent node: {str(e)}", exc_info=True)
         state["error"] = {"status_code": 400, "detail": str(e)}
         return state
 
-# Error checking function
-def check_for_error(state: ChatState) -> str:
-    """Check if there's an error in the state"""
+
+# 6. Clean Tool Execution Node - Execute whatever tools the LLM chose
+async def clean_tool_execution_node(
+    state: ChatState,
+    writer: StreamWriter
+) -> ChatState:
+    """Execute the tools that the LLM chose to use"""
+    try:
+        logger = state["logger"]
+        
+        writer({"event": "status", "data": {"status": "using_tools", "message": "Executing tools..."}})
+
+        if state.get("error"):
+            return state
+
+        # Get the last AI message with tool calls
+        last_ai_message = None
+        for msg in reversed(state["messages"]):
+            if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                last_ai_message = msg
+                break
+        
+        if not last_ai_message:
+            logger.warning("No tool calls found")
+            state["pending_tool_calls"] = False
+            return state
+
+        tool_calls = last_ai_message.tool_calls
+        
+        # Get the tools
+        from app.modules.agents.qna.tools import get_agent_tools
+        tools = get_agent_tools(state)
+        
+        # Execute tools and create ToolMessage objects
+        tool_messages = []
+        tool_results = []
+        
+        for tool_call in tool_calls:
+            tool_name = tool_call.get("name") if isinstance(tool_call, dict) else tool_call.name
+            tool_args = tool_call.get("args", {}) if isinstance(tool_call, dict) else tool_call.args
+            tool_id = tool_call.get("id") if isinstance(tool_call, dict) else tool_call.id
+            
+            # Handle function call format
+            if hasattr(tool_call, 'function'):
+                tool_name = tool_call.function.name
+                tool_args = tool_call.function.arguments
+                if isinstance(tool_args, str):
+                    import json
+                    tool_args = json.loads(tool_args)
+            
+            # Find and execute tool
+            tool = next((t for t in tools if t.name == tool_name), None)
+            
+            if tool:
+                try:
+                    logger.debug(f"Executing tool: {tool_name} with args: {tool_args}")
+                    result = tool._run(**tool_args) if hasattr(tool, '_run') else tool.run(**tool_args)
+                    
+                    tool_results.append({
+                        "tool_name": tool_name,
+                        "result": result,
+                        "status": "success",
+                        "tool_id": tool_id
+                    })
+                    
+                    # Create ToolMessage
+                    tool_message = ToolMessage(content=str(result), tool_call_id=tool_id)
+                    tool_messages.append(tool_message)
+                    
+                    logger.debug(f"Tool {tool_name} executed successfully")
+                    
+                except Exception as e:
+                    error_result = f"Error: {str(e)}"
+                    tool_results.append({
+                        "tool_name": tool_name,
+                        "result": error_result,
+                        "status": "error",
+                        "tool_id": tool_id
+                    })
+                    
+                    tool_message = ToolMessage(content=error_result, tool_call_id=tool_id)
+                    tool_messages.append(tool_message)
+                    
+                    logger.error(f"Tool {tool_name} failed: {e}")
+            else:
+                logger.warning(f"Tool {tool_name} not found")
+        
+        # Add tool messages to conversation
+        state["messages"].extend(tool_messages)
+        state["tool_results"] = tool_results
+        state["pending_tool_calls"] = False
+        
+        logger.debug(f"Executed {len(tool_results)} tools")
+        return state
+        
+    except Exception as e:
+        logger.error(f"Error in clean tool execution: {str(e)}", exc_info=True)
+        state["error"] = {"status_code": 400, "detail": str(e)}
+        return state
+
+
+# 7. Clean Final Response Node - Simple final response generation
+async def clean_final_response_node(
+    state: ChatState,
+    writer: StreamWriter
+) -> ChatState:
+    """Generate clean final response"""
+    try:
+        logger = state["logger"]
+        llm = state["llm"]
+
+        writer({"event": "status", "data": {"status": "finalizing", "message": "Generating final response..."}})
+
+        if state.get("error"):
+            return state
+
+        # If we already have a response and no pending tool calls, we're done
+        if state.get("response") and not state.get("pending_tool_calls", False):
+            final_content = state["response"]
+        else:
+            # Validate messages before final LLM call
+            validated_messages = []
+            messages = state["messages"]
+            
+            for i, msg in enumerate(messages):
+                if isinstance(msg, (SystemMessage, HumanMessage, AIMessage)):
+                    validated_messages.append(msg)
+                elif hasattr(msg, 'tool_call_id'):
+                    # Only keep tool messages that follow AI messages with tool_calls
+                    if (i > 0 and isinstance(messages[i-1], AIMessage) and 
+                        hasattr(messages[i-1], 'tool_calls') and messages[i-1].tool_calls):
+                        tool_call_ids = {tc.get('id') for tc in messages[i-1].tool_calls}
+                        if msg.tool_call_id in tool_call_ids:
+                            validated_messages.append(msg)
+            
+            # Get final response from LLM
+            response = await llm.ainvoke(validated_messages)
+            final_content = response.content if hasattr(response, 'content') else str(response)
+        
+        # Process citations if we have internal data
+        if state.get("final_results"):
+            final_content = process_citations(final_content, state["final_results"])
+        
+        state["response"] = final_content
+        writer({"event": "complete", "data": {"answer": final_content}})
+        
+        logger.debug("Final response generated successfully")
+        return state
+        
+    except Exception as e:
+        logger.error(f"Error in clean final response: {str(e)}", exc_info=True)
+        state["error"] = {"status_code": 400, "detail": str(e)}
+        return state
+
+
+# Helper function
+def _clean_message_history(messages):
+    """Clean message history for LLM compatibility"""
+    cleaned = []
+    for i, msg in enumerate(messages):
+        if hasattr(msg, 'tool_call_id'):
+            if i > 0:
+                prev_msg = messages[i-1]
+                if (hasattr(prev_msg, 'tool_calls') and prev_msg.tool_calls or
+                    hasattr(prev_msg, 'additional_kwargs') and prev_msg.additional_kwargs.get('tool_calls')):
+                    cleaned.append(msg)
+        else:
+            cleaned.append(msg)
+    return cleaned
+
+
+# Routing functions
+def should_continue(state: ChatState) -> Literal["execute_tools", "final"]:
+    """Route based on pending tool calls"""
+    return "execute_tools" if state.get("pending_tool_calls", False) else "final"
+
+def check_for_error(state: ChatState) -> Literal["error", "continue"]:
+    """Check for errors"""
     return "error" if state.get("error") else "continue"

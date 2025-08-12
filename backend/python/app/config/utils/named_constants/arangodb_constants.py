@@ -129,7 +129,13 @@ class CollectionNames(Enum):
 
     BLOCKS = "blocks"
 
+    # Agent Builder collections
+    AGENT_TEMPLATES = "agentTemplates"
+    AGENT_INSTANCES = "agentInstances"
+    TEMPLATE_ACCESS = "templateAccess"
 
+
+    
 class QdrantCollectionNames(Enum):
     RECORDS = "records"
 

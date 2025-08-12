@@ -1,5 +1,6 @@
 import {
   AIServiceResponse,
+  IAgentConversation,
   IConversation,
   IConversationDocument,
   IMessage,
@@ -9,15 +10,21 @@ import {
 import { IAIResponse } from '../types/conversation.interfaces';
 import mongoose, { ClientSession } from 'mongoose';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
-import { BadRequestError, InternalServerError } from '../../../libs/errors/http.errors';
+import {
+  BadRequestError,
+  InternalServerError,
+} from '../../../libs/errors/http.errors';
 import Citation, { ICitation } from '../schema/citation.schema';
 import { CONVERSATION_STATUS } from '../constants/constants';
 import { Logger } from '../../../libs/services/logger.service';
+import {
+  IAgentConversationDocument,
+  AgentConversation,
+} from '../schema/agent.conversation.schema';
 
 const logger = new Logger({
   service: 'enterprise-search',
 });
-
 
 export const buildUserQueryMessage = (query: string): IMessage => ({
   messageType: 'user_query',
@@ -29,7 +36,7 @@ export const buildUserQueryMessage = (query: string): IMessage => ({
 
 export const buildAIFailureResponseMessage = (): IMessage => ({
   messageType: 'error',
-  content: "Error Generating Response, Please try again",
+  content: 'Error Generating Response, Please try again',
   contentFormat: 'MARKDOWN',
   createdAt: new Date(),
   updatedAt: new Date(),
@@ -147,7 +154,7 @@ export const buildFilter = (
     isDeleted: false,
     isArchived: false,
     $or: [
-      { userId: new mongoose.Types.ObjectId(`${userId}`), },
+      { userId: new mongoose.Types.ObjectId(`${userId}`) },
       { 'sharedWith.userId': new mongoose.Types.ObjectId(`${userId}`) },
       { isShared: true },
     ],
@@ -464,7 +471,7 @@ export const buildConversationResponse = (
     isShared: conversation.isShared,
     sharedWith: conversation.sharedWith,
     status: conversation.status,
-    failReason : conversation.failReason,
+    failReason: conversation.failReason,
     messages: messages.map((message) => ({
       ...message,
       citations:
@@ -500,7 +507,7 @@ export const saveCompleteConversation = async (
   conversation: IConversationDocument,
   completeData: IAIResponse,
   orgId: string,
-  session?: ClientSession | null
+  session?: ClientSession | null,
 ): Promise<any> => {
   try {
     // Save citations first
@@ -541,21 +548,22 @@ export const saveCompleteConversation = async (
 
     // Return the conversation in the same format as createConversation
     const plainConversation: IConversation = updatedConversation.toObject();
-    const citationMap = new Map(citations.map((c: ICitation) => [c._id?.toString(), c]));
+    const citationMap = new Map(
+      citations.map((c: ICitation) => [c._id?.toString(), c]),
+    );
 
     return {
       ...plainConversation,
       messages: plainConversation.messages.map((message: IMessage) => ({
         ...message,
-        citations: message.citations?.map(
-          (citation: IMessageCitation) => ({
-            ...citation,
-            citationData: citation.citationId ? citationMap.get(citation.citationId.toString()) : undefined,
-          }),
-        ),
+        citations: message.citations?.map((citation: IMessageCitation) => ({
+          ...citation,
+          citationData: citation.citationId
+            ? citationMap.get(citation.citationId.toString())
+            : undefined,
+        })),
       })),
     };
-
   } catch (error: any) {
     logger.error('Error saving complete conversation', {
       conversationId: conversation._id,
@@ -563,13 +571,13 @@ export const saveCompleteConversation = async (
     });
     throw error;
   }
-}
+};
 
 // Helper function to mark conversation as failed
 export const markConversationFailed = async (
   conversation: IConversationDocument,
   failReason: string,
-  session?: ClientSession | null
+  session?: ClientSession | null,
 ): Promise<void> => {
   try {
     conversation.status = CONVERSATION_STATUS.FAILED;
@@ -596,7 +604,6 @@ export const markConversationFailed = async (
       conversationId: conversation._id,
       failReason,
     });
-
   } catch (error: any) {
     logger.error('Error marking conversation as failed', {
       conversationId: conversation._id,
@@ -604,4 +611,507 @@ export const markConversationFailed = async (
     });
     throw error;
   }
-}
+};
+
+/**
+ * Save complete agent conversation data to database
+ */
+export const saveCompleteAgentConversation = async (
+  conversation: IAgentConversationDocument,
+  completeData: IAIResponse,
+  orgId: string,
+  session?: ClientSession | null,
+): Promise<any> => {
+  try {
+    // Save citations first
+    const citations = await Promise.all(
+      completeData.citations?.map(async (citation: any) => {
+        const newCitation = new Citation({
+          content: citation.content,
+          chunkIndex: citation.chunkIndex,
+          citationType: citation.citationType,
+          metadata: {
+            ...citation.metadata,
+            orgId,
+          },
+        });
+        return session ? newCitation.save({ session }) : newCitation.save();
+      }) || [],
+    );
+
+    // Create AI response message
+    const aiResponseMessage = buildAIResponseMessage(
+      { data: completeData, statusCode: 200 },
+      citations,
+    ) as IMessageDocument;
+
+    // Update conversation
+    conversation.messages.push(aiResponseMessage);
+    conversation.lastActivityAt = Date.now();
+    conversation.status = CONVERSATION_STATUS.COMPLETE;
+
+    // Save updated conversation
+    const updatedConversation = session
+      ? await conversation.save({ session })
+      : await conversation.save() as IAgentConversationDocument;
+
+    if (!updatedConversation) {
+      throw new InternalServerError('Failed to update agent conversation');
+    }
+
+    // Return the conversation in the same format as createConversation
+    const plainConversation: IAgentConversation = updatedConversation.toObject();
+    const citationMap = new Map(
+      citations.map((c: ICitation) => [c._id?.toString(), c]),
+    );
+
+    return {
+      ...plainConversation,
+      messages: plainConversation.messages.map((message: IMessage) => ({
+        ...message,
+        citations: message.citations?.map((citation: IMessageCitation) => ({
+          ...citation,
+          citationData: citation.citationId
+            ? citationMap.get(citation.citationId.toString())
+            : undefined,
+        })),
+      })),
+    };
+  } catch (error: any) {
+    logger.error('Error saving complete agent conversation', {
+      conversationId: conversation._id,
+      agentKey: conversation.agentKey,
+      error: error.message,
+    });
+    throw error;
+  }
+};
+
+/**
+ * Mark agent conversation as failed
+ */
+export const markAgentConversationFailed = async (
+  conversation: IAgentConversationDocument,
+  failReason: string,
+  session?: ClientSession | null,
+): Promise<void> => {
+  try {
+    conversation.status = CONVERSATION_STATUS.FAILED;
+    conversation.failReason = failReason;
+    conversation.lastActivityAt = Date.now();
+
+    // Add failure message
+    const failedMessage = buildAIFailureResponseMessage() as IMessageDocument;
+    conversation.messages.push(failedMessage);
+
+    // Save failed conversation
+    const savedWithError = session
+      ? await conversation.save({ session })
+      : await conversation.save();
+
+    if (!savedWithError) {
+      logger.error('Failed to save agent conversation error state', {
+        conversationId: conversation._id,
+        agentKey: conversation.agentKey,
+        failReason,
+      });
+    }
+
+    logger.debug('Agent conversation marked as failed', {
+      conversationId: conversation._id,
+      agentKey: conversation.agentKey,
+      failReason,
+    });
+  } catch (error: any) {
+    logger.error('Failed to mark agent conversation as failed', {
+      conversationId: conversation._id,
+      agentKey: conversation.agentKey,
+      error: error.message,
+    });
+    throw error;
+  }
+};
+
+/**
+ * Build filter for agent conversations
+ */
+export const buildAgentConversationFilter = (
+  req: any,
+  orgId: string,
+  userId: string,
+  agentKey: string,
+  conversationId?: string,
+) => {
+  const filter: any = {
+    agentKey,
+    orgId,
+    userId,
+    isDeleted: false,
+  };
+
+  if (conversationId) {
+    filter._id = conversationId;
+  }
+
+  // Add additional filters based on query parameters
+  if (req.query.status) {
+    filter.status = req.query.status;
+  }
+
+  if (req.query.isShared) {
+    filter.isShared = req.query.isShared === 'true';
+  }
+
+  if (req.query.isArchived) {
+    filter.isArchived = req.query.isArchived === 'true';
+  }
+
+  // Date range filters
+  if (req.query.startDate || req.query.endDate) {
+    filter.createdAt = {};
+    if (req.query.startDate) {
+      filter.createdAt.$gte = new Date(req.query.startDate);
+    }
+    if (req.query.endDate) {
+      filter.createdAt.$lte = new Date(req.query.endDate);
+    }
+  }
+
+  return filter;
+};
+
+/**
+ * Build shared with me filter for agent conversations
+ */
+export const buildAgentSharedWithMeFilter = (
+  req: any,
+  userId: string,
+  agentKey: string,
+) => {
+  const filter: any = {
+    agentKey,
+    isDeleted: false,
+    isShared: true,
+    'sharedWith.userId': userId,
+  };
+
+  // Add additional filters
+  if (req.query.status) {
+    filter.status = req.query.status;
+  }
+
+  if (req.query.isArchived) {
+    filter.isArchived = req.query.isArchived === 'true';
+  }
+
+  return filter;
+};
+
+/**
+ * Add computed fields for agent conversations
+ */
+export const addAgentConversationComputedFields = (
+  conversation: any,
+  userId: string,
+) => {
+  return {
+    ...conversation,
+    isOwner: conversation.userId?.toString() === userId?.toString(),
+    canEdit:
+      conversation.userId?.toString() === userId?.toString() ||
+      conversation.sharedWith?.some(
+        (share: any) =>
+          share.userId?.toString() === userId?.toString() &&
+          share.accessLevel === 'write',
+      ),
+    canView: true, // User can view if they got this conversation in results
+    messageCount: conversation.messages?.length || 0,
+    lastMessage:
+      conversation.messages?.length > 0
+        ? conversation.messages[conversation.messages.length - 1]
+        : null,
+  };
+};
+
+/**
+ * Build sort options for agent conversations
+ */
+export const buildAgentConversationSortOptions = (req: any) => {
+  const { sortBy = 'lastActivityAt', sortOrder = 'desc' } = req.query;
+
+  const sortOptions: any = {};
+  sortOptions[sortBy] = sortOrder === 'asc' ? 1 : -1;
+
+  return sortOptions;
+};
+
+/**
+ * Validate agent conversation access
+ */
+export const validateAgentConversationAccess = async (
+  conversationId: string,
+  agentKey: string,
+  userId: string,
+  orgId: string,
+  accessLevel: 'read' | 'write' = 'read',
+): Promise<IAgentConversationDocument | null> => {
+  try {
+    const conversation = await AgentConversation.findOne({
+      _id: conversationId,
+      agentKey,
+      orgId,
+      isDeleted: false,
+      $or: [
+        { userId }, // Owner
+        {
+          isShared: true,
+          'sharedWith.userId': userId,
+          ...(accessLevel === 'write' && { 'sharedWith.accessLevel': 'write' }),
+        },
+      ],
+    });
+
+    return conversation;
+  } catch (error: any) {
+    logger.error('Error validating agent conversation access', {
+      conversationId,
+      agentKey,
+      userId,
+      accessLevel,
+      error: error.message,
+    });
+    return null;
+  }
+};
+
+/**
+ * Get agent conversation statistics
+ */
+export const getAgentConversationStats = async (
+  agentKey: string,
+  orgId: string,
+  userId: string,
+) => {
+  try {
+    const stats = await AgentConversation.aggregate([
+      {
+        $match: {
+          agentKey,
+          orgId,
+          userId,
+          isDeleted: false,
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          totalConversations: { $sum: 1 },
+          completedConversations: {
+            $sum: { $cond: [{ $eq: ['$status', 'Complete'] }, 1, 0] },
+          },
+          failedConversations: {
+            $sum: { $cond: [{ $eq: ['$status', 'Failed'] }, 1, 0] },
+          },
+          inProgressConversations: {
+            $sum: { $cond: [{ $eq: ['$status', 'Inprogress'] }, 1, 0] },
+          },
+          totalMessages: { $sum: { $size: '$messages' } },
+          avgMessagesPerConversation: { $avg: { $size: '$messages' } },
+          lastActivity: { $max: '$lastActivityAt' },
+        },
+      },
+    ]);
+
+    return (
+      stats[0] || {
+        totalConversations: 0,
+        completedConversations: 0,
+        failedConversations: 0,
+        inProgressConversations: 0,
+        totalMessages: 0,
+        avgMessagesPerConversation: 0,
+        lastActivity: null,
+      }
+    );
+  } catch (error: any) {
+    logger.error('Error getting agent conversation stats', {
+      agentKey,
+      orgId,
+      userId,
+      error: error.message,
+    });
+    throw error;
+  }
+};
+
+/**
+ * Search agent conversations
+ */
+export const searchAgentConversations = async (
+  agentKey: string,
+  orgId: string,
+  userId: string,
+  searchQuery: string,
+  options: {
+    page?: number;
+    limit?: number;
+    sortBy?: string;
+    sortOrder?: 'asc' | 'desc';
+  } = {},
+) => {
+  try {
+    const {
+      page = 1,
+      limit = 20,
+      sortBy = 'lastActivityAt',
+      sortOrder = 'desc',
+    } = options;
+
+    const skip = (page - 1) * limit;
+    const sort: any = {};
+    sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
+
+    const searchFilter = {
+      agentKey,
+      orgId,
+      userId,
+      isDeleted: false,
+      $or: [
+        { title: { $regex: searchQuery, $options: 'i' } },
+        { 'messages.content': { $regex: searchQuery, $options: 'i' } },
+      ],
+    };
+
+    const [conversations, totalCount] = await Promise.all([
+      AgentConversation.find(searchFilter)
+        .sort(sort)
+        .skip(skip)
+        .limit(limit)
+        .select('-messages') // Exclude messages for list view
+        .lean()
+        .exec(),
+      AgentConversation.countDocuments(searchFilter),
+    ]);
+
+    return {
+      conversations: conversations.map((conv) =>
+        addAgentConversationComputedFields(conv, userId),
+      ),
+      pagination: {
+        page,
+        limit,
+        total: totalCount,
+        pages: Math.ceil(totalCount / limit),
+        hasNextPage: page < Math.ceil(totalCount / limit),
+        hasPrevPage: page > 1,
+      },
+      searchQuery,
+    };
+  } catch (error: any) {
+    logger.error('Error searching agent conversations', {
+      agentKey,
+      orgId,
+      userId,
+      searchQuery,
+      error: error.message,
+    });
+    throw error;
+  }
+};
+
+/**
+ * Archive/Unarchive agent conversation
+ */
+export const toggleAgentConversationArchive = async (
+  conversationId: string,
+  agentKey: string,
+  userId: string,
+  orgId: string,
+  archive: boolean,
+): Promise<IAgentConversationDocument | null> => {
+  try {
+    const conversation = await validateAgentConversationAccess(
+      conversationId,
+      agentKey,
+      userId,
+      orgId,
+      'write',
+    );
+
+    if (!conversation) {
+      return null;
+    }
+
+    conversation.isArchived = archive;
+    conversation.archivedBy = archive ? (userId as any) : undefined;
+    conversation.lastActivityAt = Date.now();
+
+    const updatedConversation = await conversation.save();
+
+    logger.debug(`Agent conversation ${archive ? 'archived' : 'unarchived'}`, {
+      conversationId,
+      agentKey,
+      userId,
+      archived: archive,
+    });
+
+    return updatedConversation;
+  } catch (error: any) {
+    logger.error(
+      `Error ${archive ? 'archiving' : 'unarchiving'} agent conversation`,
+      {
+        conversationId,
+        agentKey,
+        userId,
+        error: error.message,
+      },
+    );
+    throw error;
+  }
+};
+
+/**
+ * Delete agent conversation (soft delete)
+ */
+export const deleteAgentConversation = async (
+  conversationId: string,
+  agentKey: string,
+  userId: string,
+  orgId: string,
+): Promise<IAgentConversationDocument | null> => {
+  try {
+    const conversation = await validateAgentConversationAccess(
+      conversationId,
+      agentKey,
+      userId,
+      orgId,
+      'write',
+    );
+
+    if (!conversation) {
+      return null;
+    }
+
+    conversation.isDeleted = true;
+    conversation.deletedBy = userId as any;
+    conversation.lastActivityAt = Date.now();
+
+    const updatedConversation = await conversation.save();
+
+    logger.debug('Agent conversation deleted', {
+      conversationId,
+      agentKey,
+      userId,
+    });
+
+    return updatedConversation;
+  } catch (error: any) {
+    logger.error('Error deleting agent conversation', {
+      conversationId,
+      agentKey,
+      userId,
+      error: error.message,
+    });
+    throw error;
+  }
+};

@@ -26,6 +26,23 @@ import {
   updateTitle,
   streamChat,
   addMessageStream,
+  createAgentConversation,
+  streamAgentConversation,
+  addMessageToAgentConversation,
+  addMessageStreamToAgentConversation,
+  getAllAgentConversations,
+  getAgentConversationById,
+  deleteAgentConversationById,
+  createAgentTemplate,
+  getAgentTemplate,
+  deleteAgentTemplate,
+  listAgentTemplates,
+  createAgent,
+  getAgent,
+  deleteAgent,
+  updateAgent,
+  updateAgentTemplate,
+  listAgents,
 } from '../controller/es_controller';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import {
@@ -40,7 +57,7 @@ import {
   regenerateAnswersParamsSchema,
   updateFeedbackParamsSchema,
   searchShareParamsSchema,
-} from '../validators/es_validators';
+} from '../validators/es_validators'; 
 import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
@@ -382,3 +399,131 @@ export function createSemanticSearchRouter(container: Container): Router {
 
   return router;
 }
+
+export function createAgentConversationalRouter(container: Container): Router {
+  const router = Router();
+  const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
+  let appConfig = container.get<AppConfig>('AppConfig');
+
+  router.post(
+    '/:agentKey/chat',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    createAgentConversation(appConfig),
+  );
+
+  router.post(
+    '/:agentKey/chat/stream',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    streamAgentConversation(appConfig),
+  );
+
+  router.post(
+    '/:agentKey/chat/:conversationId/messages',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    addMessageToAgentConversation(appConfig),
+  );
+
+  router.post(
+    '/:agentKey/chat/:conversationId/messages/stream',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    addMessageStreamToAgentConversation(appConfig),
+  );
+
+  router.get(
+    '/:agentKey/conversations',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    getAllAgentConversations,
+  );
+
+  router.get(
+    '/:agentKey/conversations/:conversationId',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    getAgentConversationById,
+  );
+
+  router.delete(
+    '/:agentKey/conversations/:conversationId',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    deleteAgentConversationById,
+  );
+
+  router.post(
+    '/template',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    createAgentTemplate(appConfig),
+  );
+
+  router.get(
+    '/template/:templateId',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    getAgentTemplate(appConfig),
+  );
+
+  router.put(
+    '/template/:templateId',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    updateAgentTemplate(appConfig),
+  );
+
+  router.delete(
+    '/template/:templateId',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    deleteAgentTemplate(appConfig),
+  );
+
+  router.get(
+    '/template',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    listAgentTemplates(appConfig),
+  );
+
+  router.post(
+    '/create',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    createAgent(appConfig),
+  );
+
+  router.get(
+    '/:agentKey',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    getAgent(appConfig),
+  );
+
+  router.put(
+    '/:agentKey',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    updateAgent(appConfig),
+  );
+
+  router.delete(
+    '/:agentKey',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    deleteAgent(appConfig),
+  );
+
+  router.get(
+    '/',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    listAgents(appConfig),
+  );
+
+  return router;
+} 
+
