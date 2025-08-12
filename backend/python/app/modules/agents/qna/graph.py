@@ -1,7 +1,7 @@
 from langgraph.graph import END, StateGraph
 
 from app.modules.agents.qna.chat_state import ChatState
-from app.modules.agents.qna.nodes import (  # Clean nodes
+from app.modules.agents.qna.nodes import (  # Pure LLM-driven nodes - no ToolExecutor
     analyze_query_node,
     conditional_retrieve_node,
     get_user_info_node,
@@ -15,49 +15,55 @@ from app.modules.agents.qna.nodes import (  # Clean nodes
 
 
 def should_continue_with_limit(state: ChatState) -> str:
-    """Route based on pending tool calls with a safety limit"""
-    # Check if there are pending tool calls
+    """Simple routing with safety limit - pure LLM autonomy"""
+    # Get tool execution count
+    all_tool_results = state.get("all_tool_results", [])
+    tool_call_count = len(all_tool_results)
+    
+    # Safety limit to prevent infinite loops - generous for enterprise workflows
+    max_iterations = 20  # Increased to support complex multi-tool enterprise workflows
+    
+    # Simple decision based on LLM's choice
     has_pending_calls = state.get("pending_tool_calls", False)
-    
-    # Get current tool call count with proper null handling
-    tool_results = state.get("tool_results")
-    tool_call_count = len(tool_results) if tool_results is not None else 0
-    
-    # Safety limits
-    max_tool_iterations = 5
     
     # Log for debugging
     logger = state.get("logger")
     if logger:
-        logger.debug(f"Routing decision: pending_calls={has_pending_calls}, tool_count={tool_call_count}")
+        logger.debug(f"Tool routing: pending={has_pending_calls}, count={tool_call_count}/{max_iterations}")
+        
+        # Show recent tool usage for complex workflow tracking
+        if all_tool_results and len(all_tool_results) > 0:
+            recent_tools = [result.get("tool_name", "unknown") for result in all_tool_results[-5:]]
+            logger.debug(f"Recent tool chain: {' → '.join(recent_tools)}")
     
-    # Continue with tools if we have pending calls and haven't hit the limit
-    if has_pending_calls and tool_call_count < max_tool_iterations:
+    # Simple routing logic - let LLM drive everything
+    if has_pending_calls and tool_call_count < max_iterations:
         return "execute_tools"
     else:
-        if tool_call_count >= max_tool_iterations and logger:
-            logger.warning(f"Hit tool call limit ({max_tool_iterations}), proceeding to final response")
+        if tool_call_count >= max_iterations and logger:
+            logger.warning(f"Reached maximum tool iterations ({max_iterations}), proceeding to final response")
+            logger.info("This prevents infinite loops while allowing complex enterprise workflows")
         return "final"
 
 
-def create_clean_qna_graph() -> StateGraph:
-    """Create a clean QnA graph where LLM makes natural tool decisions with multi-tool support"""
+def create_pure_llm_qna_graph() -> StateGraph:
+    """Create a pure LLM-driven QnA graph with complete tool autonomy and no ToolExecutor dependency"""
 
     workflow = StateGraph(ChatState)
 
-    # Add clean nodes (minimal forced logic)
-    workflow.add_node("analyze", analyze_query_node)                    # Simple analysis for retrieval only
-    workflow.add_node("conditional_retrieve", conditional_retrieve_node) # Only retrieve if needed
-    workflow.add_node("get_user", get_user_info_node)                   # Get user info
-    workflow.add_node("prepare_prompt", prepare_clean_prompt_node)      # Clean prompt preparation
-    workflow.add_node("agent", clean_agent_node)                       # Pure LLM tool decision making
-    workflow.add_node("execute_tools", clean_tool_execution_node)       # Execute LLM-chosen tools
-    workflow.add_node("final", clean_final_response_node)               # Clean final response
+    # Add nodes - each focused on specific functionality, LLM makes all tool decisions
+    workflow.add_node("analyze", analyze_query_node)                    # Simple query analysis
+    workflow.add_node("conditional_retrieve", conditional_retrieve_node) # Data retrieval when needed
+    workflow.add_node("get_user", get_user_info_node)                   # User context
+    workflow.add_node("prepare_prompt", prepare_clean_prompt_node)      # Present ALL tools to LLM
+    workflow.add_node("agent", clean_agent_node)                       # LLM decides everything autonomously
+    workflow.add_node("execute_tools", clean_tool_execution_node)       # Execute ANY tool directly (no executor)
+    workflow.add_node("final", clean_final_response_node)               # Final response
 
     # Set entry point
     workflow.set_entry_point("analyze")
 
-    # Build the clean flow
+    # Build flow - simple, linear, error-handled
     workflow.add_conditional_edges(
         "analyze",
         check_for_error,
@@ -76,7 +82,7 @@ def create_clean_qna_graph() -> StateGraph:
         }
     )
 
-    # Always continue to prompt preparation after user info
+    # Linear flow to prompt preparation
     workflow.add_edge("get_user", "prepare_prompt")
 
     workflow.add_conditional_edges(
@@ -88,24 +94,31 @@ def create_clean_qna_graph() -> StateGraph:
         }
     )
 
-    # Agent decides naturally whether to use tools or provide final response
+    # LLM decides autonomously - supports unlimited tool combinations and workflows
+    # Examples: Slack → JIRA → Confluence → Email → Calendar (all LLM-driven)
     workflow.add_conditional_edges(
         "agent",
-        should_continue_with_limit,  # Use the safer version with limits
+        should_continue_with_limit,
         {
             "execute_tools": "execute_tools",
             "final": "final"
         }
     )
 
-    # CRITICAL FIX: After tool execution, go back to agent to potentially call more tools
+    # Critical: After tool execution, return to agent for potential additional tool calls
+    # This enables natural multi-step workflows like:
+    # 1. Search Slack for bug reports
+    # 2. Create JIRA ticket
+    # 3. Update Confluence documentation  
+    # 4. Send email notification
+    # 5. Schedule follow-up meeting
     workflow.add_edge("execute_tools", "agent")
 
-    # Final response ends the workflow
+    # End the workflow
     workflow.add_edge("final", END)
 
     return workflow.compile()
 
 
-# Export the clean graph
-qna_graph = create_clean_qna_graph()
+# Export the pure LLM-driven graph with direct tool execution
+qna_graph = create_pure_llm_qna_graph()

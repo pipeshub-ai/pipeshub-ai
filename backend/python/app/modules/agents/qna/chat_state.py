@@ -30,7 +30,7 @@ class ChatState(TypedDict):
     filters: Optional[Dict[str, Any]]
     retrieval_mode: str
     
-    # NEW: Query analysis results
+    # Query analysis results
     query_analysis: Optional[Dict[str, Any]]  # Results from query analysis
     
     # Original query processing (now optional)
@@ -59,9 +59,19 @@ class ChatState(TypedDict):
     tools: Optional[List[str]]  # List of tool names to enable for this agent
     output_file_path: Optional[str]  # Optional file path for saving responses
     
-    # Tool calling specific fields
+    # Tool calling specific fields - no ToolExecutor dependency
     pending_tool_calls: Optional[bool]  # Whether the agent has pending tool calls
-    tool_results: Optional[List[Dict[str, Any]]]  # Results of tool execution
+    tool_results: Optional[List[Dict[str, Any]]]  # Results of current tool execution
+    all_tool_results: Optional[List[Dict[str, Any]]]  # All tool results for the session
+    
+    # Web search specific fields
+    web_search_results: Optional[List[Dict[str, Any]]]  # Stored web search results
+    web_search_template_context: Optional[Dict[str, Any]]  # Template context for web search formatting
+    
+    # Pure registry integration - no executor
+    available_tools: Optional[List[str]]  # List of all available tools from registry
+    tool_configs: Optional[Dict[str, Any]]  # Tool configurations (Slack tokens, etc.)
+    registry_tool_instances: Optional[Dict[str, Any]]  # Cached tool instances
 
 def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], llm: BaseChatModel,
                         logger: Logger, retrieval_service: RetrievalService, arango_service: ArangoService,
@@ -71,8 +81,8 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
     # Get user-defined system prompt or use default
     system_prompt = chat_query.get("systemPrompt", "You are an enterprise questions answering expert")
     
-    # Get tools configuration
-    tools = chat_query.get("tools", None)
+    # Get tools configuration - no restrictions, let LLM decide
+    tools = chat_query.get("tools", None)  # None means all tools available
     output_file_path = chat_query.get("outputFilePath", None)
     
     # Build filters based on allowed apps and knowledge bases
@@ -94,7 +104,7 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
         "filters": filters,
         "retrieval_mode": chat_query.get("retrievalMode", "HYBRID"),
         
-        # NEW: Query analysis (will be populated by analyze_query_node)
+        # Query analysis (will be populated by analyze_query_node)
         "query_analysis": None,
         
         # Original query processing (now optional - may not be used)
@@ -128,7 +138,17 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
         "tools": tools,
         "output_file_path": output_file_path,
         
-        # Tool calling specific fields
+        # Tool calling specific fields - direct execution
         "pending_tool_calls": False,
         "tool_results": None,
+        "all_tool_results": [],
+        
+        # Web search specific fields
+        "web_search_results": None,
+        "web_search_template_context": None,
+        
+        # Pure registry integration - no executor dependency
+        "available_tools": None,
+        "tool_configs": None,
+        "registry_tool_instances": {},  # Cache for tool instances
     }

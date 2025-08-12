@@ -1,7 +1,7 @@
-# Clean Intelligent Agent System - LLM-Driven Tool Selection
+# Clean Intelligent Agent System - Pure LLM-Driven Tool Selection
 import asyncio
-from datetime import datetime
 from typing import Literal
+from datetime import datetime
 
 from langgraph.types import StreamWriter
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -10,6 +10,7 @@ from app.config.constants.arangodb import AccountType, CollectionNames
 from app.modules.agents.qna.chat_state import ChatState
 from app.modules.qna.prompt_templates import qna_prompt
 from app.utils.citations import process_citations
+
 
 
 # 1. Query Analysis Node - Simple analysis for conditional retrieval only
@@ -68,7 +69,7 @@ async def conditional_retrieve_node(
             
         analysis = state.get("query_analysis", {})
         
-        # Skip retrieval if not needed
+        # Skip retrieval based on analysis
         if not analysis.get("needs_internal_data", False):
             logger.info("Skipping data retrieval - not needed for this query")
             state["search_results"] = []
@@ -123,7 +124,7 @@ async def conditional_retrieve_node(
         return state
 
 
-# 3. User Info Node (unchanged)
+# 3. User Info Node
 async def get_user_info_node(state: ChatState) -> ChatState:
     """Fetch user info if needed"""
     try:
@@ -146,12 +147,12 @@ async def get_user_info_node(state: ChatState) -> ChatState:
         return state
 
 
-# 4. Clean Prompt Creation - Let LLM decide on tools naturally
+# 4. Clean Prompt Creation - Pure tool presentation to LLM
 def prepare_clean_prompt_node(
     state: ChatState,
     writer: StreamWriter
 ) -> ChatState:
-    """Create a clean prompt that lets the LLM decide on tool usage naturally"""
+    """Create a clean prompt that presents all available tools to the LLM"""
     try:
         logger = state["logger"]
         if state.get("error"):
@@ -186,22 +187,24 @@ def prepare_clean_prompt_node(
         # Build clean system message
         system_content = state.get("system_prompt") or "You are an intelligent AI assistant"
         
-        # Add natural tool guidance (no forced logic)
-        tools_config = state.get("tools", [])
-        if tools_config:
-            from app.modules.agents.qna.tools import get_agent_tools
-            tools = get_agent_tools(state)
-            if tools:
-                tool_descriptions = []
-                for tool in tools:
-                    tool_descriptions.append(f"- {tool.name}: {tool.description}")
-                
-                system_content += f"""
+        # Get ALL available tools from registry - no filtering
+        from app.modules.agents.qna.tool_registry import get_agent_tools, get_tool_usage_guidance
+        
+        tools = get_agent_tools(state)
+        
+        if tools:
+            # Simple tool presentation - just list them all
+            tool_descriptions = []
+            for tool in tools:
+                tool_descriptions.append(f"- {tool.name}: {tool.description}")
+            
+            system_content += f"""
 
-You have access to the following tools that you can use when appropriate:
+You have access to the following tools:
+
 {chr(10).join(tool_descriptions)}
 
-Use these tools when they would be helpful to better answer the user's question or fulfill their request. Think about what the user is asking for and choose the right tools for the job."""
+{get_tool_usage_guidance()}"""
         
         # Create messages
         messages = [SystemMessage(content=system_content)]
@@ -222,21 +225,21 @@ Use these tools when they would be helpful to better answer the user's question 
         messages.append(HumanMessage(content=full_prompt))
         
         state["messages"] = messages
-        logger.debug(f"Prepared clean prompt with {len(messages)} messages")
+        logger.debug(f"Prepared prompt with {len(messages)} messages and {len(tools)} available tools")
         
         return state
     except Exception as e:
-        logger.error(f"Error in clean prompt preparation: {str(e)}", exc_info=True)
+        logger.error(f"Error in prompt preparation: {str(e)}", exc_info=True)
         state["error"] = {"status_code": 400, "detail": str(e)}
         return state
 
 
-# 5. Clean Agent Node - No forced tool logic, pure LLM decision making
+# 5. Pure Agent Node - Complete LLM autonomy
 async def clean_agent_node(
     state: ChatState,
     writer: StreamWriter
 ) -> ChatState:
-    """Clean agent that lets LLM naturally decide on tool usage"""
+    """Pure agent that lets LLM decide everything"""
     try:
         logger = state["logger"]
         llm = state["llm"]
@@ -246,15 +249,12 @@ async def clean_agent_node(
         if state.get("error"):
             return state
 
-        # Get all available tools (no filtering)
-        tools_config = state.get("tools", [])
+        # Get ALL available tools - no restrictions
+        from app.modules.agents.qna.tool_registry import get_agent_tools
+        tools = get_agent_tools(state)
         
-        if tools_config:
-            from app.modules.agents.qna.tools import get_agent_tools
-            tools = get_agent_tools(state)
-            
-            logger.debug(f"Available tools: {[tool.name for tool in tools]}")
-            
+        if tools:
+            logger.debug(f"Providing {len(tools)} tools to LLM for autonomous decision making")
             try:
                 llm_with_tools = llm.bind_tools(tools)
             except (NotImplementedError, AttributeError) as e:
@@ -263,25 +263,34 @@ async def clean_agent_node(
                 tools = []
         else:
             llm_with_tools = llm
-            tools = []
             logger.debug("No tools available")
 
-        # Call the LLM - let it decide naturally
+        # Add previous tool results context if available
+        if state.get("all_tool_results"):
+            from app.modules.agents.qna.tool_registry import get_tool_results_summary
+            tool_context = "\n\n" + get_tool_results_summary(state)
+            
+            # Add context to the last human message
+            if state["messages"] and isinstance(state["messages"][-1], HumanMessage):
+                state["messages"][-1].content += tool_context
+                logger.debug(f"Added tool execution context from {len(state['all_tool_results'])} previous results")
+
+        # Call the LLM - complete autonomy
         cleaned_messages = _clean_message_history(state["messages"])
         response = await llm_with_tools.ainvoke(cleaned_messages)
         
         # Add the response to messages
         state["messages"].append(response)
         
-        # Check if the response contains tool calls
+        # Check LLM's decision on tool usage
         if hasattr(response, 'tool_calls') and response.tool_calls:
-            logger.debug(f"Agent decided to call {len(response.tool_calls)} tools")
+            logger.debug(f"LLM autonomously decided to use {len(response.tool_calls)} tools")
             for tool_call in response.tool_calls:
                 tool_name = tool_call.get("name") if isinstance(tool_call, dict) else getattr(tool_call, 'name', 'unknown')
                 logger.debug(f"  - {tool_name}")
             state["pending_tool_calls"] = True
         else:
-            logger.debug("Agent decided to provide final response without tools")
+            logger.debug("LLM autonomously decided to provide final response without tools")
             state["pending_tool_calls"] = False
             
             if hasattr(response, 'content'):
@@ -292,17 +301,17 @@ async def clean_agent_node(
         return state
         
     except Exception as e:
-        logger.error(f"Error in clean agent node: {str(e)}", exc_info=True)
+        logger.error(f"Error in agent node: {str(e)}", exc_info=True)
         state["error"] = {"status_code": 400, "detail": str(e)}
         return state
 
 
-# 6. Clean Tool Execution Node - Execute whatever tools the LLM chose
+# 6. Universal Tool Execution Node - Execute any tool the LLM chose
 async def clean_tool_execution_node(
     state: ChatState,
     writer: StreamWriter
 ) -> ChatState:
-    """Execute the tools that the LLM chose to use"""
+    """Universal tool execution - handle any tool from registry"""
     try:
         logger = state["logger"]
         
@@ -325,9 +334,10 @@ async def clean_tool_execution_node(
 
         tool_calls = last_ai_message.tool_calls
         
-        # Get the tools
-        from app.modules.agents.qna.tools import get_agent_tools
+        # Get available tools
+        from app.modules.agents.qna.tool_registry import get_agent_tools
         tools = get_agent_tools(state)
+        tools_by_name = {tool.name: tool for tool in tools}
         
         # Execute tools and create ToolMessage objects
         tool_messages = []
@@ -346,63 +356,87 @@ async def clean_tool_execution_node(
                     import json
                     tool_args = json.loads(tool_args)
             
-            # Find and execute tool
-            tool = next((t for t in tools if t.name == tool_name), None)
-            
-            if tool:
-                try:
+            try:
+                result = None
+                
+                # Execute the tool directly - no ToolExecutor
+                if tool_name in tools_by_name:
+                    tool = tools_by_name[tool_name]
                     logger.debug(f"Executing tool: {tool_name} with args: {tool_args}")
                     result = tool._run(**tool_args) if hasattr(tool, '_run') else tool.run(**tool_args)
-                    
-                    tool_results.append({
-                        "tool_name": tool_name,
-                        "result": result,
-                        "status": "success",
-                        "tool_id": tool_id
-                    })
-                    
-                    # Create ToolMessage
-                    tool_message = ToolMessage(content=str(result), tool_call_id=tool_id)
-                    tool_messages.append(tool_message)
-                    
-                    logger.debug(f"Tool {tool_name} executed successfully")
-                    
-                except Exception as e:
-                    error_result = f"Error: {str(e)}"
-                    tool_results.append({
-                        "tool_name": tool_name,
-                        "result": error_result,
+                else:
+                    # Tool not found in available tools
+                    logger.warning(f"Tool {tool_name} not found in available tools")
+                    result = json.dumps({
                         "status": "error",
-                        "tool_id": tool_id
-                    })
+                        "message": f"Tool '{tool_name}' not found in available tools",
+                        "available_tools": list(tools_by_name.keys())
+                    }, indent=2)
+                
+                # Store tool result
+                tool_result = {
+                    "tool_name": tool_name,
+                    "result": result,
+                    "status": "success" if "error" not in str(result).lower() else "error",
+                    "tool_id": tool_id,
+                    "args": tool_args,
+                    "execution_timestamp": datetime.now().isoformat()
+                }
+                tool_results.append(tool_result)
+                
+                # Create ToolMessage
+                tool_message = ToolMessage(content=str(result), tool_call_id=tool_id)
+                tool_messages.append(tool_message)
+                
+                logger.debug(f"Tool {tool_name} executed")
                     
-                    tool_message = ToolMessage(content=error_result, tool_call_id=tool_id)
-                    tool_messages.append(tool_message)
-                    
-                    logger.error(f"Tool {tool_name} failed: {e}")
-            else:
-                logger.warning(f"Tool {tool_name} not found")
+            except Exception as e:
+                error_result = f"Error executing {tool_name}: {str(e)}"
+                tool_result = {
+                    "tool_name": tool_name,
+                    "result": error_result,
+                    "status": "error",
+                    "tool_id": tool_id,
+                    "args": tool_args,
+                    "execution_timestamp": datetime.now().isoformat(),
+                    "error_details": str(e)
+                }
+                tool_results.append(tool_result)
+                
+                tool_message = ToolMessage(content=error_result, tool_call_id=tool_id)
+                tool_messages.append(tool_message)
+                
+                logger.error(f"Tool {tool_name} failed: {e}")
         
         # Add tool messages to conversation
         state["messages"].extend(tool_messages)
+        
+        # Store tool results
         state["tool_results"] = tool_results
+        
+        # Accumulate all tool results for the session
+        if "all_tool_results" not in state:
+            state["all_tool_results"] = []
+        state["all_tool_results"].extend(tool_results)
+        
+        # Reset pending tool calls
         state["pending_tool_calls"] = False
         
-        logger.debug(f"Executed {len(tool_results)} tools")
+        logger.debug(f"Executed {len(tool_results)} tools. Session total: {len(state['all_tool_results'])}")
         return state
         
     except Exception as e:
-        logger.error(f"Error in clean tool execution: {str(e)}", exc_info=True)
+        logger.error(f"Error in tool execution: {str(e)}", exc_info=True)
         state["error"] = {"status_code": 400, "detail": str(e)}
         return state
 
 
-# 7. Clean Final Response Node - Simple final response generation
+# 7. Clean Final Response Node
 async def clean_final_response_node(
     state: ChatState,
     writer: StreamWriter
 ) -> ChatState:
-    """Generate clean final response"""
+    """Generate final response - LLM handles all decisions"""
     try:
         logger = state["logger"]
         llm = state["llm"]
@@ -412,11 +446,11 @@ async def clean_final_response_node(
         if state.get("error"):
             return state
 
-        # If we already have a response and no pending tool calls, we're done
+        # Use existing response if available and no pending tool calls
         if state.get("response") and not state.get("pending_tool_calls", False):
             final_content = state["response"]
         else:
-            # Validate messages before final LLM call
+            # Clean and validate message history
             validated_messages = []
             messages = state["messages"]
             
@@ -431,47 +465,151 @@ async def clean_final_response_node(
                         if msg.tool_call_id in tool_call_ids:
                             validated_messages.append(msg)
             
+            # Add tool execution summary if available
+            if state.get("all_tool_results"):
+                from app.modules.agents.qna.tool_registry import get_tool_results_summary
+                tool_summary = "\n\n" + get_tool_results_summary(state)
+                
+                # Add to context for final response
+                if validated_messages and isinstance(validated_messages[-1], HumanMessage):
+                    validated_messages[-1].content += tool_summary
+                    logger.debug(f"Added comprehensive tool summary: {len(state['all_tool_results'])} executions")
+            
             # Get final response from LLM
             response = await llm.ainvoke(validated_messages)
             final_content = response.content if hasattr(response, 'content') else str(response)
         
-        # Process citations if we have internal data
+        # Process citations for internal data
         if state.get("final_results"):
             final_content = process_citations(final_content, state["final_results"])
         
         state["response"] = final_content
         writer({"event": "complete", "data": {"answer": final_content}})
         
-        logger.debug("Final response generated successfully")
+        logger.debug("Final response generated")
         return state
         
     except Exception as e:
-        logger.error(f"Error in clean final response: {str(e)}", exc_info=True)
+        logger.error(f"Error in final response: {str(e)}", exc_info=True)
         state["error"] = {"status_code": 400, "detail": str(e)}
         return state
 
 
 # Helper function
+# Helper functions - FIXED VERSION
+
+def _validate_and_fix_message_sequence(messages):
+    """Validate and fix message sequence to ensure OpenAI API compatibility"""
+    validated = []
+    pending_tool_calls = {}
+    
+    for msg in messages:
+        if isinstance(msg, (SystemMessage, HumanMessage)):
+            # Clear any pending tool calls when we see a new human message
+            if isinstance(msg, HumanMessage):
+                pending_tool_calls.clear()
+            validated.append(msg)
+            
+        elif isinstance(msg, AIMessage):
+            validated.append(msg)
+            # Track tool calls from this AI message
+            if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                for tc in msg.tool_calls:
+                    tool_id = tc.get('id') if isinstance(tc, dict) else getattr(tc, 'id', None)
+                    if tool_id:
+                        pending_tool_calls[tool_id] = True
+                        
+        elif hasattr(msg, 'tool_call_id'):
+            # Only include tool message if we're expecting it
+            if msg.tool_call_id in pending_tool_calls:
+                validated.append(msg)
+                # Mark this tool call as resolved
+                pending_tool_calls.pop(msg.tool_call_id, None)
+            else:
+                # Skip orphaned tool messages
+                continue
+    
+    # If there are any unresolved tool calls, we need to remove the AI message that created them
+    # to avoid the OpenAI error
+    if pending_tool_calls:
+        # Find and remove the AI message with unresolved tool calls
+        final_validated = []
+        for msg in validated:
+            if isinstance(msg, AIMessage) and hasattr(msg, 'tool_calls') and msg.tool_calls:
+                # Check if any tool calls from this message are unresolved
+                has_unresolved = False
+                for tc in msg.tool_calls:
+                    tool_id = tc.get('id') if isinstance(tc, dict) else getattr(tc, 'id', None)
+                    if tool_id and tool_id in pending_tool_calls:
+                        has_unresolved = True
+                        break
+                
+                if not has_unresolved:
+                    final_validated.append(msg)
+                # Skip AI messages with unresolved tool calls
+            else:
+                final_validated.append(msg)
+        
+        validated = final_validated
+    
+    return validated
+
 def _clean_message_history(messages):
-    """Clean message history for LLM compatibility"""
+    """Clean message history for LLM compatibility - ensures proper tool call/response pairing"""
+    # First validate and fix the message sequence
+    validated_messages = _validate_and_fix_message_sequence(messages)
+    
+    # Then apply the cleaning logic
     cleaned = []
-    for i, msg in enumerate(messages):
-        if hasattr(msg, 'tool_call_id'):
-            if i > 0:
-                prev_msg = messages[i-1]
-                if (hasattr(prev_msg, 'tool_calls') and prev_msg.tool_calls or
-                    hasattr(prev_msg, 'additional_kwargs') and prev_msg.additional_kwargs.get('tool_calls')):
-                    cleaned.append(msg)
-        else:
+    
+    for i, msg in enumerate(validated_messages):
+        # Always include system, human, and AI messages
+        if isinstance(msg, (SystemMessage, HumanMessage, AIMessage)):
             cleaned.append(msg)
+        
+        # For tool messages, ensure they follow an AI message with tool calls
+        elif hasattr(msg, 'tool_call_id'):
+            # Look backwards to find the most recent AI message with tool calls
+            found_matching_ai = False
+            for j in range(i-1, -1, -1):
+                prev_msg = validated_messages[j]
+                if isinstance(prev_msg, AIMessage):
+                    # Check if this AI message has tool calls
+                    if hasattr(prev_msg, 'tool_calls') and prev_msg.tool_calls:
+                        # Check if our tool_call_id matches any of the tool calls
+                        tool_call_ids = []
+                        for tc in prev_msg.tool_calls:
+                            if isinstance(tc, dict):
+                                tool_call_ids.append(tc.get('id'))
+                            else:
+                                tool_call_ids.append(getattr(tc, 'id', None))
+                        
+                        if msg.tool_call_id in tool_call_ids:
+                            found_matching_ai = True
+                            break
+                    else:
+                        # Found an AI message without tool calls, stop looking
+                        break
+                
+                # If we encounter another tool message, continue looking backwards
+                elif hasattr(prev_msg, 'tool_call_id'):
+                    continue
+                else:
+                    # Found a non-AI, non-tool message, stop looking
+                    break
+            
+            # Only include the tool message if we found a matching AI message
+            if found_matching_ai:
+                cleaned.append(msg)
+    
     return cleaned
 
 
-# Routing functions
+# Routing functions - Simple, no complex logic
 def should_continue(state: ChatState) -> Literal["execute_tools", "final"]:
-    """Route based on pending tool calls"""
+    """Simple routing based on LLM's tool call decision"""
     return "execute_tools" if state.get("pending_tool_calls", False) else "final"
 
 def check_for_error(state: ChatState) -> Literal["error", "continue"]:
-    """Check for errors"""
+    """Simple error check"""
     return "error" if state.get("error") else "continue"
