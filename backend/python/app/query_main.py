@@ -8,6 +8,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.agents.router.router import router as tools_router
 from app.api.middlewares.auth import authMiddleware
 from app.api.routes.agent import router as agent_router
 from app.api.routes.chatbot import router as chatbot_router
@@ -282,6 +283,7 @@ app.include_router(chatbot_router, prefix="/api/v1")
 app.include_router(records_router, prefix="/api/v1")
 app.include_router(agent_router, prefix="/api/v1")
 app.include_router(health_router, prefix="/api/v1")
+app.include_router(tools_router, prefix="/api/v1")
 
 
 def run(host: str = "0.0.0.0", port: int = 8000, reload: bool = True) -> None:
