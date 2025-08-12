@@ -351,14 +351,14 @@ class DataSourceEntitiesProcessor:
             if existing_record_group is None:
                 record_group.id = str(uuid.uuid4())
                 record_group.org_id = self.org_id
-                await self.arango_service.batch_upsert_nodes(
-                    [record_group.to_arango_base_record_group()], collection=CollectionNames.RECORD_GROUPS.value, transaction=transaction
-                )
                 # Create a permission edge between the record group and the org if it doesn't exist
                 # Create a permission edge between the record group and the user if it doesn't exist
                 # Create a permission edge between the record group and the user group if it doesn't exist
                 # Create a permission edge between the record group and the org if it doesn't exist
                 # Create a edge between the record group and the app with sync status if it doesn't exist
+            else:
+                record_group.id = existing_record_group.id
+
             await self.arango_service.batch_upsert_nodes(
                 [record_group.to_arango_base_record_group()], collection=CollectionNames.RECORD_GROUPS.value, transaction=transaction
             )
