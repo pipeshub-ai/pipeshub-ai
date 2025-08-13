@@ -53,7 +53,10 @@ import {
 } from '../services/entity_event.service';
 import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck';
 
-const CONNECTORS = [{ key: 'googleWorkspace', name: 'Google Workspace' }];
+const CONNECTORS = [
+  { key: 'googleWorkspace', name: 'Google Workspace' },
+  { key: 'atlassian', name: 'Atlassian' },
+];
 const logger = Logger.getInstance({
   service: 'Connectors Routes',
 });
@@ -87,7 +90,7 @@ const oAuthConfigSchema = z.object({
 const oAuthValidationSchema = z.object({
   body: oAuthConfigSchema,
   query: z.object({
-    service: z.enum(['googleWorkspace']), // Enum validation
+    service: z.enum(['googleWorkspace', 'atlassian']), // Enum validation
   }),
   params: z.object({}),
   headers: z.object({}),
@@ -95,7 +98,7 @@ const oAuthValidationSchema = z.object({
 const ServiceValidationSchema = z.object({
   body: z.object({}),
   query: z.object({
-    service: z.enum(['googleWorkspace']), // Enum validation
+    service: z.enum(['googleWorkspace', 'atlassian']), // Enum validation
   }),
   params: z.object({}),
   headers: z.object({}),

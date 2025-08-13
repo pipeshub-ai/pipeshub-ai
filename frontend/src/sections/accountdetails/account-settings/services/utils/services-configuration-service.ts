@@ -181,7 +181,6 @@ export const updateArangoDBConfig = async (arangoDBConfig: ArangoDBConfig): Prom
  */
 export const updateKafkaConfig = async (kafkaConfig: KafkaConfig): Promise<any> => {
   const response = await axios.post(`${API_BASE_URL}/kafkaConfig`, kafkaConfig);
-  console.log(response);
   return response;
 };
 

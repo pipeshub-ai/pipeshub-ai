@@ -3,6 +3,7 @@ import type { Icon as IconifyIcon } from '@iconify/react';
 import { useRef, useState } from 'react';
 import closeIcon from '@iconify-icons/eva/close-outline';
 import googleIcon from '@iconify-icons/eva/google-outline';
+import atlassianIcon from '@iconify-icons/eva/globe-outline';
 
 import {
   Box,
@@ -21,6 +22,7 @@ import { Iconify } from 'src/components/iconify';
 import GoogleWorkSpaceConfigForm from './google-workspace-config-company-form';
 
 import type { GoogleWorkspaceConfigFormRef } from './google-workspace-config-company-form';
+import AtlassianConfigForm, { AtlassianConfigFormRef } from './atlassian-config-form';
 
 // Method configurations
 interface ConnectorConfigType {
@@ -36,6 +38,11 @@ const CONNECTOR_CONFIG: ConnectorConfigType = {
     icon: googleIcon,
     title: 'Google Workspace',
     color: '#4285F4',
+  },
+  atlassian: {
+    icon: atlassianIcon,
+    title: 'Atlassian',
+    color: '#0052CC',
   },
 };
 
@@ -65,6 +72,7 @@ const ConfigureConnectorDialog = ({
   const [isValid, setIsValid] = useState(false);
 
   const googleWorkspaceFormRef = useRef<GoogleWorkspaceConfigFormRef>(null);
+  const atlassianFormRef = useRef<AtlassianConfigFormRef>(null);
 
   // Get connector config if available
   const connectorConfig = connectorType ? CONNECTOR_CONFIG[connectorType] : null;
@@ -82,6 +90,9 @@ const ConfigureConnectorDialog = ({
     switch (connectorType) {
       case 'googleWorkspace':
         currentRef = googleWorkspaceFormRef;
+        break;
+      case 'atlassian':
+        currentRef = atlassianFormRef;
         break;
       default:
         currentRef = null;
@@ -178,6 +189,14 @@ const ConfigureConnectorDialog = ({
                   onSaveSuccess={handleFormSaveSuccess}
                   onFileRemoved={() => onFileRemoved('googleWorkspace')} //
                   ref={googleWorkspaceFormRef}
+                  isEnabled={isEnabled || false}
+                />
+              )}
+              {connectorType === 'atlassian' && (
+                <AtlassianConfigForm
+                  onValidationChange={handleValidationChange}
+                  onSaveSuccess={handleFormSaveSuccess}
+                  ref={atlassianFormRef}
                   isEnabled={isEnabled || false}
                 />
               )}

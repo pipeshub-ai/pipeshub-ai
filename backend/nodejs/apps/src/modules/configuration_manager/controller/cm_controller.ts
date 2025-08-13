@@ -1327,6 +1327,137 @@ export const getGoogleWorkspaceOauthConfig =
     }
   };
 
+  export const getAtlassianOauthConfig =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (req: AuthenticatedUserRequest|AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
+    try {
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const orgId = (req as AuthenticatedUserRequest).user?.orgId || (req as AuthenticatedServiceRequest).tokenPayload?.orgId;
+      if (!orgId) {
+        throw new BadRequestError('Organisaton not found');
+      } 
+      const encryptedAtlassianConfig = await keyValueStoreService.get<string>(
+        `${configPaths.connectors.atlassian.config}/${orgId}`,
+      );
+      if (encryptedAtlassianConfig) {
+        const atlassianConfig = JSON.parse(
+          EncryptionService.getInstance(
+            configManagerConfig.algorithm,
+            configManagerConfig.secretKey,  
+          ).decrypt(encryptedAtlassianConfig),
+        );
+        res.status(200).json(atlassianConfig).end();
+      } else {
+        res.status(200).json({}).end();
+      }
+    } catch (error: any) {
+      logger.error('Error getting Atlassian config', { error });
+      next(error);
+    }
+  }; 
+  
+  export const setAtlassianOauthConfig =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (req: AuthenticatedUserRequest|AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
+    try {
+      const { clientId, clientSecret } = req.body;
+      const orgId = (req as AuthenticatedUserRequest).user?.orgId || (req as AuthenticatedServiceRequest).tokenPayload?.orgId;
+      if (!orgId) {
+        throw new BadRequestError('Organisation not found');
+      }
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const existingAtlassianConfig = await keyValueStoreService.get<string>(
+        `${configPaths.connectors.atlassian.config}/${orgId}`,
+      );
+      if (existingAtlassianConfig) {
+        const atlassianConfig = JSON.parse(
+          EncryptionService.getInstance(
+            configManagerConfig.algorithm,
+            configManagerConfig.secretKey,  
+          ).decrypt(existingAtlassianConfig),
+        );
+        if (atlassianConfig.clientId != clientId || atlassianConfig.clientSecret != clientSecret) {
+          const encryptedAtlassianConfig = EncryptionService.getInstance(
+            configManagerConfig.algorithm,
+            configManagerConfig.secretKey,
+          ).encrypt(JSON.stringify({ clientId, clientSecret }));
+          await keyValueStoreService.set<string>(
+            `${configPaths.connectors.atlassian.config}/${orgId}`,
+            encryptedAtlassianConfig,
+          );
+        }
+      } else {
+        const encryptedAtlassianConfig = EncryptionService.getInstance(
+          configManagerConfig.algorithm,
+          configManagerConfig.secretKey,
+        ).encrypt(JSON.stringify({ clientId, clientSecret }));
+        await keyValueStoreService.set<string>(
+          `${configPaths.connectors.atlassian.config}/${orgId}`,
+          encryptedAtlassianConfig,
+        );
+      }
+      res.status(200).json({ message: 'Atlassian config created successfully' });
+    } catch (error: any) {
+      logger.error('Error creating Atlassian config', { error });
+      next(error);
+    }
+  };
+
+  export const getAtlassianCredentials =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (req: AuthenticatedUserRequest|AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
+    try {
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const orgId = (req as AuthenticatedUserRequest).user?.orgId || (req as AuthenticatedServiceRequest).tokenPayload?.orgId;
+      if (!orgId) {
+        throw new BadRequestError('Organisaton not found');
+      }
+      const encryptedAtlassianCredentials = await keyValueStoreService.get<string>(
+        `${configPaths.connectors.atlassian.credentials}/${orgId}`,
+      );
+      if (encryptedAtlassianCredentials) {
+        const atlassianCredentials = JSON.parse(
+          EncryptionService.getInstance(
+            configManagerConfig.algorithm,
+            configManagerConfig.secretKey,  
+          ).decrypt(encryptedAtlassianCredentials),
+        );
+        res.status(200).json(atlassianCredentials).end();
+      } else {
+        res.status(200).json({}).end();
+      }
+    } catch (error: any) {
+      logger.error('Error getting Atlassian credentials', { error });
+      next(error);
+    }
+  };
+
+  export const setAtlassianCredentials =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (req: AuthenticatedUserRequest|AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
+    try {
+      const credentials = req.body;
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const orgId = (req as AuthenticatedUserRequest).user?.orgId || (req as AuthenticatedServiceRequest).tokenPayload?.orgId;
+      if (!orgId) {
+        throw new BadRequestError('Organisaton not found');
+      }
+      // Todo: Do a health check for the credentials
+      const encryptedAtlassianCredentials = EncryptionService.getInstance(
+        configManagerConfig.algorithm,  
+        configManagerConfig.secretKey,
+      ).encrypt(JSON.stringify(credentials));
+      await keyValueStoreService.set<string>(
+        `${configPaths.connectors.atlassian.credentials}/${orgId}`,
+        encryptedAtlassianCredentials,
+      );
+      res.status(200).json({ message: 'Atlassian credentials created successfully' });
+    } catch (error: any) {
+      logger.error('Error creating Atlassian credentials', { error });
+      next(error);
+    }
+  };
+
 export const setSsoAuthConfig =
   (keyValueStoreService: KeyValueStoreService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {

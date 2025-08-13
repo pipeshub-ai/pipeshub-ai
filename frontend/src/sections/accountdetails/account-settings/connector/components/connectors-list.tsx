@@ -1,6 +1,7 @@
 import type { Icon as IconifyIcon } from '@iconify/react';
 
 import googleIcon from '@iconify-icons/mdi/google';
+import atlassianIcon from '@iconify-icons/eva/globe-2-outline';
 
 export interface ConnectorConfig {
   id: string;
@@ -28,5 +29,12 @@ export const CONNECTORS_LIST: ConnectorConfig[] = [
     description:
       'Integrate with Google Workspace for calendar, gmail, spreadsheets, drive and document sharing',
     color: '#4285F4',
+  },
+  {
+    id: 'atlassian',
+    icon: atlassianIcon,
+    title: 'Atlassian',
+    description: 'Integrate with Atlassian for Confluence and Jira',
+    color: '#0052CC',
   },
 ];

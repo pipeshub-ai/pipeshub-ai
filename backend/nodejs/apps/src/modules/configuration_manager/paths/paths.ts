@@ -12,6 +12,11 @@ export const configPaths = {
       },
       config: '/services/connectors/googleWorkspace/oauth/config',
     },
+    atlassian: {
+      base: '/services/connectors/atlassian/',
+      credentials: '/services/connectors/atlassian/credentials',
+      config: '/services/connectors/atlassian/oauth/config',
+    },
   },
   smtp: '/services/smtp',
   auth: {

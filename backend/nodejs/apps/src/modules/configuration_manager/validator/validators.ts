@@ -270,6 +270,13 @@ export const googleWorkspaceConfigSchema = z.object({
   }),
 });
 
+export const atlassianCredentialsSchema = z.object({
+  body: z.object({
+    clientId: z.string().min(1, { message: 'Atlassian client ID is required' }),
+    clientSecret: z.string().min(1, { message: 'Atlassian client Secret is required' }),
+  }),
+});
+
 // export const aiModelsConfigSchema = z.object({
 //   body: z
 //     .object({
