@@ -49,6 +49,8 @@ import {
   updateDefaultAIModel,
   getAIModelsProviders,
   getModelsByType,
+  getAtlassianOauthConfig,
+  setAtlassianOauthConfig,
 } from '../controller/cm_controller';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
@@ -75,6 +77,7 @@ import {
   deleteProviderSchema,
   addProviderRequestSchema,
   updateProviderRequestSchema,
+  atlassianCredentialsSchema,
 } from '../validator/validators';
 import { FileProcessorFactory } from '../../../libs/middlewares/file_processor/fp.factory';
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
@@ -172,6 +175,74 @@ export function createConfigurationManagerRouter(container: Container): Router {
       appConfig.communicationBackend,
       appConfig.scopedJwtSecret,
     ),
+  );
+
+  router.get(
+    '/internal/connectors/atlassian/config',
+    authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
+    metricsMiddleware(container),
+    (req: AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
+      if (!req.tokenPayload) {
+        throw new NotFoundError('User not found');
+      }
+      return getAtlassianOauthConfig(keyValueStoreService)(
+        req,
+        res,
+        next,
+      );
+    },
+  );
+
+  router.get(
+    '/connectors/atlassian/config',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+      if (!req.user) {
+        throw new NotFoundError('User not found');
+      }
+      return getAtlassianOauthConfig(keyValueStoreService)(
+        req,
+        res,
+        next,
+      );
+    },
+  );
+
+  router.post(
+    '/connectors/atlassian/config',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(atlassianCredentialsSchema),
+    (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+      if (!req.user) {
+        throw new NotFoundError('User not found');
+      }
+      return setAtlassianOauthConfig(keyValueStoreService)(
+        req,
+        res,
+        next,
+      );
+    },
+  );
+
+  router.post(
+    '/internal/connectors/atlassian/config',
+    authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(atlassianCredentialsSchema),
+    (req: AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
+      if (!req.tokenPayload) {
+        throw new NotFoundError('User not found');
+      }
+      return setAtlassianOauthConfig(keyValueStoreService)(
+        req,
+        res,
+        next,
+      );
+    },
   );
 
   /**

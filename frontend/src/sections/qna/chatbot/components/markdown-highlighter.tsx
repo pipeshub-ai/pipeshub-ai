@@ -1051,7 +1051,6 @@ const MarkdownViewer: React.FC<MarkdownViewerProps> = ({
       }
 
       if (!highlightingInProgressRef.current) {
-        console.log('Applying highlights...');
         highlightingInProgressRef.current = true;
 
         clearHighlights();

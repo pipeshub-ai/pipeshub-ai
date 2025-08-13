@@ -866,7 +866,6 @@ const TextViewer: React.FC<TextViewerProps> = ({
       }
 
       if (!highlightingInProgressRef.current) {
-        console.log('Applying highlights...');
         highlightingInProgressRef.current = true;
 
         clearHighlights();

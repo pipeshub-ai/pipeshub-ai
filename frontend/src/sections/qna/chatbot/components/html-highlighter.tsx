@@ -1100,7 +1100,6 @@ const HtmlViewer: React.FC<HtmlViewerProps> = ({
       }
 
       if (!highlightingInProgressRef.current) {
-        console.log('Applying highlights...');
         highlightingInProgressRef.current = true;
 
         clearHighlights();

@@ -52,7 +52,6 @@ export class MigrationService {
 
     //  migrate llm configs
     const llmConfigs = aiModels['llm'];
-    console.log(llmConfigs);
     let isDefault = true;
     for (const llmConfig of llmConfigs) {
       if (!llmConfig.modelKey) {
@@ -65,7 +64,6 @@ export class MigrationService {
     }
 
     const embeddingConfigs = aiModels['embedding'];
-    console.log(embeddingConfigs);
     isDefault = true;
     for (const embeddingConfig of embeddingConfigs) {
       if (!embeddingConfig.modelKey) {

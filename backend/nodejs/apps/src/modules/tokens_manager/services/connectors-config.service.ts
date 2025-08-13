@@ -14,6 +14,7 @@ import {
   GOOGLE_WORKSPACE_CONFIG_PATH,
   GOOGLE_WORKSPACE_CREDENTIALS_PATH,
   GOOGLE_WORKSPACE_INDIVIDUAL_CREDENTIALS_PATH,
+  ATLASIAN_OAUTH_CONFIG_PATH,
 } from '../consts/constants';
 import { generateFetchConfigToken } from '../utils/generateToken';
 
@@ -147,6 +148,31 @@ export const getGoogleWorkspaceConfig = async (
   return response;
 };
 
+export const getAtlassianOauthConfig = async (
+  req: AuthenticatedUserRequest,
+  url: string,
+  scopedJwtSecret: string,
+): Promise<ConfigurationManagerResponse> => {
+  if (!req.user) {
+    throw new NotFoundError('User Not Found');
+  }
+  const configurationManagerCommandOptions: ConfigurationManagerCommandOptions =
+    {
+      uri: `${url}/${ATLASIAN_OAUTH_CONFIG_PATH}`,
+      method: HttpMethod.GET,
+      headers: {
+        Authorization: `Bearer ${await generateFetchConfigToken(req.user, scopedJwtSecret)}`,
+        'Content-Type': 'application/json',
+      },
+    };
+
+  const cmCommand = new ConfigurationManagerServiceCommand(
+    configurationManagerCommandOptions,
+  );
+  const response = await cmCommand.execute();
+  return response;
+};
+
 export const setGoogleWorkspaceConfig = async (
   req: AuthenticatedUserRequest,
   url: string,
@@ -158,6 +184,32 @@ export const setGoogleWorkspaceConfig = async (
   const configurationManagerCommandOptions: ConfigurationManagerCommandOptions =
     {
       uri: `${url}/${GOOGLE_WORKSPACE_CONFIG_PATH}`,
+      method: HttpMethod.POST,
+      headers: {
+        Authorization: `Bearer ${await generateFetchConfigToken(req.user, scopedJwtSecret)}`,
+        'Content-Type': 'application/json',
+      },
+      body: req.body,
+    };
+
+  const cmCommand = new ConfigurationManagerServiceCommand(
+    configurationManagerCommandOptions,
+  );
+  const response = await cmCommand.execute();
+  return response;
+};
+
+export const setAtlassianOauthConfig = async (
+  req: AuthenticatedUserRequest,
+  url: string,
+  scopedJwtSecret: string,
+): Promise<ConfigurationManagerResponse> => {
+  if (!req.user) {
+    throw new NotFoundError('User Not Found');
+  }
+  const configurationManagerCommandOptions: ConfigurationManagerCommandOptions =
+    {
+      uri: `${url}/${ATLASIAN_OAUTH_CONFIG_PATH}`,
       method: HttpMethod.POST,
       headers: {
         Authorization: `Bearer ${await generateFetchConfigToken(req.user, scopedJwtSecret)}`,
