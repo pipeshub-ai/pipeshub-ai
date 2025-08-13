@@ -31,7 +31,7 @@ from app.models.users import User
 RESOURCE_URL = "https://api.atlassian.com/oauth/token/accessible-resources"
 BASE_URL = "https://api.atlassian.com/ex/jira"
 
-def adf_to_text(adf_content: Any) -> str:
+def adf_to_text(adf_content: Dict[str, Any]) -> str:
     """
     Convert Atlassian Document Format (ADF) to plain text.
     Args:
