@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass
 from logging import Logger
 from typing import Any, Dict, List, Optional, Tuple
@@ -177,7 +178,6 @@ def adf_to_text(adf_content: Dict[str, Any]) -> str:
     result = "".join(text_parts)
 
     # Clean up multiple consecutive newlines
-    import re
     result = re.sub(r'\n{3,}', '\n\n', result)
 
     return result.strip()
@@ -305,11 +305,6 @@ class JiraClient:
 
         issue_records = []
         for issue in issues:
-            # print("--------------------------------")
-            # print("--------------------------------")
-            # print(json.dumps(issue, indent=4), "issue")
-            # print("--------------------------------")
-            # print("--------------------------------")
             issue_id = f"project-{project_key}/issue-{issue.get('id')}"
             fields = issue.get("fields", {})
             issue_name = fields.get("summary")

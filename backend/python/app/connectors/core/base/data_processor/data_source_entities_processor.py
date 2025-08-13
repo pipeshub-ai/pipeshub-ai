@@ -220,11 +220,6 @@ class DataSourceEntitiesProcessor:
             "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
         }
 
-        print("--------------------------------")
-        print("--------------------------------")
-        print(record.to_arango_base_record(), "record")
-        print("--------------------------------")
-        print("--------------------------------")
         # Upsert base record
         await self.arango_service.batch_upsert_nodes(
             [record.to_arango_base_record()],
@@ -232,11 +227,6 @@ class DataSourceEntitiesProcessor:
             transaction=transaction
         )
         # Upsert specific record type if it has a specific method
-        print("--------------------------------")
-        print("--------------------------------")
-        print(record.to_arango_record(), "record")
-        print("--------------------------------")
-        print("--------------------------------")
         await self.arango_service.batch_upsert_nodes(
             [record.to_arango_record()],
             collection=config["collection"],
@@ -394,7 +384,6 @@ class DataSourceEntitiesProcessor:
             else:
                 record_group.id = existing_record_group.id
 
-            print(record_group.to_arango_base_record_group(), "record_group")
             await self.arango_service.batch_upsert_nodes(
                 [record_group.to_arango_base_record_group()], collection=CollectionNames.RECORD_GROUPS.value, transaction=transaction
             )
