@@ -344,18 +344,20 @@ async def download_file(
         if not record:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
-        file_id = record.get("externalRecordId")
+        external_record_id = record.get("externalRecordId")
 
-        if org["accountType"] in [AccountType.ENTERPRISE.value, AccountType.BUSINESS.value]:
-            # Use service account credentials
-            creds = await get_service_account_credentials(org_id, user_id, logger, arango_service, google_token_handler, request.app.container)
-        else:
-            # Individual account - use stored OAuth credentials
-            creds = await get_user_credentials(org_id, user_id, logger, google_token_handler, request.app.container)
+        if connector.lower() == Connectors.GOOGLE_DRIVE.value.lower() or connector.lower() == Connectors.GOOGLE_MAIL.value.lower():
+            if org["accountType"] in [AccountType.ENTERPRISE.value, AccountType.BUSINESS.value]:
+                # Use service account credentials
+                creds = await get_service_account_credentials(org_id, user_id, logger, arango_service, google_token_handler, request.app.container)
+            else:
+                # Individual account - use stored OAuth credentials
+                creds = await get_user_credentials(org_id, user_id, logger, google_token_handler, request.app.container)
 
         # Download file based on connector type
         try:
             if connector.lower() == Connectors.GOOGLE_DRIVE.value.lower():
+                file_id = external_record_id
                 logger.info(f"Downloading Drive file: {file_id}")
                 # Build the Drive service
                 drive_service = build("drive", "v3", credentials=creds)
@@ -489,6 +491,7 @@ async def download_file(
                 )
 
             elif connector.lower() == Connectors.GOOGLE_MAIL.value.lower():
+                file_id = external_record_id
                 logger.info(f"Downloading Gmail attachment for record_id: {record_id}")
                 gmail_service = build("gmail", "v1", credentials=creds)
 
@@ -685,6 +688,21 @@ async def download_file(
                 return StreamingResponse(
                     attachment_stream(), media_type="application/octet-stream"
                 )
+
+            elif connector.lower() == Connectors.CONFLUENCE.value.lower():
+                from app.connectors.sources.atlassian.confluence.confluence_cloud import (
+                    ConfluenceClient,
+                )
+                from app.connectors.sources.atlassian.core.oauth import (
+                    AtlassianOAuthProvider,
+                )
+                creds = await config_service.get_config(f"{AtlassianOAuthProvider.get_name()}/{org_id}")
+                confluence_client = ConfluenceClient(logger, org_id, creds)
+                await confluence_client.initialize()
+                html_content = await confluence_client.fetch_page_content(external_record_id)
+                return StreamingResponse(
+                    iter([html_content]), media_type=MimeTypes.HTML.value, headers=headers
+                )
             else:
                 raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Invalid connector type")
 
@@ -754,20 +772,23 @@ async def stream_record(
         if not record:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
-        file_id = record.get("externalRecordId")
+        external_record_id = record.get("externalRecordId")
         connector = record.get("connectorName")
         recordType = record.get("recordType")
 
-        # Different auth handling based on account type
-        if org["accountType"] in [AccountType.ENTERPRISE.value, AccountType.BUSINESS.value]:
-            # Use service account credentials
-            creds = await get_service_account_credentials(org_id, user_id, logger, arango_service, google_token_handler, request.app.container)
-        else:
-            # Individual account - use stored OAuth credentials
-            creds = await get_user_credentials(org_id, user_id,logger, google_token_handler, request.app.container)
+
+        if connector.lower() == Connectors.GOOGLE_DRIVE.value.lower() or connector.lower() == Connectors.GOOGLE_MAIL.value.lower():
+            # Different auth handling based on account type
+            if org["accountType"] in [AccountType.ENTERPRISE.value, AccountType.BUSINESS.value]:
+                # Use service account credentials
+                creds = await get_service_account_credentials(org_id, user_id, logger, arango_service, google_token_handler, request.app.container)
+            else:
+                # Individual account - use stored OAuth credentials
+                creds = await get_user_credentials(org_id, user_id,logger, google_token_handler, request.app.container)
         # Download file based on connector type
         try:
             if connector.lower() == Connectors.GOOGLE_DRIVE.value.lower():
+                file_id = external_record_id
                 logger.info(f"Downloading Drive file: {file_id}")
                 drive_service = build("drive", "v3", credentials=creds)
                 file_name = record.get("recordName", "")
@@ -874,6 +895,7 @@ async def stream_record(
                 )
 
             elif connector.lower() == Connectors.GOOGLE_MAIL.value.lower():
+                file_id = external_record_id
                 logger.info(
                     f"Handling Gmail request for record_id: {record_id}, type: {recordType}"
                 )
@@ -1276,6 +1298,20 @@ async def stream_record(
                             detail="Failed to download file from both Gmail and Drive",
                         )
 
+            elif connector.lower() == Connectors.CONFLUENCE.value.lower():
+                from app.connectors.sources.atlassian.confluence.confluence_cloud import (
+                    ConfluenceClient,
+                )
+                from app.connectors.sources.atlassian.core.oauth import (
+                    AtlassianOAuthProvider,
+                )
+                creds = await config_service.get_config(f"{AtlassianOAuthProvider.get_name()}/{org_id}")
+                confluence_client = ConfluenceClient(logger, org_id, creds)
+                await confluence_client.initialize()
+                html_content = await confluence_client.fetch_page_content(external_record_id)
+                return StreamingResponse(
+                    iter([html_content]), media_type=MimeTypes.HTML.value, headers=headers
+                )
             else:
                 raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Invalid connector type")
 

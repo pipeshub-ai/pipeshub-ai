@@ -272,6 +272,19 @@ mail_record_schema = {
     "message": "Document does not match the mail record schema.",
 }
 
+webpage_record_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "domain": {"type": ["string", "null"]},
+        },
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the webpage record schema.",
+}
+
 record_group_schema = {
     "rule": {
         "type": "object",

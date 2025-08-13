@@ -1,11 +1,6 @@
 import json
 from typing import List, Optional
 
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import Resource
-
-from app.agents.actions.google.auth.auth import gmail_auth
-from app.agents.actions.google.gmail.config import GoogleGmailConfig
 from app.agents.actions.google.gmail.utils import GmailUtils
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
@@ -14,19 +9,16 @@ from app.agents.tools.models import ToolParameter
 
 class Gmail:
     """Gmail tool exposed to the agents"""
-    def __init__(self, config: GoogleGmailConfig) -> None:
+    def __init__(self, client: object) -> None:
         """Initialize the Gmail tool"""
         """
         Args:
-            config: Gmail configuration
+            client: Authenticated Gmail client
         Returns:
             None
         """
-        self.config = config
-        self.service: Optional[Resource] = None
-        self.credentials: Optional[Credentials] = None
+        self.client = client
 
-    @gmail_auth()
     @tool(
         app_name="gmail",
         tool_name="reply",
@@ -122,7 +114,7 @@ class Gmail:
                 message_id,
             )
 
-            message = self.service.users().messages().send( # type: ignore
+            message = self.client.users().messages().send( # type: ignore
                 userId="me",
                 body=message_body,
             ).execute() # type: ignore
@@ -133,7 +125,6 @@ class Gmail:
         except Exception as e:
             return False, json.dumps({"error": str(e)})
 
-    @gmail_auth()
     @tool(
         app_name="gmail",
         tool_name="draft_email",
@@ -211,7 +202,7 @@ class Gmail:
                 mail_attachments,
             )
 
-            draft = self.service.users().drafts().create( # type: ignore
+            draft = self.client.users().drafts().create( # type: ignore
                 userId="me",
                 body={"message": message_body},
             ).execute() # type: ignore
@@ -222,7 +213,6 @@ class Gmail:
         except Exception as e:
             return False, json.dumps({"error": str(e)})
 
-    @gmail_auth()
     @tool(
         app_name="gmail",
         tool_name="send_email",
@@ -318,7 +308,7 @@ class Gmail:
                 message_id,
             )
 
-            message = self.service.users().messages().send( # type: ignore
+            message = self.client.users().messages().send( # type: ignore
                 userId="me",
                 body=message_body,
             ).execute() # type: ignore
@@ -329,7 +319,6 @@ class Gmail:
         except Exception as e:
             return False, json.dumps({"error": str(e)})
 
-    @gmail_auth()
     @tool(
         app_name="gmail",
         tool_name="search_emails",
@@ -370,7 +359,7 @@ class Gmail:
             tuple[bool, str]: True if the emails are searched, False otherwise
         """
         try:
-            messages = self.service.users().messages().list( # type: ignore
+            messages = self.client.users().messages().list( # type: ignore
                 userId="me",
                 q=query,
                 maxResults=max_results,
@@ -380,7 +369,6 @@ class Gmail:
         except Exception as e:
             return False, json.dumps({"error": str(e)})
 
-    @gmail_auth()
     @tool(
         app_name="gmail",
         tool_name="get_email_details",
@@ -405,7 +393,7 @@ class Gmail:
             tuple[bool, str]: True if the email details are retrieved, False otherwise
         """
         try:
-            message = self.service.users().messages().get( # type: ignore
+            message = self.client.users().messages().get( # type: ignore
                 userId="me",
                 id=message_id,
                 format="full",
@@ -414,7 +402,6 @@ class Gmail:
         except Exception as e:
             return False, json.dumps({"error": str(e)})
 
-    @gmail_auth()
     @tool(
         app_name="gmail",
         tool_name="get_email_attachments",
@@ -439,7 +426,7 @@ class Gmail:
             tuple[bool, str]: True if the email attachments are retrieved, False otherwise
         """
         try:
-            message = self.service.users().messages().get( # type: ignore
+            message = self.client.users().messages().get( # type: ignore
                 userId="me",
                 id=message_id,
                 format="full",

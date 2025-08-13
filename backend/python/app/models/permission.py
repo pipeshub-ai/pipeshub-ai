@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -20,10 +20,11 @@ class EntityType(str, Enum):
     ANYONE_WITH_LINK = "ANYONE_WITH_LINK"
 
 class Permission(BaseModel):
-    external_id: str
     email: str
     type: PermissionType
     entity_type: EntityType
+    external_id: Optional[str] = None
+
     created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the permission creation")
     updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the permission update")
 

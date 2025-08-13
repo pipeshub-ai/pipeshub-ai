@@ -24,7 +24,6 @@ class User(Node):
             "last_name": self.last_name,
             "full_name": self.full_name,
             "email": self.email,
-            "source_user_id": self.source_user_id,
             "title": self.title,
             "is_active": self.is_active,
             "org_id": self.org_id,
@@ -35,8 +34,7 @@ class User(Node):
         return {
             "email": self.email,
             "fullName": self.full_name,
-            "orgId": self.org_id,
-            "userId": self.user_id
+            "isActive": self.is_active,
         }
 
     def validate(self) -> bool:

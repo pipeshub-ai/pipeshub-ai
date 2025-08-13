@@ -5,7 +5,7 @@ from typing import Optional
 import uvicorn
 from arango import ArangoClient
 from fastapi import APIRouter, FastAPI, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, Response
 
 from app.config.configuration_service import ConfigurationService
 from app.config.providers.in_memory_store import InMemoryKeyValueStore
@@ -45,14 +45,14 @@ async def test_run() -> None:
 
     app.connector = confluence_connector
 
-router = APIRouter(prefix="/oauth")
+router = APIRouter()
 
-@router.get("/atlassian/start")
+@router.get("/oauth/atlassian/start")
 async def oauth_start(return_to: Optional[str] = None) -> RedirectResponse:
     url = await app.connector.provider.start_authorization(return_to=return_to, use_pkce=True)
     return RedirectResponse(url)
 
-@router.get("/atlassian/callback")
+@router.get("/oauth/atlassian/callback")
 async def oauth_callback(request: Request) -> RedirectResponse:
     error = request.query_params.get("error")
     if error:
@@ -67,6 +67,12 @@ async def oauth_callback(request: Request) -> RedirectResponse:
     # Optionally pull saved return_to from state store before deletion,
     # or stash it in a short-lived cookie at /start.
     return RedirectResponse(url="http://localhost:3001")
+
+@router.get("/api/v1/org/{org_id}/page/{page_id}/fetch")
+async def get_page(org_id: str, page_id: str) -> Response:
+    confluence_client = await app.connector.get_confluence_client(org_id)
+    page_content = await confluence_client.fetch_page_content(page_id)
+    return Response(content=page_content, media_type="text/html")
 
 app.include_router(router)
 

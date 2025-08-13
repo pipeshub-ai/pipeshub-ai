@@ -156,6 +156,10 @@ class AtlassianOAuthProvider(OAuthProvider):
         super().__init__(config, key_value_store, base_arango_service)
         self._accessible_resources: Optional[List[AtlassianCloudResource]] = None
 
+    @staticmethod
+    def get_name() -> str:
+        return "atlassian"
+
     def get_provider_name(self) -> str:
         return "atlassian"
 
@@ -171,7 +175,9 @@ class AtlassianOAuthProvider(OAuthProvider):
     async def handle_callback(self, code: str, state: str) -> OAuthToken:
         token = await super().handle_callback(code, state, save_token=False)
         identity = await self.get_identity(token)
-        email = identity['email']
+        email = identity.get('email')
+        if not email:
+            raise Exception("User email not found in Atlassian identity response")
         user = await self.base_arango_service.get_user_by_email(email)
         if not user:
             raise Exception(f"User {email} not found")

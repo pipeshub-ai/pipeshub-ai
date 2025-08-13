@@ -32,6 +32,7 @@ from app.schema.arango.documents import (
     record_group_schema,
     record_schema,
     user_schema,
+    webpage_record_schema,
 )
 from app.schema.arango.edges import (
     basic_edge_schema,
@@ -52,6 +53,7 @@ NODE_COLLECTIONS = [
     (CollectionNames.FILES.value, file_record_schema),
     (CollectionNames.LINKS.value, None),
     (CollectionNames.MAILS.value, mail_record_schema),
+    (CollectionNames.WEBPAGES.value, webpage_record_schema),
     (CollectionNames.PEOPLE.value, None),
     (CollectionNames.USERS.value, user_schema),
     (CollectionNames.GROUPS.value, None),
