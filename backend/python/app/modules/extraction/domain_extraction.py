@@ -574,6 +574,7 @@ class DomainExtractor:
                     )
 
             # Handle summary document
+            document_id = None
             if metadata.summary:
                 document_id = await self.save_summary_to_storage(org_id, record_id,virtual_record_id, metadata.summary)
                 if document_id is None:

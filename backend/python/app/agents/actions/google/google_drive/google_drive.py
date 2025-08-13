@@ -8,7 +8,6 @@ from app.agents.tools.models import ToolParameter
 
 logger = logging.getLogger(__name__)
 
-
 class GoogleDrive:
     """Google Drive tool exposed to the agents"""
     def __init__(self, client: object) -> None:
@@ -207,7 +206,7 @@ class GoogleDrive:
             tuple[bool, str]: True if the file is deleted, False otherwise
         """
         try:
-            self.service.files().delete(fileId=file_id).execute() # type: ignore
+            self.client.files().delete(fileId=file_id).execute() # type: ignore
             return True, json.dumps({
                 "message": f"File {file_id} deleted successfully"
             })
@@ -236,7 +235,7 @@ class GoogleDrive:
             tuple[bool, str]: True if the file details are retrieved, False otherwise
         """
         try:
-            file = self.service.files().get(fileId=file_id).execute() # type: ignore
+            file = self.client.files().get(fileId=file_id).execute() # type: ignore
             return True, json.dumps({
                 "file_id": file.get("id", ""),
                 "file_name": file.get("name", ""),

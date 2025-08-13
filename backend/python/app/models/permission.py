@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -20,7 +20,7 @@ class EntityType(str, Enum):
     ANYONE_WITH_LINK = "ANYONE_WITH_LINK"
 
 class Permission(BaseModel):
-    external_id: str
+    external_id: Optional[str] = None
     email: str
     type: PermissionType
     entity_type: EntityType

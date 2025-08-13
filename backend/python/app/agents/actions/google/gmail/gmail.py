@@ -447,3 +447,42 @@ class Gmail:
         except Exception as e:
             return False, json.dumps({"error": str(e)})
 
+    @tool(
+        app_name="gmail",
+        tool_name="download_email_attachment",
+        parameters=[
+            ToolParameter(
+                name="message_id",
+                type=ParameterType.STRING,
+                description="The ID of the email to download the attachment for",
+                required=True
+            ),
+            ToolParameter(
+                name="attachment_id",
+                type=ParameterType.STRING,
+                description="The ID of the attachment to download",
+                required=True
+            )
+        ]
+    )
+    def download_email_attachment(
+        self,
+        message_id: str,
+        attachment_id: str,
+    ) -> tuple[bool, str]:
+        """Download an email attachment
+        Args:
+            message_id: The ID of the email
+            attachment_id: The ID of the attachment
+        Returns:
+            tuple[bool, str]: True if the attachment is downloaded, False otherwise
+        """
+        try:
+            attachment = self.client.users().messages().attachments().get( # type: ignore
+                userId="me",
+                messageId=message_id,
+                id=attachment_id,
+            ).execute() # type: ignore
+            return True, json.dumps(attachment)
+        except Exception as e:
+            return False, json.dumps({"error": str(e)})
