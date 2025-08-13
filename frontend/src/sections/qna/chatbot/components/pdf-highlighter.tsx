@@ -146,7 +146,7 @@ const processHighlight = (citation: DocumentContent): HighlightType | null => {
         text: '',
         emoji: '',
       },
-      id: citation.metadata._id || citation.metadata._id || getNextId(),
+      id: citation.metadata._id || getNextId(),
     };
   } catch (error) {
     console.error('Error processing highlight:', error);
@@ -389,6 +389,7 @@ const PdfHighlighterComp = ({
           .filter((citation) => citation.highlight);
 
         setProcessedCitations(processed);
+        console.log("processed",processed)
         setHighlights(processed.map((c) => c.highlight).filter(Boolean) as HighlightType[]);
       } else {
         setProcessedCitations([]);

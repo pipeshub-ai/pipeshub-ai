@@ -66,6 +66,22 @@ export function createConversationalRouter(container: Container): Router {
     createConversation(appConfig),
   );
 
+    /**
+   * @route POST /api/v1/conversations
+   * @desc Create a new conversation with initial query
+   * @access Private
+   * @body {
+   *   query: string
+   * }
+   */
+    router.post(
+      '/internal/create',
+      authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
+      metricsMiddleware(container),
+      ValidationMiddleware.validate(enterpriseSearchCreateSchema),
+      createConversation(appConfig),
+    );
+
   /**
    * @route POST /api/v1/conversations/stream
    * @desc Stream chat events from AI backend
@@ -96,6 +112,23 @@ export function createConversationalRouter(container: Container): Router {
   router.post(
     '/:conversationId/messages',
     authMiddleware.authenticate,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(addMessageParamsSchema),
+    addMessage(appConfig),
+  );
+
+   /**
+   * @route POST /api/v1/conversations/:conversationId/messages
+   * @desc Add a new message to existing conversation
+   * @access Private
+   * @param {string} conversationId - Conversation ID
+   * @body {
+   *   query: string
+   * }
+   */
+   router.post(
+    '/internal/:conversationId/messages',
+    authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(addMessageParamsSchema),
     addMessage(appConfig),

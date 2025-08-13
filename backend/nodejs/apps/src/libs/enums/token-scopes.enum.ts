@@ -5,6 +5,7 @@ export const TokenScopes = Object.freeze({
   USER_LOOKUP: 'user:lookup',
   TOKEN_REFRESH: 'token:refresh',
   STORAGE_TOKEN: 'storage:token',
+  CONVERSATION_CREATE: 'conversation:create',
 } as const);
 
 // Create a type for the TokenScopes keys
