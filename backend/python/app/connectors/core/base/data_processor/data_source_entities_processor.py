@@ -330,7 +330,7 @@ class DataSourceEntitiesProcessor:
 
             if records_to_publish:
                 # Send a single message with all the records
-                 for record in records_to_publish:
+                for record in records_to_publish:
                     await self.messaging_producer.send_message(
                             "record-events",
                             {"eventType": "newRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": record.to_kafka_record()},
