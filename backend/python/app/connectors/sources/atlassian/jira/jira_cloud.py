@@ -198,7 +198,7 @@ class JiraClient:
         self.org_id = org_id
         self.token = token
         self.base_url = BASE_URL
-        self.session = aiohttp.ClientSession()
+        self.session = None
         self.accessible_resources = None
         self.cloud_id = None
 
