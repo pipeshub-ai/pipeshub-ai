@@ -189,6 +189,9 @@ class EventProcessor:
             connector = event_data.get("connectorName", "")
             extension = event_data.get("extension", "unknown")
             mime_type = event_data.get("mimeType", "unknown")
+            origin = event_data.get("origin", "unknown")
+            record_type = event_data.get("recordType", "unknown")
+            record_name = event_data.get("recordName", f"Untitled-{record_id}")
 
             if extension is None and mime_type != "text/gmail_content":
                 extension = event_data["recordName"].split(".")[-1]
@@ -196,7 +199,7 @@ class EventProcessor:
             if mime_type == "text/gmail_content":
                 self.logger.info("🚀 Processing Gmail Message")
                 result = await self.processor.process_gmail_message(
-                    recordName=f"Record-{record_id}",
+                    recordName=record_name,
                     recordId=record_id,
                     version=record_version,
                     source=connector,
@@ -338,9 +341,23 @@ class EventProcessor:
                 )
                 return result
 
+            if mime_type == MimeTypes.HTML.value:
+                result = await self.processor.process_html_document(
+                    recordName=record_name,
+                    recordId=record_id,
+                    version=record_version,
+                    source=connector,
+                    orgId=org_id,
+                    html_content=file_content,
+                    virtual_record_id = virtual_record_id,
+                    origin = origin,
+                    recordType = record_type
+                )
+                return result
+
             if extension == ExtensionTypes.PDF.value:
                 result = await self.processor.process_pdf_document(
-                    recordName=f"Record-{record_id}",
+                    recordName=record_name,
                     recordId=record_id,
                     version=record_version,
                     source=connector,
@@ -351,7 +368,7 @@ class EventProcessor:
 
             elif extension == ExtensionTypes.DOCX.value:
                 result = await self.processor.process_docx_document(
-                    recordName=f"Record-{record_id}",
+                    recordName=record_name,
                     recordId=record_id,
                     version=record_version,
                     source=connector,
@@ -362,7 +379,7 @@ class EventProcessor:
 
             elif extension == ExtensionTypes.DOC.value:
                 result = await self.processor.process_doc_document(
-                    recordName=f"Record-{record_id}",
+                    recordName=record_name,
                     recordId=record_id,
                     version=record_version,
                     source=connector,
@@ -372,7 +389,7 @@ class EventProcessor:
                 )
             elif extension == ExtensionTypes.XLSX.value:
                 result = await self.processor.process_excel_document(
-                    recordName=f"Record-{record_id}",
+                    recordName=record_name,
                     recordId=record_id,
                     version=record_version,
                     source=connector,
@@ -382,7 +399,7 @@ class EventProcessor:
                 )
             elif extension == ExtensionTypes.XLS.value:
                 result = await self.processor.process_xls_document(
-                    recordName=f"Record-{record_id}",
+                    recordName=record_name,
                     recordId=record_id,
                     version=record_version,
                     source=connector,
@@ -392,7 +409,7 @@ class EventProcessor:
                 )
             elif extension == ExtensionTypes.CSV.value:
                 result = await self.processor.process_csv_document(
-                    recordName=f"Record-{record_id}",
+                    recordName=record_name,
                     recordId=record_id,
                     version=record_version,
                     source=connector,
@@ -403,18 +420,20 @@ class EventProcessor:
 
             elif extension == ExtensionTypes.HTML.value:
                 result = await self.processor.process_html_document(
-                    recordName=f"Record-{record_id}",
+                    recordName=record_name,
                     recordId=record_id,
                     version=record_version,
                     source=connector,
                     orgId=org_id,
                     html_content=file_content,
-                    virtual_record_id = virtual_record_id
+                    virtual_record_id = virtual_record_id,
+                    origin=connector,
+                    recordType=record_type
                 )
 
             elif extension == ExtensionTypes.PPTX.value:
                 result = await self.processor.process_pptx_document(
-                    recordName=f"Record-{record_id}",
+                    recordName=record_name,
                     recordId=record_id,
                     version=record_version,
                     source=connector,
@@ -425,7 +444,7 @@ class EventProcessor:
 
             elif extension == ExtensionTypes.PPT.value:
                 result = await self.processor.process_ppt_document(
-                    recordName=f"Record-{record_id}",
+                    recordName=record_name,
                     recordId=record_id,
                     version=record_version,
                     source=connector,
@@ -436,7 +455,7 @@ class EventProcessor:
 
             elif extension == ExtensionTypes.MD.value:
                 result = await self.processor.process_md_document(
-                    recordName=f"Record-{record_id}",
+                    recordName=record_name,
                     recordId=record_id,
                     version=record_version,
                     source=connector,
@@ -447,7 +466,7 @@ class EventProcessor:
 
             elif extension == ExtensionTypes.MDX.value:
                 result = await self.processor.process_mdx_document(
-                    recordName=f"Record-{record_id}",
+                    recordName=record_name,
                     recordId=record_id,
                     version=record_version,
                     source=connector,
@@ -458,7 +477,7 @@ class EventProcessor:
 
             elif extension == ExtensionTypes.TXT.value:
                 result = await self.processor.process_txt_document(
-                    recordName=f"Record-{record_id}",
+                    recordName=record_name,
                     recordId=record_id,
                     version=record_version,
                     source=connector,
