@@ -20,9 +20,9 @@ from app.connectors.sources.google.common.scopes import (
 )
 
 try:
-    from google.oauth2 import service_account
-    from google.oauth2.credentials import Credentials
-    from googleapiclient.discovery import build
+    from google.oauth2 import service_account  # type: ignore
+    from google.oauth2.credentials import Credentials  # type: ignore
+    from googleapiclient.discovery import build  # type: ignore
 except ImportError:
     print("Google API client libraries not found. Please install them using 'pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib'")
     raise

@@ -8,7 +8,6 @@ from app.agents.tools.models import ToolParameter
 
 logger = logging.getLogger(__name__)
 
-
 class GoogleDrive:
     """Google Drive tool exposed to the agents"""
     def __init__(self, client: object) -> None:
