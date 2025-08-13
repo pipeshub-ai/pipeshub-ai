@@ -261,10 +261,16 @@ class WebpageRecord(Record):
             "recordName": self.record_name,
             "recordType": self.record_type.value,
             "mimeType": self.mime_type,
+            "version": self.version,
+            "origin": self.origin,
+            "connectorName": self.connector_name,
+            "webUrl": self.weburl,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
             "sourceCreatedAtTimestamp": self.source_created_at,
             "sourceLastModifiedTimestamp": self.source_updated_at,
+            "signedUrl": self.signed_url,
+            "signedUrlRoute": self.fetch_signed_url,
         }
 
     def to_arango_record(self) -> Dict:

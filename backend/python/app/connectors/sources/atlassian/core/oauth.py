@@ -156,6 +156,10 @@ class AtlassianOAuthProvider(OAuthProvider):
         super().__init__(config, key_value_store, base_arango_service)
         self._accessible_resources: Optional[List[AtlassianCloudResource]] = None
 
+    @staticmethod
+    def get_name() -> str:
+        return "atlassian"
+
     def get_provider_name(self) -> str:
         return "atlassian"
 

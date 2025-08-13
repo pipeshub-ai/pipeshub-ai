@@ -21,7 +21,9 @@ from app.connectors.sources.atlassian.core.oauth import (
     AtlassianOAuthProvider,
     AtlassianScope,
 )
-from app.models.entities import RecordGroupType, RecordType, User, WebpageRecord
+from app.models.entities import RecordGroupType, RecordType, WebpageRecord
+from app.models.permission import EntityType, Permission, PermissionType
+from app.models.users import User
 
 RESOURCE_URL = "https://api.atlassian.com/oauth/token/accessible-resources"
 BASE_URL = "https://api.atlassian.com/ex/confluence"
@@ -36,8 +38,9 @@ class AtlassianCloudResource:
     avatar_url: Optional[str] = None
 
 class ConfluenceClient:
-    def __init__(self, logger: Logger, token: OAuthToken) -> None:
+    def __init__(self, logger: Logger, org_id: str, token: OAuthToken) -> None:
         self.logger = logger
+        self.org_id = org_id
         self.token = token
         self.base_url = "https://api.atlassian.com/ex/confluence"
         self.headers = {
@@ -175,7 +178,6 @@ class ConfluenceClient:
         url = f"{base_url}/wiki/api/v2/spaces/{space_id}/permissions"
         while True:
             permissions_batch = await self.make_authenticated_json_request("GET", url)
-            # print(json.dumps(permissions_batch, indent=4), "permissions_batch")
             permissions = permissions + permissions_batch.get("results", [])
             next_url = permissions_batch.get("_links", {}).get("next", None)
             if not next_url:
@@ -184,26 +186,75 @@ class ConfluenceClient:
 
         return permissions
 
+    async def fetch_page_content(
+        self,
+        page_id: str,
+    ) -> Dict[str, Any]:
+        base_url = f"{BASE_URL}/{self.cloud_id}"
+        url = f"{base_url}/wiki/api/v2/pages/{page_id}"
+        page_details = await self.make_authenticated_json_request("GET", url, params={"body-format": "storage"})
+        html_content = page_details.get("body", {}).get("storage", {}).get("value", "")
+        title = page_details.get("title", "")
+
+        html = f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>{title}</title>
+                <meta charset="UTF-8">
+            </head>
+            <body>
+                {html_content}
+            </body>
+            </html>
+        """
+
+        return html
+
+    async def _fetch_page_details(
+        self,
+        page_id: str,
+    ) -> Dict[str, Any]:
+        base_url = f"{BASE_URL}/{self.cloud_id}"
+        url = f"{base_url}/wiki/api/v2/pages/{page_id}"
+        return await self.make_authenticated_json_request("GET", url)
+
     async def fetch_pages_with_permissions(
         self,
         space_id: str,
+        users: List[User],
     ) -> List[WebpageRecord]:
         base_url = f"{BASE_URL}/{self.cloud_id}"
         limit = 25
         pages_url = f"{base_url}/wiki/api/v2/spaces/{space_id}/pages"
         records = []
         permissions = []
+        for user in users:
+            permissions.append(Permission(
+                email=user.email,
+                entity_type=EntityType.USER,
+                type=PermissionType.READ
+            ))
         while True:
             pages_batch = await self.make_authenticated_json_request("GET", pages_url, params={"limit": limit})
             for page in pages_batch.get("results", []):
                 # page_permissions = await self._fetch_page_permission(page["id"])
                 # page["permissions"] = page_permissions
                 # print("Processing page", page["title"], page["id"], page["createdAt"])
-                dt = datetime.strptime(page["createdAt"], "%Y-%m-%dT%H:%M:%S.%fZ")
+                page_details = await self._fetch_page_details(page["id"])
 
+                created_at = datetime.strptime(page["createdAt"], "%Y-%m-%dT%H:%M:%S.%fZ")
+                modified_at = datetime.strptime(page_details["version"]["createdAt"], "%Y-%m-%dT%H:%M:%S.%fZ")
+                page_link = page_details.get("_links")
+                web_url = ""
+                if page_link:
+                    web_url = page_link.get("base", "") + page_link.get("webui", "")
+
+                signed_url = f"http://localhost:8088/api/v1/org/{self.org_id}/page/{page['id']}/fetch"
                 record = WebpageRecord(
                     id=str(uuid.uuid4()),
                     external_record_id=page["id"],
+                    external_revision_id=str(page_details["version"]["number"]),
                     version=0,
                     record_name=page["title"],
                     record_type=RecordTypes.WEBPAGE,
@@ -213,10 +264,11 @@ class ConfluenceClient:
                     external_record_group_id=space_id,
                     parent_record_type=RecordType.WEBPAGE,
                     parent_external_record_id=page.get('parentId'),
-                    web_url=page["_links"]["webui"],
+                    weburl=web_url,
                     mime_type=MimeTypes.HTML.value,
-                    source_created_at=int(dt.timestamp() * 1000),
-
+                    source_created_at=int(created_at.timestamp() * 1000),
+                    source_modified_at=int(modified_at.timestamp() * 1000),
+                    signed_url=signed_url
                 )
                 records.append((record, permissions))
             next_url = pages_batch.get("_links", {}).get("next", None)
@@ -224,9 +276,21 @@ class ConfluenceClient:
                 break
             pages_url = f"{base_url}/{next_url}"
 
-        # print(json.dumps(records, indent=4), "records")
-
         return records
+
+    async def fetch_users(self) -> List[User]:
+        url = f"{BASE_URL}/{self.cloud_id}/rest/api/3/users/search"
+        users = []
+        base_url = f"{BASE_URL}/{self.cloud_id}"
+        while True:
+            users_batch = await self.make_authenticated_json_request("GET", url)
+            users = users + users_batch.get("results", [])
+            next_url = users_batch.get("_links", {}).get("next", None)
+            if not next_url:
+                break
+            url = f"{base_url}/{next_url}"
+        return [User(email=user["emailAddress"], org_id=self.org_id) for user in users]
+
 
 
 class ConfluenceConnector:
@@ -256,22 +320,23 @@ class ConfluenceConnector:
             return
 
         user = users[0]
-        confluence_client = await self.get_confluence_client(user)
-        for user in users:
-            try:
-                spaces = await confluence_client.fetch_spaces_with_permissions()
-                for space in spaces:
-                    page_records = await confluence_client.fetch_pages_with_permissions(space["id"])
-                    await self.data_entities_processor.on_new_records(page_records)
-            except Exception as e:
-                self.logger.error(f"Error processing user {user.email}: {e}")
+        confluence_client = await self.get_confluence_client(user.org_id)
 
 
-    async def get_confluence_client(self, user: User) -> ConfluenceClient:
-        token = await self.provider.get_token(user.org_id)
+        try:
+            spaces = await confluence_client.fetch_spaces_with_permissions()
+            for space in spaces:
+                page_records = await confluence_client.fetch_pages_with_permissions(space["id"], users)
+                await self.data_entities_processor.on_new_records(page_records)
+        except Exception as e:
+            self.logger.error(f"Error processing user {user.email}: {e}")
+
+
+    async def get_confluence_client(self, org_id: str) -> ConfluenceClient:
+        token = await self.provider.get_token(org_id)
         if not token:
-            raise Exception(f"Token for user {user.email} not found")
-        confluence_client = ConfluenceClient(self.logger, token)
+            raise Exception(f"Token for org {org_id} not found")
+        confluence_client = ConfluenceClient(self.logger, org_id, token)
         await confluence_client.initialize()
 
         return confluence_client
