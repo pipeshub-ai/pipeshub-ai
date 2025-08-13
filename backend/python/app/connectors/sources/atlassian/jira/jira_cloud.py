@@ -390,7 +390,7 @@ class JiraClient:
     async def fetch_issue_content(
         self,
         issue_id: str,
-    ) -> Dict[str, Any]:
+    ) -> str:
         base_url = f"{BASE_URL}/{self.cloud_id}"
         url = f"{base_url}/rest/api/3/issue/{issue_id}"
         issue_details = await self.make_authenticated_json_request("GET", url)
