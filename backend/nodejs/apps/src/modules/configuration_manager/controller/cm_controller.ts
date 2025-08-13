@@ -53,6 +53,11 @@ import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 const logger = Logger.getInstance({
   service: 'ConfigurationManagerController',
 });
+
+function getOrgIdFromRequest(req: AuthenticatedUserRequest | AuthenticatedServiceRequest): string | undefined {
+  return (req as AuthenticatedUserRequest).user?.orgId || (req as AuthenticatedServiceRequest).tokenPayload?.orgId;
+}
+
 export const createStorageConfig =
   (
     keyValueStoreService: KeyValueStoreService,
@@ -1162,6 +1167,7 @@ export const getGoogleWorkspaceBusinessCredentials =
       next(error);
     }
   };
+
 export const deleteGoogleWorkspaceCredentials =
   (keyValueStoreService: KeyValueStoreService, orgId: string) =>
   async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
@@ -1332,7 +1338,7 @@ export const getGoogleWorkspaceOauthConfig =
   async (req: AuthenticatedUserRequest|AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
     try {
       const configManagerConfig = loadConfigurationManagerConfig();
-      const orgId = (req as AuthenticatedUserRequest).user?.orgId || (req as AuthenticatedServiceRequest).tokenPayload?.orgId;
+      const orgId = getOrgIdFromRequest(req);
       if (!orgId) {
         throw new BadRequestError('Organisaton not found');
       } 
@@ -1360,42 +1366,20 @@ export const getGoogleWorkspaceOauthConfig =
   (keyValueStoreService: KeyValueStoreService) =>
   async (req: AuthenticatedUserRequest|AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
     try {
-      const { clientId, clientSecret } = req.body;
-      const orgId = (req as AuthenticatedUserRequest).user?.orgId || (req as AuthenticatedServiceRequest).tokenPayload?.orgId;
+      const oauthConfig = req.body;
+      const orgId = getOrgIdFromRequest(req);
       if (!orgId) {
         throw new BadRequestError('Organisation not found');
       }
       const configManagerConfig = loadConfigurationManagerConfig();
-      const existingAtlassianConfig = await keyValueStoreService.get<string>(
+      const encryptedAtlassianConfig = EncryptionService.getInstance(
+        configManagerConfig.algorithm,
+        configManagerConfig.secretKey,
+      ).encrypt(JSON.stringify(oauthConfig));
+      await keyValueStoreService.set<string>(
         `${configPaths.connectors.atlassian.config}/${orgId}`,
+        encryptedAtlassianConfig,
       );
-      if (existingAtlassianConfig) {
-        const atlassianConfig = JSON.parse(
-          EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,  
-          ).decrypt(existingAtlassianConfig),
-        );
-        if (atlassianConfig.clientId != clientId || atlassianConfig.clientSecret != clientSecret) {
-          const encryptedAtlassianConfig = EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).encrypt(JSON.stringify({ clientId, clientSecret }));
-          await keyValueStoreService.set<string>(
-            `${configPaths.connectors.atlassian.config}/${orgId}`,
-            encryptedAtlassianConfig,
-          );
-        }
-      } else {
-        const encryptedAtlassianConfig = EncryptionService.getInstance(
-          configManagerConfig.algorithm,
-          configManagerConfig.secretKey,
-        ).encrypt(JSON.stringify({ clientId, clientSecret }));
-        await keyValueStoreService.set<string>(
-          `${configPaths.connectors.atlassian.config}/${orgId}`,
-          encryptedAtlassianConfig,
-        );
-      }
       res.status(200).json({ message: 'Atlassian config created successfully' });
     } catch (error: any) {
       logger.error('Error creating Atlassian config', { error });
@@ -1408,9 +1392,9 @@ export const getGoogleWorkspaceOauthConfig =
   async (req: AuthenticatedUserRequest|AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
     try {
       const configManagerConfig = loadConfigurationManagerConfig();
-      const orgId = (req as AuthenticatedUserRequest).user?.orgId || (req as AuthenticatedServiceRequest).tokenPayload?.orgId;
+      const orgId = getOrgIdFromRequest(req);
       if (!orgId) {
-        throw new BadRequestError('Organisaton not found');
+        throw new BadRequestError('Organisation not found');
       }
       const encryptedAtlassianCredentials = await keyValueStoreService.get<string>(
         `${configPaths.connectors.atlassian.credentials}/${orgId}`,
@@ -1438,9 +1422,9 @@ export const getGoogleWorkspaceOauthConfig =
     try {
       const credentials = req.body;
       const configManagerConfig = loadConfigurationManagerConfig();
-      const orgId = (req as AuthenticatedUserRequest).user?.orgId || (req as AuthenticatedServiceRequest).tokenPayload?.orgId;
+      const orgId = getOrgIdFromRequest(req);
       if (!orgId) {
-        throw new BadRequestError('Organisaton not found');
+        throw new BadRequestError('Organisation not found');
       }
       // Todo: Do a health check for the credentials
       const encryptedAtlassianCredentials = EncryptionService.getInstance(

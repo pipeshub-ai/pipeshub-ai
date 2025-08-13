@@ -39,6 +39,8 @@ import {
   getRefreshTokenCredentials,
   getRefreshTokenConfig,
   setRefreshTokenCredentials,
+  getAtlassianOauthConfig,
+  setAtlassianOauthConfig,
 } from '../services/connectors-config.service';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import { verifyGoogleWorkspaceToken } from '../utils/verifyToken';
@@ -310,71 +312,27 @@ export function createConnectorRouter(container: Container) {
         const userType = org.accountType;
 
         let response;
-        switch (userType.toLowerCase()) {
-          case googleWorkspaceTypes.INDIVIDUAL.toLowerCase():
-            response = await getGoogleWorkspaceConfig(
-              req,
-              config.cmBackend,
-              config.scopedJwtSecret,
-            );
-            if (response.statusCode !== 200) {
-              if (
-                response.data &&
-                typeof response.data === 'object' &&
-                Object.keys(response.data).length === 0
-              ) {
-                res.status(204).end();
-                return;
-              }
-              throw new InternalServerError(
-                'Error getting config',
-                response?.data,
+        const { service } = req.query;
+        if (service === 'atlassian') {
+          response = await getAtlassianOauthConfig(
+            req,
+            config.cmBackend,
+            config.scopedJwtSecret,
+          );
+          if (response.statusCode !== 200) {
+            throw new InternalServerError('Error getting config', response?.data);
+          }
+          res.status(200).json(response.data);
+          return;
+        } else if (service == 'googleWorkspace') {
+          switch (userType.toLowerCase()) {
+            case googleWorkspaceTypes.INDIVIDUAL.toLowerCase():
+              response = await getGoogleWorkspaceConfig(
+                req,
+                config.cmBackend,
+                config.scopedJwtSecret,
               );
-            }
-            const configData = response.data;
-            if (
-              response.data &&
-              typeof response.data === 'object' &&
-              Object.keys(response.data).length === 0
-            ) {
-              res.status(204).end();
-              return;
-            }
-            if (!configData.clientId) {
-              throw new NotFoundError('Client Id is missing');
-            }
-            if (!configData.clientSecret) {
-              throw new NotFoundError('Client Secret is missing');
-            }
-
-            res.status(200).json({
-              googleClientId: configData.clientId,
-              googleClientSecret: configData.clientSecret,
-              enableRealTimeUpdates: configData?.enableRealTimeUpdates,
-              topicName: configData?.topicName,
-            });
-
-            break;
-
-          case googleWorkspaceTypes.BUSINESS.toLowerCase():
-            response = await getGoogleWorkspaceBusinessCredentials(
-              req,
-              config.cmBackend,
-              config.scopedJwtSecret,
-            );
-            logger.error('Config response', response);
-            if (response.statusCode !== 200) {
-              throw new InternalServerError(
-                'Error getting credentials',
-                response?.data,
-              );
-            } else {
-              if (response.data.client_id) {
-                res.status(200).json({
-                  adminEmail: response?.data?.adminEmail,
-                  isConfigured: true,
-                });
-              } else {
+              if (response.statusCode !== 200) {
                 if (
                   response.data &&
                   typeof response.data === 'object' &&
@@ -388,13 +346,71 @@ export function createConnectorRouter(container: Container) {
                   response?.data,
                 );
               }
-            }
-            break;
+              const configData = response.data;
+              if (
+                response.data &&
+                typeof response.data === 'object' &&
+                Object.keys(response.data).length === 0
+              ) {
+                res.status(204).end();
+                return;
+              }
+              if (!configData.clientId) {
+                throw new NotFoundError('Client Id is missing');
+              }
+              if (!configData.clientSecret) {
+                throw new NotFoundError('Client Secret is missing');
+              }
 
-          default:
-            throw new BadRequestError(
-              `Unsupported google workspace type: ${userType}`,
-            );
+              res.status(200).json({
+                googleClientId: configData.clientId,
+                googleClientSecret: configData.clientSecret,
+                enableRealTimeUpdates: configData?.enableRealTimeUpdates,
+                topicName: configData?.topicName,
+              });
+
+              break;
+
+            case googleWorkspaceTypes.BUSINESS.toLowerCase():
+              response = await getGoogleWorkspaceBusinessCredentials(
+                req,
+                config.cmBackend,
+                config.scopedJwtSecret,
+              );
+              logger.error('Config response', response);
+              if (response.statusCode !== 200) {
+                throw new InternalServerError(
+                  'Error getting credentials',
+                  response?.data,
+                );
+              } else {
+                if (response.data.client_id) {
+                  res.status(200).json({
+                    adminEmail: response?.data?.adminEmail,
+                    isConfigured: true,
+                  });
+                } else {
+                  if (
+                    response.data &&
+                    typeof response.data === 'object' &&
+                    Object.keys(response.data).length === 0
+                  ) {
+                    res.status(204).end();
+                    return;
+                  }
+                  throw new InternalServerError(
+                    'Error getting config',
+                    response?.data,
+                  );
+                }
+              }
+              break;
+
+            default:
+              throw new BadRequestError(
+                `Unsupported google workspace type: ${userType}`,
+              );
+          }
         }
       } catch (error) {
         next(error);
@@ -413,13 +429,25 @@ export function createConnectorRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
-        let response = await setGoogleWorkspaceConfig(
-          req,
-          config.cmBackend,
-          config.scopedJwtSecret,
-        );
-
-        if (response.statusCode !== 200) {
+        let service = req.query.service;
+        let response;
+        if (service === 'atlassian') {
+          response = await setAtlassianOauthConfig(
+            req,
+            config.cmBackend,
+            config.scopedJwtSecret,
+          );
+        } else if (service === 'googleWorkspace') { 
+          response = await setGoogleWorkspaceConfig(
+            req,
+            config.cmBackend,
+            config.scopedJwtSecret,
+          );
+        }
+        else {
+          throw new BadRequestError('Invalid service name');
+        }
+        if (response?.statusCode !== 200) {
           throw new InternalServerError('Error setting config', response?.data);
         }
         res.status(200).json({

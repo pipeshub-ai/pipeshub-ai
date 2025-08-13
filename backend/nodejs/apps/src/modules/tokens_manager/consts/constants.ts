@@ -16,5 +16,5 @@ export const CONNECTORS_TYPES = {
 export const REFRESH_TOKEN_PATH =
   'api/v1/connectors/internal/refreshIndividualConnectorToken';
 
-export const ATLASIAN_CREDENTIALS_PATH =
-  'api/v1/configurationManager/internal/connectors/atlassianCredentials';
+export const ATLASIAN_OAUTH_CONFIG_PATH =
+  'api/v1/configurationManager/internal/connectors/atlassian/config';

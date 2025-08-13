@@ -15,7 +15,7 @@ export const configPaths = {
     atlassian: {
       base: '/services/connectors/atlassian/',
       credentials: '/services/connectors/atlassian/credentials',
-      config: '/services/connectors/atlassian/oauth/config',
+      config: '/services/connectors/atlassian/config',
     },
   },
   smtp: '/services/smtp',

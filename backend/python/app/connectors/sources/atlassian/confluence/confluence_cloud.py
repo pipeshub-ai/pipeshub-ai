@@ -251,7 +251,7 @@ class ConfluenceClient:
                 web_url = ""
                 if page_link:
                     web_url = page_link.get("base", "") + page_link.get("webui", "")
-
+                
                 signed_url = f"http://localhost:8088/api/v1/org/{self.org_id}/page/{page['id']}/fetch"
                 record = WebpageRecord(
                     id=str(uuid.uuid4()),

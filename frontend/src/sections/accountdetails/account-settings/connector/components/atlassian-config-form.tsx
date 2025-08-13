@@ -235,11 +235,11 @@ const AtlassianConfigForm = forwardRef<AtlassianConfigFormRef, AtlassianConfigFo
         };
 
         // Send the update request
-        // await axios.post('/api/v1/connectors/config', payload, {
-        //   params: {
-        //     service: 'atlassian',
-        //   },
-        // });
+        await axios.post('/api/v1/connectors/config', payload, {
+          params: {
+            service: 'atlassian',
+          },
+        });
 
         // Update the configured state
         setIsConfigured(true);
