@@ -10,3 +10,5 @@ class ParameterType(Enum):
     ARRAY = "array"
     OBJECT = "object"
     BINARY_IO = "binary_io"
+    LIST = "List"
+    DICT = "Dict"
