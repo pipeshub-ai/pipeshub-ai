@@ -9,7 +9,7 @@ from app.utils.time_conversion import parse_timestamp
 
 class GoogleCalendar:
     """Google Calendar tool exposed to the agents"""
-    def __init__(self, client: object, calendar_id: str) -> None:
+    def __init__(self, client: object, calendar_id: str = "primary") -> None:
         """Initialize the Google Calendar tool"""
         """
         Args:
