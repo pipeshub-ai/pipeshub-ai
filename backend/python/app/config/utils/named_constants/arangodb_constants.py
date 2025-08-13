@@ -87,6 +87,7 @@ class CollectionNames(Enum):
     ATTACHMENTS = "attachments"
     LINKS = "links"
     MAILS = "mails"
+    WEBPAGES = "webpages"
 
     # Users and groups
     PEOPLE = "people"

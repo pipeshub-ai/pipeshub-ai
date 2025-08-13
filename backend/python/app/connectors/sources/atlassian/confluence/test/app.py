@@ -1,0 +1,81 @@
+import asyncio
+import os
+from typing import Optional
+
+import uvicorn
+from arango import ArangoClient
+from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi.responses import RedirectResponse
+
+from app.config.configuration_service import ConfigurationService
+from app.config.providers.in_memory_store import InMemoryKeyValueStore
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    DataSourceEntitiesProcessor,
+)
+from app.connectors.services.base_arango_service import BaseArangoService
+from app.connectors.sources.atlassian.confluence.confluence_cloud import (
+    ConfluenceConnector,
+)
+from app.connectors.sources.atlassian.core.apps import ConfluenceApp
+from app.services.kafka_consumer import KafkaConsumerManager
+from app.utils.logger import create_logger
+
+app = FastAPI()
+
+async def test_run() -> None:
+    logger = create_logger("confluence_connector")
+
+    key_value_store = InMemoryKeyValueStore(logger, "app/config/default_config.json")
+    await key_value_store.create_key("atlassian_oauth_provider", {
+        "client_id":os.getenv("ATLASSIAN_CLIENT_ID"),
+        "client_secret": os.getenv("ATLASSIAN_CLIENT_SECRET"),
+        "redirect_uri": os.getenv("ATLASSIAN_REDIRECT_URI")
+    })
+
+    config_service = ConfigurationService(logger, key_value_store)
+    kafka_service = KafkaConsumerManager(logger, config_service, None, None)
+
+    arango_service = BaseArangoService(logger, ArangoClient(), config_service, kafka_service)
+    await arango_service.connect()
+    data_entities_processor = DataSourceEntitiesProcessor(logger, ConfluenceApp(), arango_service, config_service)
+    await data_entities_processor.initialize()
+    confluence_connector = ConfluenceConnector(logger, data_entities_processor, config_service)
+    await confluence_connector.initialize()
+
+
+    app.connector = confluence_connector
+
+router = APIRouter(prefix="/oauth")
+
+@router.get("/atlassian/start")
+async def oauth_start(return_to: Optional[str] = None) -> RedirectResponse:
+    url = await app.connector.provider.start_authorization(return_to=return_to, use_pkce=True)
+    return RedirectResponse(url)
+
+@router.get("/atlassian/callback")
+async def oauth_callback(request: Request) -> RedirectResponse:
+    error = request.query_params.get("error")
+    if error:
+        raise HTTPException(400, detail=request.query_params.get("error_description", error))
+    code = request.query_params.get("code")
+    state = request.query_params.get("state")
+    if not code or not state:
+        raise HTTPException(400, detail="Missing code/state")
+    await app.connector.provider.handle_callback(code, state)
+    await app.connector.run()
+
+    # Optionally pull saved return_to from state store before deletion,
+    # or stash it in a short-lived cookie at /start.
+    return RedirectResponse(url="http://localhost:3001")
+
+app.include_router(router)
+
+@app.on_event("startup")
+async def startup_event() -> None:
+    asyncio.create_task(test_run())
+
+
+if __name__ == "__main__":
+    # asyncio.run(test_run())
+    uvicorn.run(app, host="0.0.0.0", port=8088)
+

@@ -7,9 +7,10 @@ from app.models.graph import Node
 @dataclass
 class User(Node):
     email: str
-    source_user_id: str
-    is_active: bool
-    _key: Optional[str] = None
+    source_user_id: Optional[str] = None
+    org_id: Optional[str] = None
+    user_id: Optional[str] = None
+    is_active: Optional[bool] = None
     first_name: Optional[str] = None
     middle_name: Optional[str] = None
     last_name: Optional[str] = None
@@ -23,16 +24,38 @@ class User(Node):
             "last_name": self.last_name,
             "full_name": self.full_name,
             "email": self.email,
-            "source_user_id": self.source_user_id,
             "title": self.title,
-            "is_active": self.is_active
+            "is_active": self.is_active,
+            "org_id": self.org_id,
+            "user_id": self.user_id
+        }
+
+    def to_arango_base_record(self) -> Dict[str, Any]:
+        return {
+            "email": self.email,
+            "fullName": self.full_name,
+            "isActive": self.is_active,
         }
 
     def validate(self) -> bool:
         return self.email is not None and self.email != ""
 
     def key(self) -> str:
-        return self._key
+        return self.email
+
+    @staticmethod
+    def from_arango_user(data: Dict[str, Any]) -> 'User':
+        return User(
+            email=data.get("email", ""),
+            org_id=data.get("orgId", ""),
+            user_id=data.get("userId", None),
+            is_active=data.get("isActive", False),
+            first_name=data.get("firstName", None),
+            middle_name=data.get("middleName", None),
+            last_name=data.get("lastName", None),
+            full_name=data.get("fullName", None),
+            title=data.get("title", None),
+        )
 
 @dataclass
 class UserGroup(Node):

@@ -1,19 +1,27 @@
+import uuid
 from dataclasses import dataclass
 from typing import List, Tuple
 
 from arango.database import TransactionDatabase
 
+from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames, OriginTypes
-from app.connectors.sources.microsoft.onedrive.arango_service import ArangoService
+from app.config.constants.service import config_node_constants
+from app.connectors.core.interfaces.connector.apps import App, AppGroup
+from app.connectors.services.base_arango_service import BaseArangoService
 from app.models.entities import (
     FileRecord,
     MailRecord,
     MessageRecord,
     Record,
     RecordGroup,
+    WebpageRecord,
 )
 from app.models.permission import EntityType, Permission
 from app.models.users import User, UserGroup
+from app.services.messaging.interface.producer import IMessagingProducer
+from app.services.messaging.kafka.config.kafka_config import KafkaProducerConfig
+from app.services.messaging.messaging_factory import MessagingFactory
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -30,22 +38,6 @@ class RecordGroupWithPermissions:
 class UserGroupWithMembers:
     user_group: UserGroup
     users: List[Tuple[User, Permission]]
-
-class App:
-    def __init__(self, app_name: str) -> None:
-        self.app_name = app_name
-
-    def get_app_name(self) -> str:
-        return self.app_name
-
-class AppGroup:
-    def __init__(self, app_group_name: str, apps: List[App]) -> None:
-        self.app_group_name = app_group_name
-        self.apps = apps
-
-    def get_app_group_name(self) -> str:
-        return self.app_group_name
-
 
 read_collections = [
     CollectionNames.RECORDS.value,
@@ -71,6 +63,8 @@ write_collections = [
     CollectionNames.RECORD_GROUPS.value,
     CollectionNames.FILES.value,
     CollectionNames.MAILS.value,
+    CollectionNames.WEBPAGES.value,
+    # CollectionNames.MESSAGES.value,
     # CollectionNames.MESSAGES.value,
     CollectionNames.USERS.value,
     # CollectionNames.USER_GROUPS.value,
@@ -86,10 +80,32 @@ write_collections = [
 ]
 
 class DataSourceEntitiesProcessor:
-    def __init__(self, logger, app: App, arango_service: ArangoService) -> None:
+    def __init__(self, logger, app: App, arango_service: BaseArangoService, config_service: ConfigurationService) -> None:
         self.logger = logger
         self.app = app
-        self.arango_service: ArangoService = arango_service
+        self.arango_service: BaseArangoService = arango_service
+        self.config_service: ConfigurationService = config_service
+        self.org_id = ""
+
+    async def initialize(self) -> None:
+        producer_config = await self.config_service.get_config(
+            config_node_constants.KAFKA.value
+        )
+        kafka_producer_config = KafkaProducerConfig(
+            bootstrap_servers=producer_config.get("bootstrap_servers"),
+            client_id=producer_config.get("client_id", "connectors"),
+        )
+        self.messaging_producer: IMessagingProducer = MessagingFactory.create_producer(
+            broker_type="kafka",
+            logger=self.logger,
+            config=kafka_producer_config,
+        )
+        await self.messaging_producer.initialize()
+        orgs = await self.arango_service.get_all_orgs()
+        if not orgs:
+            raise Exception("No organizations found in the database. Cannot initialize DataSourceEntitiesProcessor.")
+        self.org_id = orgs[0]["_key"]
+
 
     async def _handle_parent_record(self, record: Record, transaction: TransactionDatabase) -> None:
         if record.parent_external_record_id:
@@ -98,7 +114,8 @@ class DataSourceEntitiesProcessor:
 
             if parent_record is None:
                 # Create a new parent record
-                parent_record = Record(
+                parent_record = FileRecord(
+                    org_id=self.org_id,
                     external_record_id=record.parent_external_record_id,
                     record_name=record.parent_external_record_id,
                     origin=OriginTypes.CONNECTOR.value,
@@ -106,6 +123,10 @@ class DataSourceEntitiesProcessor:
                     record_type=record.parent_record_type,
                     record_group_type=record.record_group_type,
                     version=0,
+                    is_file=False,
+                    extension=None,
+                    mime_type="application/vnd.folder",
+
                 )
                 await self.arango_service.batch_upsert_nodes(
                     [parent_record.to_arango_base_record()], collection=CollectionNames.RECORDS.value, transaction=transaction
@@ -137,7 +158,6 @@ class DataSourceEntitiesProcessor:
                 group_type=record.record_group_type,
                 connector_name=record.connector_name,
             )
-            print(record_group.to_arango_base_record_group(), "record_group.to_arango_base_record_group()")
             await self.arango_service.batch_upsert_nodes(
                 [record_group.to_arango_base_record_group()], collection=CollectionNames.RECORD_GROUPS.value, transaction=transaction
             )
@@ -152,67 +172,66 @@ class DataSourceEntitiesProcessor:
                 "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                 "entityType": "GROUP",
             }
-            print(record_group_edge, "record_group_edge")
             await self.arango_service.batch_create_edges(
                 [record_group_edge], collection=CollectionNames.BELONGS_TO.value, transaction=transaction
             )
 
     async def _handle_new_record(self, record: Record, transaction: TransactionDatabase) -> None:
-        is_of_type_record = None
+        # Set org_id for the record
+        record.org_id = self.org_id
 
-        if isinstance(record, FileRecord):
-            print("File record")
-            is_of_type_record = {
-                "_from": f"{CollectionNames.RECORDS.value}/{record.id}",
-                "_to": f"{CollectionNames.FILES.value}/{record.id}",
-                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                }
-            print(record.to_arango_base_record(), "record.to_arango_base_record()")
-            print(record.to_arango_file_record(), "record.to_arango_file_record()")
-            await self.arango_service.batch_upsert_nodes(
-                [record.to_arango_base_record()], collection=CollectionNames.RECORDS.value, transaction=transaction
-            )
-            await self.arango_service.batch_upsert_nodes(
-                [record.to_arango_file_record()], collection=CollectionNames.FILES.value, transaction=transaction
-            )
-            await self.arango_service.batch_create_edges(
-                [is_of_type_record], collection=CollectionNames.IS_OF_TYPE.value, transaction=transaction
-            )
-        if isinstance(record, MailRecord):
-            print("Mail record")
-            is_of_type_record = {
-                "_from": f"{CollectionNames.RECORDS.value}/{record.id}",
-                "_to": f"{CollectionNames.MAILS.value}/{record.id}",
-                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+        # Define record type configurations
+        record_type_config = {
+            FileRecord: {
+                "collection": CollectionNames.FILES.value,
+            },
+            MailRecord: {
+                "collection": CollectionNames.MAILS.value,
+            },
+            MessageRecord: {
+                "collection": CollectionNames.MESSAGES.value,
+            },
+            WebpageRecord: {
+                "collection": CollectionNames.WEBPAGES.value,
             }
-            await self.arango_service.batch_upsert_nodes(
-                [record.to_arango_base_record()], collection=CollectionNames.RECORDS.value, transaction=transaction
-            )
-            await self.arango_service.batch_upsert_nodes(
-                [record.to_arango_mail_record()], collection=CollectionNames.MAILS.value, transaction=transaction
-            )
-            await self.arango_service.batch_create_edges(
-                [is_of_type_record], collection=CollectionNames.IS_OF_TYPE.value, transaction=transaction
-            )
-        if isinstance(record, MessageRecord):
-            print("Message record")
-            is_of_type_record = {
-                "_from": f"{CollectionNames.RECORDS.value}/{record.id}",
-                "_to": f"{CollectionNames.MESSAGES.value}/{record.id}",
-                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-            }
-            await self.arango_service.batch_upsert_nodes(
-                [record.to_arango_base_record()], collection=CollectionNames.RECORDS.value, transaction=transaction
-            )
-            await self.arango_service.batch_upsert_nodes(
-                [record.to_arango_message_record()], collection=CollectionNames.MESSAGES.value, transaction=transaction
-            )
-            await self.arango_service.batch_create_edges(
-                [is_of_type_record], collection=CollectionNames.IS_OF_TYPE.value, transaction=transaction
-            )
+        }
+
+        # Get the configuration for the current record type
+        record_type = type(record)
+        if record_type not in record_type_config:
+            self.logger.warning(f"Unsupported record type: {record_type}")
+            return
+
+        config = record_type_config[record_type]
+
+        # Create the IS_OF_TYPE edge
+        is_of_type_record = {
+            "_from": f"{CollectionNames.RECORDS.value}/{record.id}",
+            "_to": f"{config['collection']}/{record.id}",
+            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+        }
+
+        # Upsert base record
+        await self.arango_service.batch_upsert_nodes(
+            [record.to_arango_base_record()],
+            collection=CollectionNames.RECORDS.value,
+            transaction=transaction
+        )
+
+        # Upsert specific record type if it has a specific method
+        await self.arango_service.batch_upsert_nodes(
+            [record.to_arango_record()],
+            collection=config["collection"],
+            transaction=transaction
+        )
+
+        # Create IS_OF_TYPE edge
+        await self.arango_service.batch_create_edges(
+            [is_of_type_record],
+            collection=CollectionNames.IS_OF_TYPE.value,
+            transaction=transaction
+        )
 
 
     async def _handle_record_permissions(self, record: Record, permissions: List[Permission], transaction: TransactionDatabase) -> None:
@@ -257,7 +276,6 @@ class DataSourceEntitiesProcessor:
                 record_permissions.append(permission.to_arango_permission(from_collection, to_collection))
 
         if record_permissions:
-            print(record_permissions, "record_permissions")
             await self.arango_service.batch_create_edges(
                 record_permissions, collection=CollectionNames.PERMISSIONS.value, transaction=transaction
             )
@@ -290,7 +308,12 @@ class DataSourceEntitiesProcessor:
         # Record download function
         # Create a permission edge between the record and the app with sync status if it doesn't exist
 
-        # print(record)
+        if existing_record is None:
+            await self.messaging_producer.send_message(
+                "record-events",
+                {"eventType": "newRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": record.to_kafka_record()},
+                key=record.id
+            )
 
     async def on_new_records(self, records_with_permissions: List[Tuple[Record, List[Permission]]]) -> None:
         try:
@@ -321,56 +344,110 @@ class DataSourceEntitiesProcessor:
         pass
 
     async def on_record_deleted(self, record_id: str) -> None:
-        # Remove all edges from the record
-        # Remove the record
-        pass
-
+        await self.arango_service.delete_record(record_id)
 
     async def on_new_record_groups(self, record_groups: List[RecordGroup], permissions: List[Permission]) -> None:
         # Create a transaction
+        transaction = self.arango_service.db.begin_transaction(
+                    read=read_collections,
+                    write=write_collections,
+            )
         for record_group in record_groups:
+            self.logger.info(f"Processing record group: {record_group}")
+            existing_record_group = await self.arango_service.get_record_group_by_external_id(connector_name=record_group.connector_name,
+                                                                                            external_id=record_group.external_group_id, transaction=transaction)
+            if existing_record_group is None:
+                record_group.id = str(uuid.uuid4())
+                record_group.org_id = self.org_id
+                # Create a permission edge between the record group and the org if it doesn't exist
+                # Create a permission edge between the record group and the user if it doesn't exist
+                # Create a permission edge between the record group and the user group if it doesn't exist
+                # Create a permission edge between the record group and the org if it doesn't exist
+                # Create a edge between the record group and the app with sync status if it doesn't exist
+            else:
+                record_group.id = existing_record_group.id
 
-            # Create record group if it doesn't exist
-            # Create a permission edge between the record group and the org if it doesn't exist
-            # Create a permission edge between the record group and the user if it doesn't exist
-            # Create a permission edge between the record group and the user group if it doesn't exist
-            # Create a permission edge between the record group and the org if it doesn't exist
-            # Create a edge between the record group and the app with sync status if it doesn't exist
-
-
-            print(record_group)
+            await self.arango_service.batch_upsert_nodes(
+                [record_group.to_arango_base_record_group()], collection=CollectionNames.RECORD_GROUPS.value, transaction=transaction
+            )
+        transaction.commit_transaction()
 
         # Commit the transaction
-
 
     async def on_new_users(self, users: List[User]) -> None:
         # Create a transaction
+        transaction = self.arango_service.db.begin_transaction(
+                    read=read_collections,
+                    write=write_collections,
+            )
+
+        # Get all users from the database(Active and Inactive)
+        existing_users = await self.arango_service.get_users(self.org_id, active=False)
 
         for user in users:
+            self.logger.info(f"Processing user: {user}")
 
-            # Create user if it doesn't exist
-            # Create app if it doesn't exist
-            # Create a edge between the user and the app with sync status if it doesn't exist
-            # Create a edge between the user and the org if it doesn't exist
-            # Create a edge between the user and app if it doesn't exist
+            existing_user_emails = {existing_user.get("email") for existing_user in existing_users}
+            if user.email not in existing_user_emails:
+                user_record = user.to_arango_base_record()
+                user_record["isActive"] = False
+                user_record["_key"] = str(uuid.uuid4())
+                user_record["orgId"] = self.org_id
+                await self.arango_service.batch_upsert_nodes(
+                    [user_record],
+                    collection=CollectionNames.USERS.value, transaction=transaction
+                )
 
-            print(user)
+                #  # Create a edge between the user and the org if it doesn't exist
+                #  user_org_relation = {
+                #     "_from": f"{CollectionNames.USERS.value}/{user.id}",
+                #     "_to": f"{CollectionNames.ORGS.value}/{self.org_id}",
+                #     "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                #     "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                #     "entityType": "USER",
+                #  }
+                #  await self.arango_service.batch_create_edges(
+                #     [user_org_relation], collection=CollectionNames.BELONGS_TO.value, transaction=transaction
+                #  )
+
+                # Create a edge between the user and the app with sync status if it doesn't exist
+                # user_app_relation = {
+                #     "_from": f"{CollectionNames.USERS.value}/{user.id}",
+                #     "_to": f"{CollectionNames.APPS.value}/{self.app.id}",
+                #     "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                #     "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                #     "entityType": "USER",
+                #  }
+
+
+
         # Commit the transaction
-
+        transaction.commit_transaction()
 
     async def on_new_user_groups(self, user_groups: List[UserGroup], permissions: List[Permission]) -> None:
         # Create a transaction
 
         for user_group in user_groups:
-
+            self.logger.info(f"Processing user group: {user_group}")
             # Create user group if it doesn't exist
             # Create a edge between the user and user group
 
-            print(user_group)
         # Commit the transaction
+
 
     async def on_new_app(self, app: App) -> None:
         pass
 
     async def on_new_app_group(self, app_group: AppGroup) -> None:
         pass
+
+
+    async def get_all_active_users(self) -> List[User]:
+        users = await self.arango_service.get_users(self.org_id, active=True)
+
+        return [User.from_arango_user(user) for user in users]
+
+    async def get_all_active_users_by_app(self, app: App) -> List[User]:
+        users = await self.arango_service.get_users_by_app(self.org_id, app)
+
+        return [User.from_arango_user(user) for user in users]

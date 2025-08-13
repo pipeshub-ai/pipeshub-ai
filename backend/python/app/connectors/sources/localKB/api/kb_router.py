@@ -861,7 +861,6 @@ async def list_kb_permissions(
 ) -> Union[ListPermissionsResponse, Dict[str, Any]]:
     try:
         result = await kb_service.list_kb_permissions(kb_id=kb_id, requester_id=requester_id)
-        print(result)
         if not result or result.get("success") is False:
             error_code = int(result.get("code", HTTP_INTERNAL_SERVER_ERROR))
             error_reason = result.get("reason", "Unknown error")

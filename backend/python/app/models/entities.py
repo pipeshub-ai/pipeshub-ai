@@ -8,6 +8,13 @@ from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
+class RecordGroupType(str, Enum):
+    SLACK_CHANNEL = "SLACK_CHANNEL"
+    CONFLUENCE_SPACES = "CONFLUENCE_SPACES"
+    KB = "KB"
+    NOTION_WORKSPACE = "NOTION_WORKSPACE"
+    DRIVE = "DRIVE"
+
 class RecordType(str, Enum):
     FILE = "FILE"
     DRIVE = "DRIVE"
@@ -54,6 +61,8 @@ class Record(BaseModel):
 
     # Source information
     weburl: Optional[str] = None
+    signed_url: Optional[str] = None
+    fetch_signed_url: Optional[str] = None
     mime_type: Optional[str] = None
     # Content blocks
     block_containers: BlocksContainer = Field(default_factory=BlocksContainer, description="List of block containers in this record")
@@ -68,6 +77,7 @@ class Record(BaseModel):
     def to_arango_base_record(self) -> Dict:
         return {
             "_key": self.id,
+            "orgId": self.org_id,
             "recordName": self.record_name,
             "recordType": self.record_type.value,
             "externalRecordId": self.external_record_id,
@@ -92,6 +102,7 @@ class Record(BaseModel):
     def from_arango_base_record(arango_base_record: Dict) -> "Record":
         return Record(
             id=arango_base_record["_key"],
+            org_id=arango_base_record["orgId"],
             record_name=arango_base_record["recordName"],
             record_type=arango_base_record["recordType"],
             record_group_type=None,
@@ -107,10 +118,12 @@ class Record(BaseModel):
             source_updated_at=arango_base_record["sourceLastModifiedTimestamp"],
         )
 
+    def to_kafka_record(self) -> Dict:
+        raise NotImplementedError("Implement this method in the subclass")
 
 class FileRecord(Record):
+    is_file: bool
     size_in_bytes: int = None
-    is_file: bool = True
     extension: Optional[str] = None
     path: Optional[str] = None
     etag: Optional[str] = None
@@ -120,9 +133,10 @@ class FileRecord(Record):
     sha1_hash: Optional[str] = None
     sha256_hash: Optional[str] = None
 
-    def to_arango_file_record(self) -> Dict:
+    def to_arango_record(self) -> Dict:
         return {
             "_key": self.id,
+            "orgId": self.org_id,
             "name": self.record_name,
             "isFile": self.is_file,
             "extension": self.extension,
@@ -143,6 +157,7 @@ class FileRecord(Record):
     def from_arango_base_file_record(arango_base_file_record: Dict, arango_base_record: Dict) -> "FileRecord":
         return FileRecord(
             id=arango_base_record["_key"],
+            org_id=arango_base_record["orgId"],
             record_name=arango_base_record["recordName"],
             record_type=arango_base_record["recordType"],
             external_record_id=arango_base_record["externalRecordId"],
@@ -166,8 +181,47 @@ class FileRecord(Record):
             sha256_hash=arango_base_file_record["sha256Hash"],
         )
 
+    def to_kafka_record(self) -> Dict:
+        return {
+            "recordId": self.id,
+            "orgId": self.org_id,
+            "recordName": self.record_name,
+            "recordType": self.record_type.value,
+            "externalRecordId": self.external_record_id,
+            "version": self.version,
+            "origin": self.origin,
+            "connectorName": self.connector_name,
+            "mimeType": self.mime_type,
+            "webUrl": self.weburl,
+            "createdAtTimestamp": self.created_at,
+            "updatedAtTimestamp": self.updated_at,
+            "sourceCreatedAtTimestamp": self.source_created_at,
+            "sourceLastModifiedTimestamp": self.source_updated_at,
+            "extension": self.extension,
+            "sizeInBytes": self.size_in_bytes,
+            "signedUrl": self.signed_url,
+            "signedUrlRoute": self.fetch_signed_url,
+            "externalRevisionId": self.external_revision_id,
+            "externalRecordGroupId": self.external_record_group_id,
+            "parentExternalRecordId": self.parent_external_record_id,
+            "isFile": self.is_file,
+        }
+
 class MessageRecord(Record):
     content: Optional[str] = None
+
+
+    def to_kafka_record(self) -> Dict:
+        return {
+            "recordId": self.id,
+            "orgId": self.org_id,
+            "recordName": self.record_name,
+            "recordType": self.record_type.value,
+            "createdAtTimestamp": self.created_at,
+            "updatedAtTimestamp": self.updated_at,
+            "sourceCreatedAtTimestamp": self.source_created_at,
+            "sourceLastModifiedTimestamp": self.source_updated_at,
+        }
 
 class MailRecord(Record):
     subject: Optional[str] = None
@@ -177,9 +231,10 @@ class MailRecord(Record):
     bcc_emails: Optional[List[str]] = None
 
 
-    def to_arango_mail_record(self) -> Dict:
+    def to_arango_record(self) -> Dict:
         return {
             "_key": self.id,
+            "orgId": self.org_id,
             "name": self.record_name,
             "subject": self.subject,
             "from": self.from_email,
@@ -188,17 +243,42 @@ class MailRecord(Record):
             "bcc": self.bcc_emails,
         }
 
+
+    def to_kafka_record(self) -> Dict:
+        return {
+            "recordId": self.id,
+            "orgId": self.org_id,
+            "recordName": self.record_name,
+            "recordType": self.record_type.value,
+        }
+
 class WebpageRecord(Record):
-    webpage_url: Optional[str] = None
-    webpage_title: Optional[str] = None
-    webpage_description: Optional[str] = None
+
+    def to_kafka_record(self) -> Dict:
+        return {
+            "recordId": self.id,
+            "orgId": self.org_id,
+            "recordName": self.record_name,
+            "recordType": self.record_type.value,
+            "mimeType": self.mime_type,
+            "createdAtTimestamp": self.created_at,
+            "updatedAtTimestamp": self.updated_at,
+            "sourceCreatedAtTimestamp": self.source_created_at,
+            "sourceLastModifiedTimestamp": self.source_updated_at,
+        }
+
+    def to_arango_record(self) -> Dict:
+        return {
+            "_key": self.id,
+            "orgId": self.org_id,
+        }
 
 class RecordGroup(BaseModel):
     id: str = Field(description="Unique identifier for the record group", default_factory=lambda: str(uuid4()))
     name: str = Field(description="Name of the record group")
     external_group_id: Optional[str] = Field(description="External identifier for the record group")
     connector_name: Optional[str] = Field(description="Name of the connector used to create the record group")
-    group_type: Optional[str] = Field(description="Type of the record group")
+    group_type: Optional[RecordGroupType] = Field(description="Type of the record group")
     created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record group creation")
     updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record group update")
     source_created_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the record group creation in the source system")
@@ -210,7 +290,7 @@ class RecordGroup(BaseModel):
             "groupName": self.name,
             "externalGroupId": self.external_group_id,
             "connectorName": self.connector_name,
-            "groupType": self.group_type,
+            "groupType": self.group_type.value,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
             "sourceCreatedAtTimestamp": self.source_created_at,
@@ -239,11 +319,13 @@ class User(BaseModel):
     updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the user update")
     source_created_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the user creation in the source system")
     source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the user update in the source system")
+    org_id: str = Field(default="", description="Unique identifier for the organization")
 
     @staticmethod
     def from_arango_base_user(arango_base_user: Dict) -> "User":
         return User(
             id=arango_base_user["_key"],
+            org_id=arango_base_user["orgId"],
             email=arango_base_user["email"],
             name=arango_base_user["fullName"],
             created_at=arango_base_user["createdAtTimestamp"],

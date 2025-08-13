@@ -45,7 +45,7 @@ user_schema = {
         "additionalProperties": False,  # disallow extra fields
     },
     "level": "strict",  # Strict validation (reject invalid documents)
-    "message": "Document does not match the record schema.",
+    "message": "Document does not match the user schema.",
 }
 
 user_group_schema = {
@@ -270,6 +270,19 @@ mail_record_schema = {
     },
     "level": "strict",
     "message": "Document does not match the mail record schema.",
+}
+
+webpage_record_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "domain": {"type": ["string", "null"]},
+        },
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the webpage record schema.",
 }
 
 record_group_schema = {

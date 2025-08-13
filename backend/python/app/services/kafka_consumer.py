@@ -27,9 +27,30 @@ from app.exceptions.indexing_exceptions import IndexingError
 MAX_CONCURRENT_TASKS = 5  # Maximum number of messages to process concurrently
 RATE_LIMIT_PER_SECOND = 2  # Maximum number of new tasks to start per second
 
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=15))
+async def make_signed_url_api_call(signed_url: str) -> dict:
+    """
+    Make an API call with the JWT token.
+
+    Args:
+        signed_url (str): The signed URL to send the request to
+
+    Returns:
+        dict: The response from the API
+    """
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = signed_url
+            # Make the request
+            async with session.get(url) as response:
+                data = await response.read()
+                return data
+    except Exception:
+        raise
+
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=15))
-async def make_api_call(signed_url_route: str, token: str) -> dict:
+async def make_api_call(signed_url_route: str, token: str, signed_url: str = None) -> dict:
     """
     Make an API call with the JWT token.
 
@@ -327,11 +348,30 @@ class KafkaConsumerManager:
                     return True
                 except Exception as e:
                     error_occurred = True
+                    error_msg = f"Failed to process signed URL route: {str(e)}"
+                    raise
+            elif payload_data and payload_data.get("signedUrl"):
+                try:
+                    payload_data["signedUrl"] = payload_data["signedUrl"]
+                    response = await make_signed_url_api_call(payload_data["signedUrl"])
+                    if response:
+                        payload_data["buffer"] = response
+                    data["payload"] = payload_data
+                    await self.event_processor.on_event(data)
+                    processing_time = (datetime.now() - start_time).total_seconds()
+                    self.logger.info(
+                        f"✅ Successfully processed document for event: {event_type}. "
+                        f"Record: {record_id}, Time: {processing_time:.2f}s"
+                    )
+                    self.mark_message_processed(topic_partition, offset)
+                    return True
+                except Exception as e:
+                    error_occurred = True
                     error_msg = f"Failed to process signed URL: {str(e)}"
                     raise
             else:
                 raise ValueError(
-                    f"No signedUrlRoute found in payload for message {message_id}"
+                    f"No signedUrlRoute or signedUrl found in payload for message {message_id}"
                 )
 
         except IndexingError as e:
