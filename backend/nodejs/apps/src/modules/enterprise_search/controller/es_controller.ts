@@ -5,8 +5,8 @@ import {
   saveCompleteConversation,
 } from './../utils/utils';
 import { Response, NextFunction } from 'express';
-import mongoose, { ClientSession } from 'mongoose';
-import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
+import mongoose, { ClientSession, Types } from 'mongoose';
+import { AuthenticatedServiceRequest, AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { Logger } from '../../../libs/services/logger.service';
 import {
   BadRequestError,
@@ -54,11 +54,14 @@ import Citation, {
   ICitation,
 } from '../schema/citation.schema';
 import { CONVERSATION_STATUS } from '../constants/constants';
+import { Users } from '../../user_management/schema/users.schema';
+import { AuthTokenService } from '../../../libs/services/authtoken.service';
 
 const logger = Logger.getInstance({ service: 'Enterprise Search Service' });
 const rsAvailable = process.env.REPLICA_SET_AVAILABLE === 'true';
 const AI_SERVICE_UNAVAILABLE_MESSAGE =
   'AI Service is currently unavailable. Please check your network connection or try again later.';
+
 
 export const streamChat =
   (appConfig: AppConfig) =>
@@ -352,11 +355,52 @@ export const streamChat =
 
 export const createConversation =
   (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  async (req: AuthenticatedUserRequest | AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
     const requestId = req.context?.requestId;
     const startTime = Date.now();
-    const userId = req.user?.userId;
-    const orgId = req.user?.orgId;
+    let userId: Types.ObjectId | undefined;
+    let orgId: Types.ObjectId | undefined;
+    if ('user' in req) {
+      const auth_req = req as AuthenticatedUserRequest;
+      userId = auth_req.user?.userId;
+      orgId = auth_req.user?.orgId;
+    } else {
+      try{
+        const auth_req = req as AuthenticatedServiceRequest;
+        const email = auth_req.tokenPayload?.email;
+        const users = await Users.find({
+          email: email,
+          isDeleted: false,
+        });
+        const user = users[0];
+
+        if (!user) {
+          throw new NotFoundError('User not found');
+        }
+        userId = user._id as Types.ObjectId;
+        orgId = user.orgId;
+        const authTokenService = new AuthTokenService(appConfig.jwtSecret, appConfig.scopedJwtSecret);
+        const jwtToken =  authTokenService.generateToken({
+          userId: user._id,
+          orgId: user.orgId,
+          email: user.email,
+          fullName: user.fullName,
+          mobile: user.mobile,
+          userSlug: user.slug,
+        });
+        req.headers.authorization = `Bearer ${jwtToken}`;
+      }catch(error: any){
+        logger.error('Error creating conversation', {
+          requestId,
+          message: 'Error creating conversation',
+          error: error.message,
+          stack: error.stack,
+          duration: Date.now() - startTime,
+        });
+        next(error);
+      }
+    }
+    
 
     let session: ClientSession | null = null;
     let responseData: any;
@@ -575,14 +619,42 @@ export const createConversation =
 
 export const addMessage =
   (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  async (req: AuthenticatedUserRequest | AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
     const requestId = req.context?.requestId;
     const startTime = Date.now();
     let session: ClientSession | null = null;
 
     try {
-      const userId = req.user?.userId;
-      const orgId = req.user?.orgId;
+      let userId: Types.ObjectId | undefined;
+      let orgId: Types.ObjectId | undefined;
+      if ('user' in req) {
+        const auth_req = req as AuthenticatedUserRequest;
+        userId = auth_req.user?.userId;
+        orgId = auth_req.user?.orgId;
+      } else {
+        const auth_req = req as AuthenticatedServiceRequest;
+        const email = auth_req.tokenPayload?.email;
+        const users = await Users.find({
+          email: email,
+          isDeleted: false,
+        });
+        const user = users[0];
+        if (!user) {
+          throw new NotFoundError('User not found');  
+        }
+        userId = user._id as Types.ObjectId;
+        orgId = user.orgId;
+        const authTokenService = new AuthTokenService(appConfig.jwtSecret, appConfig.scopedJwtSecret);
+        const jwtToken =  authTokenService.generateToken({
+          userId: user._id,
+          orgId: user.orgId,
+          email: user.email,
+          fullName: user.fullName,
+          mobile: user.mobile,
+          userSlug: user.slug,
+        });
+        req.headers.authorization = `Bearer ${jwtToken}`;
+      }
 
       logger.debug('Adding message to conversation', {
         requestId,
