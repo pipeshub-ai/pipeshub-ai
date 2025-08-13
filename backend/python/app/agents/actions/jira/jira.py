@@ -1,12 +1,12 @@
 import json
 import logging
-from typing import Optional, Union
+from typing import Optional
 
-from app.agents.actions.jira.config import (
-    JiraApiKeyConfig,
-    JiraTokenConfig,
-    JiraUsernamePasswordConfig,
-)
+try:
+    from app.agents.client.jira import JIRA  # type: ignore
+except ImportError:
+    raise ImportError("JIRA client not found. Please install the app.agents.client.jira package.")
+
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
@@ -17,26 +17,20 @@ class Jira:
     """JIRA tool exposed to the agents"""
     def __init__(
             self,
-            config: Union[JiraUsernamePasswordConfig, JiraTokenConfig, JiraApiKeyConfig]
+            client: JIRA,
+            base_url: str
         ) -> None:
-        """Initialize the JIRA tool"""
-        """
+        """Initialize the JIRA tool
         Args:
-            logger: Logger instance
-            config: JIRA configuration (JiraUsernamePasswordConfig, JiraTokenConfig, JiraApiKeyConfig)
+            client: JIRA client
+            base_url: JIRA base URL
         Returns:
             None
         Raises:
             ValueError: If the JIRA configuration is invalid
         """
-
-        self.config = config
-        try:
-            logger.info(f"Initializing JIRA with config: {config}")
-            self.jira = config.create_client()
-        except Exception as e:
-            logger.error(f"Failed to initialize JIRA: {e}")
-            raise ValueError(f"Failed to initialize JIRA: {e}") from e
+        self.jira = client
+        self.base_url = base_url
 
     @tool(
         app_name="jira",
@@ -90,7 +84,7 @@ class Jira:
 
             logger.debug(f"JIRA issue created: {issue.key}")
             return (True, json.dumps({
-                "jira_url": f"{self.config.base_url}/browse/{issue.key}",
+                "jira_url": f"{self.base_url}/browse/{issue.key}",
                 "issue_key": issue.key,
                 "issue_type": issue_type,
                 "summary": summary,
@@ -124,7 +118,7 @@ class Jira:
         try:
             issue = self.jira.issue(issue_id)
             return (True, json.dumps({
-                "jira_url": f"{self.config.base_url}/browse/{issue.key}",
+                "jira_url": f"{self.base_url}/browse/{issue.key}",
                 "issue_key": issue.key,
                 "issue_type": issue.fields.issuetype.name,
                 "summary": issue.fields.summary,

@@ -1,12 +1,12 @@
 import json
 import logging
-from typing import Optional, Union
+from typing import Optional
 
-from app.agents.actions.confluence.config import (
-    ConfluenceApiKeyConfig,
-    ConfluenceTokenConfig,
-    ConfluenceUsernamePasswordConfig,
-)
+try:
+    from app.agents.client.confluence import Confluence  # type: ignore
+except ImportError:
+    raise ImportError("Confluence client not found. Please install the app.agents.client.confluence package.")
+
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
@@ -18,21 +18,18 @@ class Confluence:
     """Confluence tool exposed to the agents"""
     def __init__(
         self,
-        config: Union[ConfluenceUsernamePasswordConfig, ConfluenceTokenConfig, ConfluenceApiKeyConfig]) -> None:
-        """Initialize the Confluence tool"""
-        """
+        client: Confluence,
+        base_url: str
+    ) -> None:
+        """Initialize the Confluence tool
         Args:
-            config: Confluence configuration (ConfluenceUsernamePasswordConfig, ConfluenceTokenConfig, ConfluenceApiKeyConfig)
+            client: Confluence client
+            base_url: Confluence base URL
         Returns:
             None
         """
-        self.config = config
-        try:
-            logger.info("Initializing Confluence")
-            self.confluence = config.create_client()
-        except Exception as e:
-            logger.error(f"Failed to initialize Confluence: {e}")
-            raise
+        self.confluence = client
+        self.base_url = base_url
 
     @tool(
         app_name="confluence",
@@ -83,15 +80,15 @@ class Confluence:
         try:
             page = self.confluence.create_page(
                 space=space_id,
-                title=page_title,
-                body=page_content,
+                page_title=page_title,
+                page_content=page_content,
                 parent_id=parent_id
             )
             return (True, json.dumps({
-                "confluence_url": f"{self.config.base_url}/display/{page.id}",
-                "page_id": page.id,
-                "page_title": page.title,
-                "page_content": page.body,
+                "confluence_url": f"{self.base_url}/display/{page.id}", # type: ignore
+                "page_id": page.id, # type: ignore
+                "page_title": page_title,
+                "page_content": page_content,
                 "parent_id": parent_id
             }))
         except Exception as e:
@@ -164,10 +161,10 @@ class Confluence:
         try:
             page = self.confluence.update_page(page_id, page_title, page_content)
             return (True, json.dumps({
-                "confluence_url": f"{self.config.base_url}/display/{page.id}",
-                "page_id": page.id,
-                "page_title": page.title,
-                "page_content": page.body
+                "confluence_url": f"{self.base_url}/display/{page.id}", # type: ignore
+                "page_id": page_id,
+                "page_title": page_title,
+                "page_content": page_content
             }))
         except Exception as e:
             logger.error(f"Failed to update page: {e}")
@@ -351,7 +348,7 @@ class Confluence:
             A tuple with a boolean indicating success/failure and a JSON string with the search results
         """
         try:
-            results = self.confluence.cql(cql=query, expand=expand, limit=limit)
+            results = self.confluence.cql(cql=query, expand=expand, limit=limit) # type: ignore
             return (True, json.dumps(results))
         except Exception as e:
             logger.error(f"Failed to search pages: {e}")
@@ -368,7 +365,7 @@ class Confluence:
             The ID of the space
         """
         try:
-            spaces = self.confluence.get_spaces()
+            spaces = self.confluence.get_spaces() # type: ignore
             for space_obj in spaces:
                 if space_obj.name == space: # type: ignore
                     return space_obj.id # type: ignore
