@@ -329,7 +329,6 @@ class DataSourceEntitiesProcessor:
             transaction.commit_transaction()
 
             if records_to_publish:
-                # Send a single message with all the records
                 for record in records_to_publish:
                     await self.messaging_producer.send_message(
                             "record-events",

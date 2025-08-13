@@ -702,7 +702,7 @@ async def download_file(
                 await confluence_client.initialize()
                 html_content = await confluence_client.fetch_page_content(external_record_id)
                 return StreamingResponse(
-                    iter([html_content]), media_type=MimeTypes.HTML.value, headers=headers
+                    iter([html_content]), media_type=MimeTypes.HTML.value, headers={}
                 )
             else:
                 raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Invalid connector type")
@@ -1315,7 +1315,7 @@ async def stream_record(
                 await confluence_client.initialize()
                 html_content = await confluence_client.fetch_page_content(external_record_id)
                 return StreamingResponse(
-                    iter([html_content]), media_type=MimeTypes.HTML.value, headers=headers
+                    iter([html_content]), media_type=MimeTypes.HTML.value, headers={}
                 )
 
             else:
