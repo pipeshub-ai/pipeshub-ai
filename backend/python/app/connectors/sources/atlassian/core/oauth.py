@@ -22,6 +22,8 @@ class AtlassianScope(Enum):
     JIRA_PROJECT_MANAGE = "manage:jira-project"
     JIRA_CONFIGURATION_MANAGE = "manage:jira-configuration"
     JIRA_DATA_PROVIDER_MANAGE = "manage:jira-data-provider"
+    JIRA_PROJECT_READ = "read:jira-project"
+    JIRA_PROJECT_WRITE = "write:jira-project"
 
     # Confluence Scopes
     CONFLUENCE_CONTENT_READ = "read:content.all"
@@ -55,7 +57,9 @@ class AtlassianScope(Enum):
             cls.JIRA_WORK_READ.value,
             cls.JIRA_USER_READ.value,
             cls.ACCOUNT_READ.value,
-            cls.OFFLINE_ACCESS.value
+            cls.OFFLINE_ACCESS.value,
+            cls.JIRA_PROJECT_READ.value,
+            cls.JIRA_PROJECT_WRITE.value,
         ]
 
     @classmethod
@@ -80,6 +84,8 @@ class AtlassianScope(Enum):
             cls.JIRA_WORK_READ.value,
             cls.JIRA_WORK_WRITE.value,
             cls.JIRA_USER_READ.value,
+            cls.JIRA_PROJECT_READ.value,
+            cls.JIRA_PROJECT_WRITE.value,
             # Confluence
             cls.CONFLUENCE_CONTENT_READ.value,
             cls.CONFLUENCE_CONTENT_WRITE.value,

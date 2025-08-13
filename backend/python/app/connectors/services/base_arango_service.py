@@ -31,6 +31,7 @@ from app.schema.arango.documents import (
     orgs_schema,
     record_group_schema,
     record_schema,
+    ticket_record_schema,
     user_schema,
     webpage_record_schema,
 )
@@ -70,7 +71,8 @@ NODE_COLLECTIONS = [
     (CollectionNames.SUBCATEGORIES2.value, None),
     (CollectionNames.SUBCATEGORIES3.value, None),
     (CollectionNames.BLOCKS.value, None),
-    (CollectionNames.RECORD_GROUPS.value, record_group_schema)
+    (CollectionNames.RECORD_GROUPS.value, record_group_schema),
+    (CollectionNames.TICKETS.value, ticket_record_schema),
 ]
 
 EDGE_COLLECTIONS = [

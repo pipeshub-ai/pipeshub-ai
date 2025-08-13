@@ -14,6 +14,7 @@ class RecordGroupType(str, Enum):
     KB = "KB"
     NOTION_WORKSPACE = "NOTION_WORKSPACE"
     DRIVE = "DRIVE"
+    JIRA_PROJECT = "JIRA_PROJECT"
 
 class RecordType(str, Enum):
     FILE = "FILE"
@@ -21,6 +22,7 @@ class RecordType(str, Enum):
     WEBPAGE = "WEBPAGE"
     MESSAGE = "MESSAGE"
     MAIL = "MAIL"
+    TICKET = "TICKET"
     OTHERS = "OTHERS"
 
 class RecordStatus(str, Enum):
@@ -265,6 +267,8 @@ class WebpageRecord(Record):
             "updatedAtTimestamp": self.updated_at,
             "sourceCreatedAtTimestamp": self.source_created_at,
             "sourceLastModifiedTimestamp": self.source_updated_at,
+            "signedUrl": self.signed_url,
+            "signedUrlRoute": self.fetch_signed_url,
         }
 
     def to_arango_record(self) -> Dict:
@@ -273,11 +277,62 @@ class WebpageRecord(Record):
             "orgId": self.org_id,
         }
 
+class TicketRecord(Record):
+    summary: Optional[str] = None
+    description: Optional[str] = None
+    status: Optional[str] = None
+    priority: Optional[str] = None
+    assignee: Optional[str] = None
+    reporter_email: Optional[str] = None
+    assignee_email: Optional[str] = None
+    reporter_name: Optional[str] = None
+    assignee_name: Optional[str] = None
+    creator_email: Optional[str] = None
+    creator_name: Optional[str] = None
+
+    def to_arango_record(self) -> Dict:
+        return {
+            "_key": self.id,
+            "orgId": self.org_id,
+            "summary": self.summary,
+            "description": self.description,
+            "status": self.status,
+            "priority": self.priority,
+            "assignee": self.assignee,
+            "reporterEmail": self.reporter_email,
+            "assigneeEmail": self.assignee_email,
+            "creatorEmail": self.creator_email,
+            "creatorName": self.creator_name,
+        }
+
+    def to_kafka_record(self) -> Dict:
+
+        return {
+            "recordId": self.id,
+            "orgId": self.org_id,
+            "recordName": self.record_name,
+            "recordType": self.record_type.value,
+            "connectorName": self.connector_name,
+            "mimeType": self.mime_type,
+            "createdAtTimestamp": self.created_at,
+            "updatedAtTimestamp": self.updated_at,
+            "signedUrl": self.signed_url,
+            "signedUrlRoute": self.fetch_signed_url,
+            "origin": self.origin,
+            "webUrl": self.weburl,
+            "sourceCreatedAtTimestamp": self.source_created_at,
+            "sourceLastModifiedTimestamp": self.source_updated_at,
+        }
+
 class RecordGroup(BaseModel):
     id: str = Field(description="Unique identifier for the record group", default_factory=lambda: str(uuid4()))
+    org_id: str = Field(description="Unique identifier for the organization", default="")
     name: str = Field(description="Name of the record group")
+    short_name: Optional[str] = Field(default=None, description="Short name of the record group")
+    description: Optional[str] = Field(default=None, description="Description of the record group")
     external_group_id: Optional[str] = Field(description="External identifier for the record group")
     connector_name: Optional[str] = Field(description="Name of the connector used to create the record group")
+    web_url: Optional[str] = Field(default=None, description="Web URL of the record group")
     group_type: Optional[RecordGroupType] = Field(description="Type of the record group")
     created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record group creation")
     updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record group update")
@@ -288,9 +343,12 @@ class RecordGroup(BaseModel):
         return {
             "_key": self.id,
             "groupName": self.name,
+            "shortName": self.short_name,
+            "description": self.description,
             "externalGroupId": self.external_group_id,
             "connectorName": self.connector_name,
             "groupType": self.group_type.value,
+            "webUrl": self.web_url,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
             "sourceCreatedAtTimestamp": self.source_created_at,
@@ -301,10 +359,14 @@ class RecordGroup(BaseModel):
     def from_arango_base_record_group(arango_base_record_group: Dict) -> "RecordGroup":
         return RecordGroup(
             id=arango_base_record_group["_key"],
+            org_id=arango_base_record_group.get("orgId", ""),
             name=arango_base_record_group["groupName"],
+            short_name=arango_base_record_group.get("shortName", None),
+            description=arango_base_record_group.get("description", None),
             external_group_id=arango_base_record_group["externalGroupId"],
             connector_name=arango_base_record_group["connectorName"],
             group_type=arango_base_record_group["groupType"],
+            web_url=arango_base_record_group.get("webUrl", None),
             created_at=arango_base_record_group["createdAtTimestamp"],
             updated_at=arango_base_record_group["updatedAtTimestamp"],
             source_created_at=arango_base_record_group["sourceCreatedAtTimestamp"],
