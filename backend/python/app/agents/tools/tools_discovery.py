@@ -69,7 +69,7 @@ class ToolsDiscovery:
 
     def _import_google_tools(self, google_dir: Path) -> None:
         """Import Google tools which have a nested structure"""
-        google_subdirs = ["gmail", "google_calendar", "google_drive", "auth", "google_drive/enterprise"]
+        google_subdirs = ["gmail", "google_calendar", "google_drive", "auth", "enterprise"]
 
         for subdir in google_subdirs:
             subdir_path = google_dir / subdir
