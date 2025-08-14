@@ -4,6 +4,7 @@ config(); // Load environment variables first
 import { json, urlencoded, Request, Response } from "express";
 import { connect } from "./utils/db";
 import { getFromDatabase, saveToDatabase } from "./utils/conversation";
+import {markdownToBlocks} from '@tryfabric/mack';
 // import { getUserByEmail } from "./services/iam.service";
 // import { authJwtGenerator } from "./utils/createJwt";
 // import { jwtValidator } from "./middlewares/userAuthentication";
@@ -89,8 +90,19 @@ interface ConversationData {
 //   richformId: string;
 // }
 
-// Function to convert citations to hyperlinks
 function convertCitationsToHyperlinks(text: string, citationUrls: CitationUrls): string {
+  return text.replace(/\[(\d+)\]/g, (match, citationNumber) => {
+    const url = citationUrls[citationNumber];
+    if (url) {
+      // Use proper markdown link format instead of Slack's HTML-style
+      return `[[${citationNumber}](${url})]`;
+    }
+    return match;
+  });
+}
+
+// Function to convert citations to hyperlinks
+function convertCitationsToHyperlinks2(text: string, citationUrls: CitationUrls): string {
   return text.replace(/\[(\d+)\]/g, (match, citationNumber) => {
     const url = citationUrls[citationNumber];
     if (url) {
@@ -1053,17 +1065,35 @@ app.message(async ({ message, client, context }) => {
               }
            
             });
-            botResponse.content = convertCitationsToHyperlinks(botResponse.content, citationUrls);
         }
-        const blocks = [
-          {
-            type: "section",
-            text: {
-              type: "mrkdwn",
-              text: botResponse.content,
+        let blocks = [];
+        try {
+          // throw new Error("test");
+          botResponse.content = convertCitationsToHyperlinks(botResponse.content, citationUrls);
+           blocks = await markdownToBlocks(botResponse.content);
+        } catch (error) {
+          console.error("Error converting markdown to blocks:", error);
+          botResponse.content = convertCitationsToHyperlinks2(botResponse.content, citationUrls);
+
+          blocks = [
+            {
+              type: "section",
+              text: {
+                type: "mrkdwn",
+                text: botResponse.content,
+              },
             },
-          },
-        ];
+          ];
+        }
+        // const blocks = [
+        //   {
+        //     type: "section",
+        //     text: {
+        //       type: "mrkdwn",
+        //       text: botResponse.content,
+        //     },
+        //   },
+        // ];
        await typedClient.chat.update({
         channel: typedMessage.channel!,
         ts: messageTs,
