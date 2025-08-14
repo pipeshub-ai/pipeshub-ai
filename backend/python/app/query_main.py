@@ -1,3 +1,4 @@
+import os
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, List
 
@@ -8,11 +9,10 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.agents.client.google import GoogleClient
+from app.agents.actions.confluence.confluence import Confluence
 from app.agents.actions.google.google_drive.google_drive import GoogleDrive
 from app.agents.client.confluence import ConfluenceClient, ConfluenceTokenConfig
-from app.agents.actions.confluence.confluence import Confluence
-import os
+from app.agents.client.google import GoogleClient
 from app.agents.db.tools_db import ToolsDBManager
 from app.agents.router.router import router as tools_router
 from app.agents.tools.registry import _global_tools_registry
@@ -195,7 +195,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     token = os.getenv("CONFLUENCE_TOKEN")
     if not token:
         raise Exception("CONFLUENCE_TOKEN is not set")
-    
+
     confluence_client : ConfluenceClient = ConfluenceClient.build_with_config(
         ConfluenceTokenConfig(
             base_url="https://api.atlassian.com/ex/confluence",

@@ -1,493 +1,583 @@
-import json
-import os
-from typing import Any, Union
+"""
+Unified Tool Registry for Multi-Service Agent System
+Handles Slack, JIRA, Confluence, Gmail, Google Drive, Google Calendar tools
+with proper client initialization and execution patterns.
+Fixed for Pydantic v2 compatibility.
+"""
+
 import asyncio
 import inspect
+import json
+import logging
+import os
+from typing import Any, Dict, List, Optional
 
-from langchain.tools import BaseTool
-from pydantic import ConfigDict, Field
+from langchain_core.tools import BaseTool
+from pydantic import BaseModel, Field, create_model
 
-from app.agents.tools.registry import _global_tools_registry
-from app.modules.agents.qna.chat_state import ChatState
+from app.agents.actions.confluence.confluence import Confluence
+from app.agents.actions.google.enterprise.enterprise import GoogleDriveEnterprise
+from app.agents.actions.google.gmail.gmail import Gmail
+from app.agents.actions.google.google_calendar.google_calendar import GoogleCalendar
+from app.agents.actions.google.google_drive.google_drive import GoogleDrive
+from app.agents.actions.jira.jira import Jira
+from app.agents.actions.slack.config import SlackTokenConfig
+
+# Import your existing classes
+from app.agents.actions.slack.slack import Slack
+from app.agents.client.confluence import ConfluenceClient, ConfluenceTokenConfig
 from app.agents.client.google import GoogleClient
+from app.agents.client.jira import JiraClient, JiraTokenConfig
+from app.agents.tools.registry import _global_tools_registry
 
 
-class RegistryToolWrapper(BaseTool):
-    """Wrapper to adapt registry tools to LangChain BaseTool format"""
+class ToolExecutionError(Exception):
+    """Custom exception for tool execution errors"""
+    pass
 
-    # Proper Pydantic v2 configuration
-    model_config = ConfigDict(
-        arbitrary_types_allowed=True,
-        extra='allow',
-        validate_assignment=True
-    )
 
-    # Define the custom fields as class attributes with proper typing
-    app_name: str = Field(default="", description="Application name")
-    tool_name: str = Field(default="", description="Tool name")
-    registry_tool: Any = Field(default=None, description="Registry tool instance")
-    chat_state: Any = Field(default=None, description="Chat state")
+class AgentToolRegistry:
+    """
+    Unified registry for all agent tools with proper client management
+    and execution patterns for different service types.
+    """
 
-    def __init__(self, app_name: str, tool_name: str, registry_tool, state: ChatState, **kwargs) -> None:
-        # Prepare the initialization data
-        init_data = {
-            'name': f"{app_name}.{tool_name}",  # Use dot notation for consistency
-            'description': getattr(registry_tool, 'description', f"Tool: {app_name}.{tool_name}"),
-            'app_name': app_name,
-            'tool_name': tool_name,
-            'registry_tool': registry_tool,
-            'chat_state': state,
-            **kwargs
-        }
+    def __init__(self, logger: logging.Logger):
+        self.logger = logger
+        self.tool_instances: Dict[str, Any] = {}
+        self.client_instances: Dict[str, Any] = {}
+        self.tools_by_name: Dict[str, BaseTool] = {}
 
-        # Call parent constructor with all the data
-        super().__init__(**init_data)
+    async def initialize_all_tools(
+        self,
+        org_id: str,
+        user_id: str,
+        config_service: Any,
+        arango_service: Any
+    ) -> List[BaseTool]:
+        """
+        Initialize all available tools based on environment configuration
+        """
+        tools = []
 
-    @property
-    def state(self) -> ChatState:
-        """Access the chat state"""
-        return self.chat_state
+        # Initialize Slack tools
+        slack_tools = await self._initialize_slack_tools()
+        if slack_tools:
+            tools.extend(slack_tools)
 
-    async def _arun(self, **kwargs) -> str:
-        """Async execution of the registry tool"""
+        # Initialize JIRA tools
+        jira_tools = await self._initialize_jira_tools()
+        if jira_tools:
+            tools.extend(jira_tools)
+
+        # Initialize Confluence tools
+        confluence_tools = await self._initialize_confluence_tools()
+        if confluence_tools:
+            tools.extend(confluence_tools)
+
+        # Initialize Google tools (Gmail, Drive, Calendar)
+        google_tools = await self._initialize_google_tools(
+            org_id, user_id, config_service, arango_service
+        )
+        if google_tools:
+            tools.extend(google_tools)
+
+        # Cache tools by name for quick lookup
+        for tool in tools:
+            self.tools_by_name[tool.name] = tool
+
+        self.logger.info(f"Initialized {len(tools)} tools: {[t.name for t in tools]}")
+        return tools
+
+    async def _initialize_slack_tools(self) -> Optional[List[BaseTool]]:
+        """Initialize Slack tools if token is available"""
         try:
-            # Execute the tool function directly - with proper async handling
-            result = await self._execute_tool_directly_async(kwargs)
+            slack_token = os.getenv("SLACK_BOT_TOKEN")
+            if not slack_token:
+                self.logger.warning("SLACK_TOKEN not found, skipping Slack tools")
+                return None
 
-            # Convert result to string format for LLM consumption
-            return self._format_result(result)
+            # Create Slack client
+            slack_config = SlackTokenConfig(token=slack_token)
+            slack_instance = Slack(slack_config)
+            self.tool_instances["slack"] = slack_instance
+
+            # Get Slack tools from global registry
+            slack_tools = []
+            for tool_name, tool in _global_tools_registry.get_all_tools().items():
+                if tool.app_name == "slack":
+                    # Create LangChain tool wrapper
+                    langchain_tool = self._create_langchain_tool(
+                        tool_name=tool_name,
+                        description=tool.description,
+                        function=tool.function,
+                        parameters=tool.parameters,
+                        instance=slack_instance
+                    )
+                    if langchain_tool:
+                        slack_tools.append(langchain_tool)
+
+            self.logger.info(f"Initialized {len(slack_tools)} Slack tools")
+            return slack_tools
 
         except Exception as e:
-            error_msg = f"Error executing tool {self.app_name}.{self.tool_name}: {str(e)}"
-            if hasattr(self.state, 'get') and self.state.get("logger"):
-                self.state["logger"].error(error_msg)
-            return json.dumps({
-                "status": "error",
-                "message": error_msg,
-                "tool": f"{self.app_name}.{self.tool_name}",
-                "args": kwargs
-            }, indent=2)
+            self.logger.error(f"Failed to initialize Slack tools: {e}", exc_info=True)
+            return None
 
-    def _run(self, **kwargs) -> str:
-        """Sync execution wrapper - runs async method in event loop"""
+    async def _initialize_jira_tools(self) -> Optional[List[BaseTool]]:
+        """Initialize JIRA tools if token is available"""
         try:
-            # Check if we're already in an event loop
-            try:
-                loop = asyncio.get_running_loop()
-                # If we're in a loop, we need to run in a thread pool
-                import concurrent.futures
-                import threading
-                
-                def run_in_thread():
-                    # Create a new event loop for this thread
-                    new_loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(new_loop)
-                    try:
-                        return new_loop.run_until_complete(self._arun(**kwargs))
-                    finally:
-                        new_loop.close()
-                
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(run_in_thread)
-                    return future.result()
-                    
-            except RuntimeError:
-                # No running loop, we can use asyncio.run
-                return asyncio.run(self._arun(**kwargs))
+            # Use CONFLUENCE_TOKEN for JIRA as they share the same Atlassian token
+            jira_token = os.getenv("CONFLUENCE_TOKEN")
+            if not jira_token:
+                self.logger.warning("CONFLUENCE_TOKEN not found, skipping JIRA tools")
+                return None
+
+            # Create JIRA client
+            jira_config = JiraTokenConfig(
+                base_url="https://api.atlassian.com/ex/jira",
+                token=jira_token
+            )
+            jira_client = JiraClient.build_with_config(jira_config)
+            jira_instance = Jira(jira_client, "https://api.atlassian.com/ex/jira")
+            self.tool_instances["jira"] = jira_instance
+
+            # Get JIRA tools from global registry
+            jira_tools = []
+            for tool_name, tool in _global_tools_registry.get_all_tools().items():
+                if tool.app_name == "jira":
+                    langchain_tool = self._create_langchain_tool(
+                        tool_name=tool_name,
+                        description=tool.description,
+                        function=tool.function,
+                        parameters=tool.parameters,
+                        instance=jira_instance
+                    )
+                    if langchain_tool:
+                        jira_tools.append(langchain_tool)
+
+            self.logger.info(f"Initialized {len(jira_tools)} JIRA tools")
+            return jira_tools
 
         except Exception as e:
-            error_msg = f"Error executing tool {self.app_name}.{self.tool_name}: {str(e)}"
-            if hasattr(self.state, 'get') and self.state.get("logger"):
-                self.state["logger"].error(error_msg)
-            return json.dumps({
-                "status": "error",
-                "message": error_msg,
-                "tool": f"{self.app_name}.{self.tool_name}",
-                "args": kwargs
-            }, indent=2)
+            self.logger.error(f"Failed to initialize JIRA tools: {e}", exc_info=True)
+            return None
 
-    async def _execute_tool_directly_async(self, arguments: dict) -> Union[tuple, str, dict, list, int, float, bool]:
-        """Execute the registry tool function directly with proper async handling"""
-        tool_function = self.registry_tool.function
+    async def _initialize_confluence_tools(self) -> Optional[List[BaseTool]]:
+        """Initialize Confluence tools if token is available"""
+        try:
+            confluence_token = os.getenv("CONFLUENCE_TOKEN")
+            if not confluence_token:
+                self.logger.warning("CONFLUENCE_TOKEN not found, skipping Confluence tools")
+                return None
 
-        # Check if this is a class method (has 'self' parameter)
-        if hasattr(tool_function, '__qualname__') and '.' in tool_function.__qualname__:
-            # This is a class method, we need to create an instance
-            class_name = tool_function.__qualname__.split('.')[0]
-            module_name = tool_function.__module__
+            # Create Confluence client
+            confluence_config = ConfluenceTokenConfig(
+                base_url="https://api.atlassian.com/ex/confluence",
+                token=confluence_token
+            )
+            confluence_client = ConfluenceClient.build_with_config(confluence_config)
+            confluence_instance = Confluence(confluence_client, "https://api.atlassian.com/ex/confluence")
+            self.tool_instances["confluence"] = confluence_instance
 
+            # Get Confluence tools from global registry
+            confluence_tools = []
+            for tool_name, tool in _global_tools_registry.get_all_tools().items():
+                if tool.app_name == "confluence":
+                    langchain_tool = self._create_langchain_tool(
+                        tool_name=tool_name,
+                        description=tool.description,
+                        function=tool.function,
+                        parameters=tool.parameters,
+                        instance=confluence_instance
+                    )
+                    if langchain_tool:
+                        confluence_tools.append(langchain_tool)
+
+            self.logger.info(f"Initialized {len(confluence_tools)} Confluence tools")
+            return confluence_tools
+
+        except Exception as e:
+            self.logger.error(f"Failed to initialize Confluence tools: {e}", exc_info=True)
+            return None
+
+    async def _initialize_google_tools(
+        self,
+        org_id: str,
+        user_id: str,
+        config_service: Any,
+        arango_service: Any
+    ) -> Optional[List[BaseTool]]:
+        """Initialize Google tools (Gmail, Drive, Calendar)"""
+        try:
+            google_tools = []
+
+            # Check if we should use individual or enterprise authentication
+            is_individual = os.getenv("GOOGLE_AUTH_TYPE", "individual") == "individual"
+
+            # Initialize Gmail tools
             try:
-                # Import the module and get the class
-                action_module = __import__(module_name, fromlist=[class_name])
-                action_class = getattr(action_module, class_name)
+                gmail_client = await GoogleClient.build_from_services(
+                    service_name="gmail",
+                    logger=self.logger,
+                    config_service=config_service,
+                    arango_service=arango_service,
+                    org_id=org_id,
+                    user_id=user_id,
+                    is_individual=is_individual,
+                    version="v1"
+                )
+                gmail_instance = Gmail(gmail_client.get_client())
+                self.tool_instances["gmail"] = gmail_instance
 
-                # Create an instance with configuration
-                instance = await self._create_tool_instance(action_class)
-
-                # Get the bound method
-                bound_method = getattr(instance, self.tool_name)
-                
-                # Check if the method is async
-                if inspect.iscoroutinefunction(bound_method):
-                    return await bound_method(**arguments)
-                else:
-                    return bound_method(**arguments)
+                # Get Gmail tools
+                for tool_name, tool in _global_tools_registry.get_all_tools().items():
+                    if tool.app_name == "gmail":
+                        langchain_tool = self._create_langchain_tool(
+                            tool_name=tool_name,
+                            description=tool.description,
+                            function=tool.function,
+                            parameters=tool.parameters,
+                            instance=gmail_instance
+                        )
+                        if langchain_tool:
+                            google_tools.append(langchain_tool)
 
             except Exception as e:
-                raise RuntimeError(f"Failed to create instance for tool '{self.app_name}.{self.tool_name}': {str(e)}")
-        else:
-            # This is a standalone function
-            if inspect.iscoroutinefunction(tool_function):
-                return await tool_function(**arguments)
-            else:
-                return tool_function(**arguments)
+                self.logger.warning(f"Failed to initialize Gmail tools: {e}")
 
-    async def _create_tool_instance(self, action_class) -> object:
-        """Create an instance of the tool class with appropriate configuration"""
-        try:
-            # Get tool configurations from state
-            tool_configs = self.state.get("tool_configs", {})
-            app_config = tool_configs.get(self.app_name, {})
-
-            # Try different initialization strategies based on the tool type
-            if self.app_name == "slack":
-                from app.agents.actions.slack.config import SlackTokenConfig
-                if app_config.get("slack_bot_token"):
-                    config = SlackTokenConfig(token=app_config["slack_bot_token"])
-                    return action_class(config)
-
-            elif self.app_name == "jira":
-                from app.agents.client.jira import JiraClient, JiraTokenConfig
-                if app_config.get("jira_token"):
-                    jira_client : JiraClient = JiraClient.build_with_config(
-                        JiraTokenConfig(
-                            base_url="https://api.atlassian.com/ex/jira",
-                            token=app_config["jira_token"]
-                        )
-                    )
-                    return action_class(jira_client,"https://api.atlassian.com/ex/jira")
-
-            elif self.app_name == "confluence":
-                from app.agents.client.confluence import ConfluenceClient, ConfluenceTokenConfig
-                if app_config.get("confluence_token"):
-                    confluence_client : ConfluenceClient = ConfluenceClient.build_with_config(
-                        ConfluenceTokenConfig(
-                            base_url="https://api.atlassian.com/ex/confluence",
-                            token=app_config["confluence_token"]
-                        )
-                    )
-                    return action_class(confluence_client, base_url="https://api.atlassian.com/ex/confluence")
-
-            elif self.app_name == "gmail":
-                google_gmail_client: GoogleClient = await GoogleClient.build_from_services(
-                    service_name="gmail",
-                    logger=self.state.get("logger"),
-                    config_service=self.state.get("config_service"),
-                    arango_service=self.state.get("arango_service"),
-                    org_id=self.state.get("org_id"),
-                    user_id=self.state.get("user_id"),
-                    is_individual=self.state.get("is_individual",False),
-                )
-                return action_class(google_gmail_client)
-
-            elif self.app_name == "google_calendar":
-                google_calendar_client: GoogleClient = await GoogleClient.build_from_services(
-                    service_name="calendar",
-                    logger=self.state.get("logger"),
-                    config_service=self.state.get("config_service"),
-                    arango_service=self.state.get("arango_service"),
-                    org_id=self.state.get("org_id"),
-                    user_id=self.state.get("user_id"),
-                    is_individual=self.state.get("is_individual",False),
-                )
-                return action_class(google_calendar_client)
-
-            elif self.app_name == "google_drive":
-                google_drive_client: GoogleClient = await GoogleClient.build_from_services(
-                    service_name="drive",
-                    logger=self.state.get("logger"),
-                    config_service=self.state.get("config_service"),
-                    arango_service=self.state.get("arango_service"),
-                    org_id=self.state.get("org_id"),
-                    user_id=self.state.get("user_id"),
-                    is_individual=self.state.get("is_individual",False),
-                )
-                return action_class(google_drive_client)
-
-            elif self.app_name == "calculator":
-                # Calculator doesn't need configuration
-                return action_class()
-
-            # Fallback: try to create without arguments
+            # Initialize Google Drive tools
             try:
-                return action_class()
-            except TypeError:
-                # Try with empty config
-                try:
-                    return action_class({})
-                except Exception:
-                    # Last resort: try with None
-                    return action_class(None)
-
-        except Exception as e:
-            raise RuntimeError(f"Failed to create instance for {self.app_name}: {str(e)}")
-
-    def _format_result(self, result) -> str:
-        """Format tool result for LLM consumption"""
-        # Handle tuple format (success, json_string) from registry tools
-        MAX_RESULT_LENGTH = 2
-        if isinstance(result, (tuple, list)) and len(result) == MAX_RESULT_LENGTH:
-            success, result_data = result
-            return str(result_data)
-
-        # Handle direct result
-        return str(result)
-
-
-def get_agent_tools(state: ChatState) -> list:
-    """Get all available tools from the global registry - no filtering, let LLM decide"""
-    tools = []
-    logger = state.get("logger")
-
-    # Get ALL tools from the global registry
-    registry_tools = _global_tools_registry.get_all_tools()
-    if logger:
-        logger.info(f"Loading {len(registry_tools)} tools from global registry")
-
-    # User-configured tools filter (optional - if None or empty, load all tools)
-    user_enabled_tools = state.get("tools", None)
-
-    # If tools is an empty list [], treat it as "load all tools"
-    if user_enabled_tools is not None and len(user_enabled_tools) == 0:
-        user_enabled_tools = None
-        if logger:
-            logger.info("Empty tools list detected - loading ALL available tools")
-
-    # Convert all registry tools to LangChain format
-    for full_tool_name, registry_tool in registry_tools.items():
-        try:
-            if "." not in full_tool_name:
-                # Handle tools without app prefix
-                app_name = "default"
-                tool_name = full_tool_name
-            else:
-                app_name, tool_name = full_tool_name.split(".", 1)
-
-            # Determine if this tool should be included
-            should_include = False
-
-            # Case 1: No filter specified - include all tools
-            if user_enabled_tools is None:
-                should_include = True
-                if logger:
-                    logger.debug(f"Including {full_tool_name} - no filter specified")
-
-            # Case 2: User has specified tools - check if this tool is enabled
-            elif user_enabled_tools is not None:
-                should_include = (
-                    full_tool_name in user_enabled_tools or  # Exact match: "slack.send_message"
-                    tool_name in user_enabled_tools or      # Tool name match: "send_message"
-                    app_name in user_enabled_tools          # App name match: "slack" (includes all slack tools)
+                drive_client = await GoogleClient.build_from_services(
+                    service_name="drive",
+                    logger=self.logger,
+                    config_service=config_service,
+                    arango_service=arango_service,
+                    org_id=org_id,
+                    user_id=user_id,
+                    is_individual=is_individual,
+                    version="v3"
                 )
-                if should_include and logger:
-                    logger.debug(f"Including {full_tool_name} - matches user filter")
+                drive_instance = GoogleDrive(drive_client.get_client())
+                self.tool_instances["google_drive"] = drive_instance
 
-            # Case 3: Always include essential tools
-            if not should_include and _is_essential_tool(full_tool_name):
-                should_include = True
-                if logger:
-                    logger.debug(f"Including {full_tool_name} - essential tool")
+                # Get Google Drive tools
+                for tool_name, tool in _global_tools_registry.get_all_tools().items():
+                    if tool.app_name == "google_drive":
+                        langchain_tool = self._create_langchain_tool(
+                            tool_name=tool_name,
+                            description=tool.description,
+                            function=tool.function,
+                            parameters=tool.parameters,
+                            instance=drive_instance
+                        )
+                        if langchain_tool:
+                            google_tools.append(langchain_tool)
 
-            if should_include:
-                wrapper_tool = RegistryToolWrapper(app_name, tool_name, registry_tool, state)
-                tools.append(wrapper_tool)
-                if logger:
-                    logger.debug(f"✅ Added tool: {full_tool_name}")
-            else:
-                if logger:
-                    logger.debug(f"❌ Skipped tool: {full_tool_name}")
+                # Initialize Enterprise Drive tools if not individual
+                if not is_individual:
+                    enterprise_client = await GoogleClient.build_from_services(
+                        service_name="admin",
+                        logger=self.logger,
+                        config_service=config_service,
+                        arango_service=arango_service,
+                        org_id=org_id,
+                        user_id=user_id,
+                        is_individual=False,
+                        version="directory_v1"
+                    )
+                    enterprise_instance = GoogleDriveEnterprise(enterprise_client.get_client())
+                    self.tool_instances["google_drive_enterprise"] = enterprise_instance
+
+                    # Get Enterprise Drive tools
+                    for tool_name, tool in _global_tools_registry.get_all_tools().items():
+                        if tool.app_name == "google_drive_enterprise":
+                            langchain_tool = self._create_langchain_tool(
+                                tool_name=tool_name,
+                                description=tool.description,
+                                function=tool.function,
+                                parameters=tool.parameters,
+                                instance=enterprise_instance
+                            )
+                            if langchain_tool:
+                                google_tools.append(langchain_tool)
+
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize Google Drive tools: {e}")
+
+            # Initialize Google Calendar tools
+            try:
+                calendar_client = await GoogleClient.build_from_services(
+                    service_name="calendar",
+                    logger=self.logger,
+                    config_service=config_service,
+                    arango_service=arango_service,
+                    org_id=org_id,
+                    user_id=user_id,
+                    is_individual=is_individual,
+                    version="v3"
+                )
+                calendar_instance = GoogleCalendar(calendar_client.get_client())
+                self.tool_instances["google_calendar"] = calendar_instance
+
+                # Get Google Calendar tools
+                for tool_name, tool in _global_tools_registry.get_all_tools().items():
+                    if tool.app_name == "google_calendar":
+                        langchain_tool = self._create_langchain_tool(
+                            tool_name=tool_name,
+                            description=tool.description,
+                            function=tool.function,
+                            parameters=tool.parameters,
+                            instance=calendar_instance
+                        )
+                        if langchain_tool:
+                            google_tools.append(langchain_tool)
+
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize Google Calendar tools: {e}")
+
+            self.logger.info(f"Initialized {len(google_tools)} Google tools")
+            return google_tools if google_tools else None
 
         except Exception as e:
-            if logger:
-                logger.error(f"Failed to add tool {full_tool_name}: {e}")
-            # Continue with other tools even if one fails
-            continue
+            self.logger.error(f"Failed to initialize Google tools: {e}", exc_info=True)
+            return None
 
-    # Initialize tool state storage
-    _initialize_tool_state(state)
+    def _create_langchain_tool(
+        self,
+        tool_name: str,
+        description: str,
+        function: Any,
+        parameters: List[Any],
+        instance: Any
+    ) -> Optional[BaseTool]:
+        """Create a LangChain compatible tool wrapper with proper Pydantic v2 support"""
 
-    # Store available tools in state for reference
-    state["available_tools"] = [tool.name for tool in tools]
+        try:
+            # Create Pydantic model fields using create_model
+            model_fields = {}
 
-    if logger:
-        logger.info(f"Total tools available to LLM: {len(tools)}")
+            for param in parameters:
+                # Determine the proper type
+                param_type = str  # Default type
 
-        # Log breakdown by app for debugging
-        tool_breakdown = {}
-        for tool in tools:
-            # Extract app name from tool name (format: app_name.tool_name)
-            if "." in tool.name:
-                app = tool.name.split(".")[0]
-                tool_breakdown[app] = tool_breakdown.get(app, 0) + 1
+                if hasattr(param, 'type') and hasattr(param.type, 'value'):
+                    type_value = param.type.value
+                    if type_value == "integer":
+                        param_type = int
+                    elif type_value == "number":
+                        param_type = float
+                    elif type_value == "boolean":
+                        param_type = bool
+                    elif type_value in ["array", "list"]:
+                        param_type = List[str]
+                    elif type_value in ["object", "dict"]:
+                        param_type = Dict[str, Any]
 
-        logger.info(f"Tool breakdown by app: {tool_breakdown}")
+                # Handle optional vs required fields
+                if param.required:
+                    field_info = Field(description=param.description)
+                    model_fields[param.name] = (param_type, field_info)
+                else:
+                    # For optional fields, use Optional and provide default
+                    default_value = getattr(param, 'default', None)
+                    field_info = Field(default=default_value, description=param.description)
+                    model_fields[param.name] = (Optional[param_type], field_info)
 
-    return tools
+            # Use create_model to properly create the Pydantic model
+            safe_tool_name = tool_name.replace('.', '_').replace('-', '_')
+            InputModel = create_model(
+                f"{safe_tool_name}Input",
+                **model_fields
+            )
 
+            # Capture variables in closure
+            captured_tool_name = tool_name
+            captured_description = description
+            captured_function = function
+            captured_instance = instance
+            captured_logger = self.logger
 
-def _is_essential_tool(full_tool_name: str) -> bool:
-    """Check if a tool is essential and should always be included"""
-    essential_patterns = [
-        "calculator.",
-        "web_search",
-        "get_current_datetime"
-    ]
-    return any(pattern in full_tool_name for pattern in essential_patterns)
+            class CustomTool(BaseTool):
+                name: str = captured_tool_name
+                description: str = captured_description
+                args_schema: type[BaseModel] = InputModel
 
+                def _run(self, **kwargs) -> str:
+                    return asyncio.run(self._arun(**kwargs))
 
-def _initialize_tool_state(state: ChatState) -> None:
-    """Initialize tool-related state variables"""
-    state.setdefault("tool_results", [])
-    state.setdefault("all_tool_results", [])
-    state.setdefault("web_search_results", [])
-    state.setdefault("web_search_template_context", {})
-    state.setdefault("tool_configs", {})
+                async def _arun(self, **kwargs) -> str:
+                    try:
+                        # Execute the tool function
+                        if inspect.iscoroutinefunction(captured_function):
+                            result = await captured_function(captured_instance, **kwargs)
+                        else:
+                            result = captured_function(captured_instance, **kwargs)
 
-    # Initialize tool configurations from environment
-    _load_tool_configs(state)
+                        # Handle different return formats
+                        if isinstance(result, tuple):
+                            success, data = result
+                            if success:
+                                return data if isinstance(data, str) else json.dumps(data)
+                            else:
+                                error_msg = data if isinstance(data, str) else json.dumps(data)
+                                raise ToolExecutionError(f"Tool execution failed: {error_msg}")
+                        else:
+                            return result if isinstance(result, str) else json.dumps(result)
 
+                    except Exception as e:
+                        error_msg = f"Error executing {captured_tool_name}: {str(e)}"
+                        captured_logger.error(error_msg)
+                        raise ToolExecutionError(error_msg)
 
-def _load_tool_configs(state: ChatState) -> None:
-    """Load tool configurations from environment variables"""
-    configs = {}
+            return CustomTool()
 
-    # Load all possible tool configurations from environment
-    env_mappings = {
-        "slack": {"slack_bot_token": "SLACK_BOT_TOKEN"},
-        "jira": {
-            "jira_token": "CONFLUENCE_TOKEN"
-        },
-        "confluence": {
-            "confluence_token": "CONFLUENCE_TOKEN"
-        }
-    }
+        except Exception as e:
+            self.logger.error(f"Failed to create LangChain tool for {tool_name}: {e}", exc_info=True)
+            return None
 
-    for tool_app, env_mapping in env_mappings.items():
-        app_config = {}
-        for config_key, env_var in env_mapping.items():
-            value = os.getenv(env_var)
-            if value:
-                app_config[config_key] = value
+    async def execute_tool_simple(
+        self,
+        tool_name: str,
+        tool_args: Dict[str, Any]
+    ) -> Any:
+        """
+        Simplified tool execution method for direct use in nodes
+        """
+        try:
+            if tool_name not in self.tools_by_name:
+                raise ToolExecutionError(f"Tool '{tool_name}' not found")
 
-        # Only add config if at least one value is present
-        if app_config:
-            configs[tool_app] = app_config
+            tool = self.tools_by_name[tool_name]
 
-    state["tool_configs"] = configs
-
-
-def get_tool_by_name(tool_name: str, state: ChatState) -> RegistryToolWrapper | None:
-    """Get a specific tool by name from the registry"""
-    registry_tools = _global_tools_registry.get_all_tools()
-
-    # Try exact full name match first
-    if tool_name in registry_tools:
-        if "." in tool_name:
-            app_name, actual_tool_name = tool_name.split(".", 1)
-        else:
-            app_name, actual_tool_name = "default", tool_name
-        return RegistryToolWrapper(app_name, actual_tool_name, registry_tools[tool_name], state)
-
-    # Try partial name match
-    for full_name, registry_tool in registry_tools.items():
-        if hasattr(registry_tool, 'tool_name') and (
-            registry_tool.tool_name == tool_name or full_name.endswith(f".{tool_name}")
-        ):
-            if "." in full_name:
-                app_name, actual_tool_name = full_name.split(".", 1)
+            # Execute the tool
+            if inspect.iscoroutinefunction(tool._arun):
+                result = await tool._arun(**tool_args)
             else:
-                app_name, actual_tool_name = "default", full_name
-            return RegistryToolWrapper(app_name, actual_tool_name, registry_tool, state)
+                result = tool._run(**tool_args)
 
-    return None
+            self.logger.debug(f"Tool {tool_name} executed successfully")
+            return result
+
+        except Exception as e:
+            error_msg = f"Error executing tool {tool_name}: {str(e)}"
+            self.logger.error(error_msg)
+            raise ToolExecutionError(error_msg)
+
+    def get_agent_tools(self, allowed_tools: Optional[List[str]] = None) -> List[BaseTool]:
+        """
+        Get tools for LLM binding, optionally filtered by allowed tool names
+        """
+        if allowed_tools is None:
+            return list(self.tools_by_name.values())
+        else:
+            filtered_tools = []
+            for tool_name in allowed_tools:
+                if tool_name in self.tools_by_name:
+                    filtered_tools.append(self.tools_by_name[tool_name])
+                else:
+                    self.logger.warning(f"Requested tool '{tool_name}' not available")
+            return filtered_tools
+
+    def get_tool_usage_guidance(self) -> str:
+        """
+        Return guidance text for tool usage
+        """
+        return """
+Tool Usage Guidelines:
+- Use tools when you need to interact with external services
+- Always check tool responses for success/failure status
+- For Slack: Use channel names or IDs as needed
+- For JIRA: Use project keys and issue keys correctly
+- For Confluence: Use space IDs and page IDs
+- For Google services: Ensure proper date/time formats
+- Handle errors gracefully and inform the user of any issues
+"""
+
+    def get_tool_results_summary(self, all_tool_results: List[Dict[str, Any]]) -> str:
+        """
+        Generate a summary of tool execution results
+        """
+        if not all_tool_results:
+            return "No tools have been executed yet."
+
+        summary_parts = []
+        for i, result in enumerate(all_tool_results[-10:], 1):  # Last 10 results
+            tool_name = result.get("tool_name", "unknown")
+            status = result.get("status", "unknown")
+
+            if status == "success":
+                summary_parts.append(f"{i}. {tool_name}: ✅ Success")
+            else:
+                summary_parts.append(f"{i}. {tool_name}: ❌ Failed")
+
+        return "\n".join(summary_parts)
 
 
-def get_tool_results_summary(state: ChatState) -> str:
-    """Get a summary of all tool results for the LLM"""
-    all_results = state.get("all_tool_results", [])
-
-    if not all_results:
-        return "No tools have been executed yet."
-
-    summary = f"Tool Execution Summary (Total: {len(all_results)}):\n"
-
-    # Group by tool type and status
-    tool_summary = {}
-    for result in all_results:
-        tool_name = result.get("tool_name", "unknown")
-        status = result.get("status", "unknown")
-
-        if tool_name not in tool_summary:
-            tool_summary[tool_name] = {"success": 0, "error": 0, "results": []}
-
-        tool_summary[tool_name][status] += 1
-        tool_summary[tool_name]["results"].append(result)
-
-    for tool_name, stats in tool_summary.items():
-        summary += f"\n{tool_name}:\n"
-        summary += f"  - Successful executions: {stats['success']}\n"
-        summary += f"  - Failed executions: {stats['error']}\n"
-
-        # Show last result for context
-        if stats["results"]:
-            last_result = stats["results"][-1]
-            MAX_RESULT_PREVIEW_LENGTH = 150
-            result_preview = str(last_result.get("result", ""))[:MAX_RESULT_PREVIEW_LENGTH]
-            if len(result_preview) == MAX_RESULT_PREVIEW_LENGTH:
-                result_preview += "..."
-            summary += f"  - Last result: {result_preview}\n"
-
-    return summary
+# Global registry instance
+_agent_tool_registry: Optional[AgentToolRegistry] = None
 
 
-def get_all_available_tool_names() -> dict:
-    """Get list of all available tool names from registry"""
-    registry_tools = list(_global_tools_registry.list_tools())
+def get_agent_tool_registry(logger: logging.Logger) -> AgentToolRegistry:
+    """Get or create the global agent tool registry"""
+    global _agent_tool_registry
+    if _agent_tool_registry is None:
+        _agent_tool_registry = AgentToolRegistry(logger)
+    return _agent_tool_registry
 
-    return {
-        "registry_tools": registry_tools,
-        "total_count": len(registry_tools)
-    }
+
+# Convenience functions for use in nodes.py
+def get_agent_tools(state: Dict[str, Any]) -> List[BaseTool]:
+    """Get available tools for the agent"""
+    logger = state.get("logger")
+    if not logger:
+        return []
+
+    registry = get_agent_tool_registry(logger)
+    allowed_tools = state.get("tools")  # None means all tools
+    return registry.get_agent_tools(allowed_tools)
+
+
+async def execute_tool_simple(tool: BaseTool, tool_args: Dict[str, Any], logger: logging.Logger) -> Any:
+    """Execute a tool with the given arguments"""
+    try:
+        if inspect.iscoroutinefunction(tool._arun):
+            return await tool._arun(**tool_args)
+        else:
+            return tool._run(**tool_args)
+    except Exception as e:
+        logger.error(f"Tool execution failed: {e}")
+        raise
 
 
 def get_tool_usage_guidance() -> str:
-    """Provide comprehensive guidance for tool usage"""
+    """Get tool usage guidance"""
     return """
-COMPREHENSIVE TOOL USAGE GUIDANCE:
-
-You have access to a comprehensive set of enterprise and utility tools. Use them naturally based on user requests:
-
-APPROACH:
-- Analyze the user's request to understand what they want to accomplish
-- Choose the most appropriate tools to fulfill their request
-- Execute tools in logical sequence when multiple steps are needed
-- Provide clear, helpful responses based on tool results
-
-AVAILABLE TOOL CATEGORIES:
-- Mathematical calculations and data processing
-- Web search and information retrieval
-- File operations and content management
-- Communication (Slack, Email)
-- Project management (JIRA)
-- Documentation (Confluence)
-- Calendar and scheduling
-- And many more enterprise tools
-
-BEST PRACTICES:
-- Use tools when they can provide better, more current, or more accurate information
-- Combine multiple tools when needed to complete complex tasks
-- Handle errors gracefully and try alternative approaches
-- Provide context about what tools you're using and why
-
-You have complete freedom to decide which tools to use and how to use them based on the user's needs.
+Tool Usage Guidelines:
+- Use tools when you need to interact with external services
+- Always check tool responses for success/failure status
+- For Slack: Use channel names or IDs as needed
+- For JIRA: Use project keys and issue keys correctly
+- For Confluence: Use space IDs and page IDs
+- For Google services: Ensure proper date/time formats
+- Handle errors gracefully and inform the user of any issues
 """
+
+
+def get_tool_results_summary(state: Dict[str, Any]) -> str:
+    """Get a summary of tool execution results"""
+    all_tool_results = state.get("all_tool_results", [])
+    if not all_tool_results:
+        return "No tools have been executed yet."
+
+    summary_parts = []
+    for i, result in enumerate(all_tool_results[-10:], 1):  # Last 10 results
+        tool_name = result.get("tool_name", "unknown")
+        status = result.get("status", "unknown")
+
+        if status == "success":
+            summary_parts.append(f"{i}. {tool_name}: ✅ Success")
+        else:
+            summary_parts.append(f"{i}. {tool_name}: ❌ Failed")
+
+    return "\n".join(summary_parts)

@@ -1,3 +1,8 @@
+"""
+Modified nodes.py that integrates with the unified tool registry
+for proper multi-service tool execution.
+"""
+
 import asyncio
 import json
 from datetime import datetime
@@ -8,6 +13,15 @@ from langgraph.types import StreamWriter
 
 from app.config.constants.arangodb import AccountType, CollectionNames
 from app.modules.agents.qna.chat_state import ChatState
+
+# Import the unified tool registry
+from app.modules.agents.qna.tool_registry import (
+    execute_tool_simple,
+    get_agent_tool_registry,
+    get_agent_tools,
+    get_tool_results_summary,
+    get_tool_usage_guidance,
+)
 from app.modules.qna.prompt_templates import qna_prompt
 from app.utils.citations import fix_json_string, process_citations
 from app.utils.streaming import stream_llm_response
@@ -55,7 +69,7 @@ async def analyze_query_node(
         return state
 
 
-# 2. Conditional Retrieval Node - Only retrieves if analysis suggests it's needed
+# 2. Conditional Retrieval Node
 async def conditional_retrieve_node(
     state: ChatState,
     writer: StreamWriter
@@ -147,7 +161,42 @@ async def get_user_info_node(state: ChatState) -> ChatState:
         return state
 
 
-# 4. Clean Prompt Creation - Pure tool presentation to LLM
+# 4. Initialize Tool Registry Node (NEW)
+async def initialize_tool_registry_node(
+    state: ChatState,
+    writer: StreamWriter
+) -> ChatState:
+    """Initialize the unified tool registry with all available tools"""
+    try:
+        logger = state["logger"]
+
+        writer({"event": "status", "data": {"status": "initializing_tools", "message": "Setting up available tools..."}})
+
+        # Get or create the tool registry
+        registry = get_agent_tool_registry(logger)
+
+        # Initialize all tools
+        available_tools = await registry.initialize_all_tools(
+            org_id=state["org_id"],
+            user_id=state["user_id"],
+            config_service=state["config_service"],
+            arango_service=state["arango_service"]
+        )
+
+        # Store available tools in state
+        state["available_tools"] = [tool.name for tool in available_tools]
+        state["registry_tool_instances"] = registry.tool_instances
+
+        logger.info(f"Tool registry initialized with {len(available_tools)} tools")
+        return state
+
+    except Exception as e:
+        logger.error(f"Error initializing tool registry: {str(e)}", exc_info=True)
+        state["error"] = {"status_code": 500, "detail": f"Tool registry initialization failed: {str(e)}"}
+        return state
+
+
+# 5. Clean Prompt Creation
 def prepare_clean_prompt_node(
     state: ChatState,
     writer: StreamWriter
@@ -187,16 +236,11 @@ def prepare_clean_prompt_node(
         # Build clean system message
         system_content = state.get("system_prompt") or "You are an intelligent AI assistant"
 
-        # Get ALL available tools from registry - no filtering
-        from app.modules.agents.qna.tool_registry import (
-            get_agent_tools,
-            get_tool_usage_guidance,
-        )
-
+        # Get ALL available tools from unified registry
         tools = get_agent_tools(state)
 
         if tools:
-            # Simple tool presentation - just list them all
+            # Simple tool presentation
             tool_descriptions = []
             for tool in tools:
                 tool_descriptions.append(f"- {tool.name}: {tool.description}")
@@ -237,12 +281,12 @@ You have access to the following tools:
         return state
 
 
-# 5. Agent Node - Complete LLM autonomy
+# 6. Agent Node
 async def agent_node(
     state: ChatState,
     writer: StreamWriter
 ) -> ChatState:
-    """Pure agent that lets LLM decide everything"""
+    """Pure agent that lets LLM decide everything using unified tool registry"""
     try:
         logger = state["logger"]
         llm = state["llm"]
@@ -252,8 +296,7 @@ async def agent_node(
         if state.get("error"):
             return state
 
-        # Get ALL available tools - no restrictions
-        from app.modules.agents.qna.tool_registry import get_agent_tools
+        # Get ALL available tools from unified registry
         tools = get_agent_tools(state)
 
         if tools:
@@ -270,7 +313,6 @@ async def agent_node(
 
         # Add previous tool results context if available
         if state.get("all_tool_results"):
-            from app.modules.agents.qna.tool_registry import get_tool_results_summary
             tool_context = "\n\n" + get_tool_results_summary(state)
 
             # Add context to the last human message
@@ -278,7 +320,7 @@ async def agent_node(
                 state["messages"][-1].content += tool_context
                 logger.debug(f"Added tool execution context from {len(state['all_tool_results'])} previous results")
 
-        # Call the LLM - complete autonomy
+        # Call the LLM
         cleaned_messages = _clean_message_history(state["messages"])
         response = await llm_with_tools.ainvoke(cleaned_messages)
 
@@ -301,7 +343,7 @@ async def agent_node(
             else:
                 state["response"] = str(response)
 
-        logger.debug(f"🔥 Agent response: {state['response']}")
+        logger.debug(f"🔥 Agent response: {state.get('response', 'No response yet')}")
 
         return state
 
@@ -311,14 +353,12 @@ async def agent_node(
         return state
 
 
-# 6. Tool Execution Node - Execute any tool the LLM chose
+# 7. UNIFIED Tool Execution Node
 async def tool_execution_node(
     state: ChatState,
     writer: StreamWriter
 ) -> ChatState:
-    """Universal tool execution - handle any tool from registry with proper async support"""
-    import inspect
-    
+    """UNIFIED tool execution using the unified registry"""
     try:
         logger = state["logger"]
 
@@ -341,8 +381,7 @@ async def tool_execution_node(
 
         tool_calls = last_ai_message.tool_calls
 
-        # Get available tools
-        from app.modules.agents.qna.tool_registry import get_agent_tools
+        # Get available tools from unified registry
         tools = get_agent_tools(state)
         tools_by_name = {tool.name: tool for tool in tools}
 
@@ -360,128 +399,55 @@ async def tool_execution_node(
                 tool_name = tool_call.function.name
                 tool_args = tool_call.function.arguments
                 if isinstance(tool_args, str):
-                    import json
                     tool_args = json.loads(tool_args)
 
             try:
                 result = None
 
-                # Execute the tool directly with improved async handling
+                # UNIFIED: Use the unified registry execution
                 if tool_name in tools_by_name:
                     tool = tools_by_name[tool_name]
-                    logger.debug(f"Executing tool: {tool_name} with args: {tool_args}")
-                    
-                    # Try different execution methods in order of preference
-                    executed = False
-                    
-                    # Method 1: Try _arun (preferred async method)
-                    if hasattr(tool, '_arun') and not executed:
-                        try:
-                            result = await tool._arun(**tool_args)
-                            executed = True
-                            logger.debug(f"Tool {tool_name} executed via _arun")
-                        except Exception as e:
-                            logger.warning(f"Tool {tool_name} _arun failed: {e}, trying other methods")
-                    
-                    # Method 2: Try _run (sync method that handles async internally)
-                    if hasattr(tool, '_run') and not executed:
-                        try:
-                            # Check if _run is async (some tools might have async _run)
-                            if inspect.iscoroutinefunction(tool._run):
-                                result = await tool._run(**tool_args)
-                            else:
-                                result = tool._run(**tool_args)
-                            executed = True
-                            logger.debug(f"Tool {tool_name} executed via _run")
-                        except Exception as e:
-                            logger.warning(f"Tool {tool_name} _run failed: {e}, trying other methods")
-                    
-                    # Method 3: Try run method as fallback
-                    if hasattr(tool, 'run') and not executed:
-                        try:
-                            if inspect.iscoroutinefunction(tool.run):
-                                result = await tool.run(**tool_args)
-                            else:
-                                result = tool.run(**tool_args)
-                            executed = True
-                            logger.debug(f"Tool {tool_name} executed via run")
-                        except Exception as e:
-                            logger.warning(f"Tool {tool_name} run failed: {e}")
-                    
-                    # Method 4: Direct method execution (for registry tools)
-                    if not executed:
-                        try:
-                            # This is for registry tools - execute the underlying method directly
-                            registry_tool = getattr(tool, 'registry_tool', None)
-                            if registry_tool and hasattr(registry_tool, 'function'):
-                                tool_function = registry_tool.function
-                                
-                                # Check if it's a class method
-                                if hasattr(tool_function, '__qualname__') and '.' in tool_function.__qualname__:
-                                    # Get the instance from the tool wrapper
-                                    if hasattr(tool, '_create_tool_instance'):
-                                        class_name = tool_function.__qualname__.split('.')[0]
-                                        module_name = tool_function.__module__
-                                        action_module = __import__(module_name, fromlist=[class_name])
-                                        action_class = getattr(action_module, class_name)
-                                        instance = await tool._create_tool_instance(action_class)
-                                        
-                                        # Get the actual method name from the tool
-                                        method_name = getattr(tool, 'tool_name', tool_name.split('.')[-1])
-                                        bound_method = getattr(instance, method_name)
-                                        
-                                        if inspect.iscoroutinefunction(bound_method):
-                                            result = await bound_method(**tool_args)
-                                        else:
-                                            result = bound_method(**tool_args)
-                                        executed = True
-                                        logger.debug(f"Tool {tool_name} executed via direct method call")
-                                else:
-                                    # Standalone function
-                                    if inspect.iscoroutinefunction(tool_function):
-                                        result = await tool_function(**tool_args)
-                                    else:
-                                        result = tool_function(**tool_args)
-                                    executed = True
-                                    logger.debug(f"Tool {tool_name} executed via direct function call")
-                        except Exception as e:
-                            logger.warning(f"Tool {tool_name} direct execution failed: {e}")
-                    
-                    # If still not executed, return error
-                    if not executed:
-                        result = json.dumps({
-                            "status": "error",
-                            "message": f"Tool '{tool_name}' could not be executed - no valid execution method found",
-                            "available_methods": [method for method in ['_arun', '_run', 'run'] if hasattr(tool, method)]
-                        }, indent=2)
-                        
+                    logger.debug(f"🚀 Executing tool: {tool_name} with args: {tool_args}")
+
+                    # Use the unified execution function
+                    result = await execute_tool_simple(tool, tool_args, logger)
+
+                    # Store detailed tool result
+                    tool_result = {
+                        "tool_name": tool_name,
+                        "result": result,
+                        "status": "success",
+                        "tool_id": tool_id,
+                        "args": tool_args,
+                        "execution_timestamp": datetime.now().isoformat()
+                    }
+                    tool_results.append(tool_result)
+
+                    # Create ToolMessage
+                    tool_message = ToolMessage(content=str(result), tool_call_id=tool_id)
+                    tool_messages.append(tool_message)
+
+                    logger.debug(f"🚀 Tool {tool_name} executed successfully")
+
                 else:
-                    # Tool not found in available tools
-                    logger.warning(f"Tool {tool_name} not found in available tools")
-                    result = json.dumps({
+                    logger.warning(f"🚀 Tool {tool_name} not found in available tools")
+                    error_result = f"Tool '{tool_name}' not found in available tools"
+                    tool_result = {
+                        "tool_name": tool_name,
+                        "result": error_result,
                         "status": "error",
-                        "message": f"Tool '{tool_name}' not found in available tools",
-                        "available_tools": list(tools_by_name.keys())
-                    }, indent=2)
+                        "tool_id": tool_id,
+                        "args": tool_args,
+                        "execution_timestamp": datetime.now().isoformat(),
+                        "error_details": "Tool not found"
+                    }
+                    tool_results.append(tool_result)
 
-                # Store tool result
-                tool_result = {
-                    "tool_name": tool_name,
-                    "result": result,
-                    "status": "success" if "error" not in str(result).lower() else "error",
-                    "tool_id": tool_id,
-                    "args": tool_args,
-                    "execution_timestamp": datetime.now().isoformat()
-                }
-                tool_results.append(tool_result)
-
-                # Create ToolMessage
-                tool_message = ToolMessage(content=str(result), tool_call_id=tool_id)
-                tool_messages.append(tool_message)
-
-                logger.debug(f"Tool {tool_name} executed successfully")
+                    tool_message = ToolMessage(content=error_result, tool_call_id=tool_id)
+                    tool_messages.append(tool_message)
 
             except Exception as e:
+                logger.error(f"🚀 Tool {tool_name} execution failed: {e}", exc_info=True)
                 error_result = f"Error executing {tool_name}: {str(e)}"
                 tool_result = {
                     "tool_name": tool_name,
@@ -497,8 +463,6 @@ async def tool_execution_node(
                 tool_message = ToolMessage(content=error_result, tool_call_id=tool_id)
                 tool_messages.append(tool_message)
 
-                logger.error(f"Tool {tool_name} failed: {e}", exc_info=True)
-
         # Add tool messages to conversation
         state["messages"].extend(tool_messages)
 
@@ -513,20 +477,21 @@ async def tool_execution_node(
         # Reset pending tool calls
         state["pending_tool_calls"] = False
 
-        logger.debug(f"Executed {len(tool_results)} tools. Session total: {len(state['all_tool_results'])}")
+        logger.debug(f"🚀 Executed {len(tool_results)} tools. Session total: {len(state['all_tool_results'])}")
         return state
 
     except Exception as e:
-        logger.error(f"Error in tool execution: {str(e)}", exc_info=True)
+        logger.error(f"🚀 Error in tool execution: {str(e)}", exc_info=True)
         state["error"] = {"status_code": 400, "detail": str(e)}
         return state
 
-# 7. Final Response Node
+
+# 8. Final Response Node (unchanged but using unified registry for summaries)
 async def final_response_node(
     state: ChatState,
     writer: StreamWriter
 ) -> ChatState:
-    """Generate final response - handle existing response from agent with bulletproof format handling"""
+    """Generate final response"""
     try:
         logger = state["logger"]
         llm = state["llm"]
@@ -536,56 +501,37 @@ async def final_response_node(
         if state.get("error"):
             return state
 
-        # ✅ CHECK FOR RESPONSES - Priority: Current node response > Existing response > Generate new
+        # Check for existing response
         existing_response = state.get("response")
-
-        # Check if we have a current node response (from the most recent agent execution)
-        # This happens when the agent node just provided a direct response without needing tools
-        current_node_has_response = (
-            existing_response and
-            not state.get("pending_tool_calls", False) and
-            not state.get("tool_results")  # No tools executed in this iteration
-        )
-
-        # Use existing response if current node didn't generate one but we have a previous response
         use_existing_response = (
             existing_response and
             not state.get("pending_tool_calls", False)
         )
 
         if use_existing_response:
-            if current_node_has_response:
-                logger.debug(f"Using current node response: {len(str(existing_response))} chars")
-            else:
-                logger.debug(f"Using existing response from previous node: {len(str(existing_response))} chars")
+            logger.debug(f"Using existing response: {len(str(existing_response))} chars")
 
-            # Stream the existing response in chunks for consistent behavior
+            # Stream the existing response in chunks
             writer({"event": "status", "data": {"status": "delivering", "message": "Delivering response..."}})
 
-            # Normalize response format - handle both string and dict responses
+            # Normalize response format
             final_content = _normalize_response_format(existing_response)
 
             # Process citations if available
             if state.get("final_results"):
-                # Process citations on the answer text
                 cited_answer = process_citations(final_content["answer"], state["final_results"])
-
-                # Handle citation processing result
                 if isinstance(cited_answer, str):
                     final_content["answer"] = cited_answer
                 elif isinstance(cited_answer, dict) and "answer" in cited_answer:
                     final_content = cited_answer
 
-            print(f"🔥 Final content: {final_content}")
-
-            # Send content in chunks to simulate streaming
+            # Send content in chunks
             chunk_size = 50
             answer_text = final_content.get("answer", "")
             for i in range(0, len(answer_text), chunk_size):
                 chunk = answer_text[i:i + chunk_size]
                 writer({"event": "answer_chunk", "data": {"chunk": chunk}})
-                await asyncio.sleep(0.01)  # Small delay for streaming effect
-
+                await asyncio.sleep(0.01)
 
             # Send complete event
             completion_data = final_content
@@ -597,7 +543,7 @@ async def final_response_node(
             logger.debug(f"Delivered existing response: {len(answer_text)} chars")
             return state
 
-        # ✅ IF NO USABLE RESPONSE EXISTS, GENERATE NEW ONE
+        # Generate new response
         logger.debug("No usable response found, generating new response with LLM")
 
         # Convert LangChain messages to dict format
@@ -610,15 +556,13 @@ async def final_response_node(
             elif isinstance(msg, AIMessage):
                 validated_messages.append({"role": "assistant", "content": msg.content})
 
-        # Add tool summary if available
+        # Add tool summary if available (using unified registry)
         if state.get("all_tool_results"):
-            from app.modules.agents.qna.tool_registry import get_tool_results_summary
             tool_summary = get_tool_results_summary(state)
 
             if validated_messages and validated_messages[-1]["role"] == "user":
                 validated_messages[-1]["content"] += f"\n\nTool Execution Results:\n{tool_summary}"
             else:
-                # Add as new user message if no user message exists
                 validated_messages.append({
                     "role": "user",
                     "content": f"Based on the tool execution results:\n{tool_summary}\n\nPlease provide a comprehensive response."
@@ -637,7 +581,7 @@ async def final_response_node(
             async for stream_event in stream_llm_response(llm, validated_messages, final_results):
                 event_type = stream_event["event"]
                 event_data = stream_event["data"]
-                logger.debug(f"🔥 Stream event: {event_type} {type(event_data)} {event_data}")
+                logger.debug(f"🔥 Stream event: {event_type}")
 
                 # Forward all events from stream_llm_response
                 writer({"event": event_type, "data": event_data})
@@ -647,7 +591,6 @@ async def final_response_node(
                     final_content = event_data
                     completion_data = event_data
                 elif event_type == "answer_chunk":
-                    # Accumulate chunks
                     final_content += event_data
 
         except Exception as stream_error:
@@ -673,7 +616,7 @@ async def final_response_node(
                     writer({"event": "answer_chunk", "data": {"chunk": chunk}})
                     await asyncio.sleep(0.02)
 
-                # Create completion data with proper format
+                # Create completion data
                 citations = [
                     {
                         "citationId": result["metadata"].get("_id"),
@@ -692,11 +635,10 @@ async def final_response_node(
                     "reason": "Fallback response generation"
                 }
                 writer({"event": "complete", "data": completion_data})
-                final_content = completion_data  # Store as dict format
+                final_content = completion_data
 
             except Exception as fallback_error:
                 logger.error(f"Fallback generation also failed: {fallback_error}")
-                # Last resort - use a generic error message
                 error_content = "I apologize, but I encountered an issue generating a response. Please try again."
                 error_response = {
                     "answer": error_content,
@@ -709,7 +651,7 @@ async def final_response_node(
                 final_content = error_response
                 completion_data = error_response
 
-        # Store final response - ensure it's in proper format
+        # Store final response
         state["response"] = _clean_response(final_content)
         if completion_data:
             state["completion_data"] = _clean_response(completion_data)
@@ -719,18 +661,16 @@ async def final_response_node(
         return state
 
     except Exception as e:
-        logger.error(f"Error in agent final response: {str(e)}", exc_info=True)
+        logger.error(f"Error in final response: {str(e)}", exc_info=True)
         state["error"] = {"status_code": 400, "detail": str(e)}
         writer({"event": "error", "data": {"error": str(e)}})
         return state
 
 
-
-# Helper functions
+# Helper functions (unchanged)
 def _normalize_response_format(response) -> dict:
-    """Normalize response to expected format - handle both string and dict responses"""
+    """Normalize response to expected format"""
     if isinstance(response, str):
-        # Convert string response to expected dict format
         return {
             "answer": response,
             "citations": [],
@@ -738,7 +678,6 @@ def _normalize_response_format(response) -> dict:
             "reason": "Direct response"
         }
     elif isinstance(response, dict):
-        # Already in dict format, ensure required keys exist
         return {
             "answer": response.get("answer", str(response.get("content", response))),
             "citations": response.get("citations", []),
@@ -746,7 +685,6 @@ def _normalize_response_format(response) -> dict:
             "reason": response.get("reason", "Processed response")
         }
     else:
-        # Fallback for other types - convert to string
         return {
             "answer": str(response),
             "citations": [],
@@ -759,44 +697,34 @@ def _clean_response(response) -> dict:
     """Clean the response to ensure it is in the expected format"""
     if isinstance(response, str):
         try:
-            # Try to parse as JSON first
             cleaned_content = response.strip()
-            # Handle nested JSON (sometimes response is JSON within JSON)
             if cleaned_content.startswith('"') and cleaned_content.endswith('"'):
                 cleaned_content = cleaned_content[1:-1].replace('\\"', '"')
 
-            # Handle escaped newlines and other special characters
             cleaned_content = cleaned_content.replace("\\n", "\n").replace("\\t", "\t")
-
-            # Apply our fix for control characters in JSON string values
             cleaned_content = fix_json_string(cleaned_content)
 
-            # Try to parse the cleaned content
             response_data = json.loads(cleaned_content)
             return _normalize_response_format(response_data)
         except (json.JSONDecodeError, Exception):
-            # If JSON parsing fails, treat as plain string
             return _normalize_response_format(response)
     else:
-        # Already a dict or other object
         return _normalize_response_format(response)
 
 
 def _validate_and_fix_message_sequence(messages) -> list:
-    """Validate and fix message sequence to ensure OpenAI API compatibility"""
+    """Validate and fix message sequence"""
     validated = []
     pending_tool_calls = {}
 
     for msg in messages:
         if isinstance(msg, (SystemMessage, HumanMessage)):
-            # Clear any pending tool calls when we see a new human message
             if isinstance(msg, HumanMessage):
                 pending_tool_calls.clear()
             validated.append(msg)
 
         elif isinstance(msg, AIMessage):
             validated.append(msg)
-            # Track tool calls from this AI message
             if hasattr(msg, 'tool_calls') and msg.tool_calls:
                 for tc in msg.tool_calls:
                     tool_id = tc.get('id') if isinstance(tc, dict) else getattr(tc, 'id', None)
@@ -804,23 +732,15 @@ def _validate_and_fix_message_sequence(messages) -> list:
                         pending_tool_calls[tool_id] = True
 
         elif hasattr(msg, 'tool_call_id'):
-            # Only include tool message if we're expecting it
             if msg.tool_call_id in pending_tool_calls:
                 validated.append(msg)
-                # Mark this tool call as resolved
                 pending_tool_calls.pop(msg.tool_call_id, None)
-            else:
-                # Skip orphaned tool messages
-                continue
 
-    # If there are any unresolved tool calls, we need to remove the AI message that created them
-    # to avoid the OpenAI error
+    # Remove unresolved tool calls
     if pending_tool_calls:
-        # Find and remove the AI message with unresolved tool calls
         final_validated = []
         for msg in validated:
             if isinstance(msg, AIMessage) and hasattr(msg, 'tool_calls') and msg.tool_calls:
-                # Check if any tool calls from this message are unresolved
                 has_unresolved = False
                 for tc in msg.tool_calls:
                     tool_id = tc.get('id') if isinstance(tc, dict) else getattr(tc, 'id', None)
@@ -830,7 +750,6 @@ def _validate_and_fix_message_sequence(messages) -> list:
 
                 if not has_unresolved:
                     final_validated.append(msg)
-                # Skip AI messages with unresolved tool calls
             else:
                 final_validated.append(msg)
 
@@ -840,28 +759,20 @@ def _validate_and_fix_message_sequence(messages) -> list:
 
 
 def _clean_message_history(messages) -> list:
-    """Clean message history for LLM compatibility - ensures proper tool call/response pairing"""
-    # First validate and fix the message sequence
+    """Clean message history for LLM compatibility"""
     validated_messages = _validate_and_fix_message_sequence(messages)
-
-    # Then apply the cleaning logic
     cleaned = []
 
     for i, msg in enumerate(validated_messages):
-        # Always include system, human, and AI messages
         if isinstance(msg, (SystemMessage, HumanMessage, AIMessage)):
             cleaned.append(msg)
 
-        # For tool messages, ensure they follow an AI message with tool calls
         elif hasattr(msg, 'tool_call_id'):
-            # Look backwards to find the most recent AI message with tool calls
             found_matching_ai = False
             for j in range(i-1, -1, -1):
                 prev_msg = validated_messages[j]
                 if isinstance(prev_msg, AIMessage):
-                    # Check if this AI message has tool calls
                     if hasattr(prev_msg, 'tool_calls') and prev_msg.tool_calls:
-                        # Check if our tool_call_id matches any of the tool calls
                         tool_call_ids = []
                         for tc in prev_msg.tool_calls:
                             if isinstance(tc, dict):
@@ -873,24 +784,19 @@ def _clean_message_history(messages) -> list:
                             found_matching_ai = True
                             break
                     else:
-                        # Found an AI message without tool calls, stop looking
                         break
-
-                # If we encounter another tool message, continue looking backwards
                 elif hasattr(prev_msg, 'tool_call_id'):
                     continue
                 else:
-                    # Found a non-AI, non-tool message, stop looking
                     break
 
-            # Only include the tool message if we found a matching AI message
             if found_matching_ai:
                 cleaned.append(msg)
 
     return cleaned
 
 
-# Routing functions - Simple, no complex logic
+# Routing functions
 def should_continue(state: ChatState) -> Literal["execute_tools", "final"]:
     """Simple routing based on LLM's tool call decision"""
     return "execute_tools" if state.get("pending_tool_calls", False) else "final"

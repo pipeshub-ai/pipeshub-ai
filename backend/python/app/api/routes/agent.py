@@ -8,10 +8,10 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from langchain.chat_models.base import BaseChatModel
 from pydantic import BaseModel
 
+from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
 from app.modules.agents.qna.chat_state import build_initial_state
 from app.modules.agents.qna.graph import qna_graph
-from app.config.configuration_service import ConfigurationService
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_arango import ArangoService
 from app.modules.retrieval.retrieval_service import RetrievalService
@@ -579,8 +579,6 @@ async def get_agents(request: Request) -> JSONResponse:
             raise HTTPException(status_code=404, detail="User not found for getting agents")
         # Get all agents
         agents = await arango_service.get_all_agents(user.get("_key"))
-        if agents is None or len(agents) == 0:
-            raise HTTPException(status_code=404, detail="No agents found")
         return JSONResponse(
             status_code=200,
             content={
