@@ -49,6 +49,8 @@ class ConfluenceRESTClientViaApiKey(HTTPClient):
 
 class ConfluenceRESTClientViaToken(HTTPClient):
     def __init__(self, token: str, token_type: str = "Bearer") -> None:
+        print("token",token)
+        print("token_type",token_type)
         super().__init__(token, token_type)
         self.accessible_resources = None
         self.cloud_id = None
@@ -56,6 +58,7 @@ class ConfluenceRESTClientViaToken(HTTPClient):
     async def initialize(self) -> None:
         if self.accessible_resources is None:
             self.accessible_resources = await self._get_accessible_resources()
+            print("self.accessible_resources",self.accessible_resources)
             if self.accessible_resources:
                 self.cloud_id = self.accessible_resources[0].id
             else:
@@ -70,7 +73,9 @@ class ConfluenceRESTClientViaToken(HTTPClient):
         Returns:
             List of accessible Atlassian Cloud resources
         """
+        print("RESOURCE_URL",RESOURCE_URL)
         response = await self.get(RESOURCE_URL)
+        print("response",response)
         return [
             AtlassianCloudResource(
                 id=resource["id"],
@@ -92,9 +97,13 @@ class ConfluenceRESTClientViaToken(HTTPClient):
         Returns:
             List of Confluence spaces with permissions
         """
+        print("get_spaces_with_permissions inside client confluence")
         await self.initialize()
         base_url = f"{BASE_URL}/{self.cloud_id}"
         spaces_url = f"{base_url}/wiki/api/v2/spaces"
+        print("spaces_url",spaces_url)
+        print("base_url",base_url)
+        print("self.cloud_id",self.cloud_id)
         spaces = []
         while True:
             spaces_batch = await self.get(spaces_url)

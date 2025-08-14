@@ -316,7 +316,9 @@ async def tool_execution_node(
     state: ChatState,
     writer: StreamWriter
 ) -> ChatState:
-    """Universal tool execution - handle any tool from registry"""
+    """Universal tool execution - handle any tool from registry with proper async support"""
+    import inspect
+    
     try:
         logger = state["logger"]
 
@@ -364,11 +366,95 @@ async def tool_execution_node(
             try:
                 result = None
 
-                # Execute the tool directly - no ToolExecutor
+                # Execute the tool directly with improved async handling
                 if tool_name in tools_by_name:
                     tool = tools_by_name[tool_name]
                     logger.debug(f"Executing tool: {tool_name} with args: {tool_args}")
-                    result = tool._run(**tool_args) if hasattr(tool, '_run') else tool.run(**tool_args)
+                    
+                    # Try different execution methods in order of preference
+                    executed = False
+                    
+                    # Method 1: Try _arun (preferred async method)
+                    if hasattr(tool, '_arun') and not executed:
+                        try:
+                            result = await tool._arun(**tool_args)
+                            executed = True
+                            logger.debug(f"Tool {tool_name} executed via _arun")
+                        except Exception as e:
+                            logger.warning(f"Tool {tool_name} _arun failed: {e}, trying other methods")
+                    
+                    # Method 2: Try _run (sync method that handles async internally)
+                    if hasattr(tool, '_run') and not executed:
+                        try:
+                            # Check if _run is async (some tools might have async _run)
+                            if inspect.iscoroutinefunction(tool._run):
+                                result = await tool._run(**tool_args)
+                            else:
+                                result = tool._run(**tool_args)
+                            executed = True
+                            logger.debug(f"Tool {tool_name} executed via _run")
+                        except Exception as e:
+                            logger.warning(f"Tool {tool_name} _run failed: {e}, trying other methods")
+                    
+                    # Method 3: Try run method as fallback
+                    if hasattr(tool, 'run') and not executed:
+                        try:
+                            if inspect.iscoroutinefunction(tool.run):
+                                result = await tool.run(**tool_args)
+                            else:
+                                result = tool.run(**tool_args)
+                            executed = True
+                            logger.debug(f"Tool {tool_name} executed via run")
+                        except Exception as e:
+                            logger.warning(f"Tool {tool_name} run failed: {e}")
+                    
+                    # Method 4: Direct method execution (for registry tools)
+                    if not executed:
+                        try:
+                            # This is for registry tools - execute the underlying method directly
+                            registry_tool = getattr(tool, 'registry_tool', None)
+                            if registry_tool and hasattr(registry_tool, 'function'):
+                                tool_function = registry_tool.function
+                                
+                                # Check if it's a class method
+                                if hasattr(tool_function, '__qualname__') and '.' in tool_function.__qualname__:
+                                    # Get the instance from the tool wrapper
+                                    if hasattr(tool, '_create_tool_instance'):
+                                        class_name = tool_function.__qualname__.split('.')[0]
+                                        module_name = tool_function.__module__
+                                        action_module = __import__(module_name, fromlist=[class_name])
+                                        action_class = getattr(action_module, class_name)
+                                        instance = await tool._create_tool_instance(action_class)
+                                        
+                                        # Get the actual method name from the tool
+                                        method_name = getattr(tool, 'tool_name', tool_name.split('.')[-1])
+                                        bound_method = getattr(instance, method_name)
+                                        
+                                        if inspect.iscoroutinefunction(bound_method):
+                                            result = await bound_method(**tool_args)
+                                        else:
+                                            result = bound_method(**tool_args)
+                                        executed = True
+                                        logger.debug(f"Tool {tool_name} executed via direct method call")
+                                else:
+                                    # Standalone function
+                                    if inspect.iscoroutinefunction(tool_function):
+                                        result = await tool_function(**tool_args)
+                                    else:
+                                        result = tool_function(**tool_args)
+                                    executed = True
+                                    logger.debug(f"Tool {tool_name} executed via direct function call")
+                        except Exception as e:
+                            logger.warning(f"Tool {tool_name} direct execution failed: {e}")
+                    
+                    # If still not executed, return error
+                    if not executed:
+                        result = json.dumps({
+                            "status": "error",
+                            "message": f"Tool '{tool_name}' could not be executed - no valid execution method found",
+                            "available_methods": [method for method in ['_arun', '_run', 'run'] if hasattr(tool, method)]
+                        }, indent=2)
+                        
                 else:
                     # Tool not found in available tools
                     logger.warning(f"Tool {tool_name} not found in available tools")
@@ -393,7 +479,7 @@ async def tool_execution_node(
                 tool_message = ToolMessage(content=str(result), tool_call_id=tool_id)
                 tool_messages.append(tool_message)
 
-                logger.debug(f"Tool {tool_name} executed")
+                logger.debug(f"Tool {tool_name} executed successfully")
 
             except Exception as e:
                 error_result = f"Error executing {tool_name}: {str(e)}"
@@ -411,7 +497,7 @@ async def tool_execution_node(
                 tool_message = ToolMessage(content=error_result, tool_call_id=tool_id)
                 tool_messages.append(tool_message)
 
-                logger.error(f"Tool {tool_name} failed: {e}")
+                logger.error(f"Tool {tool_name} failed: {e}", exc_info=True)
 
         # Add tool messages to conversation
         state["messages"].extend(tool_messages)
@@ -434,7 +520,6 @@ async def tool_execution_node(
         logger.error(f"Error in tool execution: {str(e)}", exc_info=True)
         state["error"] = {"status_code": 400, "detail": str(e)}
         return state
-
 
 # 7. Final Response Node
 async def final_response_node(

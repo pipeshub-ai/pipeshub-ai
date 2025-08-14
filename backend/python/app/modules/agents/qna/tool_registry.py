@@ -1,12 +1,15 @@
 import json
 import os
 from typing import Any, Union
+import asyncio
+import inspect
 
 from langchain.tools import BaseTool
 from pydantic import ConfigDict, Field
 
 from app.agents.tools.registry import _global_tools_registry
 from app.modules.agents.qna.chat_state import ChatState
+from app.agents.client.google import GoogleClient
 
 
 class RegistryToolWrapper(BaseTool):
@@ -45,11 +48,11 @@ class RegistryToolWrapper(BaseTool):
         """Access the chat state"""
         return self.chat_state
 
-    def _run(self, **kwargs) -> str:
-        """Execute the registry tool directly"""
+    async def _arun(self, **kwargs) -> str:
+        """Async execution of the registry tool"""
         try:
-            # Execute the tool function directly - no ToolExecutor
-            result = self._execute_tool_directly(kwargs)
+            # Execute the tool function directly - with proper async handling
+            result = await self._execute_tool_directly_async(kwargs)
 
             # Convert result to string format for LLM consumption
             return self._format_result(result)
@@ -65,8 +68,46 @@ class RegistryToolWrapper(BaseTool):
                 "args": kwargs
             }, indent=2)
 
-    def _execute_tool_directly(self, arguments: dict) -> Union[tuple, str, dict, list, int, float, bool]:
-        """Execute the registry tool function directly"""
+    def _run(self, **kwargs) -> str:
+        """Sync execution wrapper - runs async method in event loop"""
+        try:
+            # Check if we're already in an event loop
+            try:
+                loop = asyncio.get_running_loop()
+                # If we're in a loop, we need to run in a thread pool
+                import concurrent.futures
+                import threading
+                
+                def run_in_thread():
+                    # Create a new event loop for this thread
+                    new_loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(new_loop)
+                    try:
+                        return new_loop.run_until_complete(self._arun(**kwargs))
+                    finally:
+                        new_loop.close()
+                
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(run_in_thread)
+                    return future.result()
+                    
+            except RuntimeError:
+                # No running loop, we can use asyncio.run
+                return asyncio.run(self._arun(**kwargs))
+
+        except Exception as e:
+            error_msg = f"Error executing tool {self.app_name}.{self.tool_name}: {str(e)}"
+            if hasattr(self.state, 'get') and self.state.get("logger"):
+                self.state["logger"].error(error_msg)
+            return json.dumps({
+                "status": "error",
+                "message": error_msg,
+                "tool": f"{self.app_name}.{self.tool_name}",
+                "args": kwargs
+            }, indent=2)
+
+    async def _execute_tool_directly_async(self, arguments: dict) -> Union[tuple, str, dict, list, int, float, bool]:
+        """Execute the registry tool function directly with proper async handling"""
         tool_function = self.registry_tool.function
 
         # Check if this is a class method (has 'self' parameter)
@@ -81,19 +122,27 @@ class RegistryToolWrapper(BaseTool):
                 action_class = getattr(action_module, class_name)
 
                 # Create an instance with configuration
-                instance = self._create_tool_instance(action_class)
+                instance = await self._create_tool_instance(action_class)
 
-                # Get the bound method and call it
+                # Get the bound method
                 bound_method = getattr(instance, self.tool_name)
-                return bound_method(**arguments)
+                
+                # Check if the method is async
+                if inspect.iscoroutinefunction(bound_method):
+                    return await bound_method(**arguments)
+                else:
+                    return bound_method(**arguments)
 
             except Exception as e:
                 raise RuntimeError(f"Failed to create instance for tool '{self.app_name}.{self.tool_name}': {str(e)}")
         else:
             # This is a standalone function
-            return tool_function(**arguments)
+            if inspect.iscoroutinefunction(tool_function):
+                return await tool_function(**arguments)
+            else:
+                return tool_function(**arguments)
 
-    def _create_tool_instance(self, action_class) -> object:
+    async def _create_tool_instance(self, action_class) -> object:
         """Create an instance of the tool class with appropriate configuration"""
         try:
             # Get tool configurations from state
@@ -108,81 +157,62 @@ class RegistryToolWrapper(BaseTool):
                     return action_class(config)
 
             elif self.app_name == "jira":
-                from app.agents.actions.jira.config import (
-                    JiraTokenConfig,
-                    JiraUsernamePasswordConfig,
-                )
-                if app_config.get("jira_api_token"):
-                    config = JiraTokenConfig(
-                        base_url=app_config.get("jira_url", ""),
-                        token=app_config["jira_api_token"]
+                from app.agents.client.jira import JiraClient, JiraTokenConfig
+                if app_config.get("jira_token"):
+                    jira_client : JiraClient = JiraClient.build_with_config(
+                        JiraTokenConfig(
+                            base_url="https://api.atlassian.com/ex/jira",
+                            token=app_config["jira_token"]
+                        )
                     )
-                    return action_class(config)
-                elif app_config.get("jira_username") and app_config.get("jira_password"):
-                    config = JiraUsernamePasswordConfig(
-                        base_url=app_config.get("jira_url", ""),
-                        username=app_config["jira_username"],
-                        password=app_config["jira_password"]
-                    )
-                    return action_class(config)
+                    return action_class(jira_client,"https://api.atlassian.com/ex/jira")
 
             elif self.app_name == "confluence":
-                from app.agents.actions.confluence.config import (
-                    ConfluenceTokenConfig,
-                    ConfluenceUsernamePasswordConfig,
-                )
-                if app_config.get("confluence_api_token"):
-                    config = ConfluenceTokenConfig(
-                        base_url=app_config.get("confluence_url", ""),
-                        token=app_config["confluence_api_token"]
+                from app.agents.client.confluence import ConfluenceClient, ConfluenceTokenConfig
+                if app_config.get("confluence_token"):
+                    confluence_client : ConfluenceClient = ConfluenceClient.build_with_config(
+                        ConfluenceTokenConfig(
+                            base_url="https://api.atlassian.com/ex/confluence",
+                            token=app_config["confluence_token"]
+                        )
                     )
-                    return action_class(config)
-                elif app_config.get("confluence_username") and app_config.get("confluence_password"):
-                    config = ConfluenceUsernamePasswordConfig(
-                        base_url=app_config.get("confluence_url", ""),
-                        username=app_config["confluence_username"],
-                        password=app_config["confluence_password"]
-                    )
-                    return action_class(config)
+                    return action_class(confluence_client, base_url="https://api.atlassian.com/ex/confluence")
 
             elif self.app_name == "gmail":
-                from app.agents.actions.google.gmail.config import GoogleGmailConfig
-                config = GoogleGmailConfig(
-                    credentials_path=app_config.get("google_credentials_path"),
-                    token_file_path=app_config.get("google_token_path"),
-                    scopes=app_config.get("google_scopes")
+                google_gmail_client: GoogleClient = await GoogleClient.build_from_services(
+                    service_name="gmail",
+                    logger=self.state.get("logger"),
+                    config_service=self.state.get("config_service"),
+                    arango_service=self.state.get("arango_service"),
+                    org_id=self.state.get("org_id"),
+                    user_id=self.state.get("user_id"),
+                    is_individual=self.state.get("is_individual",False),
                 )
-                return action_class(config)
+                return action_class(google_gmail_client)
 
             elif self.app_name == "google_calendar":
-                from app.agents.actions.google.google_calendar.config import (
-                    GoogleCalendarConfig,
+                google_calendar_client: GoogleClient = await GoogleClient.build_from_services(
+                    service_name="calendar",
+                    logger=self.state.get("logger"),
+                    config_service=self.state.get("config_service"),
+                    arango_service=self.state.get("arango_service"),
+                    org_id=self.state.get("org_id"),
+                    user_id=self.state.get("user_id"),
+                    is_individual=self.state.get("is_individual",False),
                 )
-                config = GoogleCalendarConfig(
-                    credentials_path=app_config.get("google_credentials_path"),
-                    token_file_path=app_config.get("google_token_path"),
-                    scopes=app_config.get("google_scopes")
-                )
-                return action_class(config)
+                return action_class(google_calendar_client)
 
             elif self.app_name == "google_drive":
-                from app.agents.actions.google.google_drive.config import (
-                    GoogleDriveConfig,
+                google_drive_client: GoogleClient = await GoogleClient.build_from_services(
+                    service_name="drive",
+                    logger=self.state.get("logger"),
+                    config_service=self.state.get("config_service"),
+                    arango_service=self.state.get("arango_service"),
+                    org_id=self.state.get("org_id"),
+                    user_id=self.state.get("user_id"),
+                    is_individual=self.state.get("is_individual",False),
                 )
-                config = GoogleDriveConfig(
-                    credentials_path=app_config.get("google_credentials_path"),
-                    token_file_path=app_config.get("google_token_path"),
-                    scopes=app_config.get("google_scopes")
-                )
-                return action_class(config)
-
-            elif self.app_name == "github":
-                from app.agents.actions.github.config import GithubConfig
-                config = GithubConfig(
-                    base_url=app_config.get("github_url", "https://api.github.com"),
-                    token=app_config.get("github_token", "")
-                )
-                return action_class(config)
+                return action_class(google_drive_client)
 
             elif self.app_name == "calculator":
                 # Calculator doesn't need configuration
@@ -335,35 +365,10 @@ def _load_tool_configs(state: ChatState) -> None:
     env_mappings = {
         "slack": {"slack_bot_token": "SLACK_BOT_TOKEN"},
         "jira": {
-            "jira_url": "JIRA_URL",
-            "jira_username": "JIRA_USERNAME",
-            "jira_password": "JIRA_PASSWORD",
-            "jira_api_token": "JIRA_API_TOKEN"
+            "jira_token": "CONFLUENCE_TOKEN"
         },
         "confluence": {
-            "confluence_url": "CONFLUENCE_URL",
-            "confluence_username": "CONFLUENCE_USERNAME",
-            "confluence_password": "CONFLUENCE_PASSWORD",
-            "confluence_api_token": "CONFLUENCE_API_TOKEN"
-        },
-        "gmail": {
-            "google_credentials_path": "GOOGLE_CREDENTIALS_PATH",
-            "google_token_path": "GOOGLE_TOKEN_PATH",
-            "google_scopes": "GOOGLE_SCOPES"
-        },
-        "google_calendar": {
-            "google_credentials_path": "GOOGLE_CREDENTIALS_PATH",
-            "google_token_path": "GOOGLE_TOKEN_PATH",
-            "google_scopes": "GOOGLE_SCOPES"
-        },
-        "google_drive": {
-            "google_credentials_path": "GOOGLE_CREDENTIALS_PATH",
-            "google_token_path": "GOOGLE_TOKEN_PATH",
-            "google_scopes": "GOOGLE_SCOPES"
-        },
-        "github": {
-            "github_url": "GITHUB_URL",
-            "github_token": "GITHUB_TOKEN"
+            "confluence_token": "CONFLUENCE_TOKEN"
         }
     }
 

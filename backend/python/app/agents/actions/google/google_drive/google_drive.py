@@ -86,12 +86,17 @@ class GoogleDrive:
             tuple[bool, str]: True if the folder is created, False otherwise
         """
         try:
+            print("create_folder inside action google_drive")
+            print("folder_name",folder_name)
+            print("self.client",self.client)
+            print("type(self.client)",type(self.client))
             folder = self.client.files().create( # type: ignore
                 body={
                     "name": folder_name,
                     "mimeType": "application/vnd.google-apps.folder",
                 },
             ).execute() # type: ignore
+            print("folder",folder)
             return True, json.dumps({
                 "folder_id": folder.get("id", ""),
                 "folder_name": folder.get("name", ""),
@@ -99,6 +104,7 @@ class GoogleDrive:
                 "folder_mimeType": folder.get("mimeType", ""),
             })
         except Exception as e:
+            print("error",e)
             return False, json.dumps({"error": str(e)})
 
     @tool(

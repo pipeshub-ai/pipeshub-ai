@@ -5,6 +5,7 @@ from langchain.chat_models.base import BaseChatModel
 from langchain_core.messages import BaseMessage
 from typing_extensions import TypedDict
 
+from app.config.configuration_service import ConfigurationService
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_arango import ArangoService
 from app.modules.retrieval.retrieval_service import RetrievalService
@@ -21,6 +22,7 @@ class ChatState(TypedDict):
     retrieval_service: RetrievalService
     arango_service: ArangoService
     reranker_service: RerankerService
+    config_service: ConfigurationService
 
     query: str
     limit: int # Number of chunks to retrieve from the vector database
@@ -75,7 +77,7 @@ class ChatState(TypedDict):
 
 def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], llm: BaseChatModel,
                         logger: Logger, retrieval_service: RetrievalService, arango_service: ArangoService,
-                        reranker_service: RerankerService) -> ChatState:
+                        reranker_service: RerankerService, config_service: ConfigurationService) -> ChatState:
     """Build the initial state from the chat query and user info"""
 
     # Get user-defined system prompt or use default
@@ -130,7 +132,7 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
         "retrieval_service": retrieval_service,
         "arango_service": arango_service,
         "reranker_service": reranker_service,
-
+        "config_service": config_service,
         # Enhanced features
         "system_prompt": system_prompt,
         "apps": apps,

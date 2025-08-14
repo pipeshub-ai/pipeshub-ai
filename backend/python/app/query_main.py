@@ -8,6 +8,11 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.agents.client.google import GoogleClient
+from app.agents.actions.google.google_drive.google_drive import GoogleDrive
+from app.agents.client.confluence import ConfluenceClient, ConfluenceTokenConfig
+from app.agents.actions.confluence.confluence import Confluence
+import os
 from app.agents.db.tools_db import ToolsDBManager
 from app.agents.router.router import router as tools_router
 from app.agents.tools.registry import _global_tools_registry
@@ -186,6 +191,42 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # List all tools in the registry
     registry_tools = tool_registry.list_tools()
     logger.info(f"Tools in registry: {registry_tools}")
+
+    token = os.getenv("CONFLUENCE_TOKEN")
+    if not token:
+        raise Exception("CONFLUENCE_TOKEN is not set")
+    
+    confluence_client : ConfluenceClient = ConfluenceClient.build_with_config(
+        ConfluenceTokenConfig(
+            base_url="https://api.atlassian.com/ex/confluence",
+            token=token
+        )
+    )
+
+    confluence: Confluence = Confluence(confluence_client, base_url="https://api.atlassian.com/ex/confluence")
+    print(confluence)
+    print(type(confluence))
+
+    google_drive_client: GoogleClient = await GoogleClient.build_from_services(
+        service_name="drive",
+        logger=logger,
+        config_service=app_container.config_service(),
+        arango_service=app_container.arango_service(),
+        org_id=orgs[0].get("_id").split("/")[-1],
+        user_id="68971965af24995323b317e2",
+        is_individual=False,
+    )
+
+    google_drive_tool = GoogleDrive(google_drive_client.get_client())
+    print(google_drive_tool.get_files_list())
+
+    # print(await confluence.get_spaces_with_permissions()) #type: ignore
+    # print("-----------1")
+    # print(await confluence.get_pages()) #type: ignore
+    # print("-----------2")
+    # #print(await confluence.invite_email("rishabh.gupta998@gmail.com")) #type: ignore
+    # # print(await confluence.create_page("65725", "test", "Testing from Agent Tool")) #type: ignore
+    # print("-----------2")
 
     yield
     # Shutdown
