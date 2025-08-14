@@ -49,6 +49,7 @@
     "@azure/storage-blob": "^12.25.0",
     "@node-saml/passport-saml": "^5.0.1",
     "@qdrant/js-client-rest": "^1.14.1",
+    "@slack/bolt": "^4.4.0",
     "@types/bcrypt": "^5.0.2",
     "@types/express-session": "^1.18.1",
     "@types/mongodb": "^4.0.6",
