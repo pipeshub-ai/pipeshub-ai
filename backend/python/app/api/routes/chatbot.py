@@ -139,7 +139,6 @@ async def get_llm_for_chat(config_service: ConfigurationService, model_key: str 
     """Get LLM instance based on user selection or fallback to default"""
     try:
         llm_config = await get_model_config(config_service, model_key)
-
         if not llm_config:
             raise ValueError("No LLM configurations found")
 
@@ -165,8 +164,8 @@ async def get_llm_for_chat(config_service: ConfigurationService, model_key: str 
         model_string = llm_config.get("configuration", {}).get("model")
         model_names = [name.strip() for name in model_string.split(",") if name.strip()]
         default_model_name = model_names[0]
-        model_provider = llm_config[0].get("provider")
-        return get_generator_model(model_provider, llm_config[0], default_model_name)
+        model_provider = llm_config.get("provider")
+        return get_generator_model(model_provider, llm_config, default_model_name)
 
     except Exception as e:
             raise ValueError(f"Failed to initialize LLM: {str(e)}")
