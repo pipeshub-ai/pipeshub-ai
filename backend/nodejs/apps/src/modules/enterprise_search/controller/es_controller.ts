@@ -4167,8 +4167,8 @@ export const deleteAgent =
             );
           } else {
             // Mark as failed if no complete data received
-            await markConversationFailed(
-              savedConversation as IConversationDocument,
+            await markAgentConversationFailed (
+              savedConversation as IAgentConversationDocument,
               'No complete response received from AI service',
               session,
             );

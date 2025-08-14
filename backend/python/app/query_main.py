@@ -150,12 +150,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         retrieval_service = await container.retrieval_service()
         await retrieval_service.get_embedding_model_instance()
 
-    arango_config = ArangoConfig(
-        url="http://localhost:8529",
-        username="root",
-        password="your_password",
-        db="es"
+    arango_config_dict = await container.config_service().get_config(
+        config_node_constants.ARANGODB.value
     )
+    arango_config = ArangoConfig(**arango_config_dict)
 
     # Create ToolsDBManager
     logger.info("Creating ToolsDBManager...")
