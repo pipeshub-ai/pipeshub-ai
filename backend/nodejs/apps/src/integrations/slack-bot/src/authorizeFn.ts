@@ -8,7 +8,11 @@ interface AuthorizationResult {
 
 const authorizeFn =
   async ({}: AuthorizeParams): Promise<AuthorizationResult> => {
-    return { botToken: process.env.BOT_TOKEN || '' };
+    const botToken = process.env.BOT_TOKEN;
+    if (!botToken) {
+      throw new Error('BOT_TOKEN environment variable is not set.');
+    }
+    return { botToken };
     // Add custom authorization logic if needed
   };
 
