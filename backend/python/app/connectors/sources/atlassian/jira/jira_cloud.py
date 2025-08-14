@@ -316,7 +316,7 @@ class JiraClient:
             creator_email = creator.get("emailAddress")
             creator_name = creator.get("displayName")
 
-            if (creator_email is None):
+            if creator_email is None:
                 creator_email = user.email
             permissions = [Permission(
                 entity_type=EntityType.USER,
