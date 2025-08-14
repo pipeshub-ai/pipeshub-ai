@@ -9,7 +9,8 @@
     "dev": "nodemon src/index.ts",
     "lint": "eslint . --ext .ts",
     "format": "prettier --write .",
-    "test": "mocha"
+    "test": "mocha",
+    "slack": "nodemon src/integrations/slack-bot/src/index.ts"
   },
   "keywords": [],
   "author": "",

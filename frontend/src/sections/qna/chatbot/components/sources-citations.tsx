@@ -118,14 +118,14 @@ interface SourcesAndCitationsProps {
 }
 
 const getFileIcon = (extension: string): IconifyIcon =>
-  FILE_CONFIG.icons[extension.toLowerCase() as keyof typeof FILE_CONFIG.icons] || defaultFileIcon;
+  FILE_CONFIG.icons[extension?.toLowerCase() as keyof typeof FILE_CONFIG.icons] || defaultFileIcon;
 
 const isDocViewable = (extension: string): boolean =>
-  FILE_CONFIG.viewableExtensions.includes(extension.toLowerCase());
+  FILE_CONFIG.viewableExtensions.includes(extension?.toLowerCase());
 
 // Get connector color based on connector type
 const getConnectorColor = (connector: string): string => {
-  switch (connector.toUpperCase()) {
+  switch (connector?.toUpperCase()) {
     case 'DRIVE':
       return '#4285F4'; // Google Drive blue
     case 'GMAIL':
