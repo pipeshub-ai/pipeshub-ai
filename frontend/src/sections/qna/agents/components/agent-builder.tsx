@@ -42,12 +42,8 @@ import cogIcon from '@iconify-icons/mdi/cog';
 
 import type { Agent, AgentTemplate, AgentFormData } from 'src/types/agent';
 import AgentApiService from '../services/agent-api-service';
-import {
-  validateAgentForm,
-  getInitialAgentFormData,
-  APPS,
-  normalizeTags,
-} from '../utils/agent-utils';
+import { validateAgentForm, getInitialAgentFormData, APPS } from '../utils/agent-utils';
+import { createScrollableContainerStyle } from '../../chatbot/utils/styles/scrollbar';
 
 interface AgentBuilderProps {
   open: boolean;
@@ -141,6 +137,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({
   editingAgent,
 }) => {
   const theme = useTheme();
+  const scrollableContainerStyle = createScrollableContainerStyle(theme);
   const [activeStep, setActiveStep] = useState(0);
   const [formData, setFormData] = useState<AgentFormData>(getInitialAgentFormData());
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -199,7 +196,6 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({
       setToolSearchTerm('');
     }
   }, [open]);
-
 
   const loadAvailableResources = useCallback(async () => {
     try {
@@ -269,7 +265,6 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({
     },
     [errors]
   );
-
 
   const handleBack = useCallback(() => {
     setActiveStep((prev) => prev - 1);
@@ -706,7 +701,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({
                   sx={{ mb: 1.5 }}
                 />
 
-                <Box sx={{ maxHeight: 180, overflow: 'auto' }}>
+                <Box sx={{ maxHeight: 180, overflow: 'auto', ...scrollableContainerStyle }}>
                   <Grid container spacing={1}>
                     {filteredTools.map((tool) => (
                       <Grid item xs={12} sm={6} key={tool.id}>
@@ -775,7 +770,15 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({
                   Knowledge Bases
                 </Typography>
 
-                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mb: 1.5 }}>
+                <Box
+                  sx={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: 0.5,
+                    mb: 1.5,
+                    ...scrollableContainerStyle,
+                  }}
+                >
                   {(formData.kb || []).map((kbId, index) => {
                     const kb = availableKBs.find((k) => k.id === kbId);
                     return (
@@ -808,7 +811,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({
                   sx={{ mb: 1.5 }}
                 />
 
-                <Box sx={{ maxHeight: 180, overflow: 'auto' }}>
+                <Box sx={{ maxHeight: 180, overflow: 'auto', ...scrollableContainerStyle }}>
                   <Grid container spacing={1}>
                     {filteredKBs.map((kb) => (
                       <Grid item xs={12} sm={6} key={kb.id}>
@@ -930,6 +933,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({
                 borderRadius: 1.5,
                 border: '1px solid',
                 borderColor: 'divider',
+                ...scrollableContainerStyle,
               }}
             >
               <Typography variant="h6" sx={{ mb: 1, fontWeight: 600 }}>
@@ -1329,7 +1333,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({
       </Box>
 
       {/* Content */}
-      <DialogContent sx={{ flexGrow: 1, pt: 1, pb: 1.5 }}>
+      <DialogContent sx={{ flexGrow: 1, pt: 1, pb: 1.5, ...scrollableContainerStyle }}>
         {loading ? (
           <Box
             sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 200 }}

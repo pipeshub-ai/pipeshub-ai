@@ -40,9 +40,9 @@ import toolIcon from '@iconify-icons/mdi/tools';
 import databaseIcon from '@iconify-icons/mdi/database';
 import cogIcon from '@iconify-icons/mdi/cog';
 import sparklesIcon from '@iconify-icons/mdi/auto-awesome';
-
 import type { AgentTemplate } from 'src/types/agent';
 import { TEMPLATE_CATEGORIES } from '../utils/agent-utils';
+import {createScrollableContainerStyle} from '../../chatbot/utils/styles/scrollbar';
 
 interface TemplateSelectorProps {
   open: boolean;
@@ -68,7 +68,7 @@ const TemplateSelector: React.FC<TemplateSelectorProps> = ({
   const [selectedCategory, setSelectedCategory] = useState<string>('');
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const [activeTemplate, setActiveTemplate] = useState<AgentTemplate | null>(null);
-
+  const scrollableContainerStyle = createScrollableContainerStyle(theme);
   // Enhanced color scheme matching other components
   const bgPaper = isDark ? '#1F2937' : '#ffffff';
   const bgCard = isDark ? 'rgba(32, 30, 30, 0.5)' : '#ffffff';
@@ -261,9 +261,12 @@ const TemplateSelector: React.FC<TemplateSelectorProps> = ({
                   sx={{
                     height: 18,
                     fontSize: '0.65rem',
-                    bgcolor: alpha(theme.palette.secondary.main, 0.1),
-                    color: theme.palette.secondary.main,
+                    bgcolor: isDark ? 'rgba(228, 214, 214, 0.85)' : 'rgba(0, 0, 0, 0.05)',
+                    color: theme.palette.primary.main,
                     border: 'none',
+                    '&:hover': {
+                      backgroundColor: isDark ? 'rgba(228, 214, 214, 0.85)' : 'rgba(0, 0, 0, 0.05)',
+                    },
                   }}
                 />
               </Box>
@@ -328,9 +331,12 @@ const TemplateSelector: React.FC<TemplateSelectorProps> = ({
                       sx={{
                         height: 16,
                         fontSize: '0.6rem',
-                        bgcolor: alpha(theme.palette.info.main, 0.1),
-                        color: theme.palette.info.main,
-                        border: 'none',
+                        bgcolor: isDark ? 'rgba(228, 214, 214, 0.85)' : 'rgba(0, 0, 0, 0.05)',
+                      color: theme.palette.secondary.main,
+                      border: 'none',
+                      '&:hover': {
+                        backgroundColor: isDark ? 'rgba(228, 214, 214, 0.85)' : 'rgba(0, 0, 0, 0.05)',
+                      },
                       }}
                     />
                   ))}
@@ -351,54 +357,7 @@ const TemplateSelector: React.FC<TemplateSelectorProps> = ({
               </Box>
             )}
 
-            {/* Template Capabilities */}
-            <Box>
-              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
-                {Array.isArray(template.tools) && template.tools.length > 0 && (
-                  <Chip
-                    label={`${template.tools.length} tools`}
-                    size="small"
-                    variant="outlined"
-                    icon={<Icon icon={toolIcon} width={10} height={10} />}
-                    sx={{
-                      height: 18,
-                      fontSize: '0.6rem',
-                      borderColor,
-                      color: textSecondary,
-                    }}
-                  />
-                )}
-                {Array.isArray(template.models) && template.models.length > 0 && (
-                  <Chip
-                    label={`${template.models.length} models`}
-                    size="small"
-                    variant="outlined"
-                    icon={<Icon icon={brainIcon} width={10} height={10} />}
-                    sx={{
-                      height: 18,
-                      fontSize: '0.6rem',
-                      borderColor,
-                      color: textSecondary,
-                    }}
-                  />
-                )}
-                {Array.isArray(template.kb) && template.kb.length > 0 && (
-                  <Chip
-                    label={`${template.kb.length} KB`}
-                    size="small"
-                    variant="outlined"
-                    icon={<Icon icon={databaseIcon} width={10} height={10} />}
-                    sx={{
-                      height: 18,
-                      fontSize: '0.6rem',
-                      borderColor,
-                      color: textSecondary,
-                    }}
-                  />
-                )}
-              </Box>
-            </Box>
-
+          
             {/* Stats Section */}
             <Box
               sx={{
@@ -407,75 +366,10 @@ const TemplateSelector: React.FC<TemplateSelectorProps> = ({
                 borderTop: `1px solid ${borderColor}`,
               }}
             >
-              <Box
-                sx={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  mb: 1.5,
-                }}
-              >
-                <Tooltip title="Template Rating">
-                  <Box
-                    sx={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 0.5,
-                      px: 0.75,
-                      py: 0.25,
-                      borderRadius: '4px',
-                      bgcolor: alpha(theme.palette.warning.main, 0.1),
-                    }}
-                  >
-                    <Icon
-                      icon={starIcon}
-                      width={10}
-                      height={10}
-                      color={theme.palette.warning.main}
-                    />
-                    <Typography
-                      variant="caption"
-                      sx={{
-                        color: theme.palette.warning.main,
-                        fontSize: '0.65rem',
-                        fontWeight: 600,
-                      }}
-                    >
-                      {(template.rating || 5).toFixed(1)}
-                    </Typography>
-                  </Box>
-                </Tooltip>
-
-                <Tooltip title="Usage Count">
-                  <Box
-                    sx={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 0.5,
-                      px: 0.75,
-                      py: 0.25,
-                      borderRadius: '4px',
-                      bgcolor: alpha(textSecondary, 0.1),
-                    }}
-                  >
-                    <Icon icon={accountIcon} width={10} height={10} color={textSecondary} />
-                    <Typography
-                      variant="caption"
-                      sx={{
-                        color: textSecondary,
-                        fontSize: '0.65rem',
-                      }}
-                    >
-                      {template.usageCount || 0} uses
-                    </Typography>
-                  </Box>
-                </Tooltip>
-              </Box>
-
               {/* Action Button */}
               <Button
                 size="small"
-                variant="contained"
+                variant="outlined"
                 fullWidth
                 onClick={(e) => {
                   e.stopPropagation();
@@ -488,7 +382,7 @@ const TemplateSelector: React.FC<TemplateSelectorProps> = ({
                   borderRadius: '6px',
                   textTransform: 'none',
                   '&:hover': {
-                    backgroundColor: theme.palette.primary.dark,
+                    backgroundColor: alpha(theme.palette.primary.main, 0.05),
                   },
                 }}
               >
@@ -604,48 +498,16 @@ const TemplateSelector: React.FC<TemplateSelectorProps> = ({
             />
             <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.875rem' }}>
               {Array.isArray(filteredTemplates) ? filteredTemplates.length : 0} template
-              {(Array.isArray(filteredTemplates) ? filteredTemplates.length : 0) !== 1 ? 's' : ''}{' '}
+              {(Array.isArray(filteredTemplates) ? filteredTemplates.length : 0) !== 1
+                ? 's'
+                : ''}{' '}
               found
             </Typography>
           </Stack>
-
-          {/* Category Filters */}
-          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
-            <Chip
-              label={`All (${Array.isArray(templates) ? templates.length : 0})`}
-              variant={selectedCategory === '' ? 'filled' : 'outlined'}
-              color={selectedCategory === '' ? 'primary' : 'default'}
-              onClick={() => setSelectedCategory('')}
-              size="small"
-              sx={{
-                borderColor,
-                '&:hover': {
-                  backgroundColor: alpha(theme.palette.primary.main, 0.05),
-                },
-              }}
-            />
-            {Array.isArray(categoriesWithCounts) &&
-              categoriesWithCounts.map((category) => (
-                <Chip
-                  key={category.name}
-                  label={`${category.name} (${category.count})`}
-                  variant={selectedCategory === category.name ? 'filled' : 'outlined'}
-                  color={selectedCategory === category.name ? 'primary' : 'default'}
-                  onClick={() => setSelectedCategory(category.name)}
-                  size="small"
-                  sx={{
-                    borderColor,
-                    '&:hover': {
-                      backgroundColor: alpha(theme.palette.primary.main, 0.05),
-                    },
-                  }}
-                />
-              ))}
-          </Box>
         </Box>
 
         {/* Content */}
-        <DialogContent sx={{ flexGrow: 1, overflow: 'auto', p: 3 }}>
+        <DialogContent sx={{ flexGrow: 1, overflow: 'auto', p: 3, ...scrollableContainerStyle }}>
           {!Array.isArray(filteredTemplates) || filteredTemplates.length === 0 ? (
             <Paper
               sx={{
@@ -705,16 +567,16 @@ const TemplateSelector: React.FC<TemplateSelectorProps> = ({
           </ListItemIcon>
           <ListItemText>Use Template</ListItemText>
         </MenuItem>
-        
+
         <MenuItem onClick={handleEdit}>
           <ListItemIcon>
             <Icon icon={editIcon} width={16} height={16} />
           </ListItemIcon>
           <ListItemText>Edit Template</ListItemText>
         </MenuItem>
-        
+
         <Divider />
-        
+
         <MenuItem onClick={handleDelete} sx={{ color: 'error.main' }}>
           <ListItemIcon>
             <Icon icon={deleteIcon} width={16} height={16} color={theme.palette.error.main} />

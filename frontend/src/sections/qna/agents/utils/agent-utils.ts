@@ -275,23 +275,6 @@ export const COMMON_MODELS = [
 
 export const APPS = ['GMAIL', 'DRIVE', 'GOOGEL CALENDAR', 'JIRA', 'SLACK'] as const;
 
-// Agent capabilities based on tools and models
-export const getAgentCapabilities = (agent: Agent): string[] => {
-  const capabilities: string[] = [];
-
-  if (agent.tools.includes('web_search')) capabilities.push('Web Search');
-  if (agent.tools.includes('calculator')) capabilities.push('Math & Calculations');
-  if (agent.tools.includes('code_interpreter')) capabilities.push('Code Execution');
-  if (agent.tools.includes('file_upload')) capabilities.push('File Processing');
-  if (agent.tools.includes('image_generator')) capabilities.push('Image Generation');
-  if (agent.tools.includes('pdf_reader')) capabilities.push('Document Analysis');
-  if (agent.kb.length > 0) capabilities.push('Knowledge Base Access');
-  if (agent.vectorDBs.length > 0) capabilities.push('Semantic Search');
-  if (agent.apps.length > 0) capabilities.push('App Integration');
-
-  return capabilities;
-};
-
 // Export utilities for consistent tag management
 export const normalizeTags = (tags: string[]): string[] =>
   tags

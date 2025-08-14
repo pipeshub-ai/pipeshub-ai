@@ -20,7 +20,6 @@ import {
   Alert,
   CircularProgress,
   useTheme,
-  alpha,
   Autocomplete,
 } from '@mui/material';
 import { Icon } from '@iconify/react';
@@ -36,9 +35,9 @@ import {
   validateAgentTemplateForm,
   getInitialTemplateFormData,
   TEMPLATE_CATEGORIES,
-  COMMON_TOOLS,
-  COMMON_MODELS,
 } from '../utils/agent-utils';
+import { createScrollableContainerStyle } from '../../chatbot/utils/styles/scrollbar';
+
 
 interface TemplateBuilderProps {
   open: boolean;
@@ -57,7 +56,7 @@ const TemplateBuilder: React.FC<TemplateBuilderProps> = ({
   const [formData, setFormData] = useState<AgentTemplateFormData>(getInitialTemplateFormData());
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [isSaving, setIsSaving] = useState(false);
-
+  const scrollableContainerStyle = createScrollableContainerStyle(theme);
   const [newTag, setNewTag] = useState('');
 
   // Initialize form data with safe handling
@@ -281,7 +280,7 @@ const TemplateBuilder: React.FC<TemplateBuilderProps> = ({
       </DialogTitle>
 
       {/* Content */}
-      <DialogContent sx={{ flexGrow: 1, overflow: 'auto' }}>
+      <DialogContent sx={{ flexGrow: 1, overflow: 'auto', ...scrollableContainerStyle }}>
         <Box sx={{ py: 1 }}>
           {/* Basic Information */}
           <Typography variant="h6" sx={{ mb: 2, fontWeight: 600, color: 'text.primary' }}>

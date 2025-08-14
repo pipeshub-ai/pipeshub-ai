@@ -40,11 +40,7 @@ import moreVertIcon from '@iconify-icons/mdi/dots-vertical';
 import editIcon from '@iconify-icons/mdi/pencil';
 import deleteIcon from '@iconify-icons/mdi/delete';
 import chatIcon from '@iconify-icons/mdi/chat';
-import copyIcon from '@iconify-icons/mdi/content-copy';
 import templateIcon from '@iconify-icons/mdi/file-document';
-import robotIcon from '@iconify-icons/mdi/robot-outline';
-import smartHomeIcon from '@iconify-icons/mdi/home-assistant';
-import brainIcon from '@iconify-icons/mdi/brain';
 import sparklesIcon from '@iconify-icons/mdi/auto-awesome';
 import timeIcon from '@iconify-icons/mdi/clock-outline';
 import clearIcon from '@iconify-icons/mdi/close';
@@ -57,9 +53,6 @@ import {
   filterAgents,
   sortAgents,
   formatTimestamp,
-  formatConversationCount,
-  getAgentCapabilities,
-  getTagColor,
 } from './utils/agent-utils';
 import AgentBuilder from './components/agent-builder';
 import TemplateBuilder from './components/template-builder';
@@ -68,30 +61,6 @@ import TemplateSelector from './components/template-selector';
 interface AgentsManagementProps {
   onAgentSelect?: (agent: Agent) => void;
 }
-
-// Enhanced agent icon mapping based on agent type or capabilities
-const getAgentIcon = (agent: Agent) => {
-  const capabilities = getAgentCapabilities(agent);
-  const tags = agent.tags || [];
-  const name = agent.name?.toLowerCase() || '';
-  
-  // Check for specific capabilities or tags
-  if (capabilities.includes('chat') || tags.includes('customer-support') || name.includes('support')) {
-    return chatIcon;
-  }
-  if (capabilities.includes('analysis') || tags.includes('analytics') || name.includes('analyst')) {
-    return brainIcon;
-  }
-  if (capabilities.includes('automation') || tags.includes('assistant') || name.includes('assistant')) {
-    return smartHomeIcon;
-  }
-  if (capabilities.includes('creative') || tags.includes('content') || name.includes('content')) {
-    return sparklesIcon;
-  }
-  
-  // Default AI agent icon
-  return robotIcon;
-};
 
 const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) => {
   const theme = useTheme();
@@ -299,9 +268,6 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
     const cardBorder = isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.08)';
     const statsBg = isDark ? 'rgba(255, 255, 255, 0.03)' : 'rgba(0, 0, 0, 0.03)';
 
-    const capabilities = getAgentCapabilities(agent);
-    const agentIcon = getAgentIcon(agent);
-
     return (
       <Grid item xs={12} sm={6} md={4} lg={3} key={agent._key}>
         <Card
@@ -348,7 +314,7 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
                   border: `2px solid ${alpha(theme.palette.primary.main, 0.2)}`,
                 }}
               >
-                <Icon icon={agentIcon} width={20} height={20} color={theme.palette.primary.main} />
+                <Icon icon={sparklesIcon} width={20} height={20} color={theme.palette.primary.main} />
               </Avatar>
 
               <Box sx={{ flex: 1, minWidth: 0 }}>
@@ -399,48 +365,6 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
               {agent.description || 'No description available'}
             </Typography>
 
-            {/* Capabilities - More compact */}
-            {capabilities.length > 0 && (
-              <Box>
-                <Box
-                  sx={{
-                    display: 'flex',
-                    flexWrap: 'wrap',
-                    gap: 0.5,
-                  }}
-                >
-                  {capabilities.slice(0, 3).map((capability) => (
-                    <Chip
-                      key={capability}
-                      label={capability}
-                      size="small"
-                      sx={{
-                        height: 18,
-                        fontSize: '0.6rem',
-                        fontWeight: 500,
-                        bgcolor: isDark ? 'rgba(255, 255, 255, 0.05)' : 'rgba(0, 0, 0, 0.05)',
-                        color: textSecondary,
-                        border: `1px solid ${cardBorder}`,
-                      }}
-                    />
-                  ))}
-                  {capabilities.length > 3 && (
-                    <Chip
-                      label={`+${capabilities.length - 3}`}
-                      size="small"
-                      sx={{
-                        height: 18,
-                        fontSize: '0.6rem',
-                        fontWeight: 500,
-                        bgcolor: alpha(theme.palette.primary.main, 0.1),
-                        color: theme.palette.primary.main,
-                        border: 'none',
-                      }}
-                    />
-                  )}
-                </Box>
-              </Box>
-            )}
 
             {/* Tags - More compact */}
             {Array.isArray(agent.tags) && agent.tags.length > 0 && (
@@ -451,7 +375,7 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
                   gap: 0.5,
                 }}
               >
-                {agent.tags.slice(0, 2).map((tag) => (
+                {agent.tags.slice(0, 3).map((tag) => (
                   <Chip
                     key={tag}
                     label={tag}
@@ -460,15 +384,18 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
                       height: 16,
                       fontSize: '0.6rem',
                       fontWeight: 400,
-                      bgcolor: alpha(theme.palette.secondary.main, 0.1),
+                      bgcolor: isDark ? 'rgba(228, 214, 214, 0.85)' : 'rgba(0, 0, 0, 0.05)',
                       color: theme.palette.secondary.main,
                       border: 'none',
+                      '&:hover': {
+                        backgroundColor: isDark ? 'rgba(228, 214, 214, 0.85)' : 'rgba(0, 0, 0, 0.05)',
+                      },
                     }}
                   />
                 ))}
-                {agent.tags.length > 2 && (
+                {agent.tags.length > 3 && (
                   <Chip
-                    label={`+${agent.tags.length - 2}`}
+                    label={`+${agent.tags.length - 3}`}
                     size="small"
                     sx={{
                       height: 16,
@@ -498,32 +425,6 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
                   mb: 1.5,
                 }}
               >
-                <Tooltip title="Conversations">
-                  <Box
-                    sx={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 0.5,
-                      px: 0.75,
-                      py: 0.25,
-                      borderRadius: '4px',
-                      bgcolor: statsBg,
-                    }}
-                  >
-                    <Icon icon={chatIcon} width={10} height={10} color={textSecondary} />
-                    <Typography
-                      variant="caption"
-                      sx={{
-                        color: textPrimary,
-                        fontSize: '0.65rem',
-                        fontWeight: 600,
-                      }}
-                    >
-                      {agent.conversationCount || 0}
-                    </Typography>
-                  </Box>
-                </Tooltip>
-
                 <Tooltip title={`Updated ${formatTimestamp(agent.updatedAtTimestamp || new Date().toISOString())}`}>
                   <Box
                     sx={{
@@ -643,7 +544,7 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
       <Box
         sx={{
           borderBottom: `1px solid ${borderColor}`,
-          backgroundColor: bgPaper,
+          backgroundColor: 'background.paper',
           px: { xs: 2, sm: 3 },
           py: 2.5,
         }}
@@ -846,7 +747,7 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
             </Button>
 
             <Button
-              variant="contained"
+              variant="outlined"
               startIcon={<Icon icon={plusIcon} fontSize={14} />}
               onClick={() => setShowAgentBuilder(true)}
               sx={{
@@ -856,8 +757,11 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
                 fontSize: '0.8125rem',
                 fontWeight: 500,
                 textTransform: 'none',
+                borderColor: 'primary.main',
+                color: 'primary.main',
                 '&:hover': {
-                  backgroundColor: theme.palette.primary.dark,
+                  backgroundColor: (themeVal) => alpha(themeVal.palette.primary.main, 0.05),
+                  borderColor: 'primary.dark',
                 },
               }}
             >
@@ -989,7 +893,7 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
                     borderRadius: 2,
                   }}
                 >
-                  <Icon icon={robotIcon} width={64} height={64} color={theme.palette.text.disabled} />
+                  <Icon icon={sparklesIcon} width={64} height={64} color={theme.palette.text.disabled} />
                   <Typography variant="h6" sx={{ mt: 2, mb: 1, color: textPrimary }}>
                     {searchQuery || selectedTags.length > 0
                       ? 'No agents found'
