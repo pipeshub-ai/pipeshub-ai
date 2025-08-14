@@ -20,3 +20,13 @@ def parse_timestamp(timestamp_str: str) -> int:
 
     # Convert seconds to milliseconds
     return timestamp * 1000
+
+def prepare_iso_timestamps(start_time: str, end_time: str) -> tuple[str, str]:
+    """Converts start and end time strings to ISO 8601 formatted strings."""
+    start_timestamp = parse_timestamp(start_time)
+    end_timestamp = parse_timestamp(end_time)
+
+    start_dt = datetime.fromtimestamp(start_timestamp / 1000, tz=timezone.utc)
+    end_dt = datetime.fromtimestamp(end_timestamp / 1000, tz=timezone.utc)
+
+    return start_dt.isoformat(), end_dt.isoformat()

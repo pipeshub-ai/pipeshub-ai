@@ -4,7 +4,7 @@ from typing import List, Optional
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
-from app.utils.time_conversion import parse_timestamp
+from app.utils.time_conversion import prepare_iso_timestamps
 
 
 class GoogleCalendar:
@@ -145,17 +145,16 @@ class GoogleCalendar:
             if not event_end_time:
                 return False, json.dumps({"error": "Event end time is required"})
 
-            event_start_time = str(parse_timestamp(event_start_time))
-            event_end_time = str(parse_timestamp(event_end_time))
+            event_start_time_iso, event_end_time_iso = prepare_iso_timestamps(event_start_time, event_end_time)
 
             event_config = {
                 "summary": event_title,
                 "description": event_description,
                 "start": {
-                    "dateTime": event_start_time,
+                    "dateTime": event_start_time_iso,
                 },
                 "end": {
-                    "dateTime": event_end_time,
+                    "dateTime": event_end_time_iso,
                 },
                 "location": event_location,
                 "organizer": {
@@ -176,9 +175,8 @@ class GoogleCalendar:
                 }
 
             if event_all_day:
-                event_config["start"] = {"date": event_start_time.split("T")[0]}
-                event_config["end"] = {"date": event_end_time.split("T")[0]}
-
+                event_config["start"] = {"date": event_start_time_iso.split("T")[0]}
+                event_config["end"] = {"date": event_end_time_iso.split("T")[0]}
             event = self.client.events().insert( # type: ignore
                 calendarId=self.calendar_id,
                 body=event_config,
@@ -332,15 +330,13 @@ class GoogleCalendar:
                 event["timeZone"] = event_timezone
 
             if event_start_time and event_end_time:
-                event_start_time = str(parse_timestamp(event_start_time))
-                event_end_time = str(parse_timestamp(event_end_time))
-
+                event_start_time_iso, event_end_time_iso = prepare_iso_timestamps(event_start_time, event_end_time)
                 if event_all_day:
-                    event["start"] = {"date": event_start_time.split("T")[0]}
-                    event["end"] = {"date": event_end_time.split("T")[0]}
+                    event["start"] = {"date": event_start_time_iso.split("T")[0]}
+                    event["end"] = {"date": event_end_time_iso.split("T")[0]}
                 else:
-                    event["start"] = {"dateTime": event_start_time}
-                    event["end"] = {"dateTime": event_end_time}
+                    event["start"] = {"dateTime": event_start_time_iso}
+                    event["end"] = {"dateTime": event_end_time_iso}
 
             updated_event = self.client.events().update( # type: ignore
                 calendarId=self.calendar_id,
@@ -427,7 +423,7 @@ class GoogleCalendar:
             tuple[bool, str]: True if the calendar is retrieved, False otherwise
         """
         try:
-            calendar = self.service.calendars().get(calendarId=self.calendar_id).execute() # type: ignore
+            calendar = self.client.calendars().get(calendarId=self.calendar_id).execute() # type: ignore
             return True, json.dumps(calendar)
         except Exception as e:
             return False, json.dumps({"error": str(e)})
