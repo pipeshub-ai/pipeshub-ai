@@ -17,6 +17,7 @@ from app.connectors.sources.atlassian.confluence.confluence_cloud import (
     ConfluenceConnector,
 )
 from app.connectors.sources.atlassian.core.apps import ConfluenceApp
+from app.connectors.sources.atlassian.core.oauth import OAUTH_CONFIG_PATH
 from app.services.kafka_consumer import KafkaConsumerManager
 from app.utils.logger import create_logger
 
@@ -26,11 +27,6 @@ async def test_run() -> None:
     logger = create_logger("confluence_connector")
 
     key_value_store = InMemoryKeyValueStore(logger, "app/config/default_config.json")
-    await key_value_store.create_key("atlassian_oauth_provider", {
-        "client_id":os.getenv("ATLASSIAN_CLIENT_ID"),
-        "client_secret": os.getenv("ATLASSIAN_CLIENT_SECRET"),
-        "redirect_uri": os.getenv("ATLASSIAN_REDIRECT_URI")
-    })
 
     config_service = ConfigurationService(logger, key_value_store)
     kafka_service = KafkaConsumerManager(logger, config_service, None, None)
@@ -39,6 +35,11 @@ async def test_run() -> None:
     await arango_service.connect()
     data_entities_processor = DataSourceEntitiesProcessor(logger, ConfluenceApp(), arango_service, config_service)
     await data_entities_processor.initialize()
+    await key_value_store.create_key(f"{OAUTH_CONFIG_PATH}/{data_entities_processor.org_id}", {
+        "client_id":os.getenv("ATLASSIAN_CLIENT_ID"),
+        "client_secret": os.getenv("ATLASSIAN_CLIENT_SECRET"),
+        "redirect_uri": os.getenv("ATLASSIAN_REDIRECT_URI")
+    })
     confluence_connector = ConfluenceConnector(logger, data_entities_processor, config_service)
     await confluence_connector.initialize()
 

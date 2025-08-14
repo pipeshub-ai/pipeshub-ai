@@ -158,7 +158,7 @@ export const getAtlassianOauthConfig = async (
   }
   const configurationManagerCommandOptions: ConfigurationManagerCommandOptions =
     {
-      uri: `${url}/${ATLASIAN_OAUTH_CONFIG_PATH}`,
+      uri: `${url}/${ATLASIAN_OAUTH_CONFIG_PATH}/${req.user.org_id}`,
       method: HttpMethod.GET,
       headers: {
         Authorization: `Bearer ${await generateFetchConfigToken(req.user, scopedJwtSecret)}`,
@@ -209,7 +209,7 @@ export const setAtlassianOauthConfig = async (
   }
   const configurationManagerCommandOptions: ConfigurationManagerCommandOptions =
     {
-      uri: `${url}/${ATLASIAN_OAUTH_CONFIG_PATH}`,
+      uri: `${url}/${ATLASIAN_OAUTH_CONFIG_PATH}/${req.user.org_id}`,
       method: HttpMethod.POST,
       headers: {
         Authorization: `Bearer ${await generateFetchConfigToken(req.user, scopedJwtSecret)}`,

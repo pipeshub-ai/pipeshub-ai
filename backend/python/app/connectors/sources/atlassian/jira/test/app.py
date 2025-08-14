@@ -27,12 +27,6 @@ async def test_run() -> None:
     logger = create_logger("jira_connector")
 
     key_value_store = InMemoryKeyValueStore(logger, "app/config/default_config.json")
-    await key_value_store.create_key(OAUTH_CONFIG_PATH, {
-        "client_id":os.getenv("ATLASSIAN_CLIENT_ID"),
-        "client_secret": os.getenv("ATLASSIAN_CLIENT_SECRET"),
-        "redirect_uri": os.getenv("ATLASSIAN_REDIRECT_URI")
-    })
-
     config_service = ConfigurationService(logger, key_value_store)
     kafka_service = KafkaConsumerManager(logger, config_service, None, None)
 
@@ -40,6 +34,12 @@ async def test_run() -> None:
     await arango_service.connect()
     data_entities_processor = DataSourceEntitiesProcessor(logger, JiraApp(), arango_service, config_service)
     await data_entities_processor.initialize()
+    await key_value_store.create_key(f"{OAUTH_CONFIG_PATH}/{data_entities_processor.org_id}", {
+        "client_id":os.getenv("ATLASSIAN_CLIENT_ID"),
+        "client_secret": os.getenv("ATLASSIAN_CLIENT_SECRET"),
+        "redirect_uri": os.getenv("ATLASSIAN_REDIRECT_URI")
+    })
+
     jira_connector = JiraConnector(logger, data_entities_processor, config_service)
     await jira_connector.initialize()
 

@@ -135,6 +135,7 @@ class AtlassianOAuthProvider(OAuthProvider):
         redirect_uri: str,
         key_value_store: KeyValueStore,
         base_arango_service: BaseArangoService,
+        credentials_path: str,
         scopes: Optional[List[str]] = None,
     ) -> None:
         """
@@ -162,7 +163,7 @@ class AtlassianOAuthProvider(OAuthProvider):
             }
         )
 
-        super().__init__(config, key_value_store, base_arango_service)
+        super().__init__(config, key_value_store, base_arango_service, credentials_path)
         self._accessible_resources: Optional[List[AtlassianCloudResource]] = None
 
     @staticmethod
@@ -182,30 +183,14 @@ class AtlassianOAuthProvider(OAuthProvider):
             return await resp.json()
 
     async def handle_callback(self, code: str, state: str) -> OAuthToken:
-        token = await super().handle_callback(code, state, save_token=False)
-        identity = await self.get_identity(token)
-        email = identity.get('email')
-        if not email:
-            raise Exception("User email not found in Atlassian identity response")
-        user = await self.base_arango_service.get_user_by_email(email)
-        if not user:
-            raise Exception(f"User {email} not found")
-        org_id = user.org_id
-        if not org_id:
-            raise Exception(f"User {email} does not have an org_id")
+        token = await super().handle_callback(code, state)
+        # identity = await self.get_identity(token)
+        # email = identity.get('email')
+        # if not email:
+        #     raise Exception("User email not found in Atlassian identity response")
+        # user = await self.base_arango_service.get_user_by_email(email)
 
-        await self.key_value_store.create_key(f"{OAUTH_CREDENTIALS_PATH}/{org_id}", token.to_dict())
 
         return token
 
-    async def get_token(self, id: str) -> Optional[OAuthToken]:
-        # id is org_id
-        token = await self.key_value_store.get_key(f"{OAUTH_CREDENTIALS_PATH}/{id}")
-        if not token:
-            return None
-        token = OAuthToken.from_dict(token)
-        if token.is_expired:
-            token = await self.refresh_access_token(token.refresh_token)
-            await self.key_value_store.create_key(f"{OAUTH_CREDENTIALS_PATH}/{id}", token.to_dict())
-        return token
 

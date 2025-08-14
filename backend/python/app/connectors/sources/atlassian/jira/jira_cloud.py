@@ -17,6 +17,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 from app.connectors.core.base.token_service.oauth_service import OAuthToken
 from app.connectors.sources.atlassian.core.oauth import (
     OAUTH_CONFIG_PATH,
+    OAUTH_CREDENTIALS_PATH,
     AtlassianOAuthProvider,
     AtlassianScope,
 )
@@ -410,14 +411,15 @@ class JiraConnector:
 
     async def initialize(self) -> None:
         await self.data_entities_processor.initialize()
-        config = await self.config_service.get_config(OAUTH_CONFIG_PATH)
+        config = await self.config_service.get_config(f"{OAUTH_CONFIG_PATH}/{self.data_entities_processor.org_id}")
         self.provider = AtlassianOAuthProvider(
             client_id=config["client_id"],
             client_secret=config["client_secret"],
             redirect_uri=config["redirect_uri"],
             scopes=AtlassianScope.get_full_access(),
             key_value_store=self.config_service.store,
-            base_arango_service=self.data_entities_processor.arango_service
+            base_arango_service=self.data_entities_processor.arango_service,
+            credentials_path=f"{OAUTH_CREDENTIALS_PATH}/{self.data_entities_processor.org_id}"
         )
 
     async def run(self) -> None:
@@ -443,7 +445,7 @@ class JiraConnector:
 
 
     async def get_jira_client(self, org_id: str) -> JiraClient:
-        token = await self.provider.get_token(org_id)
+        token = await self.provider.ensure_valid_token()
         if not token:
             raise Exception(f"Token for org {org_id} not found")
         jira_client = JiraClient(self.logger, org_id, token)
