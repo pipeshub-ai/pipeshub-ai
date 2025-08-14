@@ -1067,33 +1067,23 @@ app.message(async ({ message, client, context }) => {
             });
         }
         let blocks = [];
+        const originalContent = botResponse.content;
         try {
-          // throw new Error("test");
-          botResponse.content = convertCitationsToHyperlinks(botResponse.content, citationUrls);
-           blocks = await markdownToBlocks(botResponse.content);
+          const contentForMack = convertCitationsToHyperlinks(originalContent, citationUrls);
+          blocks = await markdownToBlocks(contentForMack);
         } catch (error) {
           console.error("Error converting markdown to blocks:", error);
-          botResponse.content = convertCitationsToHyperlinks2(botResponse.content, citationUrls);
-
+          const contentForFallback = convertCitationsToHyperlinks2(originalContent, citationUrls);
           blocks = [
             {
               type: "section",
               text: {
                 type: "mrkdwn",
-                text: botResponse.content,
+                text: contentForFallback,
               },
             },
           ];
         }
-        // const blocks = [
-        //   {
-        //     type: "section",
-        //     text: {
-        //       type: "mrkdwn",
-        //       text: botResponse.content,
-        //     },
-        //   },
-        // ];
        await typedClient.chat.update({
         channel: typedMessage.channel!,
         ts: messageTs,
