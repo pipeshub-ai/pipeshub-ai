@@ -1,10 +1,11 @@
 // Enumerations for the RecordDocument model
-export type RecordType = 'FILE' | 'WEBPAGE' | 'MESSAGE' | 'EMAIL' | 'OTHERS';
+export type RecordType = 'FILE' | 'WEBPAGE' | 'MESSAGE' | 'EMAIL' | 'TICKET' | 'OTHERS';
 export type OriginType = 'UPLOAD' | 'CONNECTOR';
 export type ConnectorName =
   | 'ONEDRIVE'
   | 'GOOGLE_DRIVE'
   | 'CONFLUENCE'
+  | 'JIRA'
   | 'SLACK';
 export type IndexingStatus =
   | 'NOT_STARTED'

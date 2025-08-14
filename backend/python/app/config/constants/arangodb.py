@@ -100,6 +100,7 @@ class CollectionNames(Enum):
     MAILS = "mails"
     MESSAGES = "messages"
     WEBPAGES = "webpages"
+    TICKETS = "tickets"
 
     # Users and groups
     PEOPLE = "people"
@@ -193,6 +194,7 @@ class MimeTypes(Enum):
     NOTION_TEXT = "notion/text"
     NOTION_PAGE_COMMENT_TEXT = "notion/pageCommentText"
     HTML = "text/html"
+    PLAIN_TEXT = "text/plain"
 
 
 class ProgressStatus(Enum):

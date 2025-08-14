@@ -88,6 +88,7 @@ class CollectionNames(Enum):
     LINKS = "links"
     MAILS = "mails"
     WEBPAGES = "webpages"
+    TICKETS = "tickets"
 
     # Users and groups
     PEOPLE = "people"
@@ -169,6 +170,8 @@ class MimeTypes(Enum):
     XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     XLS = "application/vnd.ms-excel"
     CSV = "text/csv"
+    HTML = "text/html"
+    PLAIN_TEXT = "text/plain"
 
 
 class ProgressStatus(Enum):

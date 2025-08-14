@@ -1794,7 +1794,7 @@ class Processor:
             raise
 
     async def process_txt_document(
-        self, recordName, recordId, version, source, orgId, txt_binary, virtual_record_id
+        self, recordName, recordId, version, source, orgId, txt_binary, virtual_record_id, recordType, connectorName, origin
     ) -> None:
         """Process TXT document and extract structured content"""
         self.logger.info(
@@ -1871,11 +1871,17 @@ class Processor:
                         "text": block,
                         "metadata": {
                             **(domain_metadata or {}),
+                            "recordName": recordName,
+                            "orgId": orgId,
                             "recordId": recordId,
                             "blockType": "text",
                             "blockNum": [idx],
                             "blockText": json.dumps(full_context),
                             "virtualRecordId": virtual_record_id,
+                            "recordType": recordType,
+                            "connectorName": connectorName,
+                            "origin": origin,
+                            "mimeType": MimeTypes.PLAIN_TEXT.value,
                         },
                     }
                 )

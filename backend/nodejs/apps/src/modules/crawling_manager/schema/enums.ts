@@ -23,6 +23,7 @@ export enum ConnectorType {
     GOOGLE_WORKSPACE = 'google_workspace',
     SLACK = 'slack',
     CONFLUENCE = 'confluence',
+    JIRA = 'jira',
     ONE_DRIVE = 'one_drive',
     SHAREPOINT = 'sharepoint',
     S3 = 's3',

@@ -189,7 +189,7 @@ class EventProcessor:
             connector = event_data.get("connectorName", "")
             extension = event_data.get("extension", "unknown")
             mime_type = event_data.get("mimeType", "unknown")
-            origin = event_data.get("origin", "unknown")
+            origin = event_data.get("origin", "CONNECTOR" if connector != "" else "UPLOAD")
             record_type = event_data.get("recordType", "unknown")
             record_name = event_data.get("recordName", f"Untitled-{record_id}")
 
@@ -355,6 +355,21 @@ class EventProcessor:
                 )
                 return result
 
+            if mime_type == MimeTypes.PLAIN_TEXT.value:
+                result = await self.processor.process_txt_document(
+                    recordName=record_name,
+                    recordId=record_id,
+                    version=record_version,
+                    source=connector,
+                    orgId=org_id,
+                    txt_binary=file_content,
+                    virtual_record_id=virtual_record_id,
+                    recordType=record_type,
+                    connectorName=connector,
+                    origin=origin
+                )
+                return result
+
             if extension == ExtensionTypes.PDF.value:
                 result = await self.processor.process_pdf_document(
                     recordName=record_name,
@@ -483,7 +498,10 @@ class EventProcessor:
                     source=connector,
                     orgId=org_id,
                     txt_binary=file_content,
-                    virtual_record_id = virtual_record_id
+                    virtual_record_id=virtual_record_id,
+                    recordType=record_type,
+                    connectorName=connector,
+                    origin=origin
                 )
 
             else:

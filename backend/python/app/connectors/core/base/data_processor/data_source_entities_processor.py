@@ -16,6 +16,7 @@ from app.models.entities import (
     Record,
     RecordGroup,
     RecordType,
+    TicketRecord,
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission
@@ -45,6 +46,8 @@ read_collections = [
     CollectionNames.RECORD_GROUPS.value,
     CollectionNames.FILES.value,
     CollectionNames.MAILS.value,
+    CollectionNames.TICKETS.value,
+    CollectionNames.WEBPAGES.value,
     # CollectionNames.MESSAGES.value,
     CollectionNames.USERS.value,
     # CollectionNames.USER_GROUPS.value,
@@ -65,6 +68,7 @@ write_collections = [
     CollectionNames.FILES.value,
     CollectionNames.MAILS.value,
     CollectionNames.WEBPAGES.value,
+    CollectionNames.TICKETS.value,
     # CollectionNames.MESSAGES.value,
     # CollectionNames.MESSAGES.value,
     CollectionNames.USERS.value,
@@ -194,7 +198,10 @@ class DataSourceEntitiesProcessor:
             },
             WebpageRecord: {
                 "collection": CollectionNames.WEBPAGES.value,
-            }
+            },
+            TicketRecord: {
+                "collection": CollectionNames.TICKETS.value,
+            },
         }
 
         # Get the configuration for the current record type
@@ -355,19 +362,20 @@ class DataSourceEntitiesProcessor:
     async def on_record_deleted(self, record_id: str) -> None:
         await self.arango_service.delete_record(record_id)
 
-    async def on_new_record_groups(self, record_groups: List[RecordGroup], permissions: List[Permission]) -> None:
+    async def on_new_record_groups(self, record_groups: List[Tuple[RecordGroup, List[Permission]]]) -> None:
         # Create a transaction
         transaction = self.arango_service.db.begin_transaction(
                     read=read_collections,
                     write=write_collections,
             )
-        for record_group in record_groups:
+        for record_group, permissions in record_groups:
+            record_group.org_id = self.org_id
+
             self.logger.info(f"Processing record group: {record_group}")
             existing_record_group = await self.arango_service.get_record_group_by_external_id(connector_name=record_group.connector_name,
                                                                                             external_id=record_group.external_group_id, transaction=transaction)
             if existing_record_group is None:
                 record_group.id = str(uuid.uuid4())
-                record_group.org_id = self.org_id
                 # Create a permission edge between the record group and the org if it doesn't exist
                 # Create a permission edge between the record group and the user if it doesn't exist
                 # Create a permission edge between the record group and the user group if it doesn't exist

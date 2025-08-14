@@ -21,9 +21,9 @@ class HTTPClient:
         Returns:
             A dictionary containing the response from the server
         """
-        await self._ensure_session()
+        session = await self._ensure_session()
         headers = {**self.headers, **headers}
-        async with self.session.request("GET", url, headers=headers, **kwargs) as response:
+        async with session.request("GET", url, headers=headers, **kwargs) as response:
             return await response.json()
 
     async def post(self, url: str, data: dict, headers: dict = {}, **kwargs) -> dict:
@@ -34,9 +34,9 @@ class HTTPClient:
         Returns:
             A dictionary containing the response from the server
         """
-        await self._ensure_session()
+        session = await self._ensure_session()
         headers = {**self.headers, **headers}
-        async with self.session.request("POST", url, headers=headers, json=data, **kwargs) as response:
+        async with session.request("POST", url, headers=headers, json=data, **kwargs) as response:
             return await response.json()
 
     async def put(self, url: str, data: dict, headers: dict = {}, **kwargs) -> dict:
@@ -47,9 +47,9 @@ class HTTPClient:
         Returns:
             A dictionary containing the response from the server
         """
-        await self._ensure_session()
+        session = await self._ensure_session()
         headers = {**self.headers, **headers}
-        async with self.session.request("PUT", url, headers=headers, json=data, **kwargs) as response:
+        async with session.request("PUT", url, headers=headers, json=data, **kwargs) as response:
             return await response.json()
 
     async def close(self) -> None:
@@ -60,9 +60,11 @@ class HTTPClient:
 
     async def __aenter__(self) -> "HTTPClient":
         """Async context manager entry"""
-        await self._ensure_session()
+        session = await self._ensure_session()
+        assert session is not None
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         """Async context manager exit"""
         await self.close()
+        assert self.session is None

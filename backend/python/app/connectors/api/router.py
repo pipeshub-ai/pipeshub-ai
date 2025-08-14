@@ -356,9 +356,9 @@ async def download_file(
                 creds = await get_user_credentials(org_id, user_id, logger, google_token_handler, request.app.container)
         elif connector.lower() == Connectors.CONFLUENCE.value.lower():
             from app.connectors.sources.atlassian.core.oauth import (
-                AtlassianOAuthProvider,
+                OAUTH_CREDENTIALS_PATH,
             )
-            creds = await config_service.get_config(f"{AtlassianOAuthProvider.get_name()}/{org_id}")
+            creds = await config_service.get_config(f"{OAUTH_CREDENTIALS_PATH}/{org_id}")
 
         # Download file based on connector type
         try:
@@ -790,9 +790,9 @@ async def stream_record(
 
         elif connector.lower() == Connectors.CONFLUENCE.value.lower():
             from app.connectors.sources.atlassian.core.oauth import (
-                AtlassianOAuthProvider,
+                OAUTH_CREDENTIALS_PATH,
             )
-            creds = await config_service.get_config(f"{AtlassianOAuthProvider.get_name()}/{org_id}")
+            creds = await config_service.get_config(f"{OAUTH_CREDENTIALS_PATH}/{org_id}")
 
         # Download file based on connector type
         try:
