@@ -18,6 +18,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 )
 from app.connectors.core.base.token_service.oauth_service import OAuthToken
 from app.connectors.sources.atlassian.core.oauth import (
+    OAUTH_CONFIG_PATH,
     AtlassianOAuthProvider,
     AtlassianScope,
 )
@@ -304,7 +305,7 @@ class ConfluenceConnector:
 
     async def initialize(self) -> None:
         await self.data_entities_processor.initialize()
-        config = await self.config_service.get_config("atlassian_oauth_provider")
+        config = await self.config_service.get_config(OAUTH_CONFIG_PATH)
         self.provider = AtlassianOAuthProvider(
             client_id=config["client_id"],
             client_secret=config["client_secret"],

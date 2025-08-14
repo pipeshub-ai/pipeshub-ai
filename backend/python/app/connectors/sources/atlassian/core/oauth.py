@@ -10,6 +10,9 @@ from app.connectors.core.base.token_service.oauth_service import (
 )
 from app.connectors.services.base_arango_service import BaseArangoService
 
+OAUTH_CONFIG_PATH = "/services/connectors/atlassian/config"
+OAUTH_CREDENTIALS_PATH = "/services/connectors/atlassian/credentials"
+
 
 class AtlassianScope(Enum):
     """Common Atlassian OAuth Scopes"""
@@ -191,17 +194,18 @@ class AtlassianOAuthProvider(OAuthProvider):
         if not org_id:
             raise Exception(f"User {email} does not have an org_id")
 
-        await self.key_value_store.create_key(f"{self.get_provider_name()}/{org_id}", token.to_dict())
+        await self.key_value_store.create_key(f"{OAUTH_CREDENTIALS_PATH}/{org_id}", token.to_dict())
 
         return token
 
     async def get_token(self, id: str) -> Optional[OAuthToken]:
-        token = await self.key_value_store.get_key(f"{self.get_provider_name()}/{id}")
+        # id is org_id
+        token = await self.key_value_store.get_key(f"{OAUTH_CREDENTIALS_PATH}/{id}")
         if not token:
             return None
         token = OAuthToken.from_dict(token)
         if token.is_expired:
             token = await self.refresh_access_token(token.refresh_token)
-            await self.key_value_store.create_key(f"{self.get_provider_name()}/{id}", token.to_dict())
+            await self.key_value_store.create_key(f"{OAUTH_CREDENTIALS_PATH}/{id}", token.to_dict())
         return token
 

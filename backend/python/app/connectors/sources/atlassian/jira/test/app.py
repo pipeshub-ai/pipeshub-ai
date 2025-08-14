@@ -15,6 +15,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.connectors.sources.atlassian.core.apps import JiraApp
 from app.connectors.sources.atlassian.jira.jira_cloud import (
+    OAUTH_CONFIG_PATH,
     JiraConnector,
 )
 from app.services.kafka_consumer import KafkaConsumerManager
@@ -26,7 +27,7 @@ async def test_run() -> None:
     logger = create_logger("jira_connector")
 
     key_value_store = InMemoryKeyValueStore(logger, "app/config/default_config.json")
-    await key_value_store.create_key("atlassian_oauth_provider", {
+    await key_value_store.create_key(OAUTH_CONFIG_PATH, {
         "client_id":os.getenv("ATLASSIAN_CLIENT_ID"),
         "client_secret": os.getenv("ATLASSIAN_CLIENT_SECRET"),
         "redirect_uri": os.getenv("ATLASSIAN_REDIRECT_URI")
