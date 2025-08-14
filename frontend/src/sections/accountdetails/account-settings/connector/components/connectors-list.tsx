@@ -5,7 +5,8 @@ import atlassianIcon from '@iconify-icons/eva/globe-2-outline';
 
 export interface ConnectorConfig {
   id: string;
-  icon: React.ComponentProps<typeof IconifyIcon>['icon'];
+  icon?: React.ComponentProps<typeof IconifyIcon>['icon'];
+  src?:string
   title: string;
   description: string;
   color: string;
@@ -25,6 +26,7 @@ export const CONNECTORS_LIST: ConnectorConfig[] = [
   {
     id: 'googleWorkspace',
     icon: googleIcon,
+    src: '/assets/icons/connectors/google.svg',
     title: 'Google Workspace',
     description:
       'Integrate with Google Workspace for calendar, gmail, spreadsheets, drive and document sharing',
@@ -32,7 +34,7 @@ export const CONNECTORS_LIST: ConnectorConfig[] = [
   },
   {
     id: 'atlassian',
-    icon: atlassianIcon,
+    src: '/assets/icons/connectors/atlassian.svg',
     title: 'Atlassian',
     description: 'Integrate with Atlassian for Confluence and Jira',
     color: '#0052CC',

@@ -211,6 +211,11 @@ const StreamingContent = React.memo(
         const citationNumber = parseInt(citationRef.replace(/[[\]]/g, ''), 10);
         const citation = citationMap[citationNumber];
 
+        if (!citation?.metadata?.extension || citation?.metadata?.mimeType === 'text/html') {
+          window.open(citation?.metadata?.webUrl, '_blank');
+          return;
+        }
+
         if (citation?.metadata?.recordId) {
           try {
             const recordCitations = aggregatedCitations[citation.metadata.recordId] || [];

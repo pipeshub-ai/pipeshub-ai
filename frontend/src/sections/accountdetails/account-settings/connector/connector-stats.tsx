@@ -106,18 +106,12 @@ const CONNECTOR_DISPLAY_NAMES: Record<string, string> = {
 };
 
 // Connector icon mapping (updated to match backend connector names)
-const CONNECTOR_ICONS: Record<string, IconifyIcon> = {
-  DRIVE: googleDriveIcon,
-  GMAIL: gmailIcon,
-  SLACK: slackIcon,
-  JIRA: jiraIcon,
-  TEAMS: microsoftTeamsIcon,
-  ONEDRIVE: microsoftOnedriveIcon,
-  SHAREPOINT: microsoftSharepointIcon,
-  OUTLOOK: microsoftOutlookIcon,
-  DROPBOX: dropboxIcon,
-  BOX: boxIcon,
-  UPLOAD: cloudUploadIcon,
+const CONNECTOR_ICONS: Record<string, string> = {
+  DRIVE: '/assets/icons/connectors/drive.svg',
+  GMAIL: '/assets/icons/connectors/gmail.svg',
+  SLACK: '/assets/icons/connectors/slack.svg',
+  JIRA: '/assets/icons/connectors/jira.svg',
+  CONFLUENCE: '/assets/icons/connectors/confluence.svg',
 };
 
 // Ultra-minimalistic SaaS color palette - monochromatic with a single accent
@@ -165,7 +159,7 @@ const ConnectorCard = ({ connector }: { connector: ConnectorData }): JSX.Element
 
   // Get display name and icon
   const displayName = CONNECTOR_DISPLAY_NAMES[connectorName] || connectorName;
-  const iconName = CONNECTOR_ICONS[connectorName] || databaseIcon;
+  const iconName = CONNECTOR_ICONS[connectorName] || '/assets/icons/connectors/database.svg';
 
   // Calculate percentage completed
   const percentComplete =
@@ -411,7 +405,7 @@ const ConnectorCard = ({ connector }: { connector: ConnectorData }): JSX.Element
               boxShadow: isDark ? 'none' : '0 1px 2px rgba(0, 0, 0, 0.03)',
             }}
           >
-            <Iconify icon={iconName} width={18} height={18} />
+            <img src={iconName} alt={displayName} width={18} height={18} />
           </Avatar>
           <Box>
             <Typography

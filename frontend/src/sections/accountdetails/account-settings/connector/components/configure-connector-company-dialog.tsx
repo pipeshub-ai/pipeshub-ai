@@ -1,9 +1,5 @@
-import type { Icon as IconifyIcon } from '@iconify/react';
-
 import { useRef, useState } from 'react';
 import closeIcon from '@iconify-icons/eva/close-outline';
-import googleIcon from '@iconify-icons/eva/google-outline';
-import atlassianIcon from '@iconify-icons/eva/globe-outline';
 
 import {
   Box,
@@ -27,7 +23,7 @@ import AtlassianConfigForm, { AtlassianConfigFormRef } from './atlassian-config-
 // Method configurations
 interface ConnectorConfigType {
   [key: string]: {
-    icon: React.ComponentProps<typeof IconifyIcon>['icon'];
+    src: string;
     title: string;
     color: string;
   };
@@ -35,12 +31,12 @@ interface ConnectorConfigType {
 
 const CONNECTOR_CONFIG: ConnectorConfigType = {
   googleWorkspace: {
-    icon: googleIcon,
+    src: '/assets/icons/connectors/google.svg',
     title: 'Google Workspace',
     color: '#4285F4',
   },
   atlassian: {
-    icon: atlassianIcon,
+    src: '/assets/icons/connectors/atlassian.svg',
     title: 'Atlassian',
     color: '#0052CC',
   },
@@ -157,7 +153,7 @@ const ConfigureConnectorDialog = ({
                   color: connectorConfig.color,
                 }}
               >
-                <Iconify icon={connectorConfig.icon} width={18} height={18} />
+                <img src={connectorConfig.src} alt={connectorConfig.title} width={18} height={18} />
               </Box>
               Configure {connectorConfig.title} Integration
             </Box>

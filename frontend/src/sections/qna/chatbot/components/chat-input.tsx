@@ -2,6 +2,7 @@ import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Icon } from '@iconify/react';
 import arrowUpIcon from '@iconify-icons/mdi/arrow-up';
 import chevronDownIcon from '@iconify-icons/mdi/chevron-down';
+import sparklesIcon from '@iconify-icons/mdi/star-four-points';
 import {
   Box,
   Paper,
@@ -31,9 +32,6 @@ export interface ChatMode {
   id: string;
   name: string;
   description: string;
-  icon: string;
-  temperature: number;
-  maxTokens: number;
 }
 
 export type ChatInputProps = {
@@ -58,43 +56,45 @@ const CHAT_MODES: ChatMode[] = [
     id: 'standard',
     name: 'Standard',
     description: 'Balanced responses with moderate creativity',
-    icon: '🎯',
-    temperature: 0.7,
-    maxTokens: 4000,
   },
   {
     id: 'quick',
     name: 'Quick',
     description: 'Quick responses with minimal context',
-    icon: '🚀',
-    temperature: 0.1,
-    maxTokens: 1000,
-  }
-  // {
-  //   id: 'creative',
-  //   name: 'Creative',
-  //   description: 'More imaginative and creative responses',
-  //   icon: '🎨',
-  //   temperature: 0.9,
-  //   maxTokens: 6000,
-  // },
-  // {
-  //   id: 'precise',
-  //   name: 'Precise',
-  //   description: 'Focused and accurate responses',
-  //   icon: '⚡',
-  //   temperature: 0.3,
-  //   maxTokens: 2000,
-  // },
-  // {
-  //   id: 'detailed',
-  //   name: 'Detailed',
-  //   description: 'Comprehensive and thorough explanations',
-  //   icon: '📝',
-  //   temperature: 0.6,
-  //   maxTokens: 8000,
-  // },
+  },
 ];
+
+const normalizeDisplayName = (name: string): string =>
+  name
+    .split('_')
+    .map((word) => {
+      const upperWord = word.toUpperCase();
+      if (
+        [
+          'ID',
+          'URL',
+          'API',
+          'UI',
+          'DB',
+          'AI',
+          'ML',
+          'KB',
+          'PDF',
+          'CSV',
+          'JSON',
+          'XML',
+          'HTML',
+          'CSS',
+          'JS',
+          'GCP',
+          'AWS',
+        ].includes(upperWord)
+      ) {
+        return upperWord;
+      }
+      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+    })
+    .join(' ');
 
 const ChatInput: React.FC<ChatInputProps> = ({
   onSubmit,
@@ -124,13 +124,14 @@ const ChatInput: React.FC<ChatInputProps> = ({
     try {
       setLoadingModels(true);
       const response = await axios.get('/api/v1/configurationManager/ai-models/available/llm');
-      
+
       if (response.data.status === 'success') {
         setModels(response.data.models || []);
 
         // Set default model if not already selected
         if (!selectedModel && response.data.data && response.data.data.length > 0) {
-          const defaultModel = response.data.data.find((model: Model) => model.isDefault) || response.data.data[0];
+          const defaultModel =
+            response.data.data.find((model: Model) => model.isDefault) || response.data.data[0];
           onModelChange(defaultModel);
         }
       }
@@ -150,7 +151,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
       const defaultModel = models.find((model: Model) => model.isDefault) || models[0];
       onModelChange(defaultModel); // Set first model as default
     }
-  }, [selectedChatMode, onChatModeChange, models, onModelChange,selectedModel]);
+  }, [selectedChatMode, onChatModeChange, models, onModelChange, selectedModel]);
 
   useEffect(() => {
     fetchAvailableModels();
@@ -416,38 +417,43 @@ const ChatInput: React.FC<ChatInputProps> = ({
               }}
             >
               {/* Chat Mode Selector */}
-              <Tooltip
-                title={`${selectedChatMode ? selectedChatMode.description : 'Select chat mode'}`}
-              >
-                <Box
-                  onClick={handleModeMenuOpen}
-                  sx={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 0.5,
-                    p: '6px 10px',
-                    borderRadius: '8px',
-                    cursor: 'pointer',
-                    color: isDark ? alpha('#fff', 0.7) : alpha('#000', 0.6),
-                    fontSize: '0.8rem',
-                    fontWeight: 500,
-                    transition: 'all 0.15s ease',
-                    backgroundColor: isDark ? alpha('#fff', 0.02) : alpha('#000', 0.02),
-                    border: `1px solid ${isDark ? alpha('#fff', 0.05) : alpha('#000', 0.04)}`,
-                    flexShrink: 0,
-                    '&:hover': {
-                      backgroundColor: isDark ? alpha('#fff', 0.06) : alpha('#000', 0.05),
-                      borderColor: isDark ? alpha('#fff', 0.08) : alpha('#000', 0.06),
-                    },
-                  }}
-                >
-                  <Typography variant="body2" sx={{ fontSize: '0.8rem', fontWeight: 500 }}>
-                    {selectedChatMode ? selectedChatMode.name : 'Standard'}
-                  </Typography>
-                  <Icon icon={chevronDownIcon} width={12} height={12} />
-                </Box>
-              </Tooltip>
-
+              <Box sx={{ display: 'flex', gap: 1 }}>
+                {CHAT_MODES.map((mode) => (
+                  <Chip
+                    key={mode.id}
+                    label={mode.name}
+                    onClick={() => handleModeSelect(mode)}
+                    size="small"
+                    variant={selectedChatMode?.id === mode.id ? 'filled' : 'outlined'}
+                    icon={<Icon icon={sparklesIcon} width={12} height={12} />}
+                    sx={{
+                      height: 24,
+                      fontSize: '0.7rem',
+                      fontWeight: 500,
+                      borderRadius: '12px',
+                      cursor: 'pointer',
+                      '& .MuiChip-icon': { width: 12, height: 12 },
+                      color:
+                        selectedChatMode?.id === mode.id ? '#fff' : theme.palette.text.secondary,
+                      bgcolor:
+                        selectedChatMode?.id === mode.id
+                          ? theme.palette.primary.main
+                          : 'transparent',
+                      borderColor:
+                        selectedChatMode?.id === mode.id
+                          ? theme.palette.primary.main
+                          : alpha(theme.palette.divider, 0.5),
+                      '&:hover': {
+                        borderColor: theme.palette.primary.main,
+                        bgcolor:
+                          selectedChatMode?.id === mode.id
+                            ? theme.palette.primary.dark
+                            : alpha(theme.palette.primary.main, 0.1),
+                      },
+                    }}
+                  />
+                ))}
+              </Box>
               <Box sx={{ display: 'flex', gap: 2, flexDirection: 'row', mr: 2 }}>
                 {/* Model Selector */}
                 <Tooltip
@@ -479,7 +485,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
                       variant="body2"
                       sx={{ fontSize: '0.8rem', fontWeight: 500, minWidth: '60px' }}
                     >
-                      {getModelDisplayName(selectedModel)}
+                      {normalizeDisplayName(selectedModel?.modelName || '')}
                     </Typography>
                     <Icon icon={chevronDownIcon} width={12} height={12} />
                   </Box>
@@ -593,7 +599,8 @@ const ChatInput: React.FC<ChatInputProps> = ({
                 key={`${model.provider}-${model.modelName}`}
                 onClick={() => handleModelSelect(model)}
                 selected={
-                  selectedModel?.provider === model.provider && selectedModel?.modelName === model.modelName
+                  selectedModel?.provider === model.provider &&
+                  selectedModel?.modelName === model.modelName
                 }
                 sx={{
                   borderRadius: '8px',
@@ -622,7 +629,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
                     fontWeight="medium"
                     sx={{ fontSize: '0.9rem', mb: 0.5 }}
                   >
-                    {model.modelName}
+                    {normalizeDisplayName(model.modelName)}
                   </Typography>
                   <Typography
                     variant="caption"
@@ -637,219 +644,11 @@ const ChatInput: React.FC<ChatInputProps> = ({
                       overflow: 'hidden',
                     }}
                   >
-                    {model.provider} {model.isMultimodal ? '• Multimodal' : ''} {model.isDefault ? '• Default' : ''}
+                    {normalizeDisplayName(model.provider)} {model.isMultimodal ? '• Multimodal' : ''}{' '}
+                    {model.isDefault ? '• Default' : ''}
                   </Typography>
                 </Box>
               </MenuItem>
-            ))}
-          </Box>
-        </Menu>
-
-        {/* Chat Mode Selection Menu */}
-        <Menu
-          anchorEl={modeMenuAnchor}
-          open={Boolean(modeMenuAnchor)}
-          onClose={handleModeMenuClose}
-          anchorOrigin={{
-            vertical: 'top',
-            horizontal: 'left',
-          }}
-          transformOrigin={{
-            vertical: 'bottom',
-            horizontal: 'left',
-          }}
-          PaperProps={{
-            sx: {
-              maxHeight: 320,
-              minWidth: 280,
-              mt: -0.5,
-              borderRadius: '12px',
-              border: `1px solid ${isDark ? alpha('#fff', 0.1) : alpha('#000', 0.1)}`,
-              backgroundColor: isDark ? '#1e1e1e' : '#ffffff',
-              boxShadow: isDark
-                ? '0 8px 32px rgba(0, 0, 0, 0.4)'
-                : '0 8px 32px rgba(0, 0, 0, 0.12)',
-              '&::-webkit-scrollbar': {
-                width: '14px',
-                height: '6px',
-                display: 'block',
-              },
-              '&::-webkit-scrollbar-track': {
-                background: isDark ? '#1a1a1a' : '#f5f7fa',
-              },
-              '&::-webkit-scrollbar-thumb': {
-                background: isDark ? 'rgba(255, 255, 255, 0.16)' : 'rgba(209, 213, 219, 0.8)',
-                borderRadius: '100px',
-                border: isDark ? '4px solid #1a1a1a' : '4px solid #f5f7fa',
-                backgroundClip: 'padding-box',
-                minHeight: '40px',
-                '&:hover': {
-                  background: isDark ? 'rgba(255, 255, 255, 0.24)' : 'rgba(156, 163, 175, 0.4)',
-                },
-              },
-              '&::-webkit-scrollbar-corner': {
-                background: 'transparent',
-              },
-            },
-          }}
-        >
-          <Box sx={{ p: 1.5, ...scrollableStyles }}>
-            <Typography
-              variant="subtitle2"
-              sx={{
-                px: 1,
-                pb: 1,
-                color: 'text.secondary',
-                fontWeight: 600,
-                fontSize: '0.75rem',
-                textTransform: 'uppercase',
-                letterSpacing: '0.5px',
-              }}
-            >
-              Chat Modes
-            </Typography>
-            <Divider sx={{ mb: 1 }} />
-
-            {CHAT_MODES.map((mode) => (
-              <Box
-                key={mode.id}
-                onClick={() => handleModeSelect(mode)}
-                sx={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 1,
-                  p: '8px 12px',
-                  mb: 0.5,
-                  borderRadius: '8px',
-                  cursor: 'pointer',
-                  transition: 'all 0.2s ease',
-                  backgroundColor:
-                    selectedChatMode?.id === mode.id
-                      ? alpha(theme.palette.primary.main, 0.1)
-                      : 'transparent',
-                  border:
-                    selectedChatMode?.id === mode.id
-                      ? `1px solid ${alpha(theme.palette.primary.main, 0.3)}`
-                      : '1px solid transparent',
-                  '&:hover': {
-                    backgroundColor:
-                      selectedChatMode?.id === mode.id
-                        ? alpha(theme.palette.primary.main, 0.15)
-                        : isDark
-                          ? alpha('#fff', 0.04)
-                          : alpha('#000', 0.03),
-                  },
-                  '&:last-child': { mb: 0 },
-                }}
-              >
-                {/* Icon */}
-                <Box
-                  sx={{
-                    width: 28,
-                    height: 28,
-                    borderRadius: '6px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    backgroundColor:
-                      selectedChatMode?.id === mode.id
-                        ? theme.palette.primary.main
-                        : isDark
-                          ? alpha('#fff', 0.05)
-                          : alpha('#000', 0.05),
-                    flexShrink: 0,
-                  }}
-                >
-                  {mode.icon}
-                </Box>
-
-                {/* Content */}
-                <Box sx={{ flex: 1, minWidth: 0 }}>
-                  <Box
-                    sx={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      mb: 0.5,
-                    }}
-                  >
-                    <Typography
-                      variant="body2"
-                      sx={{
-                        fontSize: '0.85rem',
-                        fontWeight: 500,
-                        color:
-                          selectedChatMode?.id === mode.id
-                            ? theme.palette.primary.main
-                            : 'text.primary',
-                      }}
-                    >
-                      {mode.name}
-                    </Typography>
-
-                    {/* Compact config badges */}
-                    <Box sx={{ display: 'flex', gap: 0.5 }}>
-                      <Box
-                        sx={{
-                          px: 0.5,
-                          py: 0.25,
-                          borderRadius: '4px',
-                          backgroundColor: isDark ? alpha('#fff', 0.08) : alpha('#000', 0.06),
-                          fontSize: '0.6rem',
-                          fontWeight: 500,
-                          color: 'text.secondary',
-                          lineHeight: 1,
-                        }}
-                      >
-                        {mode.temperature}
-                      </Box>
-                      <Box
-                        sx={{
-                          px: 0.5,
-                          py: 0.25,
-                          borderRadius: '4px',
-                          backgroundColor: isDark ? alpha('#fff', 0.08) : alpha('#000', 0.06),
-                          fontSize: '0.6rem',
-                          fontWeight: 500,
-                          color: 'text.secondary',
-                          lineHeight: 1,
-                        }}
-                      >
-                        {(mode.maxTokens / 1000).toFixed(0)}K
-                      </Box>
-                    </Box>
-                  </Box>
-
-                  <Typography
-                    variant="caption"
-                    sx={{
-                      fontSize: '0.7rem',
-                      lineHeight: 1.2,
-                      color: 'text.secondary',
-                      opacity: 0.75,
-                      display: '-webkit-box',
-                      WebkitLineClamp: 1,
-                      WebkitBoxOrient: 'vertical',
-                      overflow: 'hidden',
-                    }}
-                  >
-                    {mode.description}
-                  </Typography>
-                </Box>
-
-                {/* Selection indicator */}
-                {selectedChatMode?.id === mode.id && (
-                  <Box
-                    sx={{
-                      width: 6,
-                      height: 6,
-                      borderRadius: '50%',
-                      backgroundColor: theme.palette.primary.main,
-                      flexShrink: 0,
-                    }}
-                  />
-                )}
-              </Box>
             ))}
           </Box>
         </Menu>

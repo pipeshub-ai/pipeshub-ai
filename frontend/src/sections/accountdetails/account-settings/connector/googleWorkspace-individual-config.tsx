@@ -444,7 +444,7 @@ const GoogleWorkspaceIndividualPage = () => {
                         borderRadius: 1,
                       }}
                     >
-                      <Iconify icon={connector.icon} width={22} height={22} />
+                      <img src={connector.src} alt={connector.title} width={22} height={22} />
                     </Box>
 
                     <Box>

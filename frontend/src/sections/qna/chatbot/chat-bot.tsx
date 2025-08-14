@@ -540,9 +540,6 @@ const ChatInterface = () => {
     id: string;
     name: string;
     description: string;
-    icon: string;
-    temperature: number;
-    maxTokens: number;
   } | null>(null);
 
   const navigate = useNavigate();

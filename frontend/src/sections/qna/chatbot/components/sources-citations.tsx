@@ -17,7 +17,6 @@ import htmlIcon from '@iconify-icons/vscode-icons/file-type-html';
 import jsonIcon from '@iconify-icons/vscode-icons/file-type-json';
 import zipIcon from '@iconify-icons/vscode-icons/file-type-zip';
 import imageIcon from '@iconify-icons/vscode-icons/file-type-image';
-import defaultFileIcon from '@iconify-icons/mdi/file-document';
 import boxIcon from '@iconify-icons/mdi/box';
 import jiraIcon from '@iconify-icons/mdi/jira';
 import gmailIcon from '@iconify-icons/mdi/gmail';
@@ -30,6 +29,7 @@ import microsoftTeamsIcon from '@iconify-icons/mdi/microsoft-teams';
 import microsoftOutlookIcon from '@iconify-icons/mdi/microsoft-outlook';
 import microsoftOnedriveIcon from '@iconify-icons/mdi/microsoft-onedrive';
 import microsoftSharepointIcon from '@iconify-icons/mdi/microsoft-sharepoint';
+import confluenceIcon from '@iconify-icons/logos/confluence';
 
 import { Box, Paper, Stack, Button, Collapse, Typography, alpha, useTheme } from '@mui/material';
 
@@ -89,6 +89,7 @@ const CONNECTOR_ICONS = {
   DROPBOX: dropboxIcon,
   BOX: boxIcon,
   UPLOAD: cloudUploadIcon,
+  CONFLUENCE: confluenceIcon,
   // Add fallback for unknown connectors
   DEFAULT: databaseIcon,
 };
@@ -118,10 +119,13 @@ interface SourcesAndCitationsProps {
 }
 
 const getFileIcon = (extension: string): IconifyIcon =>
-  FILE_CONFIG.icons[extension?.toLowerCase() as keyof typeof FILE_CONFIG.icons] || defaultFileIcon;
+  FILE_CONFIG.icons[extension?.toLowerCase() as keyof typeof FILE_CONFIG.icons] || fileDocIcon;
 
-const isDocViewable = (extension: string): boolean =>
-  FILE_CONFIG.viewableExtensions.includes(extension?.toLowerCase());
+const isDocViewable = (extension: string): boolean => {
+  if (!extension) return false;
+  console.log(extension, FILE_CONFIG.viewableExtensions);
+  return FILE_CONFIG.viewableExtensions.includes(extension?.toLowerCase());
+};
 
 // Get connector color based on connector type
 const getConnectorColor = (connector: string): string => {
@@ -223,7 +227,11 @@ const FileCard = React.memo(
             theme.palette.mode === 'dark' ? 'rgba(255, 255, 255, 0.05)' : 'rgba(0, 0, 0, 0.03)',
         },
       }}
-      onClick={() => onViewCitations(file)}
+      onClick={() => {
+        if (file.extension) {
+          onViewCitations(file);
+        }
+      }}
     >
       <Box
         sx={{
@@ -248,7 +256,7 @@ const FileCard = React.memo(
               icon={getFileIcon(file.extension)}
               width={40}
               height={40}
-              style={{ borderRadius: '4px' }}
+              style={{ borderRadius: '4px', color: theme.palette.primary.main }}
             />
           </Box>
 
@@ -361,7 +369,7 @@ const FileCard = React.memo(
             </Button>
           )}
 
-          {isDocViewable(file.extension) && (
+          {file.extension && isDocViewable(file.extension) && (
             <Button
               size="small"
               variant="text"
@@ -433,7 +441,7 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
         fileMap.set(recordId, {
           recordId,
           recordName: citation.metadata?.recordName || 'Unknown Document',
-          extension: citation.metadata?.extension || 'pdf',
+          extension: citation.metadata?.extension,
           webUrl: citation.metadata?.webUrl,
           citationCount: aggregatedCitations[recordId]?.length || 1,
           citation,
@@ -461,10 +469,12 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
 
   const handleViewRecord = useCallback(
     (file: FileInfo) => {
+      if (file.extension) {
       onRecordClick({
-        recordId: file.recordId,
-        citations: aggregatedCitations[file.recordId] || [],
-      });
+          recordId: file.recordId,
+          citations: aggregatedCitations[file.recordId] || [],
+        });
+      }
     },
     [onRecordClick, aggregatedCitations]
   );
@@ -618,7 +628,7 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
 
                 {citation.metadata?.recordId && (
                   <Stack direction="row" spacing={1} justifyContent="flex-end">
-                    {isDocViewable(citation.metadata.extension) && (
+                    {citation.metadata.extension && isDocViewable(citation.metadata.extension) && (
                       <Button
                         size="small"
                         variant="text"
