@@ -2592,6 +2592,7 @@ export const resyncConnectorRecords =
         'DRIVE',
         'GMAIL',
         'CONFLUENCE',
+        'JIRA',
         'SLACK',
       ];
       if (!allowedConnectors.includes(connectorName)) {

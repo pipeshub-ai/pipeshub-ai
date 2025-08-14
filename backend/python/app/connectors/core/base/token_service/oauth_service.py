@@ -99,12 +99,13 @@ class OAuthToken:
 class OAuthProvider(ABC):
     """Abstract OAuth Provider interface"""
 
-    def __init__(self, config: OAuthConfig, key_value_store: KeyValueStore, base_arango_service: BaseArangoService) -> None:
+    def __init__(self, config: OAuthConfig, key_value_store: KeyValueStore, base_arango_service: BaseArangoService, credentials_path: str) -> None:
         self.config = config
         self.key_value_store = key_value_store
         self.base_arango_service = base_arango_service
         self._session: Optional[ClientSession] = None
-
+        self.credentials_path = credentials_path
+        self.token = None
     @property
     async def session(self) -> ClientSession:
         """Get or create aiohttp session"""
@@ -186,28 +187,27 @@ class OAuthProvider(ABC):
         token = OAuthToken(**token_data)
 
         # Store token
-        storage_key = f"{self.get_provider_name()}/{self.config.client_id}"
-        await self.key_value_store.create_key(storage_key, token)
+        await self.key_value_store.create_key(self.credentials_path, token.to_dict())
 
         return token
 
-    async def ensure_valid_token(self, token: Optional[OAuthToken] = None) -> OAuthToken:
+    async def ensure_valid_token(self) -> OAuthToken:
         """Ensure we have a valid (non-expired) token"""
-        if not token:
+        if not self.token:
             raise ValueError("No token found. Please authenticate first.")
 
-        if token.is_expired and token.refresh_token:
+        if self.token.is_expired and self.token.refresh_token:
             # Refresh the token
-            token = await self.refresh_access_token(token.refresh_token)
-        elif token.is_expired:
+            self.token = await self.refresh_access_token(self.token.refresh_token)
+        elif self.token.is_expired:
             raise ValueError("Token expired and no refresh token available. Please re-authenticate.")
 
-        return token
+        return self.token
 
-    async def revoke_token(self, key: str, token: Optional[str] = None) -> bool:
+    async def revoke_token(self) -> bool:
         """Revoke access token"""
         # Default implementation - override in specific providers
-        await self.key_value_store.delete(key)
+        await self.key_value_store.delete_key(self.credentials_path)
         return True
 
 
@@ -237,12 +237,13 @@ class OAuthProvider(ABC):
         await self.key_value_store.create_key(f"oauth_state/{self.get_provider_name()}/{state}", session_data)
         return self._get_authorization_url(state=state, **extra)
 
-    async def handle_callback(self, code: str, state: str, token_prefix: str="", save_token: bool = True) -> OAuthToken:
+    async def handle_callback(self, code: str, state: str) -> OAuthToken:
         data = await self.key_value_store.get_key(f"oauth_state/{self.get_provider_name()}/{state}")
         if not data:
             raise ValueError("Invalid or expired state")
         token = await self.exchange_code_for_token(code=code, state=state, code_verifier=data.get("code_verifier"))
         await self.key_value_store.delete_key(f"oauth_state/{self.get_provider_name()}/{state}")
-        if save_token:
-            await self.key_value_store.create_key(f"{self.get_provider_name()}/{token_prefix}", token)
+        self.token = token
+        await self.key_value_store.create_key(f"{self.credentials_path}", token.to_dict())
+
         return token

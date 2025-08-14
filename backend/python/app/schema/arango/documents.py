@@ -63,7 +63,7 @@ user_group_schema = {
             },
             "connectorName": {
                 "type": "string",
-                "enum": ["ONEDRIVE", "DRIVE", "GMAIL", "CONFLUENCE", "SLACK"],
+                "enum": ["ONEDRIVE", "DRIVE", "GMAIL", "CONFLUENCE", "JIRA", "SLACK"],
             },
             "mail": {"type": "string"},
             "mailEnabled": {"type": "boolean", "default": False},
@@ -131,13 +131,13 @@ record_schema = {
             "externalRevisionId": {"type": ["string", "null"], "default": None},
             "recordType": {
                 "type": "string",
-                "enum": ["FILE", "DRIVE", "WEBPAGE", "MESSAGE", "MAIL", "NOTION_DATABASE", "WEBPAGE_COMMENTS","OTHERS"],
+                "enum": ["FILE", "DRIVE", "WEBPAGE", "MESSAGE", "MAIL", "NOTION_DATABASE", "WEBPAGE_COMMENTS", "TICKET","OTHERS"],
             },
             "version": {"type": "number", "default": 0},
             "origin": {"type": "string", "enum": ["UPLOAD", "CONNECTOR"]},
             "connectorName": {
                 "type": "string",
-                "enum": ["ONEDRIVE", "DRIVE", "CONFLUENCE", "GMAIL", "SLACK", "NOTION"],
+                "enum": ["ONEDRIVE", "DRIVE", "CONFLUENCE", "GMAIL", "SLACK", "NOTION", "JIRA"],
             },
             "mimeType": {"type": ["string", "null"], "default": None},
             "webUrl": {"type": ["string", "null"]},
@@ -285,23 +285,44 @@ webpage_record_schema = {
     "message": "Document does not match the webpage record schema.",
 }
 
+ticket_record_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "summary": {"type": ["string", "null"]},
+            "description": {"type": ["string", "null"]},
+            "status": {"type": ["string", "null"]},
+            "priority": {"type": ["string", "null"]},
+            "assignee": {"type": ["string", "null"]},
+            "reporterEmail": {"type": ["string", "null"]},
+            "assigneeEmail": {"type": ["string", "null"]},
+            "creatorEmail": {"type": ["string", "null"]},
+            "creatorName": {"type": ["string", "null"]},
+        },
+    },
+}
+
 record_group_schema = {
     "rule": {
         "type": "object",
         "properties": {
             "orgId": {"type": "string"},
             "groupName": {"type": "string", "minLength": 1},
+            "shortName": {"type": ["string", "null"]},
+            "description": {"type": ["string", "null"]},
             # should be a uuid
             "externalGroupId": {"type": "string", "minLength": 1},
             "externalRevisionId": {"type": ["string", "null"], "default": None},
             "groupType": {
                 "type": "string",
-                "enum": ["SLACK_CHANNEL", "CONFLUENCE_SPACES","KB", "NOTION_WORKSPACE", "DRIVE",],
+                "enum": ["SLACK_CHANNEL", "CONFLUENCE_SPACES","KB", "NOTION_WORKSPACE", "DRIVE", "JIRA_PROJECT"],
             },
             "connectorName": {
                 "type": "string",
-                "enum": ["ONEDRIVE", "DRIVE", "CONFLUENCE", "SLACK","KB", "NOTION"],
+                "enum": ["ONEDRIVE", "DRIVE", "CONFLUENCE", "JIRA", "SLACK","KB", "NOTION"],
             },
+            "webUrl": {"type": ["string", "null"]},
             "createdBy":{"type": ["string", "null"]},
             "deletedByUserId":{"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
