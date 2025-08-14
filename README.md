@@ -12,10 +12,10 @@
 <!--Links in Readme-->
 <p align="center">
 <a href="https://docs.pipeshub.com/" target="_blank">
-    <img src="https://img.shields.io/badge/docs-view-blue" alt="Documentation">
+    <img src="https://img.shields.io/badge/docs-view-blue?style=for-the-badge" alt="Documentation">
 </a>
 <a href="https://discord.com/invite/K5RskzJBm2" target="_blank">
-     <img src="https://img.shields.io/badge/discord-join-red?logo=discord&logoColor=white" alt="Discord">
+     <img src="https://img.shields.io/badge/discord-join-red?logo=discord&logoColor=white&style=for-the-badge" alt="Discord">
 </a>
 </p>
 
@@ -148,3 +148,13 @@ docker compose -f docker-compose.prod.yml -p pipeshub-ai down
 ## 👥 Contributing
 
 Want to join our community of developers? Please check out our [Contributing Guide](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/CONTRIBUTING.md) for more details on how to set up the development environment, our coding standards, and the contribution workflow.
+
+---
+
+<a href="https://star-history.com/#pipeshub-ai/pipeshub-ai&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=pipeshub-ai/pipeshub-ai&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=pipeshub-ai/pipeshub-ai&type=Date" />
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=pipeshub-ai/pipeshub-ai&type=Date" />
+  </picture>
+</a>
