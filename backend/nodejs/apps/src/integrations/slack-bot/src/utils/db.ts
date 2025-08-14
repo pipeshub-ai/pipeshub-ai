@@ -17,14 +17,22 @@ export interface ConversationDocument {
 }
 
 export const connect = async (
-  url: string = process.env.MONGO_URI || '',
-  opts: ConnectOptions = {},
-): Promise<void> => {
-  return __connect(url, opts)
-    .then(() => console.log('mongodb running'))
+    url: string = process.env.MONGO_URI || '',
+    opts: ConnectOptions = {},
+  ): Promise<void> => {
+    if (!url) {
+      throw new Error('MONGO_URI environment variable is not set.');
+    }
+    try {
+      await __connect(url, opts);
+      console.log('mongodb running'); // Consider using a proper logger
+    } catch (err) {
+      console.error('mongodb connection error:', err); // Consider using a proper logger
+      throw err; // Re-throw the error to ensure the app fails to start if DB connection fails
+    }
+  };
 
-    .catch((err) => console.log(err));
-};
+
 
 const conversationSchema = new Schema<ConversationDocument>(
   {

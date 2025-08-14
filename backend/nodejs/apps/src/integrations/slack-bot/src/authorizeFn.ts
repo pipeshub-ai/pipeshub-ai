@@ -1,5 +1,5 @@
 interface AuthorizeParams {
-  teamId: string;
+  teamId?: string;
 }
 
 interface AuthorizationResult {
@@ -7,7 +7,7 @@ interface AuthorizationResult {
 }
 
 const authorizeFn =
-  async ({}: AuthorizeParams): Promise<AuthorizationResult> => {
+  async ({ }: AuthorizeParams): Promise<AuthorizationResult> => {
     const botToken = process.env.BOT_TOKEN;
     if (!botToken) {
       throw new Error('BOT_TOKEN environment variable is not set.');

@@ -15,6 +15,7 @@ import receiver from "./receiver";
 // import sendNotification from "./services/taskNotification";
 import { ConfigService } from "../../../modules/tokens_manager/services/cm.service";
 import {  slackJwtGenerator } from "../../../libs/utils/createJwt";
+
 // Type definitions
 // interface AuthenticatedRequest extends Request {
 //   decodedToken?: any;
@@ -918,28 +919,71 @@ receiver.router.post("slack/command", (req: Request, res: Response) => {
 // });
 
 // Slack app message handler
-app.message(async ({ message, client,context }) => {
+app.message(async ({ message, client, context }) => {
+  // Type guard to ensure message has required properties
+  if (!message || typeof message !== 'object') {
+    return;
+  }
+
+  const typedMessage = message as {
+    subtype?: string;
+    bot_id?: string;
+    user?: string;
+    files?: unknown[];
+    text?: string;
+    thread_ts?: string;
+    ts: string;
+    channel?: string;
+  };
+
+  const typedClient = client as {
+    botUserId?: string;
+    users: {
+      info: (params: { user: string }) => Promise<{
+        user?: {
+          profile?: {
+            email?: string;
+          };
+        };
+      }>;
+    };
+    chat: {
+      postMessage: (params: {
+        channel: string;
+        thread_ts?: string;
+        text: string;
+      }) => Promise<{ ts?: string }>;
+      update: (params: {
+        channel: string;
+        ts: string;
+        blocks?: unknown[];
+        text: string;
+      }) => Promise<unknown>;
+    };
+  };
+
+  const typedContext = context as {
+    botUserId?: string;
+  };
+
   if (
-    message.subtype === "bot_message" ||
-    (message as any).bot_id ||
-    (message as any).user === context.botUserId ||
-    (message as any).files ||
-    (message as any).text?.match(/<@[A-Z0-9]+>/)
+    typedMessage.subtype === "bot_message" ||
+    typedMessage.bot_id ||
+    typedMessage.user === typedContext.botUserId ||
+    typedMessage.files ||
+    typedMessage.text?.match(/<@[A-Z0-9]+>/)
   ) {
     return;
   }
 
-  console.log((message as any).text, "messagetext");
-  console.log((client as any).botUserId, "clentttt");
-
-  if ((message as any).text?.includes(`<@${(client as any).botUserId}>`)) {
+  if ('text' in message && message.text?.includes(`<@${typedClient.botUserId}>`)) {
     return;
   }
 
   try {
-    const threadId = (message as any).thread_ts || (message as any).ts;
-    const lookupResult = await client.users.info({
-      user: (message as any).user,
+    const threadId = typedMessage.thread_ts || typedMessage.ts;
+    const lookupResult = await typedClient.users.info({
+      user: typedMessage.user!,
     });
     
     if (!lookupResult.user?.profile?.email) {
@@ -954,8 +998,8 @@ app.message(async ({ message, client,context }) => {
     const conversation = await getFromDatabase(threadId, email);
     
       // Send loading message
-      const loadingMessage = await client.chat.postMessage({
-        channel: (message as any).channel,
+      const loadingMessage = await typedClient.chat.postMessage({
+        channel: typedMessage.channel!,
         thread_ts: threadId,
         text: `Generating response... :hourglass_flowing_sand:`,
       });
@@ -972,7 +1016,7 @@ app.message(async ({ message, client,context }) => {
         const response = await axios.post<ConversationData>(
           url,
           { 
-            query: (message as any).text,
+            query: typedMessage.text,
             chatMode: "quick"
           },
           {
@@ -1020,24 +1064,24 @@ app.message(async ({ message, client,context }) => {
             },
           },
         ];
-       await client.chat.update({
-        channel: (message as any).channel,
+       await typedClient.chat.update({
+        channel: typedMessage.channel!,
         ts: messageTs,
         blocks: blocks,
         text: `ChatBot Response`,
       });
       }
         else {
-          await client.chat.update({
-            channel: (message as any).channel,
+          await typedClient.chat.update({
+            channel: typedMessage.channel!,
             ts: messageTs,
             text: "Something went wrong! Please try again later.",
           });
         }
       } catch (error) {
         console.error("Error calling the Chat API:", error);
-        await client.chat.update({
-          channel: (message as any).channel,
+        await typedClient.chat.update({
+          channel: typedMessage.channel!,
           ts: messageTs,
           text: "Something went wrong! Please try again later.",
         });
