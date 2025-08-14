@@ -341,7 +341,7 @@ class JiraClient:
                 version=0,
                 mime_type=MimeTypes.PLAIN_TEXT.value,
                 signed_url=f"http://localhost:8088/api/v1/org/{self.org_id}/jira/issues/{issue.get('id')}",
-                web_url=f"{atlassian_domain}/browse/{issue.get('key')}"
+                weburl=f"{atlassian_domain}/browse/{issue.get('key')}"
             )
             issue_records.append((issue_record, permissions))
 
