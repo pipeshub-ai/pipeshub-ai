@@ -339,24 +339,404 @@ department_schema = {
     "message": "Document does not match the department schema.",
 }
 
-kb_schema = {
+
+agent_template_schema = {
     "rule": {
         "type": "object",
         "properties": {
-            "userId":{"type" : "string"},
-            "orgId": {"type": "string"},
-            "name": {"type": "string", "default": "Default"},
-            "description" : {"type":"string", "default":""},
-            "isShared" : {"type":"boolean","default":False},
+            "name": {"type": "string", "minLength": 1},
+            "description": {"type": "string", "minLength": 1},
+            "startMessage": {"type": "string", "minLength": 1},
+            "systemPrompt": {"type": "string", "minLength": 1},
+            "tools": {
+                "type": "array",
+                "items" :{
+                    "type": "object",
+                    "properties": {
+                        #scoped name for tool wild card (google.* (all tools for google)) (e.g. app_name.tool_name, google.search)
+                        "name": {"type": "string", "minLength": 1},  
+                        "description": {"type": "string", "minLength": 1},
+                    },
+                    "required": ["name"],
+                    "additionalProperties": True,
+                }
+            },
+            "models": {
+                "type": "array",
+                "items" :{
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "minLength": 1},
+                        "role": {"type": "string", "minLength": 1},
+                        "provider": {"type": "string", "minLength": 1},
+                        "config": {"type": "object"},
+                    },
+                    "required": ["name", "role", "provider"],
+                    "additionalProperties": True,
+                }
+            },
+            "memory": {
+                "type": "object",
+                "properties": {
+                    "type": {"type": "array", "items": {"type": "string", "enum": ["CONVERSATIONS", "KNOWLEDGE_BASE", "APPS", "ACTIVITIES", "VECTOR_DB"]}},
+                },
+                "required": ["type"],
+                "additionalProperties": True,
+            },
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "default": [],
+            },
+            "orgId": {"type": ["string", "null"]},
+            "isActive": {"type": "boolean", "default": True},
+            "createdBy": {"type": ["string", "null"]},
+            "updatedByUserId": {"type": ["string", "null"]},
+            "deletedByUserId": {"type": ["string", "null"]},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": ["number", "null"]},
+            "deletedAtTimestamp": {"type": ["number", "null"]},
+            "isDeleted": {"type": "boolean", "default": False},
+        },
+        "required": ["name", "description", "startMessage", "systemPrompt", "tools"],
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the agent template schema.",
+}
+
+agent_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "minLength": 1},
+            "description": {"type": "string", "minLength": 1},
+            "startMessage": {"type": "string", "minLength": 1},
+            "systemPrompt": {"type": "string", "minLength": 1},
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "default": [],
+            },
+            "tools": {
+                "type": "array",
+                "items": {"type": "string"},
+                "default": [],
+            },
+            "models": {
+                "type": "array",
+                "items": {"type": "object", "properties": {
+                    "provider": {"type": "string"},
+                    "modelName": {"type": "string"},
+                },
+                "required": ["provider", "modelName"],
+                "additionalProperties": True,
+                },
+                "default": [],
+            },
+            "apps": {
+                "type": "array",
+                "items": {"type": "string"},
+                "default": [],
+            },
+            "kb": {
+                "type": "array",
+                "items": {"type": "string"},
+                "default": [],
+            },
+            "vectorDBs": {
+                "type": "array",
+                "items": {"type": "object", "properties": {
+                    "id": {"type": "string"},
+                    "name": {"type": "string"}, 
+                    },
+                    "required": ["id", "name"],
+                    "additionalProperties": True,
+                },
+                "default": [],
+            },
+            "isActive": {"type": "boolean", "default": True},
+            "createdBy": {"type": ["string", "null"]},
+            "updatedByUserId": {"type": ["string", "null"]},
+            "deletedByUserId": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
             "deletedAtTimestamp": {"type": "number"},
             "isDeleted": {"type": "boolean", "default": False},
-            "isArchived": {"type": "boolean", "default": False}
         },
-        "required": ["orgId"],
-        "additionalProperties": False,
+        "required": ["name", "description", "startMessage", "systemPrompt", "tools", "models"],
+        "additionalProperties": True,
     },
     "level": "strict",
-    "message": "Document does not match the department schema.",
+    "message": "Document does not match the agent schema.",
 }
+
+
+# future schema
+
+# agent_template_schema = {
+#     "rule": {
+#         "type": "object",
+#         "properties": {
+#             "name": {"type": "string", "minLength": 1},
+#             "description": {"type": "string", "minLength": 1},
+#             "startMessage": {"type": "string", "minLength": 1},
+#             "systemPrompt": {"type": "string", "minLength": 1},
+#             "tools": {
+#                 "type": "array",
+#                 "items" :{
+#                     "type": "object",
+#                     "properties": {
+#                         #scoped name for tool wild card (google.* (all tools for google)) (e.g. app_name.tool_name, google.search)
+#                         "name": {"type": "string", "minLength": 1},  
+#                         "description": {"type": "string", "minLength": 1},
+#                         "config": {"type": "object"},
+#                     },
+#                     "required": ["name"],
+#                     "additionalProperties": True,
+#                 }
+#             },
+#             "models": {
+#                 "type": "array",
+#                 "items" :{
+#                     "type": "object",
+#                     "properties": {
+#                         "name": {"type": "string", "minLength": 1},
+#                         "role": {"type": "string", "minLength": 1},
+#                         "provider": {"type": "string", "minLength": 1},
+#                         "config": {"type": "object"},
+#                     },
+#                     "required": ["name", "role", "provider"],
+#                     "additionalProperties": True,
+#                 }
+#             },
+#             "actions": {
+#                 "type": "array",
+#                 # scoped action name (e.g. app_name.action_name, google.search)
+#                 "items": {
+#                     "type": "object",
+#                     "properties": {
+#                         "name": {"type": "string", "minLength": 1},
+#                         # add self approval option and add user id in approvers
+#                         "approvers": {"type": "array", "items":{
+#                             "type": "object",
+#                             "properties": {
+#                                 "userId": {"type": "array", "items": {"type": "string"}},
+#                                 "userGroupsIds": {"type": "array", "items": {"type": "string"}},
+#                                 "order": {"type": "number"},
+#                             },
+#                             "required": ["userId", "order"],
+#                             "additionalProperties": True,
+#                         }},
+#                         "reviewers": {"type": "array", "items":{
+#                             "type": "object",
+#                             "properties": {
+#                                 "userId": {"type": "array", "items": {"type": "string"}},
+#                                 "userGroupsIds": {"type": "array", "items": {"type": "string"}},
+#                                 "order": {"type": "number"},
+#                             },
+#                             "required": ["userId", "order"],
+#                             "additionalProperties": True,
+#                         }},
+#                     },
+#                     "required": ["name", "approvers", "reviewers"],
+#                     "additionalProperties": True,
+#                 },
+#                 "default": [],
+#             },
+#             "memory": {
+#                 "type": "object",
+#                 "properties": {
+#                     "type": {"type": "array", "items": {"type": "string", "enum": ["CONVERSATIONS", "KNOWLEDGE_BASE", "APPS", "ACTIVITIES", "VECTOR_DB"]}},
+#                 },
+#                 "required": ["type"],
+#                 "additionalProperties": True,
+#             },
+#             "tags": {
+#                 "type": "array",
+#                 "items": {"type": "string"},
+#                 "default": [],
+#             },
+#             "orgId": {"type": ["string", "null"]},
+#             "isActive": {"type": "boolean", "default": True},
+#             "createdBy": {"type": ["string", "null"]},
+#             "updatedByUserId": {"type": ["string", "null"]},
+#             "deletedByUserId": {"type": ["string", "null"]},
+#             "createdAtTimestamp": {"type": "number"},
+#             "updatedAtTimestamp": {"type": "number"},
+#             "deletedAtTimestamp": {"type": "number"},
+#             "isDeleted": {"type": "boolean", "default": False},
+#         },
+#         "required": ["name", "description", "startMessage", "systemPrompt", "tools", "models", "apps", "knowledgeBases"],
+#         "additionalProperties": True,
+#     },
+#     "level": "strict",
+#     "message": "Document does not match the agent template schema.",
+# }
+
+# agent_schema = {
+#     "rule": {
+#         "type": "object",
+#         "properties": {
+#             "name": {"type": "string", "minLength": 1},
+#             "description": {"type": "string", "minLength": 1},
+#             "templateKey": {"type": "string", "minLength": 1},
+#             "systemPrompt": {"type": "string", "minLength": 1},
+#             "startingMessage": {"type": "string", "minLength": 1},
+#             "tags": {
+#                 "type": "array",
+#                 "items": {"type": "string"},
+#                 "default": [],
+#             },
+#             "isActive": {"type": "boolean", "default": True},
+#             "createdBy": {"type": ["string", "null"]},
+#             "updatedByUserId": {"type": ["string", "null"]},
+#             "deletedByUserId": {"type": ["string", "null"]},
+#             "createdAtTimestamp": {"type": "number"},
+#             "updatedAtTimestamp": {"type": "number"},
+#             "deletedAtTimestamp": {"type": "number"},
+#             "isDeleted": {"type": "boolean", "default": False},
+#         },
+#         "required": ["name", "description", "templateKey", "tools", "models", "apps", "knowledgeBases"],
+#         "additionalProperties": True,
+#     },
+#     "level": "strict",
+#     "message": "Document does not match the agent schema.",
+# }
+
+# tool_schema = {
+#     "rule": {
+#         "type": "object",
+#         "properties": {
+#             # scoped name for tool (e.g. app_name.tool_name, google.search)
+#             "name": {"type": "string", "minLength": 1},
+#             "vendorName": {"type": "string", "minLength": 1},
+#             "description": {"type": "string", "minLength": 1},
+#             "isActive": {"type": "boolean", "default": True},
+#             "createdByUserId": {"type": ["string", "null"]},
+#             "updatedByUserId": {"type": ["string", "null"]},
+#             "deletedByUserId": {"type": ["string", "null"]},
+#             "orgId": {"type": ["string", "null"]},
+#             "createdAtTimestamp": {"type": "number"},
+#             "updatedAtTimestamp": {"type": "number"},
+#             "deletedAtTimestamp": {"type": "number"},
+#             "isDeleted": {"type": "boolean", "default": False},
+#         },
+#         "required": ["name", "description", "vendorName"],
+#         "additionalProperties": True,
+#     },
+#     "level": "strict",
+#     "message": "Document does not match the tool schema.",
+# }
+
+# # AI Models Schema
+# ai_model_schema = {
+#     "rule": {
+#         "type": "object",
+#         "properties": {
+#             "name": {"type": "string", "minLength": 1},
+#             "description": {"type": "string", "minLength": 1},
+#             "provider": {
+#                 "type": "string",
+#                 "enum": [
+#                     "OPENAI", "AZURE_OPENAI", "ANTHROPIC", "GOOGLE", "COHERE",
+#                     "MISTRAL", "OLLAMA", "BEDROCK", "GEMINI", "GROQ", "TOGETHER",
+#                     "FIREWORKS", "XAI", "VERTEX_AI", "CUSTOM"
+#                 ]
+#             },
+#             "modelType": {
+#                 "type": "string",
+#                 "enum": ["LLM", "EMBEDDING", "OCR", "SLM", "REASONING", "MULTIMODAL"]
+#             },
+#             "orgId": {"type": ["string", "null"]},
+#             "createdAtTimestamp": {"type": "number"},
+#             "updatedAtTimestamp": {"type": "number"},
+#             "deletedAtTimestamp": {"type": "number"},
+#             "isDeleted": {"type": "boolean", "default": False},
+#         },
+#         "required": ["name", "description", "modelKey", "provider", "modelType"],
+#         "additionalProperties": True,
+#     },
+#     "level": "strict",
+#     "message": "Document does not match the AI model schema.",
+# }
+
+# # App Actions Schema
+# app_action_schema = {
+#     "rule": {
+#         "type": "object",
+#         "properties": {
+#             # scoped name for action (e.g. app_name.action_name, drive.upload, gmail.send, etc. )
+#             "name": {"type": "string", "minLength": 1},
+#             "description": {"type": "string", "minLength": 1},
+#             "orgId": {"type": ["string", "null"]},
+#             "createdAtTimestamp": {"type": "number"},
+#             "updatedAtTimestamp": {"type": "number"},
+#             "deletedAtTimestamp": {"type": "number"},
+#             "isDeleted": {"type": "boolean", "default": False},
+#         },
+#         "required": ["name", "description"],
+#         "additionalProperties": True,
+#     },
+#     "level": "strict",
+#     "message": "Document does not match the app action schema.",
+# }
+
+# # Conversation Schema
+# conversation_schema = {
+#     "rule": {
+#         "type": "object",
+#         "properties": {
+#             "conversationDocId": {"type": "string", "minLength": 1},
+#             "orgId": {"type": ["string", "null"]},
+#             "createdAtTimestamp": {"type": "number"},
+#             "updatedAtTimestamp": {"type": "number"},
+#             "deletedAtTimestamp": {"type": "number"},
+#             "isDeleted": {"type": "boolean", "default": False},
+#         },
+#         "required": ["conversationDocId"],
+#     },
+#     "level": "strict",
+#     "message": "Document does not match the conversation schema.",
+# }
+
+# # task schema
+# task_schema = {
+#     "rule": {
+#         "type": "object",
+#         "properties": {
+#             "orgId": {"type": ["string", "null"]},
+#             "name": {"type": "string", "minLength": 1},
+#             "description": {"type": "string", "minLength": 1},
+#             "priority": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
+#             "createdAtTimestamp": {"type": "number"},
+#             "updatedAtTimestamp": {"type": "number"},
+#             "deletedAtTimestamp": {"type": "number"},
+#             "isDeleted": {"type": "boolean", "default": False},
+#         },
+#     },
+# }
+
+# # workflow schema
+# workflow_schema = {
+#     "rule": {
+#         "type": "object",
+#         "properties": {
+#             "orgId": {"type": ["string", "null"]},
+#             "name": {"type": "string", "minLength": 1},
+#             "description": {"type": "string", "minLength": 1},
+#             "taskCounts": {"type": "number"},
+#             "createdBy": {"type": ["string", "null"]},
+#             "updatedByUserId": {"type": ["string", "null"]},
+#             "deletedByUserId": {"type": ["string", "null"]},
+#             "createdAtTimestamp": {"type": "number"},
+#             "updatedAtTimestamp": {"type": "number"},
+#             "deletedAtTimestamp": {"type": "number"},
+#             "isDeleted": {"type": "boolean", "default": False},
+#         },
+#         "required": ["name", "description", "taskCounts"],
+#         "additionalProperties": True,
+#     },
+#     "level": "strict",
+#     "message": "Document does not match the workflow schema.",
+# }

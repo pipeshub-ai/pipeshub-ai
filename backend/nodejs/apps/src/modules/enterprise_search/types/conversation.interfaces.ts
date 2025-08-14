@@ -98,7 +98,8 @@ export interface IConversation {
     | 'records'
     | 'connectors'
     | 'internet_search'
-    | 'personal_kb_search';
+    | 'personal_kb_search'
+    | 'agent';
   conversationSourceRecordId?: Types.ObjectId;
   conversationSourceConnectorIds?: Types.ObjectId[];
   conversationSourceRecordType?: string;
@@ -106,6 +107,10 @@ export interface IConversation {
   updatedAt?: Date;
   failReason?: String;
   status?: String;
+}
+
+export interface IAgentConversation extends IConversation {
+  agentKey: string;
 }
 
 export interface IMessageDocument extends Document, IMessage {

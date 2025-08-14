@@ -377,7 +377,7 @@ const GoogleWorkspaceIndividualPage = () => {
 
         {/* Connectors Grid */}
         <Grid container spacing={2}>
-          {CONNECTORS_LIST.map((connector) => {
+          {CONNECTORS_LIST.filter((connector) => connector.id === 'googleWorkspace').map((connector) => {
             const isEnabled = connectorStatus[connector.id] || false;
             const isConfigured = configuredStatus[connector.id] || false;
             const isDisabled = !isConfigured && !isEnabled;

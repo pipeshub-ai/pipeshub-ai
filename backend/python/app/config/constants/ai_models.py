@@ -8,7 +8,7 @@ class OCRProvider(Enum):
     OCRMYPDF = "ocrmypdf"
 
 class AzureOpenAILLM(Enum):
-    AZURE_OPENAI_VERSION = "2023-07-01-preview"
+    AZURE_OPENAI_VERSION = "2025-04-01-preview"
 
 class AzureDocIntelligenceModel(Enum):
     PREBUILT_DOCUMENT = "prebuilt-document"

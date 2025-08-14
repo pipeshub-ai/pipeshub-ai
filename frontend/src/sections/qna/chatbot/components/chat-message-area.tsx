@@ -159,7 +159,8 @@ const ChatMessagesArea = ({
         message.id === lastBotMessage?.id &&
         !message.id.startsWith('streaming-') &&
         !isLoading &&
-        !isCreatingConversation
+        !isCreatingConversation &&
+        !message.id.startsWith('start-message')
       );
     },
     [messages, isLoading, isCreatingConversation]
