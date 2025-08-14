@@ -293,7 +293,7 @@ class JiraClient:
             for resource in response
         ]
 
-    async def fetch_issues_with_permissions(self, project_key: str, project_id: str) -> List[Tuple[Record, List[Permission]]]:
+    async def fetch_issues_with_permissions(self, project_key: str, project_id: str, user: User) -> List[Tuple[Record, List[Permission]]]:
         url = f"{BASE_URL}/{self.cloud_id}/rest/api/3/search"
         issues = []
 
@@ -312,8 +312,12 @@ class JiraClient:
             issue_name = fields.get("summary")
             status = fields.get("status", {}).get("name")
             priority = fields.get("priority", {}).get("name")
-            creator_email = fields.get("creator", {}).get("emailAddress")
-            creator_name = fields.get("creator", {}).get("displayName")
+            creator = fields.get("creator", {})
+            creator_email = creator.get("emailAddress")
+            creator_name = creator.get("displayName")
+
+            if (creator_email is None):
+                creator_email = user.email
             permissions = [Permission(
                 entity_type=EntityType.USER,
                 email=creator_email,
@@ -437,7 +441,7 @@ class JiraConnector:
             await self.data_entities_processor.on_new_record_groups(projects)
 
             for project, permissions in projects:
-                issues = await jira_client.fetch_issues_with_permissions(project.short_name, project.external_group_id)
+                issues = await jira_client.fetch_issues_with_permissions(project.short_name, project.external_group_id, user)
                 await self.data_entities_processor.on_new_records(issues)
 
         except Exception as e:
