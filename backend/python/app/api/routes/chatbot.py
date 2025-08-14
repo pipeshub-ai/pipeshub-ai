@@ -160,8 +160,9 @@ async def get_llm_for_chat(config_service: ConfigurationService, model_key: str 
             return get_generator_model(model_provider, llm_config, default_model_name)
 
         # Fallback to first available model
-
-        model_string = llm_config[0].get("configuration", {}).get("model")
+        if isinstance(llm_config, list):
+            llm_config = llm_config[0]
+        model_string = llm_config.get("configuration", {}).get("model")
         model_names = [name.strip() for name in model_string.split(",") if name.strip()]
         default_model_name = model_names[0]
         model_provider = llm_config[0].get("provider")
