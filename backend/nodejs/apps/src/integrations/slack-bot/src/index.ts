@@ -1071,6 +1071,12 @@ app.message(async ({ message, client, context }) => {
         try {
           const contentForMack = convertCitationsToHyperlinks(originalContent, citationUrls);
           blocks = await markdownToBlocks(contentForMack);
+          for (const block of blocks) {
+            // Todo: replace substring &#39; by apostrophe
+            if (block.type === "section" && block.text?.type === "mrkdwn") {
+              block.text.text = block.text.text.replace(/\&#39;/g, "'");
+            }
+          }
         } catch (error) {
           console.error("Error converting markdown to blocks:", error);
           const contentForFallback = convertCitationsToHyperlinks2(originalContent, citationUrls);
