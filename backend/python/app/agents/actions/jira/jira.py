@@ -32,20 +32,72 @@ class Jira:
     @tool(
         app_name="jira",
         tool_name="create_issue",
-        description="Create a new issue in JIRA",
+        description="Create a new issue in JIRA with proper project parameters",
         parameters=[
-            ToolParameter(name="project_key", type=ParameterType.STRING, description="The key of the project to create the issue in"),
-            ToolParameter(name="summary", type=ParameterType.STRING, description="The summary/title of the issue"),
-            ToolParameter(name="issue_type_name", type=ParameterType.STRING, description="The name of the issue type"),
-            ToolParameter(name="description", type=ParameterType.STRING, description="The description of the issue"),
-            ToolParameter(name="assignee_account_id", type=ParameterType.STRING, description="The account ID of the assignee"),
-            ToolParameter(name="reporter_account_id", type=ParameterType.STRING, description="The account ID of the reporter"),
-            ToolParameter(name="priority_name", type=ParameterType.STRING, description="The name of the priority"),
-            ToolParameter(name="labels", type=ParameterType.LIST, description="The labels to add to the issue"),
-            ToolParameter(name="components", type=ParameterType.LIST, description="The components to add to the issue"),
-            ToolParameter(name="custom_fields", type=ParameterType.DICT, description="The custom fields to add to the issue"),
+            ToolParameter(
+                name="project_key",
+                type=ParameterType.STRING,
+                description="The key of the project to create the issue in (e.g., 'SP' for Sample Project)",
+                required=True
+            ),
+            ToolParameter(
+                name="summary",
+                type=ParameterType.STRING,
+                description="The summary/title of the issue",
+                required=True
+            ),
+            ToolParameter(
+                name="issue_type_name",
+                type=ParameterType.STRING,
+                description="The name of the issue type (e.g., 'Task', 'Story', 'Bug', 'Epic', 'Sub-task')",
+                required=True
+            ),
+            ToolParameter(
+                name="description",
+                type=ParameterType.STRING,
+                description="The description of the issue",
+                required=False
+            ),
+            ToolParameter(
+                name="assignee_account_id",
+                type=ParameterType.STRING,
+                description="The account ID of the assignee (can be obtained from project lead or user search)",
+                required=False
+            ),
+            ToolParameter(
+                name="reporter_account_id",
+                type=ParameterType.STRING,
+                description="The account ID of the reporter (can be obtained from project lead or user search)",
+                required=False
+            ),
+            ToolParameter(
+                name="priority_name",
+                type=ParameterType.STRING,
+                description="The name of the priority (e.g., 'Highest', 'High', 'Medium', 'Low', 'Lowest')",
+                required=False
+            ),
+            ToolParameter(
+                name="labels",
+                type=ParameterType.LIST,
+                description="List of labels to add to the issue (e.g., ['bug', 'frontend', 'urgent'])",
+                required=False,
+                items={"type": "string"}
+            ),
+            ToolParameter(
+                name="components",
+                type=ParameterType.LIST,
+                description="List of component names to add to the issue (can be obtained from project metadata)",
+                required=False,
+                items={"type": "string"}
+            ),
+            ToolParameter(
+                name="custom_fields",
+                type=ParameterType.DICT,
+                description="Dictionary of custom field IDs and values for project-specific fields",
+                required=False
+            ),
         ],
-        returns="A message indicating whether the issue was created successfully"
+        returns="A message indicating whether the issue was created successfully with issue details"
     )
     async def create_issue(
         self,
@@ -226,3 +278,59 @@ class Jira:
         except Exception as e:
             logger.error(f"Error transitioning issue: {e}")
             return False, json.dumps({"message": f"Error transitioning issue: {e}"})
+
+    @tool(
+        app_name="jira",
+        tool_name="get_project_metadata",
+        description="Get JIRA project metadata including issue types, components, and lead information",
+        parameters=[
+            ToolParameter(name="project_key", type=ParameterType.STRING, description="The key of the project to get metadata for"),
+        ],
+        returns="Project metadata including issue types, components, and lead information"
+    )
+    async def get_project_metadata(self, project_key: str) -> Tuple[bool, str]:
+        """Get project metadata useful for creating issues"""
+        try:
+            project = await self.jira.get_client().get_project(project_key) # type: ignore
+
+            # Extract useful metadata
+            metadata = {
+                "project_key": project.get("key"),
+                "project_id": project.get("id"),
+                "project_name": project.get("name"),
+                "project_description": project.get("description"),
+                "issue_types": [
+                    {
+                        "id": issue_type.get("id"),
+                        "name": issue_type.get("name"),
+                        "description": issue_type.get("description"),
+                        "subtask": issue_type.get("subtask", False),
+                        "hierarchy_level": issue_type.get("hierarchyLevel", 0)
+                    }
+                    for issue_type in project.get("issueTypes", [])
+                ],
+                "components": [
+                    {
+                        "id": comp.get("id"),
+                        "name": comp.get("name"),
+                        "description": comp.get("description")
+                    }
+                    for comp in project.get("components", [])
+                ],
+                "lead": {
+                    "account_id": project.get("lead", {}).get("accountId"),
+                    "display_name": project.get("lead", {}).get("displayName"),
+                    "email": project.get("lead", {}).get("emailAddress")
+                } if project.get("lead") else None,
+                "project_type": project.get("projectTypeKey"),
+                "style": project.get("style"),
+                "simplified": project.get("simplified", False)
+            }
+
+            return True, json.dumps({
+                "message": "Project metadata fetched successfully",
+                "metadata": metadata
+            })
+        except Exception as e:
+            logger.error(f"Error getting project metadata: {e}")
+            return False, json.dumps({"message": f"Error getting project metadata: {e}"})
