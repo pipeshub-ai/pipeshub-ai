@@ -312,7 +312,7 @@ class JiraClient:
             issue_name = fields.get("summary")
             status = fields.get("status", {}).get("name")
             priority = fields.get("priority", {}).get("name")
-            creator = fields.get("creator", {})
+            creator = fields.get("creator") or {}
             creator_email = creator.get("emailAddress")
             creator_name = creator.get("displayName")
 
