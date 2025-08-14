@@ -16,7 +16,8 @@ import { useAuthContext } from 'src/auth/hooks';
 
 // Overview
 const ChatBotPage = lazy(() => import('src/pages/dashboard/qna/chatbot'));
-
+const AgentPage = lazy(() => import('src/pages/dashboard/qna/agent'));
+const AgentChatPage = lazy(() => import('src/sections/qna/agents/agent-chat'));
 // Accountdetails
 const CompanyProfile = lazy(() => import('src/pages/dashboard/account/company-profile'));
 const UsersAndGroups = lazy(() => import('src/pages/dashboard/account/user-and-groups'));
@@ -182,6 +183,9 @@ export const dashboardRoutes = [
     children: [
       { element: <ChatBotPage key="home" />, index: true },
       { path: ':conversationId', element: <ChatBotPage key="conversation" /> },
+      { path: 'agents', element: <AgentPage key="agent" /> },
+      { path: 'agents/:agentKey', element: <AgentChatPage key="agent-chat" /> },
+      { path: 'agents/:agentKey/conversations/:conversationId', element: <AgentChatPage key="agent-conversation" /> },
       { path: 'record/:recordId', element: <RecordDetails /> },
       {
         path: 'account',

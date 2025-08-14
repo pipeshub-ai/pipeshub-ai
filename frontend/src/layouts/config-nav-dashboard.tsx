@@ -7,6 +7,10 @@ const baseNavData = [
     items: [
       { title: 'Assistant', path: paths.dashboard.root },
       {
+        title: 'Agents',
+        path: paths.dashboard.agent.root,
+      },
+      {
         title: 'Knowledge Base',
         path: paths.dashboard.knowledgebase.root,
       },

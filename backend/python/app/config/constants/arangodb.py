@@ -150,6 +150,10 @@ class CollectionNames(Enum):
     NOTION_DATABASE_RECORD="notionDatabaseRecord"
     BELONGS_TO_RECORD_GROUP="belongsToRecordGroup"
 
+    # Agent Builder collections
+    AGENT_TEMPLATES = "agentTemplates"
+    AGENT_INSTANCES = "agentInstances"
+    TEMPLATE_ACCESS = "templateAccess"
 
 
 class QdrantCollectionNames(Enum):

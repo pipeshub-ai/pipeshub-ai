@@ -265,13 +265,12 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
                 provider=configuration.get("provider", "anthropic"),
             )
     elif provider == LLMProvider.AZURE_OPENAI.value:
-        from langchain_community.chat_models import AzureChatOpenAI
+        from langchain_openai import AzureChatOpenAI
 
         is_reasoning_model = "gpt-5" in model_name or configuration.get("isReasoning")
         temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
         return AzureChatOpenAI(
                 api_key=configuration["apiKey"],
-                model=model_name,
                 azure_endpoint=configuration["endpoint"],
                 api_version=AzureOpenAILLM.AZURE_OPENAI_VERSION.value,
                 temperature=temperature,
@@ -335,7 +334,7 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
             )
 
     elif provider == LLMProvider.OPENAI.value:
-        from langchain_community.chat_models import ChatOpenAI
+        from langchain_openai import ChatOpenAI
 
         is_reasoning_model = "gpt-5" in model_name or configuration.get("isReasoning")
         temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
@@ -366,7 +365,7 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
             )
 
     elif provider == LLMProvider.OPENAI_COMPATIBLE.value:
-        from langchain_community.chat_models import ChatOpenAI
+        from langchain_openai import ChatOpenAI
 
         return ChatOpenAI(
                 model=model_name,

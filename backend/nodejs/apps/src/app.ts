@@ -15,6 +15,7 @@ import { createOrgRouter } from './modules/user_management/routes/org.routes';
 import {
   createConversationalRouter,
   createSemanticSearchRouter,
+  createAgentConversationalRouter,
 } from './modules/enterprise_search/routes/es.routes';
 import { EnterpriseSearchAgentContainer } from './modules/enterprise_search/container/es.container';
 import { requestContextMiddleware } from './libs/middlewares/request.context';
@@ -294,6 +295,12 @@ export class Application {
     this.app.use(
       '/api/v1/conversations',
       createConversationalRouter(this.esAgentContainer),
+    );
+
+    // enterprise search agent routes
+    this.app.use(
+      '/api/v1/agents',
+      createAgentConversationalRouter(this.esAgentContainer),
     );
 
     // enterprise semantic search routes

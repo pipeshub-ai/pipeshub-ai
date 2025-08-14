@@ -8,7 +8,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.agents.db.tools_db import ToolsDBManager
 from app.agents.router.router import router as tools_router
+from app.agents.tools.registry import _global_tools_registry
 from app.api.middlewares.auth import authMiddleware
 from app.api.routes.agent import router as agent_router
 from app.api.routes.chatbot import router as chatbot_router
@@ -18,6 +20,7 @@ from app.api.routes.search import router as search_router
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.containers.query import QueryAppContainer
+from app.services.graph_db.arango.config import ArangoConfig
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -146,6 +149,45 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.info("Found organizations in the system")
         retrieval_service = await container.retrieval_service()
         await retrieval_service.get_embedding_model_instance()
+
+    arango_config = ArangoConfig(
+        url="http://localhost:8529",
+        username="root",
+        password="your_password",
+        db="es"
+    )
+
+    # Create ToolsDBManager
+    logger.info("Creating ToolsDBManager...")
+    tools_db = await ToolsDBManager.create(logger, arango_config)
+
+    # Connect to ArangoDB
+    logger.info("Connecting to ArangoDB...")
+    await tools_db.graph_service.connect()
+
+    # initialize collections
+    await tools_db.graph_service.create_collection("tools")
+    await tools_db.graph_service.create_collection("tools_ctags")
+
+    # Use the warmup class to import all tools automatically
+    logger.info("Using tools warmup to register all available tools...")
+    from app.agents.tools.tools_discovery import discover_tools
+
+    discovery_results = discover_tools(logger)
+    logger.info(f"Discovery completed: {discovery_results['total_tools']} tools registered")
+
+    # Create a sample tool registry (this would normally come from your actual registry)
+    logger.info("Setting up sample tool registry...")
+    tool_registry = _global_tools_registry
+
+
+    # Sync tools from registry to ArangoDB
+    logger.info("Syncing tools from registry to ArangoDB...")
+    await tools_db.sync_tools_from_registry(tool_registry)
+
+    # List all tools in the registry
+    registry_tools = tool_registry.list_tools()
+    logger.info(f"Tools in registry: {registry_tools}")
 
     yield
     # Shutdown
@@ -281,7 +323,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 app.include_router(search_router, prefix="/api/v1")
 app.include_router(chatbot_router, prefix="/api/v1")
 app.include_router(records_router, prefix="/api/v1")
-app.include_router(agent_router, prefix="/api/v1")
+app.include_router(agent_router, prefix="/api/v1/agent")
 app.include_router(health_router, prefix="/api/v1")
 app.include_router(tools_router, prefix="/api/v1")
 

@@ -56,5 +56,10 @@ export const paths = {
     copilot: {
       root: `${ROOTS.DASHBOARD}copilot`,
     },
+    agent: {
+      root: `${ROOTS.DASHBOARD}agents`,
+      chat: (agentKey: string) => `${ROOTS.DASHBOARD}agents/${agentKey}`,
+      conversation: (agentKey: string, conversationKey: string) => `${ROOTS.DASHBOARD}agent/${agentKey}/conv/${conversationKey}`,
+    },
   },
 };

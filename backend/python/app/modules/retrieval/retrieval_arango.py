@@ -1,6 +1,8 @@
-from typing import Dict, List, Optional
+import uuid
+from typing import Any, Dict, List, Optional
 
 from arango import ArangoClient
+from arango.database import TransactionDatabase
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -8,6 +10,7 @@ from app.config.constants.arangodb import (
     RecordTypes,
 )
 from app.config.constants.service import config_node_constants
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class ArangoService:
@@ -840,3 +843,447 @@ class ArangoService:
                 "inaccessible": kb_ids,
                 "error": str(e)
             }
+
+    async def batch_upsert_nodes(
+        self,
+        nodes: List[Dict],
+        collection: str,
+        transaction: Optional[TransactionDatabase] = None,
+    ) -> bool | None:
+        """Batch upsert multiple nodes using Python-Arango SDK methods"""
+        try:
+            self.logger.info("🚀 Batch upserting nodes: %s", collection)
+
+            batch_query = """
+            FOR node IN @nodes
+                UPSERT { _key: node._key }
+                INSERT node
+                UPDATE node
+                IN @@collection
+                RETURN NEW
+            """
+
+            bind_vars = {"nodes": nodes, "@collection": collection}
+
+            db = transaction if transaction else self.db
+
+            cursor = db.aql.execute(batch_query, bind_vars=bind_vars)
+            results = list(cursor)
+            self.logger.info(
+                "✅ Successfully upserted %d nodes in collection '%s'.",
+                len(results),
+                collection,
+            )
+            return True
+
+        except Exception as e:
+            self.logger.error("❌ Batch upsert failed: %s", str(e))
+            if transaction:
+                raise
+            return False
+
+    async def batch_create_edges(
+        self,
+        edges: List[Dict],
+        collection: str,
+        transaction: Optional[TransactionDatabase] = None,
+    ) -> bool | None:
+        """Batch create PARENT_CHILD relationships"""
+        try:
+            self.logger.info("🚀 Batch creating edges: %s", collection)
+
+            batch_query = """
+            FOR edge IN @edges
+                UPSERT { _from: edge._from, _to: edge._to }
+                INSERT edge
+                UPDATE edge
+                IN @@collection
+                RETURN NEW
+            """
+            bind_vars = {"edges": edges, "@collection": collection}
+
+            db = transaction if transaction else self.db
+
+            cursor = db.aql.execute(batch_query, bind_vars=bind_vars)
+            results = list(cursor)
+            self.logger.info(
+                "✅ Successfully created %d edges in collection '%s'.",
+                len(results),
+                collection,
+            )
+            return True
+        except Exception as e:
+            self.logger.error("❌ Batch edge creation failed: %s", str(e))
+            if transaction:
+                raise
+            return False
+
+    async def get_all_agent_templates(self, user_id: str) -> List[Dict]:
+        """Get all agent templates accessible by the user"""
+        try:
+            query = f"""
+            FOR perm IN {CollectionNames.TEMPLATE_ACCESS.value}
+                FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', @user_id)
+                LET doc = DOCUMENT(perm._to)
+                FILTER doc != null
+                RETURN doc
+            """
+            bind_vars = {
+                "user_id": user_id,
+            }
+            self.logger.info(f"Getting all agent templates accessible by user {user_id}")
+
+            cursor = self.db.aql.execute(query, bind_vars=bind_vars)
+            return list(cursor)
+        except Exception as e:
+            self.logger.error("❌ Failed to get all agent templates: %s", str(e))
+            return []
+
+    async def get_template(self, template_id: str, user_id: str) -> Optional[Dict]:
+        """Get the template accessible by the user"""
+        try:
+            query = f"""
+                FOR perm IN {CollectionNames.TEMPLATE_ACCESS.value}
+                    FILTER perm._to == CONCAT('{CollectionNames.AGENT_TEMPLATES.value}/', @template_id)
+                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', @user_id)
+                    LIMIT 1
+                    FILTER DOCUMENT(perm._to).isDeleted == false
+                    RETURN DOCUMENT(perm._to)
+            """
+            bind_vars = {
+                "template_id": template_id,
+                "user_id": user_id,
+            }
+            self.logger.info(f"Getting template {template_id} accessible by user {user_id}")
+            cursor = self.db.aql.execute(query, bind_vars=bind_vars)
+            result = list(cursor)
+            if len(result) == 0:
+                return None
+            return result[0]
+        except Exception as e:
+            self.logger.error("❌ Failed to get template access: %s", str(e))
+            return None
+
+    async def share_agent_template(self, template_id: str, user_ids: List[str], user_id: str) -> Optional[bool]:
+        """Share an agent template with users"""
+        try:
+            self.logger.info(f"Sharing agent template {template_id} with users {user_ids}")
+
+            user_owner_access_query = f"""
+            FOR perm IN {CollectionNames.TEMPLATE_ACCESS.value}
+                FILTER perm._to == CONCAT('{CollectionNames.AGENT_TEMPLATES.value}/', @template_id)
+                FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', @user_id)
+                LIMIT 1
+                RETURN DOCUMENT(perm._to)
+            """
+            bind_vars = {
+                "template_id": template_id,
+                "user_id": user_id,
+            }
+            cursor = self.db.aql.execute(user_owner_access_query, bind_vars=bind_vars)
+            user_owner_access = list(cursor)
+            if len(user_owner_access) == 0:
+                return False
+            user_owner_access = user_owner_access[0]
+            if user_owner_access.get("role") != "OWNER":
+                return False
+
+            #  users to be given access
+            user_template_accesses = []
+            for user_id in user_ids:
+                user = await self.get_user_by_user_id(user_id)
+                if user is None:
+                    return False
+                edge = {
+                    "_from": f"{CollectionNames.USERS.value}/{user.get('_key')}",
+                    "_to": f"{CollectionNames.AGENT_TEMPLATES.value}/{template_id}",
+                    "role": "MEMBER",
+                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                }
+                user_template_accesses.append(edge)
+
+            result = await self.batch_create_edges(user_template_accesses, CollectionNames.TEMPLATE_ACCESS.value)
+            if not result:
+                return False
+            return True
+        except Exception as e:
+            self.logger.error("❌ Failed to share agent template: %s", str(e))
+            return False
+
+    async def clone_agent_template(self, template_id: str) -> Optional[str]:
+        """Clone an agent template"""
+        try:
+            template = await self.get_document(template_id, CollectionNames.AGENT_TEMPLATES.value)
+            if template is None:
+                return None
+            template_key = str(uuid.uuid4())
+            template["_key"] = template_key
+            template["isActive"] = True
+            template["isDeleted"] = False
+            template["deletedAtTimestamp"] = None
+            template["deletedByUserId"] = None
+            template["updatedAtTimestamp"] = get_epoch_timestamp_in_ms()
+            template["updatedByUserId"] = None
+            template["createdAtTimestamp"] = get_epoch_timestamp_in_ms()
+            template["createdBy"] = None
+            template["deletedByUserId"] = None
+            template["deletedAtTimestamp"] = None
+            template["isDeleted"] = False
+            result = await self.batch_upsert_nodes([template], CollectionNames.AGENT_TEMPLATES.value)
+            if not result:
+                return None
+            return template_key
+        except Exception as e:
+            self.logger.error("❌ Failed to close agent template: %s", str(e))
+            return False
+
+    async def delete_agent_template(self, template_id: str, user_id: str) -> Optional[bool]:
+        """Delete an agent template"""
+        try:
+            template_document_id = f"{CollectionNames.AGENT_TEMPLATES.value}/{template_id}"
+            user_document_id = f"{CollectionNames.USERS.value}/{user_id}"
+
+            permission_query = f"""
+            FOR perm IN {CollectionNames.TEMPLATE_ACCESS.value}
+                FILTER perm._to == @template_document_id
+                FILTER perm._from == @user_document_id
+                FILTER perm.role == "OWNER"
+                LIMIT 1
+                RETURN perm
+            """
+
+            bind_vars = {
+                "template_document_id": template_document_id,
+                "user_document_id": user_document_id,
+            }
+
+            cursor = self.db.aql.execute(permission_query, bind_vars=bind_vars)
+            permissions = list(cursor)
+
+            if len(permissions) == 0:
+                self.logger.warning(f"No permission found for user {user_id} on template {template_id}")
+                return False
+
+            # Check if template exists
+            template = await self.get_document(template_id, CollectionNames.AGENT_TEMPLATES.value)
+            if template is None:
+                self.logger.warning(f"Template {template_id} not found")
+                return False
+
+            # Prepare update data for soft delete
+            update_data = {
+                "isDeleted": True,
+                "deletedAtTimestamp": get_epoch_timestamp_in_ms(),
+                "deletedByUserId": user_id
+            }
+
+            # Soft delete the template using AQL UPDATE
+            update_query = f"""
+            UPDATE @template_key
+            WITH @update_data
+            IN {CollectionNames.AGENT_TEMPLATES.value}
+            RETURN NEW
+            """
+
+            bind_vars = {
+                "template_key": template_id,
+                "update_data": update_data,
+            }
+
+            cursor = self.db.aql.execute(update_query, bind_vars=bind_vars)
+            result = list(cursor)
+
+            if not result or len(result) == 0:
+                self.logger.error(f"Failed to delete template {template_id}")
+                return False
+
+            self.logger.info(f"Successfully deleted template {template_id}")
+            return True
+
+        except Exception as e:
+            self.logger.error("❌ Failed to delete agent template: %s", str(e), exc_info=True)
+            return False
+
+    async def update_agent_template(self, template_id: str, template_updates: Dict[str, Any], user_id: str) -> Optional[bool]:
+        """Update an agent template"""
+        try:
+            # Check if user is the owner of the template
+            template_document_id = f"{CollectionNames.AGENT_TEMPLATES.value}/{template_id}"
+            user_document_id = f"{CollectionNames.USERS.value}/{user_id}"
+
+            permission_query = f"""
+            FOR perm IN {CollectionNames.TEMPLATE_ACCESS.value}
+                FILTER perm._to == @template_document_id
+                FILTER perm._from == @user_document_id
+                FILTER perm.role == "OWNER"
+                LIMIT 1
+                RETURN perm
+            """
+
+            bind_vars = {
+                "template_document_id": template_document_id,
+                "user_document_id": user_document_id,
+            }
+
+            cursor = self.db.aql.execute(permission_query, bind_vars=bind_vars)
+            permissions = list(cursor)
+
+            if len(permissions) == 0:
+                self.logger.warning(f"No permission found for user {user_id} on template {template_id}")
+                return False
+
+            # Prepare update data
+            update_data = {
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                "updatedByUserId": user_id
+            }
+
+            # Add only the fields that are provided
+            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "tools", "models", "memory", "tags"]
+            for field in allowed_fields:
+                if field in template_updates:
+                    update_data[field] = template_updates[field]
+
+            # Update the template - use the collection and document key
+            update_query = f"""
+            UPDATE @template_key
+            WITH @update_data
+            IN {CollectionNames.AGENT_TEMPLATES.value}
+            RETURN NEW
+            """
+
+            bind_vars = {
+                "template_key": template_id,  # Use just the key, not the full document ID
+                "update_data": update_data,
+            }
+
+            cursor = self.db.aql.execute(update_query, bind_vars=bind_vars)
+            result = list(cursor)
+
+            if not result or len(result) == 0:
+                self.logger.error(f"Failed to update template {template_id}")
+                return False
+
+            self.logger.info(f"Successfully updated template {template_id}")
+            return True
+
+        except Exception as e:
+            self.logger.error("❌ Failed to update agent template: %s", str(e), exc_info=True)
+            return False
+
+    async def get_all_agents(self, user_id: str) -> List[Dict]:
+        """Get all agents of a user"""
+        try:
+            query = f"""
+            FOR doc IN {CollectionNames.AGENT_INSTANCES.value}
+                FILTER doc.isDeleted == false
+                FILTER doc.createdBy == @user_id
+                RETURN doc
+            """
+            bind_vars = {
+                "user_id": user_id,
+            }
+            cursor = self.db.aql.execute(query, bind_vars=bind_vars)
+            return list(cursor)
+        except Exception as e:
+            self.logger.error("❌ Failed to get all agents: %s", str(e))
+            return []
+
+    async def update_agent(self, agent_id: str, agent_updates: Dict[str, Any], user_id: str) -> Optional[bool]:
+        """Update an agent"""
+        try:
+            # Check if the agent exists and user has permission to update it
+            existing_agent = await self.get_document(agent_id, CollectionNames.AGENT_INSTANCES.value)
+            if existing_agent is None:
+                self.logger.warning(f"Agent {agent_id} not found")
+                return False
+
+            # Check if user is the owner of the agent (optional - add permission check if needed)
+            # You might want to add a permission check here similar to the template update
+
+            # Prepare update data
+            update_data = {
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                "updatedByUserId": user_id
+            }
+
+            # Add only the fields that are provided in agent_updates
+            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "tools", "models", "apps", "kb", "vectorDBs", "tags"]
+            for field in allowed_fields:
+                if field in agent_updates:
+                    update_data[field] = agent_updates[field]
+
+            # Update the agent using AQL UPDATE statement
+            update_query = f"""
+            UPDATE @agent_key
+            WITH @update_data
+            IN {CollectionNames.AGENT_INSTANCES.value}
+            RETURN NEW
+            """
+
+            bind_vars = {
+                "agent_key": agent_id,  # Use just the key, not the full document ID
+                "update_data": update_data,
+            }
+
+            cursor = self.db.aql.execute(update_query, bind_vars=bind_vars)
+            result = list(cursor)
+
+            if not result or len(result) == 0:
+                self.logger.error(f"Failed to update agent {agent_id}")
+                return False
+
+            self.logger.info(f"Successfully updated agent {agent_id}")
+            return True
+
+        except Exception as e:
+            self.logger.error("❌ Failed to update agent: %s", str(e), exc_info=True)
+            return False
+
+    async def delete_agent(self, agent_id: str, user_id: str) -> Optional[bool]:
+        """Delete an agent"""
+        try:
+            # Check if agent exists
+            agent = await self.get_document(agent_id, CollectionNames.AGENT_INSTANCES.value)
+            if agent is None:
+                self.logger.warning(f"Agent {agent_id} not found")
+                return False
+
+            # Check if user is the owner of the agent
+            if agent.get("createdBy") != user_id:
+                self.logger.warning(f"User {user_id} is not the owner of agent {agent_id}")
+                return False
+
+            # Prepare update data for soft delete
+            update_data = {
+                "isDeleted": True,
+                "deletedAtTimestamp": get_epoch_timestamp_in_ms(),
+                "deletedByUserId": user_id
+            }
+
+            # Soft delete the agent using AQL UPDATE
+            update_query = f"""
+            UPDATE @agent_key
+            WITH @update_data
+            IN {CollectionNames.AGENT_INSTANCES.value}
+            RETURN NEW
+            """
+
+            bind_vars = {
+                "agent_key": agent_id,
+                "update_data": update_data,
+            }
+
+            cursor = self.db.aql.execute(update_query, bind_vars=bind_vars)
+            result = list(cursor)
+
+            if not result or len(result) == 0:
+                self.logger.error(f"Failed to delete agent {agent_id}")
+                return False
+
+            self.logger.info(f"Successfully deleted agent {agent_id}")
+            return True
+
+        except Exception as e:
+            self.logger.error("❌ Failed to delete agent: %s", str(e), exc_info=True)
+            return False

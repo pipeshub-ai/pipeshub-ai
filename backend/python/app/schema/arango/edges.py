@@ -53,6 +53,9 @@ user_drive_relation_schema = {
     "message": "Document does not match the user drive relation schema.",
 }
 
+# Tasks belongs to Workflow
+# User belongs to *
+# Record belongs to *
 belongs_to_schema = {
     "rule": {
         "type": "object",
@@ -61,7 +64,7 @@ belongs_to_schema = {
             "_to": {"type": "string", "minLength": 1},
             "entityType": {
                 "type": "string",
-                "enum": ["GROUP", "DOMAIN", "ORGANIZATION", "KB"],
+                "enum": ["GROUP", "DOMAIN", "ORGANIZATION", "KB", "WORKFLOW"],
             },
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
@@ -104,7 +107,6 @@ permissions_schema = {
     "message": "Document does not match the permissions schema.",
 }
 
-
 user_app_relation_schema = {
     "rule": {
         "type": "object",
@@ -122,6 +124,8 @@ user_app_relation_schema = {
     "message": "Document does not match the user app relation schema.",
 }
 
+# Agent -> Tool, Model, Workflow
+# Task -> agent
 basic_edge_schema = {
     "rule": {
         "type": "object",
@@ -136,3 +140,72 @@ basic_edge_schema = {
     "level": "strict",
     "message": "Document does not match the basic edge schema.",
 }
+
+# User -> Agent
+# User -> Agent Template
+role_based_edge_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_from": {"type": "string", "minLength": 1},
+            "_to": {"type": "string", "minLength": 1},
+            "createdAtTimestamp": {"type": "number"},
+            "role": {"type": "string", "enum": ["OWNER", "MEMBER"]},
+        },
+        "required": ["role", "createdAtTimestamp"],
+        "additionalProperties": True,
+    }
+}
+
+# Agent -> Memory
+source_edge_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_from": {"type": "string", "minLength": 1},
+            "_to": {"type": "string", "minLength": 1},
+            "createdAtTimestamp": {"type": "number"},
+            "source": {"type": "string", "enum": ["CONVERSATION", "KNOWLEDGE_BASE", "APPS"]},
+        },
+        "required": ["createdAtTimestamp"],
+        "additionalProperties": True,
+    }
+}
+
+
+# future schema
+
+# task_action_edge_schema = {
+#     "rule": {
+#         "type": "object",
+#         "properties": {
+#             "_from": {"type": "string", "minLength": 1},
+#             "_to": {"type": "string", "minLength": 1},
+#             "createdAtTimestamp": {"type": "number"},
+#             "approvers": {
+#                 "type": "array", "items":{
+#                 "type": "object",
+#                     "properties": {
+#                         "userId": {"type": "array", "items": {"type": "string"}},
+#                         "userGroupsIds": {"type": "array", "items": {"type": "string"}},
+#                         "order": {"type": "number"},
+#                     },
+#                 "required": ["userId", "order"],
+#                 "additionalProperties": True,
+#             }},
+#             "reviewers": {
+#                 "type": "array", "items":{
+#                 "type": "object",
+#                 "properties": {
+#                     "userId": {"type": "array", "items": {"type": "string"}},
+#                     "userGroupsIds": {"type": "array", "items": {"type": "string"}},
+#                     "order": {"type": "number"},
+#                 },
+#                 "required": ["userId", "order"],
+#                 "additionalProperties": True,
+#             }},
+#         },
+#     },
+#     "level": "strict",
+#     "message": "Document does not match the agent action edge schema.",
+# }

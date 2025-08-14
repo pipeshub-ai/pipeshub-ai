@@ -1,17 +1,20 @@
 import json
+import uuid
 from logging import Logger
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from langchain.chat_models.base import BaseChatModel
 from pydantic import BaseModel
 
+from app.config.constants.arangodb import CollectionNames
 from app.modules.agents.qna.chat_state import build_initial_state
 from app.modules.agents.qna.graph import qna_graph
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_arango import ArangoService
 from app.modules.retrieval.retrieval_service import RetrievalService
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 router = APIRouter()
 
@@ -23,6 +26,8 @@ class ChatQuery(BaseModel):
     quickMode: bool = False
     filters: Optional[Dict[str, Any]] = None
     retrievalMode: Optional[str] = "HYBRID"
+    systemPrompt: Optional[str] = None
+    tools: Optional[List[str]] = None
 
 
 async def get_services(request: Request) -> Dict[str, Any]:
@@ -115,7 +120,7 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
 
 
 async def stream_response(
-    query_info: ChatQuery,
+    query_info: Dict[str, Any],
     user_info: Dict[str, Any],
     llm: BaseChatModel,
     logger: Logger,
@@ -125,7 +130,7 @@ async def stream_response(
 ) -> AsyncGenerator[str, None]:
     # Build initial state
     initial_state = build_initial_state(
-        query_info.model_dump(),
+        query_info,
         user_info,
         llm,
         logger,
@@ -135,7 +140,8 @@ async def stream_response(
     )
 
     # Execute the graph with async
-    logger.info(f"Starting LangGraph execution for query: {query_info.query}")
+    logger.info(f"Query info: {query_info}")
+    logger.info(f"Starting LangGraph execution for query: {query_info.get('query')}")
     async for chunk in qna_graph.astream(initial_state, stream_mode="custom"):
         if isinstance(chunk, dict) and "event" in chunk:
             # Convert dict to JSON string for streaming
@@ -164,7 +170,7 @@ async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingRespo
         # Stream the response
         return StreamingResponse(
             stream_response(
-                query_info, user_info, llm, logger, retrieval_service, arango_service, reranker_service
+                query_info.model_dump(), user_info, llm, logger, retrieval_service, arango_service, reranker_service
             ),
             media_type="text/event-stream",
         )
@@ -173,4 +179,680 @@ async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingRespo
         raise he
     except Exception as e:
         logger.error(f"Error in askAIStream: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/template/create")
+async def create_agent_template(request: Request) -> JSONResponse:
+    """Create a new agent template"""
+    try:
+        # Get all services
+        services = await get_services(request)
+        logger = services["logger"]
+        arango_service = services["arango_service"]
+
+        body = await request.body()
+        body_dict = json.loads(body.decode('utf-8'))
+
+        # Extract user info from request
+        user_info = {
+            "orgId": request.state.user.get("orgId"),
+            "userId": request.state.user.get("userId"),
+        }
+        time = get_epoch_timestamp_in_ms()
+        template_key = str(uuid.uuid4())
+        logger.info(f"Creating agent template with key: {body_dict}")
+        # Create the template
+        template = {
+            "_key": template_key,
+            "name": body_dict.get("name"),
+            "description": body_dict.get("description"),
+            "startMessage": body_dict.get("startMessage"),
+            "systemPrompt": body_dict.get("systemPrompt"),
+            "tools": body_dict.get("tools"),
+            "models": body_dict.get("models"),
+            "memory": body_dict.get("memory"),
+            "tags": body_dict.get("tags"),
+            "orgId": user_info.get("orgId"),
+            "isActive": True,
+            "createdAtTimestamp": time,
+            "updatedAtTimestamp": time,
+            "isDeleted": False,
+        }
+
+        user = await arango_service.get_user_by_user_id(user_info.get("userId"))
+        logger.info(f"User: {user}")
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        template["createdBy"] = user.get("_key")
+
+        user_template_access = {
+            "_from": f"{CollectionNames.USERS.value}/{user.get('_key')}",
+            "_to": f"{CollectionNames.AGENT_TEMPLATES.value}/{template_key}",
+            "role": "OWNER",
+            "createdAtTimestamp": time,
+        }
+
+        # Create the template
+        result = await arango_service.batch_upsert_nodes([template], CollectionNames.AGENT_TEMPLATES.value)
+        if not result:
+            raise HTTPException(status_code=400, detail="Failed to create agent template")
+
+        result = await arango_service.batch_create_edges([user_template_access], CollectionNames.TEMPLATE_ACCESS.value)
+        if not result:
+            raise HTTPException(status_code=400, detail="Failed to create agent template access")
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "success",
+                "message": "Agent template created successfully",
+                "template": template,
+            },
+        )
+    except Exception as e:
+        logger.error(f"Error in create_agent_template: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/template/list")
+async def get_agent_templates(request: Request) -> JSONResponse:
+    """Get all agent templates"""
+    try:
+        # Get all services
+        services = await get_services(request)
+        logger = services["logger"]
+        arango_service = services["arango_service"]
+
+        # Extract user info from request
+        user_info = {
+            "orgId": request.state.user.get("orgId"),
+            "userId": request.state.user.get("userId"),
+        }
+        user = await arango_service.get_user_by_user_id(user_info.get("userId"))
+        logger.info(f"User: {user}")
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found for getting agent templates")
+        # Get all templates
+        templates = await arango_service.get_all_agent_templates(user.get("_key"))
+        if not templates:
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "status": "success",
+                    "message": "No agent templates found",
+                    "templates": [],
+                },
+            )
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "success",
+                "message": "Agent templates retrieved successfully",
+                "templates": templates,
+            },
+        )
+    except Exception as e:
+        logger.error(f"Error in get_agent_templates: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/template/{template_id}")
+async def get_agent_template(request: Request, template_id: str) -> JSONResponse:
+    """Get an agent template by ID"""
+    try:
+        # Get all services
+        services = await get_services(request)
+        logger = services["logger"]
+        arango_service = services["arango_service"]
+
+        # Extract user info from request
+        user_info = {
+            "orgId": request.state.user.get("orgId"),
+            "userId": request.state.user.get("userId"),
+        }
+        user = await arango_service.get_user_by_user_id(user_info.get("userId"))
+        logger.info(f"User: {user}")
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found for getting agent template")
+        # Get the template access
+        template = await arango_service.get_template(template_id, user.get("_key"))
+        if template is None:
+            raise HTTPException(status_code=404, detail="Agent template not found")
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "success",
+                "message": "Agent template retrieved successfully",
+                "template": template,
+            },
+        )
+    except Exception as e:
+        logger.error(f"Error in get_agent_template: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/share-template/{template_id}")
+async def share_agent_template(request: Request, template_id: str, user_ids: List[str] = Body(...)) -> JSONResponse:
+    """Share an agent template"""
+    try:
+        # Get all services
+        services = await get_services(request)
+        logger = services["logger"]
+        arango_service = services["arango_service"]
+
+        # Extract user info from request
+        user_info = {
+            "orgId": request.state.user.get("orgId"),
+            "userId": request.state.user.get("userId"),
+        }
+        user = await arango_service.get_user_by_user_id(user_info.get("userId"))
+        logger.info(f"User: {user}")
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found for sharing agent template")
+        # Get the template
+        template = await arango_service.get_template(template_id, user.get("_key"))
+        if not template:
+            raise HTTPException(status_code=404, detail="Agent template not found")
+        # Share the template
+        result = await arango_service.share_agent_template(template_id, user_ids, user.get("_key"))
+        if not result:
+            raise HTTPException(status_code=400, detail="Failed to share agent template")
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "success",
+                "message": "Agent template shared successfully",
+            },
+        )
+    except Exception as e:
+        logger.error(f"Error in share_agent_template: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/template/{template_id}/clone")
+async def clone_agent_template(request: Request, template_id: str) -> JSONResponse:
+    """Clone an agent template"""
+    try:
+        # Get all services
+        services = await get_services(request)
+        logger = services["logger"]
+        arango_service = services["arango_service"]
+        # Clone the template
+        cloned_template_id = await arango_service.clone_agent_template(template_id)
+        if cloned_template_id is None:
+            raise HTTPException(status_code=400, detail="Failed to clone agent template")
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "success",
+                "message": "Agent template cloned successfully",
+                "templateId": cloned_template_id,
+            },
+        )
+    except Exception as e:
+        logger.error(f"Error in clone_agent_template: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.delete("/template/{template_id}")
+async def delete_agent_template(request: Request, template_id: str) -> JSONResponse:
+    """Delete an agent template"""
+    try:
+        # Get all services
+        services = await get_services(request)
+        logger = services["logger"]
+        arango_service = services["arango_service"]
+        # Extract user info from request
+        user_info = {
+            "orgId": request.state.user.get("orgId"),
+            "userId": request.state.user.get("userId"),
+        }
+        user = await arango_service.get_user_by_user_id(user_info.get("userId"))
+        logger.info(f"User: {user}")
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found for deleting agent template")
+        # Delete the template
+        result = await arango_service.delete_agent_template(template_id,user.get("_key"))
+        if not result:
+            raise HTTPException(status_code=400, detail="Failed to delete agent template")
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "success",
+                "message": "Agent template deleted successfully",
+            },
+        )
+    except Exception as e:
+        logger.error(f"Error in delete_agent_template: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.put("/template/{template_id}")
+async def update_agent_template(request: Request, template_id: str) -> JSONResponse:
+    """Update an agent template"""
+    try:
+        # Get all services
+        services = await get_services(request)
+        logger = services["logger"]
+        arango_service = services["arango_service"]
+        # Extract user info from request
+        user_info = {
+            "orgId": request.state.user.get("orgId"),
+            "userId": request.state.user.get("userId"),
+        }
+        body = await request.body()
+        body_dict = json.loads(body.decode('utf-8'))
+        # Update the template
+        user = await arango_service.get_user_by_user_id(user_info.get("userId"))
+        logger.info(f"User: {user}")
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found for updating agent template")
+        result = await arango_service.update_agent_template(template_id, body_dict, user.get("_key"))
+        if not result:
+            raise HTTPException(status_code=400, detail="Failed to update agent template")
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "success",
+                "message": "Agent template updated successfully",
+            },
+        )
+    except Exception as e:
+        logger.error(f"Error in update_agent_template: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/create")
+async def create_agent(request: Request) -> JSONResponse:
+    """Create a new agent"""
+    try:
+        # Get all services
+        services = await get_services(request)
+        logger = services["logger"]
+        arango_service = services["arango_service"]
+
+        # Extract user info from request
+        user_info = {
+            "orgId": request.state.user.get("orgId"),
+            "userId": request.state.user.get("userId"),
+        }
+        time = get_epoch_timestamp_in_ms()
+        body = await request.body()
+        body_dict = json.loads(body.decode('utf-8'))
+        user = await arango_service.get_user_by_user_id(user_info.get("userId"))
+        logger.info(f"User: {user}")
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found for creating agent")
+        agent = {
+            "_key": str(uuid.uuid4()),
+            "name": body_dict.get("name"),
+            "description": body_dict.get("description"),
+            "startMessage": body_dict.get("startMessage"),
+            "systemPrompt": body_dict.get("systemPrompt"),
+            "tools": body_dict.get("tools"),
+            "models": body_dict.get("models"),
+            "apps": body_dict.get("apps"),
+            "kb": body_dict.get("kb"),
+            "vectorDBs": body_dict.get("vectorDBs"),
+            "tags": body_dict.get("tags"),
+            "orgId": user_info.get("orgId"),
+            "createdBy": user.get("_key"),
+            "createdAtTimestamp": time,
+            "updatedAtTimestamp": time,
+            "isDeleted": False,
+        }
+        # Create the agent
+        result = await arango_service.batch_upsert_nodes([agent], CollectionNames.AGENT_INSTANCES.value)
+        if not result:
+            raise HTTPException(status_code=400, detail="Failed to create agent")
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "success",
+                "message": "Agent created successfully",
+                "agent": agent,
+            },
+        )
+    except Exception as e:
+        logger.error(f"Error in create_agent: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/{agent_id}")
+async def get_agent(request: Request, agent_id: str) -> JSONResponse:
+    """Get an agent by ID"""
+    try:
+        # Get all services
+        services = await get_services(request)
+        logger = services["logger"]
+        arango_service = services["arango_service"]
+        # Extract user info from request
+        user_info = {
+            "orgId": request.state.user.get("orgId"),
+            "userId": request.state.user.get("userId"),
+        }
+        user = await arango_service.get_user_by_user_id(user_info.get("userId"))
+        logger.info(f"User: {user}")
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found for getting agent")
+        # Get the agent
+        agent = await arango_service.get_document(agent_id, CollectionNames.AGENT_INSTANCES.value)
+        if agent is None:
+            raise HTTPException(status_code=404, detail="Agent not found")
+
+        # Check if the user has access to the agent
+        if agent.get("createdBy") != user.get("_key"):
+            raise HTTPException(status_code=403, detail="You are not authorized to access this agent")
+
+        if agent.get("isDeleted"):
+            raise HTTPException(status_code=404, detail="Agent is deleted")
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "success",
+                "message": "Agent retrieved successfully",
+                "agent": agent,
+            },
+        )
+    except Exception as e:
+        logger.error(f"Error in get_agent: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/")
+async def get_agents(request: Request) -> JSONResponse:
+    """Get all agents"""
+    try:
+        # Get all services
+        services = await get_services(request)
+        logger = services["logger"]
+        arango_service = services["arango_service"]
+        # Extract user info from request
+        user_info = {
+            "orgId": request.state.user.get("orgId"),
+            "userId": request.state.user.get("userId"),
+        }
+        user = await arango_service.get_user_by_user_id(user_info.get("userId"))
+        logger.info(f"User: {user}")
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found for getting agents")
+        # Get all agents
+        agents = await arango_service.get_all_agents(user.get("_key"))
+        if agents is None or len(agents) == 0:
+            raise HTTPException(status_code=404, detail="No agents found")
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "success",
+                "message": "Agents retrieved successfully",
+                "agents": agents,
+            },
+        )
+    except Exception as e:
+        logger.error(f"Error in get_agents: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.put("/{agent_id}")
+async def update_agent(request: Request, agent_id: str) -> JSONResponse:
+    """Update an agent"""
+    try:
+        # Get all services
+        services = await get_services(request)
+        logger = services["logger"]
+        arango_service = services["arango_service"]
+        # Extract user info from request
+        user_info = {
+            "orgId": request.state.user.get("orgId"),
+            "userId": request.state.user.get("userId"),
+        }
+        body = await request.body()
+        body_dict = json.loads(body.decode('utf-8'))
+
+        user = await arango_service.get_user_by_user_id(user_info.get("userId"))
+        logger.info(f"User: {user}")
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found for updating agent")
+
+        #  check if user is the owner of the agent
+        agent = await arango_service.get_document(agent_id, CollectionNames.AGENT_INSTANCES.value)
+        if agent is None:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        if agent.get("createdBy") != user.get("_key"):
+            raise HTTPException(status_code=403, detail="You are not authorized to update this agent")
+
+        # Update the agent
+        result = await arango_service.update_agent(agent_id, body_dict, user.get("_key"))
+        if not result:
+            raise HTTPException(status_code=400, detail="Failed to update agent")
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "success",
+                "message": "Agent updated successfully",
+            },
+        )
+    except Exception as e:
+        logger.error(f"Error in update_agent: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.delete("/{agent_id}")
+async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
+    """Delete an agent"""
+    try:
+        # Get all services
+        services = await get_services(request)
+        logger = services["logger"]
+        arango_service = services["arango_service"]
+        # Extract user info from request
+        user_info = {
+            "orgId": request.state.user.get("orgId"),
+            "userId": request.state.user.get("userId"),
+        }
+        user = await arango_service.get_user_by_user_id(user_info.get("userId"))
+        logger.info(f"User: {user}")
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found for deleting agent")
+
+        #  check if user is the owner of the agent
+        agent = await arango_service.get_document(agent_id, CollectionNames.AGENT_INSTANCES.value)
+        if agent is None:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        if agent.get("createdBy") != user.get("_key"):
+            raise HTTPException(status_code=403, detail="You are not authorized to delete this agent")
+
+
+        # Delete the agent
+        result = await arango_service.delete_agent(agent_id, user.get("_key"))
+        if not result:
+            raise HTTPException(status_code=400, detail="Failed to delete agent")
+
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "success",
+                "message": "Agent deleted successfully",
+            },
+        )
+    except Exception as e:
+        logger.error(f"Error in delete_agent: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/{agent_id}/chat")
+async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONResponse:
+    """Chat with an agent"""
+    try:
+        # Get all services
+        services = await get_services(request)
+        logger = services["logger"]
+        arango_service = services["arango_service"]
+        retrieval_service = services["retrieval_service"]
+        llm = services["llm"]
+        reranker_service = services["reranker_service"]
+
+        # Extract user info from request
+        user_info = {
+            "orgId": request.state.user.get("orgId"),
+            "userId": request.state.user.get("userId"),
+            "sendUserInfo": request.state.user.get("sendUserInfo", True),
+        }
+
+        # Get the agent
+        agent = await arango_service.get_document(agent_id, CollectionNames.AGENT_INSTANCES.value)
+        if agent is None:
+            raise HTTPException(status_code=404, detail="Agent not found")
+
+        # Build filters object
+        filters = {}
+        if chat_query.filters is not None:
+            # Use chat query filters if provided
+            filters = chat_query.filters.copy()
+        else:
+            # If no filters, create filters from agent defaults
+            filters = {
+                "apps": agent.get("apps"),
+                "kb": agent.get("kb"),
+                "vectorDBs": agent.get("vectorDBs")
+            }
+
+        # Override individual filter values if they exist in chat query
+        if chat_query.filters is not None:
+            if chat_query.filters.get("apps") is not None:
+                filters["apps"] = chat_query.filters.get("apps")
+            if chat_query.filters.get("kb") is not None:
+                filters["kb"] = chat_query.filters.get("kb")
+            if chat_query.filters.get("vectorDBs") is not None:
+                filters["vectorDBs"] = chat_query.filters.get("vectorDBs")
+
+        # Override tools if provided in chat query
+        tools = chat_query.tools if chat_query.tools is not None else agent.get("tools")
+        system_prompt = agent.get("systemPrompt")
+
+        query_info = {
+            "query": chat_query.query,
+            "limit": chat_query.limit,
+            "messages": [],
+            "previous_conversations": chat_query.previousConversations,
+            "quick_mode": chat_query.quickMode,
+            "filters": filters,  # Send the entire filters object
+            "tools": tools,
+            "systemPrompt": system_prompt,
+        }
+
+        initial_state = build_initial_state(
+            query_info,
+            user_info,
+            llm,
+            logger,
+            retrieval_service,
+            arango_service,
+            reranker_service
+        )
+
+        # Execute the graph with async
+        logger.info(f"Starting LangGraph execution for query: {query_info.query}")
+        final_state = await qna_graph.ainvoke(initial_state)  # Using async invoke
+
+        # Check for errors
+        if final_state.get("error"):
+            error = final_state["error"]
+            return JSONResponse(
+                status_code=error.get("status_code", 500),
+                content={
+                    "status": error.get("status", "error"),
+                    "message": error.get("message", error.get("detail", "An error occurred")),
+                    "searchResults": [],
+                    "records": [],
+                },
+            )
+
+        # Return the response
+        return final_state["response"]
+
+    except Exception as e:
+        logger.error(f"Error in chat: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/{agent_id}/chat/stream")
+async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
+    """Chat with an agent"""
+    try:
+        # Get all services
+        services = await get_services(request)
+        logger = services["logger"]
+        arango_service = services["arango_service"]
+        retrieval_service = services["retrieval_service"]
+        llm = services["llm"]
+        reranker_service = services["reranker_service"]
+
+        # Extract user info from request
+        user_info = {
+            "orgId": request.state.user.get("orgId"),
+            "userId": request.state.user.get("userId"),
+            "sendUserInfo": request.state.user.get("sendUserInfo", True),
+        }
+
+        # Get the agent
+        agent = await arango_service.get_document(agent_id, CollectionNames.AGENT_INSTANCES.value)
+        if agent is None:
+            raise HTTPException(status_code=404, detail="Agent not found")
+
+        body = await request.body()
+        body_dict = json.loads(body.decode('utf-8'))
+
+        logger.info(f"body_dict: {body_dict}")
+        chat_query = ChatQuery(**body_dict)
+
+        logger.info(f"chat_query: {chat_query}")
+
+        # Build filters object
+        filters = {}
+        if chat_query.filters is not None:
+            # Use chat query filters if provided
+            filters = chat_query.filters.copy()
+        else:
+            # If no filters, create filters from agent defaults
+            filters = {
+                "apps": agent.get("apps"),
+                "kb": agent.get("kb"),
+                "vectorDBs": agent.get("vectorDBs")
+            }
+
+        # Override individual filter values if they exist in chat query
+        if chat_query.filters is not None:
+            if chat_query.filters.get("apps") is not None:
+                filters["apps"] = chat_query.filters.get("apps")
+            if chat_query.filters.get("kb") is not None:
+                filters["kb"] = chat_query.filters.get("kb")
+            if chat_query.filters.get("vectorDBs") is not None:
+                filters["vectorDBs"] = chat_query.filters.get("vectorDBs")
+
+        # Override tools if provided in chat query
+        if chat_query.tools is not None:
+            tools = chat_query.tools
+            logger.info(f"Using tools from chat query: {tools}")
+        else:
+            tools = agent.get("tools")
+            logger.info(f"Using tools from agent config: {tools}")
+
+        logger.info(f"Tools: {tools}")
+        logger.info(f"Filters: {filters}")
+        logger.info(f"chat query: {chat_query}")
+
+        system_prompt = agent.get("systemPrompt")
+
+        query_info = {
+            "query": chat_query.query,
+            "limit": chat_query.limit,
+            "messages": [],
+            "previous_conversations": chat_query.previousConversations,
+            "quick_mode": chat_query.quickMode,
+            "filters": filters,  # Send the entire filters object
+            "tools": tools,
+            "systemPrompt": system_prompt,
+        }
+
+        return StreamingResponse(
+            stream_response(
+                query_info, user_info, llm, logger, retrieval_service, arango_service, reranker_service
+            ),
+            media_type="text/event-stream",
+        )
+    except Exception as e:
+        logger.error(f"Error in chat_stream: {str(e)}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
