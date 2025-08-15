@@ -206,7 +206,7 @@ export class Application {
   private configureMiddleware(): void {
     // Security middleware - configure helmet once with all options
     this.app.use(helmet({
-      crossOriginOpenerPolicy: { policy: "unsafe-none" },
+      crossOriginOpenerPolicy: { policy: "unsafe-none" }, // Required for MSAL popup login flow to work correctly
       contentSecurityPolicy: {
         directives: {
           defaultSrc: ["'self'", "*", "'unsafe-inline'", "'unsafe-eval'", "data:", "blob:", "wss:", "ws:"],
