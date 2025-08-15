@@ -38,7 +38,6 @@ import { PrometheusService } from './libs/services/prometheus/prometheus.service
 import { StorageContainer } from './modules/storage/container/storage.container';
 import { NotificationContainer } from './modules/notification/container/notification.container';
 import {
-  AppConfig,
   loadAppConfig,
 } from './modules/tokens_manager/config/config';
 import { NotificationService } from './modules/notification/service/notification.service';
@@ -178,7 +177,7 @@ export class Application {
         .inSingletonScope();
 
       // Configure Express
-      this.configureMiddleware(appConfig);
+      this.configureMiddleware();
       this.configureRoutes();
       this.setupSwagger();
       this.configureErrorHandling();
@@ -204,45 +203,37 @@ export class Application {
     }
   }
 
-  private configureMiddleware(appConfig: AppConfig): void {
-    let connectorPublicUrl;
-    if (
-      !appConfig.connectorBackend ||
-      appConfig.connectorBackend.startsWith('localhost')
-    ) {
-      connectorPublicUrl = process.env.CONNECTOR_PUBLIC_BACKEND;
-    } else {
-      connectorPublicUrl = appConfig.connectorBackend;
-    }
-    // Security middleware
-    this.app.use(helmet());
+  private configureMiddleware(): void {
+    // Security middleware - configure helmet once with all options
+    this.app.use(helmet({
+      crossOriginOpenerPolicy: { policy: "unsafe-none" },
+      contentSecurityPolicy: {
+        directives: {
+          defaultSrc: ["'self'", "*", "'unsafe-inline'", "'unsafe-eval'", "data:", "blob:", "wss:", "ws:"],
+          connectSrc: ["'self'", "*"]
+        }
+      }
+    }));
 
     // Request context middleware
     this.app.use(requestContextMiddleware);
 
-    // CORS
+    // CORS - ensure this matches your frontend domain
     this.app.use(
       cors({
-        origin: process.env.ALLOWED_ORIGINS?.split(',') || '*',
+        origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3000'], // Be more specific than '*'
         credentials: true,
         exposedHeaders: ['x-session-token', 'content-disposition'],
+        methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+        allowedHeaders: ['Content-Type', 'Authorization', 'x-session-token']
       }),
     );
-
-    const isDev = process.env.NODE_ENV !== 'production';
-    const isStrictMode = process.env.STRICT_MODE === 'true';
-
-    this.app.use((_req, res, next) => {
-      const csp = isDev || !isStrictMode
-        ? "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:;"
-        : `script-src 'self' https://cdnjs.cloudflare.com ${connectorPublicUrl}; worker-src 'self' blob:;`;
-      res.setHeader('Content-Security-Policy', csp);
-      next();
-    });
 
     // Body parsing
     this.app.use(express.json({ limit: '10mb' }));
     this.app.use(express.urlencoded({ extended: true }));
+
+    // Logging
     this.app.use(
       morgan('combined', {
         stream: {
@@ -250,7 +241,6 @@ export class Application {
         },
       }),
     );
-    // Todo: Apply Rate Limit Middleware
   }
 
   private configureRoutes(): void {
