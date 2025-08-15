@@ -3872,7 +3872,8 @@ export const listAgents =
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
       if (aiResponse && aiResponse.statusCode !== 200) {
-        throw new BadRequestError('Failed to get agents');
+        res.status(HTTP_STATUS.OK).json([]);
+        return;
       }
       const agents = aiResponse.data;
       res.status(HTTP_STATUS.OK).json(agents);

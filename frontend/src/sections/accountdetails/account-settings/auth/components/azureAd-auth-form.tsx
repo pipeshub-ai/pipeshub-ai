@@ -33,7 +33,7 @@ export interface AzureAdAuthFormRef {
 
 const getRedirectUris = async () => {
   // Get the current window URL without hash and search parameters
-  const currentRedirectUri = `${window.location.origin}/auth/azure-ad/callback`;
+  const currentRedirectUri = `${window.location.origin}/auth/microsoft/callback`;
 
   // Get the frontend URL from the backend
   try {
@@ -41,8 +41,8 @@ const getRedirectUris = async () => {
     const frontendBaseUrl = response.data.url;
     // Ensure the URL ends with a slash if needed
     const frontendUrl = frontendBaseUrl.endsWith('/')
-      ? `${frontendBaseUrl}auth/azure-ad/callback`
-      : `${frontendBaseUrl}/auth/azure-ad/callback`;
+      ? `${frontendBaseUrl}auth/microsoft/callback`
+      : `${frontendBaseUrl}/auth/microsoft/callback`;
 
     return {
       currentRedirectUri,
@@ -72,7 +72,7 @@ const AzureAdAuthForm = forwardRef<AzureAdAuthFormRef, AzureAdAuthFormProps>(
       tenantId: 'common',
       clientId: '',
       redirectUri:
-        redirectUris?.recommendedRedirectUri || `${window.location.origin}/auth/azure-ad/callback`,
+        redirectUris?.recommendedRedirectUri || `${window.location.origin}/auth/microsoft/callback`,
     });
 
     const [errors, setErrors] = useState({
@@ -124,7 +124,7 @@ const AzureAdAuthForm = forwardRef<AzureAdAuthFormRef, AzureAdAuthFormProps>(
 
           // Set default redirectUri from uris immediately (not from state)
           const recommendedUri =
-            uris?.recommendedRedirectUri || `${window.location.origin}/auth/azure-ad/callback`;
+            uris?.recommendedRedirectUri || `${window.location.origin}/auth/microsoft/callback`;
 
           setFormData((prevFormData) => ({
             ...prevFormData,
