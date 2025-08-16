@@ -43,7 +43,7 @@ class AiConfigEventService(BaseEventService):
             self.logger.debug(f"LLM config payload: {payload}")
 
             # Refresh the LLM instance with new configuration
-            await self.retrieval_service.get_llm_instance()
+            await self.retrieval_service.get_llm_instance(use_cache=False)
 
             self.logger.info("✅ Successfully updated LLM configuration in all services")
             return True
@@ -66,7 +66,7 @@ class AiConfigEventService(BaseEventService):
             self.logger.debug(f"Embedding config payload: {payload}")
 
             # Refresh the embedding model instance with new configuration
-            await self.retrieval_service.get_embedding_model_instance()
+            await self.retrieval_service.get_embedding_model_instance(use_cache=False)
 
             self.logger.info("✅ Successfully updated embedding model in all services")
             return True
