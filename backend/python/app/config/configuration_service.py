@@ -94,7 +94,7 @@ class ConfigurationService:
                     "bootstrap_servers": brokers_list,
                     "brokers": brokers_list
                 }
-        elif key == config_node_constants.ARANGO.value:
+        elif key == config_node_constants.ARANGODB.value:
             # ArangoDB configuration fallback
             arango_url = os.getenv("ARANGO_URL")
             if arango_url:
