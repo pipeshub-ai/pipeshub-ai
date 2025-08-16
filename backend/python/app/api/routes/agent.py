@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from langchain.chat_models.base import BaseChatModel
 from pydantic import BaseModel
 
+from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
 from app.modules.agents.qna.chat_state import build_initial_state
 from app.modules.agents.qna.graph import qna_graph
@@ -71,6 +72,7 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
         arango_service = services["arango_service"]
         reranker_service = services["reranker_service"]
         retrieval_service = services["retrieval_service"]
+        config_service = services["config_service"]
         llm = services["llm"]
 
         # Extract user info from request
@@ -89,6 +91,7 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
             retrieval_service,
             arango_service,
             reranker_service,
+            config_service,
         )
 
         # Execute the graph with async
@@ -127,6 +130,7 @@ async def stream_response(
     retrieval_service: RetrievalService,
     arango_service: ArangoService,
     reranker_service: RerankerService,
+    config_service: ConfigurationService,
 ) -> AsyncGenerator[str, None]:
     # Build initial state
     initial_state = build_initial_state(
@@ -137,6 +141,7 @@ async def stream_response(
         retrieval_service,
         arango_service,
         reranker_service,
+        config_service,
     )
 
     # Execute the graph with async
@@ -158,6 +163,7 @@ async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingRespo
         arango_service = services["arango_service"]
         reranker_service = services["reranker_service"]
         retrieval_service = services["retrieval_service"]
+        config_service = services["config_service"]
         llm = services["llm"]
 
         # Extract user info from request
@@ -170,7 +176,7 @@ async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingRespo
         # Stream the response
         return StreamingResponse(
             stream_response(
-                query_info.model_dump(), user_info, llm, logger, retrieval_service, arango_service, reranker_service
+                query_info.model_dump(), user_info, llm, logger, retrieval_service, arango_service, reranker_service, config_service
             ),
             media_type="text/event-stream",
         )
@@ -573,8 +579,6 @@ async def get_agents(request: Request) -> JSONResponse:
             raise HTTPException(status_code=404, detail="User not found for getting agents")
         # Get all agents
         agents = await arango_service.get_all_agents(user.get("_key"))
-        if agents is None or len(agents) == 0:
-            raise HTTPException(status_code=404, detail="No agents found")
         return JSONResponse(
             status_code=200,
             content={
@@ -684,7 +688,7 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
         retrieval_service = services["retrieval_service"]
         llm = services["llm"]
         reranker_service = services["reranker_service"]
-
+        config_service = services["config_service"]
         # Extract user info from request
         user_info = {
             "orgId": request.state.user.get("orgId"),
@@ -741,7 +745,8 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             logger,
             retrieval_service,
             arango_service,
-            reranker_service
+            reranker_service,
+            config_service
         )
 
         # Execute the graph with async
@@ -779,7 +784,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         retrieval_service = services["retrieval_service"]
         llm = services["llm"]
         reranker_service = services["reranker_service"]
-
+        config_service = services["config_service"]
         # Extract user info from request
         user_info = {
             "orgId": request.state.user.get("orgId"),
@@ -849,7 +854,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
         return StreamingResponse(
             stream_response(
-                query_info, user_info, llm, logger, retrieval_service, arango_service, reranker_service
+                query_info, user_info, llm, logger, retrieval_service, arango_service, reranker_service, config_service
             ),
             media_type="text/event-stream",
         )

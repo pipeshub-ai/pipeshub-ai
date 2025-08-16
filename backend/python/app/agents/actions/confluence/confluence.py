@@ -104,6 +104,7 @@ class Confluence:
     )
     async def get_spaces_with_permissions(self) -> Tuple[bool, str]:
         try:
+            print("get_spaces_with_permissions inside action confluence")
             spaces = await self.confluence.get_client().get_spaces_with_permissions() # type: ignore
             return True, json.dumps({"message": "Spaces with permissions fetched successfully", "spaces": spaces})
         except Exception as e:
