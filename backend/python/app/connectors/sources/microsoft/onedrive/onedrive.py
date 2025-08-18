@@ -30,6 +30,11 @@ from app.config.providers.in_memory_store import InMemoryKeyValueStore
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
+from app.connectors.core.base.sync_point.sync_point import (
+    SyncDataPointType,
+    SyncPoint,
+    generate_record_sync_point_key,
+)
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.connectors.sources.microsoft.common.apps import OneDriveApp
 from app.models.entities import FileRecord, RecordStatus, RecordType
@@ -74,12 +79,6 @@ class DeltaGetResponse(BaseDeltaFunctionResponse, Parsable):
         The deserialization information for the current model
         Returns: Dict[str, Callable[[ParseNode], None]]
         """
-        # logger.debug("----------------------------")
-        # logger.debug("----------------------------")
-        # logger.debug(self.value)
-        # logger.debug("----------------------------")
-        # logger.debug("----------------------------")
-
         fields: Dict[str, Callable[[Any], None]] = {
             "value": lambda n : setattr(self, 'value', n.get_collection_of_object_values(DriveItem)),
         }
@@ -791,10 +790,7 @@ class OneDriveAdminClient:
             raise ex
 
 class OneDriveConnector:
-    def __init__(self, logger, data_entities_processor: DataSourceEntitiesProcessor) -> None:
-        # self.config_service = config_service
-        # self.arango_service = arango_service
-        # self.kafka_service = kafka_service
+    def __init__(self, logger, data_entities_processor: DataSourceEntitiesProcessor, arango_service: BaseArangoService,) -> None:
         self.logger = logger
         self.data_entities_processor = data_entities_processor
         credential = ClientSecretCredential(
@@ -805,6 +801,18 @@ class OneDriveConnector:
         self.client = GraphServiceClient(credential, scopes=["https://graph.microsoft.com/.default"])
         self.onedrive_client = OneDriveClient(self.client, self.logger)
         self.onedrive_admin_client = OneDriveAdminClient(self.client, self.logger)
+        self.drive_delta_sync_point = SyncPoint(connector_name=Connectors.ONEDRIVE.value,
+                                                org_id=self.data_entities_processor.org_id,
+                                                sync_data_point_type=SyncDataPointType.RECORDS,
+                                                arango_service=arango_service)
+        self.user_sync_point = SyncPoint(connector_name=Connectors.ONEDRIVE.value,
+                                        org_id=self.data_entities_processor.org_id,
+                                        sync_data_point_type=SyncDataPointType.USERS,
+                                        arango_service=arango_service)
+        self.user_group_sync_point = SyncPoint(connector_name=Connectors.ONEDRIVE.value,
+                                        org_id=self.data_entities_processor.org_id,
+                                        sync_data_point_type=SyncDataPointType.USER_GROUPS,
+                                        arango_service=arango_service)
 
     async def _process_delta_items(self, delta_items: List[dict]) -> List[Tuple[FileRecord, List[Permission]]]:
         """
@@ -896,11 +904,18 @@ class OneDriveConnector:
         """
         try:
             # Get current sync state
-            #sync_state = self.sync_state_service.get_drive_state(user_id)
-            sync_state = None
-            # Start URL - use deltaLink if available, otherwise start fresh
             root_url = f"/users/{user_id}/drive/root/delta"
-            url = sync_state.get('deltaLink') if sync_state else ("{+baseurl}" + root_url)
+            sync_point_key = generate_record_sync_point_key(RecordType.DRIVE.value, "users", user_id)
+            sync_point = await self.drive_delta_sync_point.read_sync_point(sync_point_key)
+            print(f"sync_point: {sync_point}")
+            if sync_point:
+                url = sync_point.get('deltaLink', sync_point.get('nextLink'))
+                if not url:
+                    url = ("{+baseurl}" + root_url)
+            else:
+                url = ("{+baseurl}" + root_url)
+
+            print(f"delta url: {url}")
 
             while True:
                 # Fetch delta changes
@@ -916,17 +931,20 @@ class OneDriveConnector:
                 # Update sync state with next_link
                 next_link = result.get('next_link')
                 if next_link:
-                    self._update_sync_state(user_id,
-                        next_link=next_link,
-                        delta_link=None
+                    await self.drive_delta_sync_point.update_sync_point(sync_point_key,
+                        sync_point_data={
+                            "nextLink": next_link,
+                        }
                     )
                     url = next_link
                 else:
                     # No more pages - store deltaLink and clear nextLink
                     delta_link = result.get('delta_link', None)
-                    self._update_sync_state(user_id,
-                        next_link=None,
-                        delta_link=delta_link
+                    await self.drive_delta_sync_point.update_sync_point(sync_point_key,
+                        sync_point_data={
+                            "nextLink": None,
+                            "deltaLink": delta_link
+                        }
                     )
                     break
 
@@ -977,7 +995,43 @@ class OneDriveConnector:
 
         # await self.onedrive_client.get_all_subscriptions()
 
+
 async def test_run() -> None:
+
+    async def create_dummy_users(user_email: str, arango_service: BaseArangoService) -> None:
+        org_id = "org_1"
+        org = {
+                "_key": org_id,
+                "accountType": "enterprise",
+                "name": "Test Org",
+                "isActive": True,
+                "createdAtTimestamp": 1718745600,
+                "updatedAtTimestamp": 1718745600,
+            }
+
+
+        from app.config.constants.arangodb import CollectionNames
+        await arango_service.batch_upsert_nodes([org], CollectionNames.ORGS.value)
+        user = {
+            "_key": user_email,
+            "email": user_email,
+            "userId": user_email,
+            "orgId": org_id,
+            "isActive": True,
+            "createdAtTimestamp": 1718745600,
+            "updatedAtTimestamp": 1718745600,
+        }
+
+        await arango_service.batch_upsert_nodes([user], CollectionNames.USERS.value)
+        await arango_service.batch_create_edges([{
+            "_from": f"{CollectionNames.USERS.value}/{user['_key']}",
+            "_to": f"{CollectionNames.ORGS.value}/{org_id}",
+            "entityType": "ORGANIZATION",
+            "createdAtTimestamp": 1718745600,
+            "updatedAtTimestamp": 1718745600,
+        }], CollectionNames.BELONGS_TO.value)
+
+
     logger = create_logger("onedrive_connector")
     key_value_store = InMemoryKeyValueStore(logger, "app/config/default_config.json")
     config_service = ConfigurationService(logger, key_value_store)
@@ -985,9 +1039,14 @@ async def test_run() -> None:
     arango_client = ArangoClient()
     arango_service = BaseArangoService(logger, arango_client, config_service, kafka_service)
     await arango_service.connect()
+    user_email = os.getenv("TEST_USER_EMAIL")
+    if user_email is None:
+        raise Exception("TEST_USER_EMAIL is not set")
+
+    await create_dummy_users(user_email, arango_service)
     data_entities_processor = DataSourceEntitiesProcessor(logger, OneDriveApp(), arango_service, config_service)
     await data_entities_processor.initialize()
-    onedrive_connector = OneDriveConnector(logger, data_entities_processor)
+    onedrive_connector = OneDriveConnector(logger, data_entities_processor, arango_service)
     await onedrive_connector.run()
 
 if __name__ == "__main__":

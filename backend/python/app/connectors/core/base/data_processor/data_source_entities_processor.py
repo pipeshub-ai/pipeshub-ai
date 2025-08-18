@@ -405,6 +405,7 @@ class DataSourceEntitiesProcessor:
             self.logger.info(f"Processing user: {user}")
 
             existing_user_emails = {existing_user.get("email") for existing_user in existing_users}
+            print(f"existing_user_emails: {existing_user_emails}")
             if user.email not in existing_user_emails:
                 user_record = user.to_arango_base_record()
                 user_record["isActive"] = False

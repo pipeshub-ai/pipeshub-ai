@@ -78,6 +78,7 @@ NODE_COLLECTIONS = [
     (CollectionNames.AGENT_INSTANCES.value, agent_schema),
     (CollectionNames.AGENT_TEMPLATES.value, agent_template_schema),
     (CollectionNames.TICKETS.value, ticket_record_schema),
+    (CollectionNames.SYNC_POINTS.value, None),
 
 ]
 
@@ -3175,3 +3176,88 @@ class BaseArangoService:
         except Exception as e:
             self.logger.error("❌ Failed to fetch users: %s", str(e))
             return []
+
+    async def upsert_sync_point_node(self, sync_point_key: str, sync_point_data: Dict, collection: str, transaction: Optional[TransactionDatabase] = None) -> bool:
+        """
+        Upsert a sync point node based on sync_point_key
+        """
+        try:
+            self.logger.info("🚀 Upserting sync point node: %s", sync_point_key)
+
+            # Prepare the document data with the sync_point_key
+            document_data = {"syncPointKey": sync_point_key, **sync_point_data}
+
+            query = f"""
+            UPSERT {{ syncPointKey: @sync_point_key }}
+            INSERT @document_data
+            UPDATE @document_data
+            IN {collection}
+            RETURN {{ action: OLD ? "updated" : "inserted", key: NEW._key }}
+            """
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={
+                "sync_point_key": sync_point_key,
+                "document_data": document_data
+            })
+            result = next(cursor, None)
+
+            if result:
+                action = result.get("action", "unknown")
+                self.logger.info("✅ Successfully %s sync point node: %s", action, sync_point_key)
+                return True
+            else:
+                self.logger.warning("⚠️ Failed to upsert sync point node: %s", sync_point_key)
+                return False
+
+        except Exception as e:
+            self.logger.error("❌ Failed to upsert sync point node: %s: %s", sync_point_key, str(e))
+            return False
+
+    async def get_sync_point_node(self, key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> Optional[Dict]:
+        """
+        Get a node by key
+        """
+        try:
+            self.logger.info("🚀 Retrieving node by key: %s", key)
+            query = f"""
+            FOR node IN {collection}
+                FILTER node.syncPointKey == @key
+                RETURN node
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"key": key})
+            result = next(cursor, None)
+            if result:
+                self.logger.info("✅ Successfully retrieved node by key: %s", key)
+                return result
+            else:
+                self.logger.warning("⚠️ No node found by key: %s", key)
+                return None
+        except Exception as e:
+            self.logger.error("❌ Failed to retrieve node by key: %s: %s", key, str(e))
+            return None
+
+    async def remove_sync_point_node(self, key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> bool:
+        """
+        Remove a node by key
+        """
+        try:
+            self.logger.info("🚀 Removing node by key: %s", key)
+            query = f"""
+            FOR node IN {collection}
+                FILTER node.syncPointKey == @key
+                REMOVE node IN {collection}
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"key": key})
+            result = next(cursor, None)
+            if result:
+                self.logger.info("✅ Successfully removed node by key: %s", key)
+                return True
+            else:
+                self.logger.warning("⚠️ No node found by key: %s", key)
+                return False
+        except Exception as e:
+            self.logger.error("❌ Failed to remove node by key: %s: %s", key, str(e))
+            return False

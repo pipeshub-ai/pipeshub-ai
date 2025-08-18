@@ -389,7 +389,7 @@ class User(BaseModel):
             id=arango_base_user["_key"],
             org_id=arango_base_user["orgId"],
             email=arango_base_user["email"],
-            name=arango_base_user["fullName"],
+            name=arango_base_user.get("fullName", ""),
             created_at=arango_base_user["createdAtTimestamp"],
             updated_at=arango_base_user["updatedAtTimestamp"],
         )
