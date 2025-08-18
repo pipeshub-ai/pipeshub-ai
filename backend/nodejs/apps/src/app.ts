@@ -213,15 +213,19 @@ export class Application {
           defaultSrc: ["'self'"],
           scriptSrc: [
             "'self'",
-            "https://cdnjs.cloudflare.com",
-            "https://login.microsoftonline.com", // MSAL
-            "https://graph.microsoft.com", // Microsoft Graph
+            ...(process.env.CSP_SCRIPT_SRCS?.split(',') ?? [
+              "https://cdnjs.cloudflare.com",
+              "https://login.microsoftonline.com",
+              "https://graph.microsoft.com",
+            ]),
             ...(isDev ? ["'unsafe-inline'", "'unsafe-eval'"] : [])
           ],
           connectSrc: [
             "'self'",
-            "https://login.microsoftonline.com", // MSAL
-            "https://graph.microsoft.com", // Microsoft Graph
+            ...(process.env.CSP_CONNECT_SRCS?.split(',') ?? [
+              "https://login.microsoftonline.com",
+              "https://graph.microsoft.com",
+            ]),
           ],
           objectSrc: ["'self'", "data:", "blob:"], // PDF rendering
           frameSrc: ["'self'", "blob:"], // PDF rendering in frames
