@@ -487,12 +487,7 @@ const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>((props, ref) =>
       if (onProviderChange) {
         onProviderChange(newValue.id);
       }
-      
-      // Switch provider internally
-      setTimeout(() => {
-        switchProvider(newValue.id);
-        setIsLoading(false);
-      }, 1000);
+
     }
   };
 

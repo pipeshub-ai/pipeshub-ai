@@ -56,15 +56,18 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
   const [expandedAccordion, setExpandedAccordion] = useState<string>('');
   const [showHealthCheckInfo, setShowHealthCheckInfo] = useState(false);
   const [isProviderChanging, setIsProviderChanging] = useState(false);
-  
-  const [currentProvider, setCurrentProvider] = useState<ModelProvider & {
-    editingModel?: ConfiguredModel;
-    targetModelType?: ModelType;
-  } | null>(selectedProvider);
+
+  const [currentProvider, setCurrentProvider] = useState<
+    | (ModelProvider & {
+        editingModel?: ConfiguredModel;
+        targetModelType?: ModelType;
+      })
+    | null
+  >(selectedProvider);
 
   const formRefs = useRef<{ [key: string]: DynamicFormRef | null }>({});
   const isEditMode = !!currentProvider?.editingModel;
-  
+
   // A stable key for re-rendering forms, but not the dialog itself.
   const formContainerKey = `${currentProvider?.id || 'unknown'}-${currentProvider?.targetModelType || 'none'}-${isEditMode ? 'edit' : 'add'}-${currentProvider?.editingModel?.id || 'new'}`;
 
@@ -92,22 +95,20 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
     } else {
       setExpandedAccordion('');
     }
-  }, [open, currentProvider?.id, currentProvider?.targetModelType, isEditMode, currentProvider?.editingModel?.id, currentProvider]);
+  }, [
+    open,
+    currentProvider?.id,
+    currentProvider?.targetModelType,
+    isEditMode,
+    currentProvider?.editingModel?.id,
+    currentProvider,
+  ]);
 
   useEffect(() => {
     if (open) {
       formRefs.current = {};
     }
   }, [formContainerKey, open]);
-
-  useEffect(() => {
-    if (open && currentProvider) {
-      setFormValidations({});
-      setError(null);
-      setIsSubmitting(false);
-      formRefs.current = {};
-    }
-  }, [open, currentProvider?.id, currentProvider?.targetModelType, currentProvider]);
 
   if (!currentProvider) return null;
 
@@ -179,9 +180,7 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
         if (promises.length === 0) {
           setShowHealthCheckInfo(false);
           if (currentProvider.targetModelType) {
-            setError(
-              `Please configure the ${currentProvider.targetModelType.toUpperCase()} model`
-            );
+            setError(`Please configure the ${currentProvider.targetModelType.toUpperCase()} model`);
           } else {
             setError('Please configure at least one model type');
           }
@@ -243,15 +242,15 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
       return config;
     },
     onProviderChange: async (newProviderId: string) => {
-      console.log('Provider changed in form from', currentProvider.id, 'to', newProviderId);
       setIsProviderChanging(true);
-      await new Promise(resolve => setTimeout(resolve, 300));
-      const newProvider = AVAILABLE_MODEL_PROVIDERS.find(p => p.id === newProviderId);
+      const newProvider = AVAILABLE_MODEL_PROVIDERS.find((p) => p.id === newProviderId);
       if (newProvider) {
         const enhancedProvider = {
           ...newProvider,
           targetModelType: currentProvider.targetModelType,
-          supportedTypes: currentProvider.targetModelType ? [currentProvider.targetModelType] : newProvider.supportedTypes,
+          supportedTypes: currentProvider.targetModelType
+            ? [currentProvider.targetModelType]
+            : newProvider.supportedTypes,
           editingModel: undefined,
         };
         setCurrentProvider(enhancedProvider);
@@ -335,12 +334,7 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
               }}
             >
               {currentProvider.src ? (
-                <img
-                  src={currentProvider.src}
-                  alt={currentProvider.name}
-                  width={22}
-                  height={22}
-                />
+                <img src={currentProvider.src} alt={currentProvider.name} width={22} height={22} />
               ) : (
                 <Iconify icon={robotIcon} width={22} height={22} />
               )}
