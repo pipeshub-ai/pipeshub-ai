@@ -31,7 +31,7 @@ class SyncPoint(ISyncPoint):
 
     async def create_sync_point(self, sync_point_key: str, sync_point_data: Dict[str, Any]) -> Dict[str, Any]:
         full_sync_point_key = f"{self.org_id}/{self.connector_name}/{self.sync_data_point_type.value}/{sync_point_key}"
-        sync_point_data = {
+        document_data = {
             "orgId": self.org_id,
             "connectorName": self.connector_name,
             "syncPointKey": full_sync_point_key,
@@ -39,9 +39,9 @@ class SyncPoint(ISyncPoint):
             "syncDataPointType": self.sync_data_point_type.value
         }
 
-        await self.arango_service.upsert_sync_point_node(full_sync_point_key, sync_point_data, CollectionNames.SYNC_POINTS.value)
+        await self.arango_service.upsert_sync_point_node(full_sync_point_key, document_data, CollectionNames.SYNC_POINTS.value)
 
-        return sync_point_data
+        return document_data
 
     async def read_sync_point(self, sync_point_key: str) -> Dict[str, Any]:
         full_sync_point_key = f"{self.org_id}/{self.connector_name}/{self.sync_data_point_type.value}/{sync_point_key}"
