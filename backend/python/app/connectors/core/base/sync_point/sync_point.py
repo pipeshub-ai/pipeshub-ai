@@ -50,18 +50,7 @@ class SyncPoint(ISyncPoint):
         return sync_point.get('syncPointData', {}) if sync_point else {}
 
     async def update_sync_point(self, sync_point_key: str, sync_point_data: Dict[str, Any]) -> Dict[str, Any]:
-        full_sync_point_key = f"{self.org_id}/{self.connector_name}/{self.sync_data_point_type.value}/{sync_point_key}"
-        sync_point_data = {
-            "orgId": self.org_id,
-            "connectorName": self.connector_name,
-            "syncPointKey": full_sync_point_key,
-            "syncPointData": sync_point_data,
-            "syncDataPointType": self.sync_data_point_type.value
-        }
-
-        await self.arango_service.upsert_sync_point_node(full_sync_point_key, sync_point_data, CollectionNames.SYNC_POINTS.value)
-
-        return sync_point_data
+        return await self.create_sync_point(sync_point_key, sync_point_data)
 
     async def delete_sync_point(self, sync_point_key: str) -> Dict[str, Any]:
         full_sync_point_key = f"{self.org_id}/{self.connector_name}/{self.sync_data_point_type.value}/{sync_point_key}"
