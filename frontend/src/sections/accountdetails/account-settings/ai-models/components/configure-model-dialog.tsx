@@ -1,5 +1,5 @@
 // ===================================================================
-// 📁 Fixed Model Configuration Dialog - ESLint Issues Resolved
+// 📁 Fixed Model Configuration Dialog - Provider Switching Issues Resolved
 // ===================================================================
 
 import React, { useState, useRef, useEffect } from 'react';
@@ -23,12 +23,14 @@ import {
   alpha,
   CircularProgress,
   Snackbar,
+  Fade,
+  Backdrop,
 } from '@mui/material';
 import { Iconify } from 'src/components/iconify';
 import robotIcon from '@iconify-icons/mdi/robot';
 import closeIcon from '@iconify-icons/mdi/close';
 import DynamicForm, { DynamicFormRef } from 'src/components/dynamic-form/components/dynamic-form';
-import { ModelProvider, ConfiguredModel, ModelType } from '../types';
+import { ModelProvider, ConfiguredModel, ModelType, AVAILABLE_MODEL_PROVIDERS } from '../types';
 import { modelService } from '../services/universal-config';
 
 interface ModelConfigurationDialogProps {
@@ -53,37 +55,61 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
   const [formValidations, setFormValidations] = useState<{ [key: string]: boolean }>({});
   const [expandedAccordion, setExpandedAccordion] = useState<string>('');
   const [showHealthCheckInfo, setShowHealthCheckInfo] = useState(false);
+  const [isProviderChanging, setIsProviderChanging] = useState(false);
+  
+  const [currentProvider, setCurrentProvider] = useState<ModelProvider & {
+    editingModel?: ConfiguredModel;
+    targetModelType?: ModelType;
+  } | null>(selectedProvider);
 
   const formRefs = useRef<{ [key: string]: DynamicFormRef | null }>({});
-  const isEditMode = !!selectedProvider?.editingModel;
+  const isEditMode = !!currentProvider?.editingModel;
+  
+  // A stable key for re-rendering forms, but not the dialog itself.
+  const formContainerKey = `${currentProvider?.id || 'unknown'}-${currentProvider?.targetModelType || 'none'}-${isEditMode ? 'edit' : 'add'}-${currentProvider?.editingModel?.id || 'new'}`;
 
-  // Reset state when dialog opens/closes and handle auto-expand
   useEffect(() => {
-    if (open && selectedProvider) {
+    if (selectedProvider) {
+      setCurrentProvider(selectedProvider);
+    }
+  }, [selectedProvider]);
+
+  useEffect(() => {
+    if (open && currentProvider) {
       setError(null);
       setIsSubmitting(false);
       setFormValidations({});
 
-      // Auto-expand logic
       if (isEditMode) {
-        // In edit mode, don't use accordions - show the single form directly
         setExpandedAccordion('');
-      } else if (selectedProvider.targetModelType) {
-        // Auto-expand the target model type accordion
-        setExpandedAccordion(selectedProvider.targetModelType);
-      } else if (selectedProvider.supportedTypes.length === 1) {
-        // Auto-expand if only one model type is supported
-        setExpandedAccordion(selectedProvider.supportedTypes[0]);
+      } else if (currentProvider.targetModelType) {
+        setExpandedAccordion(currentProvider.targetModelType);
+      } else if (currentProvider.supportedTypes.length === 1) {
+        setExpandedAccordion(currentProvider.supportedTypes[0]);
       } else {
-        // Default to first supported type
-        setExpandedAccordion(selectedProvider.supportedTypes[0] || '');
+        setExpandedAccordion(currentProvider.supportedTypes[0] || '');
       }
     } else {
       setExpandedAccordion('');
     }
-  }, [open, selectedProvider, isEditMode]);
+  }, [open, currentProvider?.id, currentProvider?.targetModelType, isEditMode, currentProvider?.editingModel?.id, currentProvider]);
 
-  if (!selectedProvider) return null;
+  useEffect(() => {
+    if (open) {
+      formRefs.current = {};
+    }
+  }, [formContainerKey, open]);
+
+  useEffect(() => {
+    if (open && currentProvider) {
+      setFormValidations({});
+      setError(null);
+      setIsSubmitting(false);
+      formRefs.current = {};
+    }
+  }, [open, currentProvider?.id, currentProvider?.targetModelType, currentProvider]);
+
+  if (!currentProvider) return null;
 
   const handleValidationChange = (modelType: string, isValid: boolean) => {
     setFormValidations((prev) => ({
@@ -100,22 +126,21 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
   const handleSubmit = async () => {
     setIsSubmitting(true);
     setError(null);
-    setShowHealthCheckInfo(true); // Show health check info immediately
+    setShowHealthCheckInfo(true);
 
     try {
       if (isEditMode) {
-        // Edit mode - the DynamicForm will handle the update via updateConfig
         const modelType = selectedProvider.editingModel!.modelType;
         const formRef = formRefs.current[modelType];
 
         if (formRef) {
           const result = await formRef.handleSave();
           if (result.success) {
-            setShowHealthCheckInfo(false); // Hide health check info on success
+            setShowHealthCheckInfo(false);
             onSuccess();
             onClose();
           } else {
-            setShowHealthCheckInfo(false); // Hide health check info on error
+            setShowHealthCheckInfo(false);
             setError(result.error || 'Failed to update model');
           }
         } else {
@@ -123,17 +148,11 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
           setError('Form reference not found');
         }
       } else {
-        // Add mode - create new models for each valid form
         const promises: Promise<any>[] = [];
         const configuredTypes: string[] = [];
-
-        // Get the types to process - either the target type or all supported types
-        const typesToProcess = selectedProvider.targetModelType
-          ? [selectedProvider.targetModelType]
-          : selectedProvider.supportedTypes;
-
-        // FIXED: Replace for...of loop with Promise.all and map
-        // Collect all form data first (parallel async operations)
+        const typesToProcess = currentProvider.targetModelType
+          ? [currentProvider.targetModelType]
+          : currentProvider.supportedTypes;
         const formDataPromises = typesToProcess
           .map((type) => {
             const formRef = formRefs.current[type];
@@ -143,19 +162,15 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
             return null;
           })
           .filter(Boolean) as Promise<{ type: string; formData: any }>[];
-
         const formDataResults = await Promise.all(formDataPromises);
 
-        // Process the form data
         formDataResults.forEach(({ type, formData }) => {
-          // Clean up form data
           const { providerType, modelType, _provider, ...cleanConfig } = formData;
-
           promises.push(
             modelService.addModel(type as ModelType, {
-              provider: selectedProvider.id,
+              provider: currentProvider.id,
               configuration: cleanConfig,
-              name: formData.name || `${selectedProvider.name} ${type.toUpperCase()} Model`,
+              name: formData.name || `${currentProvider.name} ${type.toUpperCase()} Model`,
             })
           );
           configuredTypes.push(type);
@@ -163,9 +178,9 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
 
         if (promises.length === 0) {
           setShowHealthCheckInfo(false);
-          if (selectedProvider.targetModelType) {
+          if (currentProvider.targetModelType) {
             setError(
-              `Please configure the ${selectedProvider.targetModelType.toUpperCase()} model`
+              `Please configure the ${currentProvider.targetModelType.toUpperCase()} model`
             );
           } else {
             setError('Please configure at least one model type');
@@ -174,93 +189,103 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
         }
 
         await Promise.all(promises);
-        setShowHealthCheckInfo(false); // Hide health check info on success
+        setShowHealthCheckInfo(false);
         onSuccess();
         onClose();
       }
     } catch (err: any) {
       console.error('Submit error:', err);
-      setShowHealthCheckInfo(false); // Hide health check info on error
+      setShowHealthCheckInfo(false);
       setError(err.message || 'Failed to save models');
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  // Calculate if we can submit
   const canSubmit = isEditMode
-    ? formValidations[selectedProvider.editingModel!.modelType]
-    : selectedProvider.targetModelType
-      ? formValidations[selectedProvider.targetModelType] // Specific model type selected
-      : Object.values(formValidations).some((valid) => valid); // Any model type configured
+    ? formValidations[currentProvider.editingModel!.modelType]
+    : currentProvider.targetModelType
+      ? formValidations[currentProvider.targetModelType]
+      : Object.values(formValidations).some((valid) => valid);
 
-  // Helper function to create config handlers for DynamicForm
   const createConfigHandlers = (modelType: string) => ({
     getConfig: async () => {
-      if (isEditMode && selectedProvider.editingModel!.modelType === modelType) {
+      if (isEditMode && currentProvider.editingModel!.modelType === modelType) {
         return {
-          ...selectedProvider.editingModel!.configuration,
-          providerType: selectedProvider.id,
-          modelType: selectedProvider.id,
-          _provider: selectedProvider.id,
+          ...currentProvider.editingModel!.configuration,
+          providerType: currentProvider.id,
+          modelType: currentProvider.id,
+          _provider: currentProvider.id,
         };
       }
       return {
-        providerType: selectedProvider.id,
-        modelType: selectedProvider.id,
-        _provider: selectedProvider.id,
+        providerType: currentProvider.id,
+        modelType: currentProvider.id,
+        _provider: currentProvider.id,
       };
     },
     updateConfig: async (config: any) => {
-      if (isEditMode && selectedProvider.editingModel!.modelType === modelType) {
-        // Extract the clean configuration data
+      if (isEditMode && currentProvider.editingModel!.modelType === modelType) {
         const { providerType, modelType: configModelType, _provider, ...cleanConfig } = config;
-
-        // Call the model service update method
         const result = await modelService.updateModel(
-          selectedProvider.editingModel!.modelType as ModelType,
-          selectedProvider.editingModel!.modelKey || selectedProvider.editingModel!.id,
+          currentProvider.editingModel!.modelType as ModelType,
+          currentProvider.editingModel!.modelKey || currentProvider.editingModel!.id,
           {
-            provider: selectedProvider.id,
+            provider: currentProvider.id,
             configuration: cleanConfig,
-            isDefault: selectedProvider.editingModel!.isDefault,
-            isMultimodal: selectedProvider.editingModel!.isMultimodal,
-            name: config.name || selectedProvider.editingModel!.name,
+            isDefault: currentProvider.editingModel!.isDefault,
+            isMultimodal: currentProvider.editingModel!.isMultimodal,
+            name: config.name || currentProvider.editingModel!.name,
           }
         );
-
         return result;
       }
-
-      // For non-edit mode, just return the config (not used in add mode)
       return config;
+    },
+    onProviderChange: async (newProviderId: string) => {
+      console.log('Provider changed in form from', currentProvider.id, 'to', newProviderId);
+      setIsProviderChanging(true);
+      await new Promise(resolve => setTimeout(resolve, 300));
+      const newProvider = AVAILABLE_MODEL_PROVIDERS.find(p => p.id === newProviderId);
+      if (newProvider) {
+        const enhancedProvider = {
+          ...newProvider,
+          targetModelType: currentProvider.targetModelType,
+          supportedTypes: currentProvider.targetModelType ? [currentProvider.targetModelType] : newProvider.supportedTypes,
+          editingModel: undefined,
+        };
+        setCurrentProvider(enhancedProvider);
+        setFormValidations({});
+        setError(null);
+      }
+      setIsProviderChanging(false);
     },
   });
 
-  // FIXED: Removed unnecessary else statements
   const getDialogTitle = () => {
     if (isEditMode) {
-      return `Edit ${selectedProvider.name}`;
+      return `Edit ${currentProvider.name}`;
     }
-    if (selectedProvider.targetModelType) {
-      return `Add ${selectedProvider.name} ${selectedProvider.targetModelType.toUpperCase()} Model`;
+    if (currentProvider.targetModelType) {
+      return `Add ${currentProvider.name} ${currentProvider.targetModelType.toUpperCase()} Model`;
     }
-    return `Configure ${selectedProvider.name}`;
+    return `Configure ${currentProvider.name}`;
   };
 
   const getDialogSubtitle = () => {
     if (isEditMode) {
-      return `Update ${selectedProvider.editingModel!.name} configuration`;
+      return `Update ${currentProvider.editingModel!.name} configuration`;
     }
-    if (selectedProvider.targetModelType) {
-      return `Configure ${selectedProvider.targetModelType.toUpperCase()} model settings`;
+    if (currentProvider.targetModelType) {
+      return `Configure ${currentProvider.targetModelType.toUpperCase()} model settings`;
     }
-    return `Set up models for ${selectedProvider.supportedTypes.join(' & ').toUpperCase()}`;
+    return `Set up models for ${currentProvider.supportedTypes.join(' & ').toUpperCase()}`;
   };
 
   return (
     <>
       <Dialog
+        // REMOVED KEY FROM HERE - THIS IS THE FIX
         open={open}
         onClose={onClose}
         maxWidth="md"
@@ -270,6 +295,8 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
             borderRadius: 1,
             maxHeight: '90vh',
             backgroundColor: theme.palette.background.paper,
+            position: 'relative',
+            transition: 'all 300ms ease-in-out', // Ensure smooth transitions
           },
         }}
         BackdropProps={{
@@ -279,6 +306,19 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
           },
         }}
       >
+        <Backdrop
+          open={isProviderChanging}
+          sx={{
+            position: 'absolute',
+            borderRadius: 'inherit',
+            backgroundColor: alpha(theme.palette.background.paper, 0.75),
+            backdropFilter: 'blur(3px)',
+            zIndex: (themeValue) => themeValue.zIndex.modal + 1,
+          }}
+        >
+          <CircularProgress color="primary" />
+        </Backdrop>
+
         <DialogTitle
           sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', pb: 1 }}
         >
@@ -294,10 +334,10 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
                 bgcolor: 'white',
               }}
             >
-              {selectedProvider.src ? (
+              {currentProvider.src ? (
                 <img
-                  src={selectedProvider.src}
-                  alt={selectedProvider.name}
+                  src={currentProvider.src}
+                  alt={currentProvider.name}
                   width={22}
                   height={22}
                 />
@@ -305,7 +345,6 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
                 <Iconify icon={robotIcon} width={22} height={22} />
               )}
             </Box>
-
             <Box>
               <Typography variant="h6" sx={{ fontWeight: 600 }}>
                 {getDialogTitle()}
@@ -315,7 +354,6 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
               </Typography>
             </Box>
           </Box>
-
           <IconButton onClick={onClose} size="small">
             <Iconify icon={closeIcon} width={20} height={20} />
           </IconButton>
@@ -329,28 +367,26 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
               {error}
             </Alert>
           )}
-
-          <Box sx={{ px: 3, py: 3 }}>
+          {/* Use the key on the content container to force re-render of forms */}
+          <Box key={formContainerKey} sx={{ px: 3, py: 3 }}>
             {isEditMode ? (
-              // Edit mode - single model type (no accordion needed)
               <Box>
                 <Typography variant="h6" sx={{ mb: 2 }}>
-                  {selectedProvider.editingModel!.modelType.toUpperCase()} Configuration
+                  {currentProvider.editingModel!.modelType.toUpperCase()} Configuration
                 </Typography>
                 <DynamicForm
                   ref={(ref) => {
-                    formRefs.current[selectedProvider.editingModel!.modelType] = ref;
+                    formRefs.current[currentProvider.editingModel!.modelType] = ref;
                   }}
-                  configType={selectedProvider.editingModel!.modelType as 'llm' | 'embedding'}
+                  configType={currentProvider.editingModel!.modelType as 'llm' | 'embedding'}
                   onValidationChange={(isValid) =>
-                    handleValidationChange(selectedProvider.editingModel!.modelType, isValid)
+                    handleValidationChange(currentProvider.editingModel!.modelType, isValid)
                   }
-                  initialProvider={selectedProvider.id}
-                  {...createConfigHandlers(selectedProvider.editingModel!.modelType)}
+                  initialProvider={currentProvider.id}
+                  {...createConfigHandlers(currentProvider.editingModel!.modelType)}
                 />
               </Box>
-            ) : selectedProvider.targetModelType ? (
-              // Specific model type selected - no accordion needed
+            ) : currentProvider.targetModelType ? (
               <Box>
                 <Typography
                   variant="h6"
@@ -358,35 +394,34 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
                 >
                   <Iconify
                     icon={
-                      selectedProvider.targetModelType === 'llm'
+                      currentProvider.targetModelType === 'llm'
                         ? 'carbon:machine-learning-model'
                         : 'mdi:magnify'
                     }
                     width={20}
                     height={20}
                     sx={{
-                      color: selectedProvider.targetModelType === 'llm' ? '#4CAF50' : '#9C27B0',
+                      color: currentProvider.targetModelType === 'llm' ? '#4CAF50' : '#9C27B0',
                     }}
                   />
-                  {selectedProvider.targetModelType.toUpperCase()} Configuration
+                  {currentProvider.targetModelType.toUpperCase()} Configuration
                 </Typography>
                 <DynamicForm
                   ref={(ref) => {
-                    formRefs.current[selectedProvider.targetModelType!] = ref;
+                    formRefs.current[currentProvider.targetModelType!] = ref;
                   }}
-                  configType={selectedProvider.targetModelType as 'llm' | 'embedding'}
+                  configType={currentProvider.targetModelType as 'llm' | 'embedding'}
                   onValidationChange={(isValid) =>
-                    handleValidationChange(selectedProvider.targetModelType!, isValid)
+                    handleValidationChange(currentProvider.targetModelType!, isValid)
                   }
-                  initialProvider={selectedProvider.id}
+                  initialProvider={currentProvider.id}
                   stepperMode={Boolean(true)}
                   isRequired={Boolean(true)}
-                  {...createConfigHandlers(selectedProvider.targetModelType!)}
+                  {...createConfigHandlers(currentProvider.targetModelType!)}
                 />
               </Box>
             ) : (
-              // Multiple model types - show accordions
-              selectedProvider.supportedTypes.map((type) => {
+              currentProvider.supportedTypes.map((type) => {
                 const isExpanded = expandedAccordion === type;
                 const typeColor = type === 'llm' ? '#4CAF50' : '#9C27B0';
                 const typeIcon = type === 'llm' ? 'carbon:machine-learning-model' : 'mdi:magnify';
@@ -460,7 +495,7 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
                         }}
                         configType={type as 'llm' | 'embedding'}
                         onValidationChange={(isValid) => handleValidationChange(type, isValid)}
-                        initialProvider={selectedProvider.id}
+                        initialProvider={currentProvider.id}
                         stepperMode={Boolean(true)}
                         isRequired={Boolean(true)}
                         {...createConfigHandlers(type)}
@@ -491,19 +526,18 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
             {isSubmitting
               ? isEditMode
                 ? 'Updating...'
-                : selectedProvider.targetModelType
+                : currentProvider.targetModelType
                   ? 'Adding Model...'
                   : 'Adding Models...'
               : isEditMode
                 ? 'Update Model'
-                : selectedProvider.targetModelType
+                : currentProvider.targetModelType
                   ? 'Add Model'
                   : 'Add Models'}
           </Button>
         </DialogActions>
       </Dialog>
 
-      {/* Health Check Info Snackbar */}
       {createPortal(
         <Snackbar
           open={showHealthCheckInfo}

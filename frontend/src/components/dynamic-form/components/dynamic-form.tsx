@@ -32,6 +32,7 @@ interface DynamicFormProps {
   // Callbacks
   onValidationChange: (isValid: boolean, formData?: any) => void;
   onSaveSuccess?: () => void;
+  onProviderChange?: (newProviderId: string) => void; // New callback for provider changes
 
   // Data management
   getConfig: () => Promise<any>;
@@ -74,6 +75,7 @@ const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>((props, ref) =>
     modelType, // Legacy support
     onValidationChange,
     onSaveSuccess,
+    onProviderChange, // New prop
     getConfig,
     updateConfig,
     title,
@@ -213,7 +215,7 @@ const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>((props, ref) =>
     finalConfigType,
   ]);
 
-    // Config loading for non-stepper mode
+  // Config loading for non-stepper mode
   const fetchConfig = React.useCallback(
     async (forceRefresh = false) => {
       if (!stepperMode && (!formDataLoaded || forceRefresh)) {
@@ -442,8 +444,6 @@ const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>((props, ref) =>
     refMethods.current.handleSubmit = refMethods.current.handleSave;
   }
 
-
-
   useEffect(() => {
     if (!stepperMode && !formDataLoaded) {
       fetchConfig();
@@ -481,8 +481,18 @@ const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>((props, ref) =>
 
   // Event handlers
   const handleProviderChange = (event: any, newValue: any) => {
-    if (newValue) {
-      switchProvider(newValue.id);
+    if (newValue && newValue.id !== currentProvider) {
+      // Call the callback to notify parent of provider change
+      setIsLoading(true);
+      if (onProviderChange) {
+        onProviderChange(newValue.id);
+      }
+      
+      // Switch provider internally
+      setTimeout(() => {
+        switchProvider(newValue.id);
+        setIsLoading(false);
+      }, 1000);
     }
   };
 
