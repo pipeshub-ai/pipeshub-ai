@@ -222,8 +222,6 @@ export class Application {
             "'self'",
             "https://login.microsoftonline.com", // MSAL
             "https://graph.microsoft.com", // Microsoft Graph
-            "wss:",
-            "ws:"
           ],
           objectSrc: ["'self'", "data:", "blob:"], // PDF rendering
           frameSrc: ["'self'", "blob:"], // PDF rendering in frames
