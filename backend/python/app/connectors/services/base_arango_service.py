@@ -3248,6 +3248,7 @@ class BaseArangoService:
             FOR node IN {collection}
                 FILTER node.syncPointKey == @key
                 REMOVE node IN {collection}
+                RETURN 1
             """
             db = transaction if transaction else self.db
             cursor = db.aql.execute(query, bind_vars={"key": key})
