@@ -854,7 +854,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
   );
 
   // metrics collection routes
-  router.patch(
+  router.put(
     '/metricsCollection/toggle',
     authMiddleware.authenticate,
     userAdminCheck,
@@ -862,6 +862,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
     metricsMiddleware(container),
     toggleMetricsCollection(keyValueStoreService),
   );
+
 
   router.post(
     '/internal/metricsCollection/toggle',

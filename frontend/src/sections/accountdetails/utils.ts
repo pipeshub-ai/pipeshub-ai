@@ -342,7 +342,7 @@ export const logout = async (): Promise<void> => {
 
 export const updateDataCollectionConsent = async (enableMetricCollection: boolean) => {
   try {
-    const response = await axios.patch(
+    const response = await axios.put(
       `${CONFIG.backendUrl}/api/v1/configurationManager/metricsCollection/toggle`,
       {
         enableMetricCollection,
