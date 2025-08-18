@@ -62,15 +62,15 @@ Beyond search, our platform allows enterprises to create custom apps and AI agen
 - Google Drive
 - Gmail
 - Google Calendar
-- Onedrive
-- Sharepoint Online
+- OneDrive
+- SharePoint Online
 - Outlook
 - Outlook Calendar
 - Slack
 - Notion
 - Jira
 - Confluence
-- MS Teams
+- Microsoft Teams
 
 ## File Formats Supported
 
