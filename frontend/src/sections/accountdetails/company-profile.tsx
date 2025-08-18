@@ -115,10 +115,7 @@ export default function CompanyProfile() {
         const { registeredName, shortName, contactEmail, permanentAddress } = orgData;
 
         // Fetch data collection consent status
-        let consentStatus = false;
-        if (isAdmin) {
-          consentStatus = Boolean(await getDataCollectionConsent());
-        }
+        const consentStatus = isAdmin ? await getDataCollectionConsent() : false;
 
         reset({
           registeredName,
@@ -575,7 +572,7 @@ export default function CompanyProfile() {
                                     const { checked } = e.target;
                                     handleConsentChange(checked);
                                   }}
-                                  disabled={!isAdmin || consentLoading}
+                                  disabled={consentLoading}
                                   color="primary"
                                 />
                               }
