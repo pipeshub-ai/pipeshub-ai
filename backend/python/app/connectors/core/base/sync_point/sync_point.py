@@ -73,4 +73,4 @@ class SyncPoint(ISyncPoint):
 
         await self.arango_service.remove_sync_point_node(full_sync_point_key, CollectionNames.SYNC_POINTS.value)
 
-        return full_sync_point_key
+        return {"status": "deleted", "key": full_sync_point_key}
