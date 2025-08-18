@@ -750,7 +750,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.get(
     '/ai-models/available/:modelType',
     authMiddleware.authenticate,
-    userAdminCheck,
     metricsMiddleware(container),
     ValidationMiddleware.validate(modelTypeSchema),
     getAvailableModelsByType(keyValueStoreService),
