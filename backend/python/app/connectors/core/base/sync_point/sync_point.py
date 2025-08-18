@@ -49,7 +49,7 @@ class SyncPoint(ISyncPoint):
         full_sync_point_key = f"{self.org_id}/{self.connector_name}/{self.sync_data_point_type.value}/{sync_point_key}"
         sync_point = await self.arango_service.get_sync_point_node(full_sync_point_key, CollectionNames.SYNC_POINTS.value)
 
-        return sync_point.get('syncPointData', {})
+        return sync_point.get('syncPointData', {}) if sync_point else {}
 
     async def update_sync_point(self, sync_point_key: str, sync_point_data: Dict[str, Any]) -> Dict[str, Any]:
         full_sync_point_key = f"{self.org_id}/{self.connector_name}/{self.sync_data_point_type.value}/{sync_point_key}"
