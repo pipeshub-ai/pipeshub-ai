@@ -23,7 +23,7 @@ class SyncPoint(ISyncPoint):
     arango_service: BaseArangoService
 
 
-    def __init__(self, connector_name: str, org_id: str, sync_data_point_type: SyncDataPointType, arango_service: BaseArangoService):
+    def __init__(self, connector_name: str, org_id: str, sync_data_point_type: SyncDataPointType, arango_service: BaseArangoService) -> None:
         self.connector_name = connector_name
         self.org_id = org_id
         self.arango_service = arango_service
