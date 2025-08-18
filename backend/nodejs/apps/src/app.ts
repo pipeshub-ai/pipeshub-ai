@@ -205,7 +205,6 @@ export class Application {
 
   private configureMiddleware(): void {
     const isDev = process.env.NODE_ENV !== 'production';
-    const isStrictMode = process.env.STRICT_MODE === 'true';
     // Security middleware - configure helmet once with all options
     this.app.use(helmet({
       crossOriginOpenerPolicy: { policy: "unsafe-none" }, // Required for MSAL popup
@@ -217,7 +216,7 @@ export class Application {
             "https://cdnjs.cloudflare.com",
             "https://login.microsoftonline.com", // MSAL
             "https://graph.microsoft.com", // Microsoft Graph
-            ...(isDev || !isStrictMode ? ["'unsafe-inline'", "'unsafe-eval'"] : [])
+            ...(isDev ? ["'unsafe-inline'", "'unsafe-eval'"] : [])
           ],
           connectSrc: [
             "'self'",
@@ -232,7 +231,6 @@ export class Application {
           childSrc: ["'self'", "blob:"], // PDF rendering
           imgSrc: ["'self'", "data:", "blob:", "https:"], // Images in PDFs
           fontSrc: ["'self'", "data:", "https:"], // Fonts in PDFs
-          styleSrc: ["'self'", "'unsafe-inline'"], // Often needed for PDF viewers
           mediaSrc: ["'self'", "blob:", "data:"] // Media in PDFs
         }
       }
