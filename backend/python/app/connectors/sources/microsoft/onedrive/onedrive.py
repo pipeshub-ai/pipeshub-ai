@@ -1,4 +1,4 @@
-import asyncio
+
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -6,7 +6,6 @@ from logging import Logger
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from aiolimiter import AsyncLimiter
-from arango import ArangoClient
 from azure.identity.aio import ClientSecretCredential
 from kiota_abstractions.base_request_configuration import RequestConfiguration
 from kiota_abstractions.method import Method
@@ -23,10 +22,8 @@ from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 from msgraph.generated.models.subscription import Subscription
 from msgraph.generated.users.users_request_builder import UsersRequestBuilder
 
-from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors, OriginTypes
 from app.config.constants.http_status_code import HttpStatusCode
-from app.config.providers.in_memory_store import InMemoryKeyValueStore
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -36,12 +33,9 @@ from app.connectors.core.base.sync_point.sync_point import (
     generate_record_sync_point_key,
 )
 from app.connectors.services.base_arango_service import BaseArangoService
-from app.connectors.sources.microsoft.common.apps import OneDriveApp
 from app.models.entities import FileRecord, RecordStatus, RecordType
 from app.models.permission import EntityType, Permission, PermissionType
 from app.models.users import User, UserGroup
-from app.services.kafka_consumer import KafkaConsumerManager
-from app.utils.logger import create_logger
 
 
 # Map Microsoft Graph roles to permission type
@@ -801,18 +795,17 @@ class OneDriveConnector:
         self.client = GraphServiceClient(credential, scopes=["https://graph.microsoft.com/.default"])
         self.onedrive_client = OneDriveClient(self.client, self.logger)
         self.onedrive_admin_client = OneDriveAdminClient(self.client, self.logger)
-        self.drive_delta_sync_point = SyncPoint(connector_name=Connectors.ONEDRIVE.value,
-                                                org_id=self.data_entities_processor.org_id,
-                                                sync_data_point_type=SyncDataPointType.RECORDS,
-                                                arango_service=arango_service)
-        self.user_sync_point = SyncPoint(connector_name=Connectors.ONEDRIVE.value,
-                                        org_id=self.data_entities_processor.org_id,
-                                        sync_data_point_type=SyncDataPointType.USERS,
-                                        arango_service=arango_service)
-        self.user_group_sync_point = SyncPoint(connector_name=Connectors.ONEDRIVE.value,
-                                        org_id=self.data_entities_processor.org_id,
-                                        sync_data_point_type=SyncDataPointType.USER_GROUPS,
-                                        arango_service=arango_service)
+        def _create_sync_point(self, sync_data_point_type: SyncDataPointType, arango_service: BaseArangoService) -> SyncPoint:
+            return SyncPoint(
+                connector_name=Connectors.ONEDRIVE.value,
+                org_id=self.data_entities_processor.org_id,
+                sync_data_point_type=sync_data_point_type,
+                arango_service=arango_service
+            )
+
+        self.drive_delta_sync_point = self._create_sync_point(SyncDataPointType.RECORDS, arango_service)
+        self.user_sync_point = self._create_sync_point(SyncDataPointType.USERS, arango_service)
+        self.user_group_sync_point = self._create_sync_point(SyncDataPointType.USER_GROUPS, arango_service)
 
     async def _process_delta_items(self, delta_items: List[dict]) -> List[Tuple[FileRecord, List[Permission]]]:
         """
@@ -907,15 +900,9 @@ class OneDriveConnector:
             root_url = f"/users/{user_id}/drive/root/delta"
             sync_point_key = generate_record_sync_point_key(RecordType.DRIVE.value, "users", user_id)
             sync_point = await self.drive_delta_sync_point.read_sync_point(sync_point_key)
-            print(f"sync_point: {sync_point}")
-            if sync_point:
-                url = sync_point.get('deltaLink', sync_point.get('nextLink'))
-                if not url:
-                    url = ("{+baseurl}" + root_url)
-            else:
+            url = sync_point.get('deltaLink') or sync_point.get('nextLink') if sync_point else None
+            if not url:
                 url = ("{+baseurl}" + root_url)
-
-            print(f"delta url: {url}")
 
             while True:
                 # Fetch delta changes
@@ -994,61 +981,4 @@ class OneDriveConnector:
                 await self._run_sync(user.source_user_id)
 
         # await self.onedrive_client.get_all_subscriptions()
-
-
-async def test_run() -> None:
-
-    async def create_dummy_users(user_email: str, arango_service: BaseArangoService) -> None:
-        org_id = "org_1"
-        org = {
-                "_key": org_id,
-                "accountType": "enterprise",
-                "name": "Test Org",
-                "isActive": True,
-                "createdAtTimestamp": 1718745600,
-                "updatedAtTimestamp": 1718745600,
-            }
-
-
-        from app.config.constants.arangodb import CollectionNames
-        await arango_service.batch_upsert_nodes([org], CollectionNames.ORGS.value)
-        user = {
-            "_key": user_email,
-            "email": user_email,
-            "userId": user_email,
-            "orgId": org_id,
-            "isActive": True,
-            "createdAtTimestamp": 1718745600,
-            "updatedAtTimestamp": 1718745600,
-        }
-
-        await arango_service.batch_upsert_nodes([user], CollectionNames.USERS.value)
-        await arango_service.batch_create_edges([{
-            "_from": f"{CollectionNames.USERS.value}/{user['_key']}",
-            "_to": f"{CollectionNames.ORGS.value}/{org_id}",
-            "entityType": "ORGANIZATION",
-            "createdAtTimestamp": 1718745600,
-            "updatedAtTimestamp": 1718745600,
-        }], CollectionNames.BELONGS_TO.value)
-
-
-    logger = create_logger("onedrive_connector")
-    key_value_store = InMemoryKeyValueStore(logger, "app/config/default_config.json")
-    config_service = ConfigurationService(logger, key_value_store)
-    kafka_service = KafkaConsumerManager(logger, config_service, None, None)
-    arango_client = ArangoClient()
-    arango_service = BaseArangoService(logger, arango_client, config_service, kafka_service)
-    await arango_service.connect()
-    user_email = os.getenv("TEST_USER_EMAIL")
-    if user_email is None:
-        raise Exception("TEST_USER_EMAIL is not set")
-
-    await create_dummy_users(user_email, arango_service)
-    data_entities_processor = DataSourceEntitiesProcessor(logger, OneDriveApp(), arango_service, config_service)
-    await data_entities_processor.initialize()
-    onedrive_connector = OneDriveConnector(logger, data_entities_processor, arango_service)
-    await onedrive_connector.run()
-
-if __name__ == "__main__":
-    asyncio.run(test_run())
 

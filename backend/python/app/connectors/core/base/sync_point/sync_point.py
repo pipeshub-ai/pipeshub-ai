@@ -38,8 +38,6 @@ class SyncPoint(ISyncPoint):
             "syncPointData": sync_point_data,
             "syncDataPointType": self.sync_data_point_type.value
         }
-        print(f"Creating sync point: {sync_point_data}")
-
 
         await self.arango_service.upsert_sync_point_node(full_sync_point_key, sync_point_data, CollectionNames.SYNC_POINTS.value)
 
@@ -60,9 +58,6 @@ class SyncPoint(ISyncPoint):
             "syncPointData": sync_point_data,
             "syncDataPointType": self.sync_data_point_type.value
         }
-
-        print(f"Updating sync point: {sync_point_data}")
-
 
         await self.arango_service.upsert_sync_point_node(full_sync_point_key, sync_point_data, CollectionNames.SYNC_POINTS.value)
 
