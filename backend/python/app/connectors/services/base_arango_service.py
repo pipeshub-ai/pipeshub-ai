@@ -3244,10 +3244,10 @@ class BaseArangoService:
         """
         try:
             self.logger.info("🚀 Removing node by key: %s", key)
-            query = f"""
-            FOR node IN {collection}
+            query = """
+            FOR node IN @@collection
                 FILTER node.syncPointKey == @key
-                REMOVE node IN {collection}
+                REMOVE node IN @@collection
                 RETURN 1
             """
             db = transaction if transaction else self.db
