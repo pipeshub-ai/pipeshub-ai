@@ -435,7 +435,7 @@ const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>((props, ref) =>
     currentProvider,
     updateConfig,
     onSaveSuccess,
-    fetchConfig
+    fetchConfig,
   ]);
 
   // Add legacy method alias
@@ -455,7 +455,7 @@ const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>((props, ref) =>
     if (formContainerRef.current && !isSwitchingProvider && !isLoading) {
       const timer = setTimeout(() => {
         if (formContainerRef.current) {
-          const {height} = formContainerRef.current.getBoundingClientRect();
+          const { height } = formContainerRef.current.getBoundingClientRect();
           if (height > 0) {
             setProviderHeights((prev) => ({
               ...prev,
@@ -486,8 +486,10 @@ const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>((props, ref) =>
       setIsLoading(true);
       if (onProviderChange) {
         onProviderChange(newValue.id);
+      } else {
+        switchProvider(newValue.id);
       }
-
+      setIsLoading(false);
     }
   };
 
@@ -500,7 +502,8 @@ const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>((props, ref) =>
       const isLegacyModelType = ['llm', 'embedding'].includes(finalConfigType);
       if (isLegacyModelType && originalApiConfigRef.current) {
         // For legacy model types, reset to the original configuration
-        const originalProvider = originalApiConfigRef.current.providerType || originalApiConfigRef.current.modelType;
+        const originalProvider =
+          originalApiConfigRef.current.providerType || originalApiConfigRef.current.modelType;
         if (resetToProvider && originalProvider) {
           resetToProvider(originalProvider, originalApiConfigRef.current);
         }
