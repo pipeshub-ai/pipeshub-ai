@@ -3220,8 +3220,8 @@ class BaseArangoService:
         """
         try:
             self.logger.info("🚀 Retrieving node by key: %s", key)
-            query = f"""
-            FOR node IN {collection}
+            query = """
+            FOR node IN @@collection
                 FILTER node.syncPointKey == @key
                 RETURN node
             """
