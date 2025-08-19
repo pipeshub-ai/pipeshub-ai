@@ -3185,7 +3185,7 @@ class BaseArangoService:
             self.logger.info("🚀 Upserting sync point node: %s", sync_point_key)
 
             # Prepare the document data with the sync_point_key
-            document_data = {"syncPointKey": sync_point_key, **sync_point_data}
+            document_data = sync_point_data
 
             query = """
             UPSERT {{ syncPointKey: @sync_point_key }}
