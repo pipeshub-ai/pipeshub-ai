@@ -3187,11 +3187,11 @@ class BaseArangoService:
             # Prepare the document data with the sync_point_key
             document_data = {"syncPointKey": sync_point_key, **sync_point_data}
 
-            query = f"""
+            query = """
             UPSERT {{ syncPointKey: @sync_point_key }}
             INSERT @document_data
             UPDATE @document_data
-            IN {collection}
+            IN @@collection
             RETURN {{ action: OLD ? "updated" : "inserted", key: NEW._key }}
             """
 
