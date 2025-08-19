@@ -922,6 +922,7 @@ export class UserController {
         });
         return;
       }
+      let error_sending_mail = false;
 
       await this.eventService.start();
       for (let i = 0; i < emailsForNewAccounts.length; ++i) {
@@ -990,7 +991,8 @@ export class UserController {
             },
           });
           if (result.statusCode !== 200) {
-            throw new InternalServerError('Error sending mail invite. Check your SMTP configuration.');
+            error_sending_mail = true;
+            continue;
           }
         } else {
           result = await this.mailService.sendMail({
@@ -1010,7 +1012,8 @@ export class UserController {
             },
           });
           if (result.statusCode !== 200) {
-            throw new InternalServerError('Error sending mail invite. Check your SMTP configuration.');
+            error_sending_mail = true;
+            continue;
           }
         }
 
@@ -1044,7 +1047,7 @@ export class UserController {
         };
 
         await this.eventService.publishEvent(event);
-        
+
         const authToken = fetchConfigJwtGenerator(
           userId.toString(),
           req.user?.orgId,
@@ -1079,7 +1082,8 @@ export class UserController {
             },
           });
           if (result.statusCode !== 200) {
-            throw new InternalServerError('Error sending mail invite. Check your SMTP configuration.');
+            error_sending_mail = true;
+            continue;
           }
         } else {
           result = await this.mailService.sendMail({
@@ -1099,14 +1103,19 @@ export class UserController {
             },
           });
           if (result.statusCode !== 200) {
-            throw new InternalServerError('Error sending mail invite. Check your SMTP configuration.');
+            error_sending_mail = true;
+            continue;
           }
         }
+      }
 
-        res.status(200).json({ message: 'Invite sent successfully' });
+      await this.eventService.stop();
+
+      if (error_sending_mail) {
+        res.status(200).json({ message: 'Error sending mail invite. Check your SMTP configuration.' });
         return;
       }
-      await this.eventService.stop();
+
       res.status(200).json({ message: 'Invite sent successfully' });
     } catch (error) {
       next(error);

@@ -69,5 +69,5 @@ export interface AddUserModalProps {
   open: boolean;
   onClose: () => void;
   groups: AppUserGroup[];
-  onUsersAdded: () => void;
+  onUsersAdded: (message: string) => void;
 }

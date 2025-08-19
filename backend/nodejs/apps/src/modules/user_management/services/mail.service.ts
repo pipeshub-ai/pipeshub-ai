@@ -73,8 +73,9 @@ export class MailService {
       };
       const response = await axios(config);
       return { statusCode: 200, data: response.data };
-    } catch (error) {
-      throw error;
+    } catch (error: any) {
+      console.log(error?.response?.data);
+      return {statusCode: 500, data: "Error sending mail. Check your SMTP configuration."}
     }
   }
 }

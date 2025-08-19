@@ -73,7 +73,7 @@ import type { GroupUser, AppUserGroup, AddUserModalProps } from '../types/group-
 interface AddUsersToGroupsModalProps {
   open: boolean;
   onClose: () => void;
-  onUsersAdded: () => void;
+  onUsersAdded: (message?: string) => void;
   allUsers: GroupUser[] | null;
   groups: AppUserGroup[];
 }
@@ -211,7 +211,7 @@ const Users = () => {
     }, 300);
   };
 
-  const handleUsersAdded = async () => {
+  const handleUsersAdded = async (message?: string) => {
     try {
       const updatedUsers = await getAllUsersWithGroups();
 
@@ -219,15 +219,15 @@ const Users = () => {
       setUsers(loggedInUsers);
       setSnackbarState({
         open: true,
-        message: 'Users added to groups successfully',
-        severity: 'success',
+        message: message || 'Users added to groups successfully',
+        severity: message ? 'error' : 'success',
       });
     } catch (error) {
       // setSnackbarState({ open: true, message: error.errorMessage, severity: 'error' });
     }
   };
 
-  const handleUsersInvited = async () => {
+  const handleUsersInvited = async (message?: string) => {
     try {
       const updatedUsers = await getAllUsersWithGroups();
 
@@ -235,8 +235,8 @@ const Users = () => {
       setUsers(loggedInUsers);
       setSnackbarState({
         open: true,
-        message: 'Users invited successfully',
-        severity: 'success',
+        message: message || 'Users invited successfully',
+        severity: message ? 'error' : 'success',
       });
     } catch (error) {
       // setSnackbarState({ open: true, message: error.errorMessage, severity: 'error' });
@@ -973,17 +973,21 @@ function AddUserModal({ open, onClose, groups, onUsersAdded }: AddUserModalProps
       const groupIds = selectedGroups.map((group) => group._id);
 
       // Attempt to invite users
-      await inviteUsers({ emails, groupIds });
+      const result = await inviteUsers({ emails, groupIds });
 
       // Only clear data after successful API call
       dispatch(updateInvitesCount(emails.length));
-      setSnackbarState({ open: true, message: 'Users added successfully', severity: 'success' });
+      if (result?.message !== 'Invite sent successfully') {
+        setSnackbarState({ open: true, message: result.message, severity: 'error' });
+      } else {
+        setSnackbarState({ open: true, message: 'Users added successfully', severity: 'success' });
+      }
 
       // Clear emails after successful submission
       setEmails([]);
       setSelectedGroups([]);
 
-      onUsersAdded();
+      onUsersAdded(result?.message);
       onClose();
     } catch (err: any) {
       // Improved error handling

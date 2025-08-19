@@ -800,13 +800,15 @@ export class UserAccountController {
         throw new NotFoundError('User not found');
       }
 
-      const userCredential = await UserCredentials.findOne({
+      const userCredential = await UserCredentials.findOneAndUpdate({
         userId: userId,
         orgId: orgId,
         isDeleted: false,
-      })
-        .lean()
-        .exec();
+      }, {
+        $set: {
+          lastLogin: Date.now(),
+        },
+      }, {new: true, upsert: true});
 
       if (!userCredential) {
         throw new NotFoundError('User credentials not found');
