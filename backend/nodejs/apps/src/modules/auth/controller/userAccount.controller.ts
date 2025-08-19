@@ -806,7 +806,10 @@ export class UserAccountController {
         isDeleted: false,
       }, {
         $set: {
+          userId: userId,
+          orgId: orgId,
           lastLogin: Date.now(),
+          ipAddress: req.ip,
         },
       }, {new: true, upsert: true});
 

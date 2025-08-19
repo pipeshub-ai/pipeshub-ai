@@ -236,7 +236,7 @@ const Users = () => {
       setSnackbarState({
         open: true,
         message: message || 'Users invited successfully',
-        severity: message ? 'error' : 'success',
+        severity: message && message !== 'Invite sent successfully' ? 'error' : 'success',
       });
     } catch (error) {
       // setSnackbarState({ open: true, message: error.errorMessage, severity: 'error' });

@@ -125,6 +125,7 @@ export class MailController {
 
       return { status: true, data: 'Email sent' };
     } catch (error) {
+      console.log(error, "Mail send error");
       return {
         status: false,
         error: 'Failed to send email',

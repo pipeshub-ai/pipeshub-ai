@@ -954,7 +954,6 @@ export class UserController {
             syncAction: 'immediate',
           } as UserAddedEvent,
         };
-
         await this.eventService.publishEvent(event);
 
         const authToken = fetchConfigJwtGenerator(
@@ -991,7 +990,7 @@ export class UserController {
             },
           });
           if (result.statusCode !== 200) {
-            error_sending_mail = true;
+            errorSendingMail = true;
             continue;
           }
         } else {
@@ -1012,7 +1011,7 @@ export class UserController {
             },
           });
           if (result.statusCode !== 200) {
-            error_sending_mail = true;
+            errorSendingMail = true;
             continue;
           }
         }
@@ -1033,8 +1032,6 @@ export class UserController {
             'User ID missing while inviting restored user. Please ensure user restoration was successful.',
           );
         }
-
-
         const event: Event = {
           eventType: EventType.NewUserEvent,
           timestamp: Date.now(),
@@ -1045,7 +1042,6 @@ export class UserController {
             syncAction: 'immediate',
           } as UserAddedEvent,
         };
-
         await this.eventService.publishEvent(event);
 
         const authToken = fetchConfigJwtGenerator(
@@ -1082,7 +1078,7 @@ export class UserController {
             },
           });
           if (result.statusCode !== 200) {
-            error_sending_mail = true;
+            errorSendingMail = true;
             continue;
           }
         } else {
@@ -1103,7 +1099,7 @@ export class UserController {
             },
           });
           if (result.statusCode !== 200) {
-            error_sending_mail = true;
+            errorSendingMail = true;
             continue;
           }
         }
@@ -1111,7 +1107,7 @@ export class UserController {
 
       await this.eventService.stop();
 
-      if (error_sending_mail) {
+      if (errorSendingMail) {
         res.status(200).json({ message: 'Error sending mail invite. Check your SMTP configuration.' });
         return;
       }
