@@ -3184,21 +3184,25 @@ class BaseArangoService:
         try:
             self.logger.info("🚀 Upserting sync point node: %s", sync_point_key)
 
-            # Prepare the document data with the sync_point_key
-            document_data = sync_point_data
+            # Prepare the document data with the sync_point_key included
+            document_data = {
+                **sync_point_data,
+                "syncPointKey": sync_point_key  # Ensure the key is in the document
+            }
 
             query = """
-            UPSERT {{ syncPointKey: @sync_point_key }}
+            UPSERT { syncPointKey: @sync_point_key }
             INSERT @document_data
             UPDATE @document_data
             IN @@collection
-            RETURN {{ action: OLD ? "updated" : "inserted", key: NEW._key }}
+            RETURN { action: OLD ? "updated" : "inserted", key: NEW._key }
             """
 
             db = transaction if transaction else self.db
             cursor = db.aql.execute(query, bind_vars={
                 "sync_point_key": sync_point_key,
-                "document_data": document_data
+                "document_data": document_data,
+                "@collection": collection
             })
             result = next(cursor, None)
 
@@ -3226,7 +3230,7 @@ class BaseArangoService:
                 RETURN node
             """
             db = transaction if transaction else self.db
-            cursor = db.aql.execute(query, bind_vars={"key": key})
+            cursor = db.aql.execute(query, bind_vars={"key": key, "@collection": collection})
             result = next(cursor, None)
             if result:
                 self.logger.info("✅ Successfully retrieved node by key: %s", key)
@@ -3251,7 +3255,7 @@ class BaseArangoService:
                 RETURN 1
             """
             db = transaction if transaction else self.db
-            cursor = db.aql.execute(query, bind_vars={"key": key})
+            cursor = db.aql.execute(query, bind_vars={"key": key, "@collection": collection})
             result = next(cursor, None)
             if result:
                 self.logger.info("✅ Successfully removed node by key: %s", key)

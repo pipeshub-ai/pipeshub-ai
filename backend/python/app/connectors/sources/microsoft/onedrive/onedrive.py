@@ -784,6 +784,14 @@ class OneDriveAdminClient:
             raise ex
 
 class OneDriveConnector:
+    def _create_sync_point(self, sync_data_point_type: SyncDataPointType, arango_service: BaseArangoService) -> SyncPoint:
+            return SyncPoint(
+                connector_name=Connectors.ONEDRIVE.value,
+                org_id=self.data_entities_processor.org_id,
+                sync_data_point_type=sync_data_point_type,
+                arango_service=arango_service
+            )
+
     def __init__(self, logger, data_entities_processor: DataSourceEntitiesProcessor, arango_service: BaseArangoService,) -> None:
         self.logger = logger
         self.data_entities_processor = data_entities_processor
@@ -795,13 +803,6 @@ class OneDriveConnector:
         self.client = GraphServiceClient(credential, scopes=["https://graph.microsoft.com/.default"])
         self.onedrive_client = OneDriveClient(self.client, self.logger)
         self.onedrive_admin_client = OneDriveAdminClient(self.client, self.logger)
-        def _create_sync_point(self, sync_data_point_type: SyncDataPointType, arango_service: BaseArangoService) -> SyncPoint:
-            return SyncPoint(
-                connector_name=Connectors.ONEDRIVE.value,
-                org_id=self.data_entities_processor.org_id,
-                sync_data_point_type=sync_data_point_type,
-                arango_service=arango_service
-            )
 
         self.drive_delta_sync_point = self._create_sync_point(SyncDataPointType.RECORDS, arango_service)
         self.user_sync_point = self._create_sync_point(SyncDataPointType.USERS, arango_service)
