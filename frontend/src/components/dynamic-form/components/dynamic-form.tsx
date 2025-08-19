@@ -483,13 +483,12 @@ const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>((props, ref) =>
   const handleProviderChange = (event: any, newValue: any) => {
     if (newValue && newValue.id !== currentProvider) {
       // Call the callback to notify parent of provider change
-      setIsLoading(true);
+
       if (onProviderChange) {
         onProviderChange(newValue.id);
       } else {
         switchProvider(newValue.id);
       }
-      setIsLoading(false);
     }
   };
 
