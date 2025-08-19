@@ -922,7 +922,7 @@ export class UserController {
         });
         return;
       }
-      let error_sending_mail = false;
+      let errorSendingMail = false;
 
       await this.eventService.start();
       for (let i = 0; i < emailsForNewAccounts.length; ++i) {
