@@ -136,11 +136,6 @@ class CollectionNames(Enum):
     TEMPLATE_ACCESS = "templateAccess"
 
 
-
-class QdrantCollectionNames(Enum):
-    RECORDS = "records"
-
-
 class ExtensionTypes(Enum):
     PDF = "pdf"
     DOCX = "docx"

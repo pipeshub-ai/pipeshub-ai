@@ -3,7 +3,6 @@ from typing import Any, Dict, List
 from langchain.schema import Document
 from langchain_experimental.text_splitter import SemanticChunker
 from langchain_qdrant import FastEmbedSparse, QdrantVectorStore, RetrievalMode
-from qdrant_client.http import models
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -390,10 +389,8 @@ class IndexingPipeline:
                 # create the collection
                 await self.vector_db_service.create_collection(
                     collection_name=self.collection_name,
-                    vectors_config={ "dense": models.VectorParams(size=embedding_size, distance=models.Distance.COSINE)},
-                    sparse_vectors_config={ "sparse": models.SparseVectorParams(index=models.SparseIndexParams(on_disk=False), modifier=models.Modifier.IDF if sparse_idf else None)},
-                    optimizers_config=models.OptimizersConfigDiff(default_segment_number=8),
-                    quantization_config=models.ScalarQuantization(scalar=models.ScalarQuantizationConfig(type=models.ScalarType.INT8, quantile=0.95, always_ram=True)),
+                    embedding_size=embedding_size,
+                    sparse_idf=sparse_idf,
                 )
                 self.logger.info(
                     f"✅ Successfully created collection {self.collection_name}"
@@ -401,16 +398,16 @@ class IndexingPipeline:
                 await self.vector_db_service.create_index(
                     collection_name=self.collection_name,
                     field_name=VIRTUAL_RECORD_ID_FIELD,
-                    field_schema=models.KeywordIndexParams(
-                        type=models.KeywordIndexType.KEYWORD,
-                    ),
+                    field_schema={
+                        "type": "keyword",
+                    }
                 )
                 await self.vector_db_service.create_index(
                     collection_name=self.collection_name,
                     field_name=ORG_ID_FIELD,
-                    field_schema=models.KeywordIndexParams(
-                        type=models.KeywordIndexType.KEYWORD,
-                    ),
+                    field_schema={
+                        "type": "keyword",
+                    }
                 )
             except Exception as e:
                 self.logger.error(

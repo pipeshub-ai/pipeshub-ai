@@ -21,7 +21,6 @@ class VectorDBFactory:
         """
         Create a QdrantService instance using the factory method.
         Args:
-            logger: Logger instance
             config: ConfigurationService or QdrantConfig
         Returns:
             QdrantService: Initialized QdrantService instance
@@ -35,7 +34,6 @@ class VectorDBFactory:
         """
         Create a QdrantService instance with async client using the factory method.
         Args:
-            logger: Logger instance
             config: ConfigurationService or QdrantConfig
         Returns:
             QdrantService: Initialized QdrantService instance with async client
@@ -52,7 +50,6 @@ class VectorDBFactory:
         Create a vector database service based on the service type.
         Args:
             service_type: Type of service to create ('qdrant', etc.)
-            logger: Logger instance
             config: ConfigurationService or QdrantConfig
 
         Returns:

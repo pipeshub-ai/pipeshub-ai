@@ -34,10 +34,12 @@ class IVectorDBService(ABC):
     async def create_collection(
         self,
         collection_name: str,
-        vectors_config: dict,
-        sparse_vectors_config: dict,
-        optimizers_config: dict,
-        quantization_config: dict,
+        embedding_size: int = 1024,
+        sparse_idf: bool = False,
+        vectors_config: Optional[dict] = None,
+        sparse_vectors_config: Optional[dict] = None,
+        optimizers_config: Optional[dict] = None,
+        quantization_config: Optional[dict] = None,
     ) -> None:
         raise NotImplementedError("create_collection() is not implemented")
 

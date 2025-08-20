@@ -157,11 +157,6 @@ class CollectionNames(Enum):
     AGENT_INSTANCES = "agentInstances"
     TEMPLATE_ACCESS = "templateAccess"
 
-
-class QdrantCollectionNames(Enum):
-    RECORDS = "records"
-
-
 class ExtensionTypes(Enum):
     PDF = "pdf"
     DOCX = "docx"

@@ -1,10 +1,24 @@
 from typing import Dict, Optional, Union
 
 from qdrant_client import AsyncQdrantClient, QdrantClient  # type: ignore
-from qdrant_client.http.models import Filter  # type: ignore
+from qdrant_client.http.models import (  # type: ignore
+    Distance,
+    Filter,  # type: ignore
+    KeywordIndexParams,
+    KeywordIndexType,
+    Modifier,
+    OptimizersConfigDiff,
+    ScalarQuantization,
+    ScalarQuantizationConfig,
+    ScalarType,
+    SparseIndexParams,
+    SparseVectorParams,
+    VectorParams,
+)
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
+from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
 from app.services.vector_db.interface.vector_db import FilterValue, IVectorDBService
 from app.services.vector_db.qdrant.config import QdrantConfig
 from app.services.vector_db.qdrant.filter import QdrantFilterMode
@@ -155,15 +169,42 @@ class QdrantService(IVectorDBService):
 
     async def create_collection(
         self,
-        collection_name: str,
-        vectors_config: dict,
-        sparse_vectors_config: dict,
-        optimizers_config: dict,
-        quantization_config: dict,
+        collection_name: str = VECTOR_DB_COLLECTION_NAME,
+        embedding_size: int = 1024,
+        sparse_idf: bool = False,
+        vectors_config: Optional[dict] = None,
+        sparse_vectors_config: Optional[dict] = None,
+        optimizers_config: Optional[dict] = None,
+        quantization_config: Optional[dict] = None,
     ) -> None:
-        """Create a collection"""
+        """Create a collection with default vector configuration if not provided"""
         if self.client is None:
             raise RuntimeError("Client not connected. Call connect() first.")
+
+        # Set default values if not provided
+        if vectors_config is None:
+            vectors_config = {"dense": VectorParams(size=embedding_size, distance=Distance.COSINE)}
+
+        if sparse_vectors_config is None:
+            sparse_vectors_config = {
+                "sparse": SparseVectorParams(
+                    index=SparseIndexParams(on_disk=False),
+                    modifier=Modifier.IDF if sparse_idf else None
+                )
+            }
+
+        if optimizers_config is None:
+            optimizers_config = OptimizersConfigDiff(default_segment_number=8)
+
+        if quantization_config is None:
+            quantization_config = ScalarQuantization(
+                scalar=ScalarQuantizationConfig(
+                    type=ScalarType.INT8,
+                    quantile=0.95,
+                    always_ram=True
+                )
+            )
+
         self.client.create_collection(
             collection_name=collection_name,
             vectors_config=vectors_config,
@@ -183,6 +224,12 @@ class QdrantService(IVectorDBService):
         """Create an index"""
         if self.client is None:
             raise RuntimeError("Client not connected. Call connect_sync() or connect_async() first.")
+
+        if field_schema.get("type") == "keyword":
+            field_schema = KeywordIndexParams(
+                type=KeywordIndexType.KEYWORD,
+            )
+
         self.client.create_payload_index(collection_name, field_name, field_schema, index_type)
         logger.info(f"✅ Created index {field_name} on collection {collection_name}")
 

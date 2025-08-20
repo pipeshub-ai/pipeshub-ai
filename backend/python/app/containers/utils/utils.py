@@ -3,7 +3,7 @@ from logging import Logger
 from arango import ArangoClient  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import ExtensionTypes, QdrantCollectionNames
+from app.config.constants.arangodb import ExtensionTypes
 from app.config.constants.service import RedisConfig, config_node_constants
 from app.core.ai_arango_service import ArangoService
 from app.events.events import EventProcessor
@@ -25,7 +25,10 @@ from app.modules.retrieval.retrieval_arango import (
 )
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.services.scheduler.redis_scheduler.redis_scheduler import RedisScheduler
-from app.services.vector_db.const.const import VECTOR_DB_SERVICE_NAME
+from app.services.vector_db.const.const import (
+    VECTOR_DB_COLLECTION_NAME,
+    VECTOR_DB_SERVICE_NAME,
+)
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.vector_db_factory import VectorDBFactory
 from app.utils.logger import create_logger
@@ -70,7 +73,7 @@ class ContainerUtils:
             logger=logger,
             config_service=config_service,
             arango_service=arango_service,
-            collection_name=QdrantCollectionNames.RECORDS.value,
+            collection_name=VECTOR_DB_COLLECTION_NAME,
             vector_db_service=vector_db_service,
         )
         return pipeline
@@ -178,7 +181,7 @@ class ContainerUtils:
         service = RetrievalService(
             logger=logger,
             config_service=config_service,
-            collection_name=QdrantCollectionNames.RECORDS.value,
+            collection_name=VECTOR_DB_COLLECTION_NAME,
             vector_db_service=vector_db_service,
         )
         return service

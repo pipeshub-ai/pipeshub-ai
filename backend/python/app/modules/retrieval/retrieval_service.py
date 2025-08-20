@@ -262,7 +262,7 @@ class RetrievalService:
                 record["virtualRecordId"] for record in accessible_records
                 if record.get("virtualRecordId") is not None
             ]
-            # Build Qdrant filter
+            # build vector db filter
             filter = await self.vector_db_service.filter_collection(
                         must={"orgId": org_id},
                         should={"virtualRecordId": accessible_virtual_record_ids}  # Pass as should condition

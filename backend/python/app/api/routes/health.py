@@ -5,19 +5,6 @@ from typing import Any, Dict, Tuple
 import grpc  #type: ignore
 from fastapi import APIRouter, Body, HTTPException, Request  #type: ignore
 from fastapi.responses import JSONResponse  #type: ignore
-from qdrant_client.http.models import (  #type: ignore
-    Distance,
-    KeywordIndexParams,
-    KeywordIndexType,
-    Modifier,
-    OptimizersConfigDiff,
-    ScalarQuantization,
-    ScalarQuantizationConfig,
-    ScalarType,
-    SparseIndexParams,
-    SparseVectorParams,
-    VectorParams,
-)
 
 from app.services.vector_db.const.const import ORG_ID_FIELD, VIRTUAL_RECORD_ID_FIELD
 from app.utils.aimodels import (
@@ -175,28 +162,25 @@ async def recreate_collection(retrieval_service, embedding_size, logger) -> None
     try:
         await retrieval_service.vector_db_service.delete_collection(retrieval_service.collection_name)
         logger.info(f"Successfully deleted empty collection {retrieval_service.collection_name}")
-
         await retrieval_service.vector_db_service.create_collection(
             collection_name=retrieval_service.collection_name,
-            dense_vectors_config={ "dense": VectorParams(size=embedding_size, distance=Distance.COSINE)},
-            sparse_vectors_config={ "sparse": SparseVectorParams(index=SparseIndexParams(on_disk=False), modifier=Modifier.IDF if SPARSE_IDF else None)},
-            optimizers_config=OptimizersConfigDiff(default_segment_number=8),
-            quantization_config=ScalarQuantization(scalar=ScalarQuantizationConfig(type=ScalarType.INT8, quantile=0.95, always_ram=True)),
+            embedding_size=embedding_size,
+            sparse_idf=SPARSE_IDF,
         )
 
         await retrieval_service.vector_db_service.create_index(
             collection_name=retrieval_service.collection_name,
             field_name=VIRTUAL_RECORD_ID_FIELD,
-            field_schema=KeywordIndexParams(
-                type=KeywordIndexType.KEYWORD,
-            ),
+            field_schema={
+                "type": "keyword",
+            }
         )
         await retrieval_service.vector_db_service.create_index(
             collection_name=retrieval_service.collection_name,
             field_name=ORG_ID_FIELD,
-            field_schema=KeywordIndexParams(
-                type=KeywordIndexType.KEYWORD,
-            ),
+            field_schema={
+                "type": "keyword",
+            }
         )
         logger.info(f"Successfully created new collection {retrieval_service.collection_name} with vector size {embedding_size}")
     except Exception as e:
