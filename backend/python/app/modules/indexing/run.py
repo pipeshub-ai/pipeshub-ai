@@ -3,9 +3,7 @@ from typing import Any, Dict, List
 from langchain.schema import Document
 from langchain_experimental.text_splitter import SemanticChunker
 from langchain_qdrant import FastEmbedSparse, QdrantVectorStore, RetrievalMode
-from qdrant_client import QdrantClient
 from qdrant_client.http import models
-from qdrant_client.http.models import FieldCondition, Filter, MatchValue
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -21,6 +19,8 @@ from app.exceptions.indexing_exceptions import (
     MetadataProcessingError,
     VectorStoreError,
 )
+from app.services.vector_db.const.const import ORG_ID_FIELD, VIRTUAL_RECORD_ID_FIELD
+from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.utils.aimodels import get_default_embedding_model, get_embedding_model
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -323,7 +323,7 @@ class IndexingPipeline:
         config_service: ConfigurationService,
         arango_service,
         collection_name: str,
-        qdrant_client: QdrantClient,
+        vector_db_service: IVectorDBService,
     ) -> None:
         self.logger = logger
         self.config_service = config_service
@@ -332,9 +332,10 @@ class IndexingPipeline:
         Initialize the indexing pipeline with necessary configurations.
 
         Args:
-            collection_name: Name for the Qdrant collection
-            qdrant_host: Qdrant server host URL
-            qdrant_api_key: Optional API key for Qdrant
+            config_service: Configuration service
+            arango_service: Arango service
+            collection_name: Name for the collection
+            vector_db_service: Vector DB service
         """
         try:
             # Initialize sparse embeddings
@@ -346,7 +347,7 @@ class IndexingPipeline:
                     details={"error": str(e)},
                 )
 
-            self.qdrant_client = qdrant_client
+            self.vector_db_service = vector_db_service
             self.collection_name = collection_name
             self.vector_store = None
 
@@ -358,20 +359,25 @@ class IndexingPipeline:
                 details={"error": str(e)},
             )
 
-    def _initialize_collection(
+    async def _initialize_collection(
         self, embedding_size: int = 1024, sparse_idf: bool = False
     ) -> None:
-        """Initialize Qdrant collection with proper configuration."""
+        """Initialize collection with proper configuration."""
         try:
-            collection_info = self.qdrant_client.get_collection(self.collection_name)
-            current_vector_size = collection_info.config.params.vectors["dense"].size
+            collection_info = await self.vector_db_service.get_collection(self.collection_name)
+            if not collection_info:
+                self.logger.info(
+                    f"Collection {self.collection_name} not found, creating new collection"
+                )
+                raise Exception("Collection not found")
+            current_vector_size = collection_info.config.params.vectors["dense"].size #type: ignore
 
             if current_vector_size != embedding_size:
                 self.logger.warning(
                     f"Collection {self.collection_name} has size {current_vector_size}, but {embedding_size} is required."
                     " Recreating collection."
                 )
-                self.qdrant_client.delete_collection(self.collection_name)
+                await self.vector_db_service.delete_collection(self.collection_name)
                 raise Exception(
                     "Recreating collection due to vector dimension mismatch."
                 )
@@ -381,42 +387,27 @@ class IndexingPipeline:
                 f"Collection {self.collection_name} not found, creating new collection"
             )
             try:
-                self.qdrant_client.create_collection(
+                # create the collection
+                await self.vector_db_service.create_collection(
                     collection_name=self.collection_name,
-                    vectors_config={
-                        "dense": models.VectorParams(
-                            size=embedding_size,
-                            distance=models.Distance.COSINE,
-                        )
-                    },
-                    sparse_vectors_config={
-                        "sparse": models.SparseVectorParams(
-                            index=models.SparseIndexParams(on_disk=False),
-                            modifier=models.Modifier.IDF if sparse_idf else None,
-                        )
-                    },
+                    vectors_config={ "dense": models.VectorParams(size=embedding_size, distance=models.Distance.COSINE)},
+                    sparse_vectors_config={ "sparse": models.SparseVectorParams(index=models.SparseIndexParams(on_disk=False), modifier=models.Modifier.IDF if sparse_idf else None)},
                     optimizers_config=models.OptimizersConfigDiff(default_segment_number=8),
-                    quantization_config=models.ScalarQuantization(
-                                scalar=models.ScalarQuantizationConfig(
-                                    type=models.ScalarType.INT8,
-                                    quantile=0.95,
-                                    always_ram=True,
-                                ),
-                            ),
+                    quantization_config=models.ScalarQuantization(scalar=models.ScalarQuantizationConfig(type=models.ScalarType.INT8, quantile=0.95, always_ram=True)),
                 )
                 self.logger.info(
                     f"✅ Successfully created collection {self.collection_name}"
                 )
-                self.qdrant_client.create_payload_index(
+                await self.vector_db_service.create_index(
                     collection_name=self.collection_name,
-                    field_name="metadata.virtualRecordId",
+                    field_name=VIRTUAL_RECORD_ID_FIELD,
                     field_schema=models.KeywordIndexParams(
                         type=models.KeywordIndexType.KEYWORD,
                     ),
                 )
-                self.qdrant_client.create_payload_index(
+                await self.vector_db_service.create_index(
                     collection_name=self.collection_name,
-                    field_name="metadata.orgId",
+                    field_name=ORG_ID_FIELD,
                     field_schema=models.KeywordIndexParams(
                         type=models.KeywordIndexType.KEYWORD,
                     ),
@@ -485,11 +476,11 @@ class IndexingPipeline:
             )
 
             # Initialize collection with correct embedding size
-            self._initialize_collection(embedding_size=embedding_size)
+            await self._initialize_collection(embedding_size=embedding_size)
 
             # Initialize vector store with same configuration
             self.vector_store: QdrantVectorStore = QdrantVectorStore(
-                client=self.qdrant_client,
+                client=self.vector_db_service.get_service_client(),
                 collection_name=self.collection_name,
                 vector_name="dense",
                 sparse_vector_name="sparse",
@@ -658,21 +649,21 @@ class IndexingPipeline:
             self.logger.info("🗑️ Proceeding with deletion as no other records exist")
 
             try:
-                filter_dict = Filter(
-                    should=[
-                        FieldCondition(
-                            key="metadata.virtualRecordId", match=MatchValue(value=virtual_record_id)
-                        )
-                    ]
+                filter_dict = await self.vector_db_service.filter_collection(
+                    must={"metadata.virtualRecordId": virtual_record_id}
                 )
 
-                result = self.qdrant_client.scroll(
+                result = await self.vector_db_service.scroll(
                     collection_name=self.collection_name,
                     scroll_filter=filter_dict,
                     limit=1000000,
                 )
 
-                ids = [point.id for point in result[0]]
+                if not result:
+                    self.logger.info(f"No embeddings found for record {record_id}")
+                    return
+
+                ids = [point.id for point in result[0]] #type: ignore
                 self.logger.info(f"🎯 Filter: {filter_dict}")
                 self.logger.info(f"🎯 Ids: {ids}")
 
@@ -768,68 +759,6 @@ class IndexingPipeline:
             raise IndexingError(
                 f"Unexpected error during indexing: {str(e)}",
                 details={"error_type": type(e).__name__},
-            )
-
-    async def check_embeddings_exist(self, record_id: str, virtual_record_id: str) -> bool:
-        """
-        Check if embeddings exist for a given virtual record ID.
-
-        Args:
-            record_id (str): ID of the record to check
-            virtual_record_id (str): Virtual record ID to check for
-
-        Returns:
-            bool: True if embeddings exist, False otherwise
-
-        Raises:
-            EmbeddingDeletionError: If there's an error during the deletion process
-        """
-        try:
-            if not virtual_record_id:
-                raise EmbeddingDeletionError(
-                    "No virtual record ID provided for deletion", virtual_record_id=virtual_record_id
-                )
-
-            self.logger.info(f"🔍 Checking embeddings with virtual_record_id {virtual_record_id}")
-
-            try:
-                filter_dict = Filter(
-                    should=[
-                        FieldCondition(
-                            key="metadata.virtualRecordId", match=MatchValue(value=virtual_record_id)
-                        )
-                    ]
-                )
-
-                result = self.qdrant_client.scroll(
-                    collection_name=self.collection_name,
-                    scroll_filter=filter_dict,
-                    limit=1000000,
-                )
-
-                ids = [point.id for point in result[0]]
-                self.logger.info(f"🎯 Filter: {filter_dict}")
-                self.logger.info(f"🎯 Ids: {ids}")
-
-                if ids:
-                    return True
-
-                return False
-
-            except Exception as e:
-                raise EmbeddingDeletionError(
-                    "Failed to check embeddings in vector store: " + str(e),
-                    record_id=record_id,
-                    details={"error": str(e)},
-                )
-
-        except EmbeddingDeletionError:
-            raise
-        except Exception as e:
-            raise EmbeddingDeletionError(
-                "Unexpected error during embedding deletion: " + str(e),
-                record_id=record_id,
-                details={"error": str(e)},
             )
 
     def _process_metadata(self, meta: Dict[str, Any]) -> Dict[str, Any]:

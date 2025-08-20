@@ -1,0 +1,21 @@
+{
+    "version": "0.2",
+    "ignorePaths": [],
+    "dictionaryDefinitions": [],
+    "dictionaries": [],
+    "words": [
+        "aiconfig",
+        "aimodels",
+        "arangodb",
+        "asimilarity",
+        "BAAI",
+        "dependency_injector",
+        "docparser",
+        "dotenv",
+        "Qdrant",
+        "reranker",
+        "vectordb"
+    ],
+    "ignoreWords": [],
+    "import": []
+}

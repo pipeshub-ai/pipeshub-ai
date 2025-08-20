@@ -2,11 +2,24 @@ import asyncio
 from logging import Logger
 from typing import Any, Dict, Tuple
 
-import grpc
-from fastapi import APIRouter, Body, HTTPException, Request
-from fastapi.responses import JSONResponse
-from qdrant_client.http import models
+import grpc  #type: ignore
+from fastapi import APIRouter, Body, HTTPException, Request  #type: ignore
+from fastapi.responses import JSONResponse  #type: ignore
+from qdrant_client.http.models import (  #type: ignore
+    Distance,
+    KeywordIndexParams,
+    KeywordIndexType,
+    Modifier,
+    OptimizersConfigDiff,
+    ScalarQuantization,
+    ScalarQuantizationConfig,
+    ScalarType,
+    SparseIndexParams,
+    SparseVectorParams,
+    VectorParams,
+)
 
+from app.services.vector_db.const.const import ORG_ID_FIELD, VIRTUAL_RECORD_ID_FIELD
 from app.utils.aimodels import (
     get_default_embedding_model,
     get_embedding_model,
@@ -158,47 +171,31 @@ async def handle_model_change(
             await recreate_collection(retrieval_service, embedding_size, logger)
 
 async def recreate_collection(retrieval_service, embedding_size, logger) -> None:
-    """Recreate the Qdrant collection with new parameters."""
+    """Recreate the collection with new parameters."""
     try:
-        retrieval_service.qdrant_client.delete_collection(retrieval_service.collection_name)
+        await retrieval_service.vector_db_service.delete_collection(retrieval_service.collection_name)
         logger.info(f"Successfully deleted empty collection {retrieval_service.collection_name}")
 
-        retrieval_service.qdrant_client.create_collection(
+        await retrieval_service.vector_db_service.create_collection(
             collection_name=retrieval_service.collection_name,
-            vectors_config={
-                "dense": models.VectorParams(
-                    size=embedding_size,
-                    distance=models.Distance.COSINE,
-                ),
-            },
-            sparse_vectors_config={
-                "sparse": models.SparseVectorParams(
-                    index=models.SparseIndexParams(on_disk=False),
-                    modifier=models.Modifier.IDF if SPARSE_IDF else None,
-                )
-            },
-            optimizers_config=models.OptimizersConfigDiff(default_segment_number=8),
-            quantization_config=models.ScalarQuantization(
-                                scalar=models.ScalarQuantizationConfig(
-                                    type=models.ScalarType.INT8,
-                                    quantile=0.95,
-                                    always_ram=True,
-                                ),
-                            ),
+            dense_vectors_config={ "dense": VectorParams(size=embedding_size, distance=Distance.COSINE)},
+            sparse_vectors_config={ "sparse": SparseVectorParams(index=SparseIndexParams(on_disk=False), modifier=Modifier.IDF if SPARSE_IDF else None)},
+            optimizers_config=OptimizersConfigDiff(default_segment_number=8),
+            quantization_config=ScalarQuantization(scalar=ScalarQuantizationConfig(type=ScalarType.INT8, quantile=0.95, always_ram=True)),
         )
 
-        retrieval_service.qdrant_client.create_payload_index(
+        await retrieval_service.vector_db_service.create_index(
             collection_name=retrieval_service.collection_name,
-            field_name="metadata.virtualRecordId",
-            field_schema=models.KeywordIndexParams(
-                type=models.KeywordIndexType.KEYWORD,
+            field_name=VIRTUAL_RECORD_ID_FIELD,
+            field_schema=KeywordIndexParams(
+                type=KeywordIndexType.KEYWORD,
             ),
         )
-        retrieval_service.qdrant_client.create_payload_index(
+        await retrieval_service.vector_db_service.create_index(
             collection_name=retrieval_service.collection_name,
-            field_name="metadata.orgId",
-            field_schema=models.KeywordIndexParams(
-                type=models.KeywordIndexType.KEYWORD,
+            field_name=ORG_ID_FIELD,
+            field_schema=KeywordIndexParams(
+                type=KeywordIndexType.KEYWORD,
             ),
         )
         logger.info(f"Successfully created new collection {retrieval_service.collection_name} with vector size {embedding_size}")
@@ -212,9 +209,9 @@ async def check_collection_info(
     embedding_size,
     logger
 ) -> None:
-    """Check and validate Qdrant collection information."""
+    """Check and validate collection information."""
     try:
-        collection_info = retrieval_service.qdrant_client.get_collection(retrieval_service.collection_name)
+        collection_info = await retrieval_service.vector_db_service.get_collection(retrieval_service.collection_name)
         qdrant_vector_size = collection_info.config.params.vectors.get("dense").size
         points_count = collection_info.points_count
 
@@ -237,14 +234,14 @@ async def check_collection_info(
 
     except grpc._channel._InactiveRpcError as e:
         if e.code() == grpc.StatusCode.NOT_FOUND:
-            logger.info("Qdrant collection not found - acceptable for health check")
+            logger.info("collection not found - acceptable for health check")
         else:
-            logger.error(f"Unexpected gRPC error while checking Qdrant collection: {str(e)}", exc_info=True)
+            logger.error(f"Unexpected gRPC error while checking vector db collection: {str(e)}", exc_info=True)
             raise HTTPException(
                 status_code=500,
                 detail={
                     "status": "not healthy",
-                    "error": f"Unexpected gRPC error while checking Qdrant collection: {str(e)}",
+                    "error": f"Unexpected gRPC error while checking vector db collection: {str(e)}",
                     "timestamp": get_epoch_timestamp_in_ms(),
                 }
             )
@@ -252,12 +249,12 @@ async def check_collection_info(
         # Re-raise HTTPException to be handled by the route handler
         raise
     except Exception as e:
-        logger.error(f"Unexpected error checking Qdrant collection: {str(e)}", exc_info=True)
+        logger.error(f"Unexpected error checking vector db collection: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail={
                 "status": "not healthy",
-                "error": f"Unexpected error checking Qdrant collection: {str(e)}",
+                "error": f"Unexpected error checking vector db collection: {str(e)}",
                 "timestamp": get_epoch_timestamp_in_ms(),
             }
         )

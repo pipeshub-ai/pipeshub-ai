@@ -241,10 +241,6 @@ class ToolsDBManager:
         try:
             tool_id = self._generate_tool_id(tool.app_name, tool.tool_name)
             new_ctag = self._generate_ctag(tool)
-            self.logger.info(f"Syncing tool: {tool.app_name}.{tool.tool_name}")
-            self.logger.info(f"Tool ID: {tool_id}")
-            self.logger.info(f"New ctag: {new_ctag}")
-
             # Check if tool exists and if ctag has changed
             existing_tool = await self.get_tool(tool.app_name, tool.tool_name)
 

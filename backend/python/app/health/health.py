@@ -1,8 +1,7 @@
 import os
 
-import aiohttp
+import aiohttp  # type: ignore
 from aiokafka import AIOKafkaConsumer  #type: ignore
-from qdrant_client import QdrantClient  #type: ignore
 from redis.asyncio import Redis, RedisError  #type: ignore
 
 from app.config.constants.http_status_code import HttpStatusCode
@@ -19,7 +18,7 @@ class Health:
         await Health.health_check_arango(container)
         await Health.health_check_kafka(container)
         await Health.health_check_redis(container)
-        await Health.health_check_qdrant(container)
+        await Health.health_check_vector_db(container)
         logger.info("✅ External services health check passed")
 
     @staticmethod
@@ -35,7 +34,7 @@ class Health:
                 raise Exception(error_msg)
 
             logger.debug(f"Checking etcd health at endpoint: {etcd_url}/health")
-
+            # TODO: remove aiohttp dependency and use http client from sources module
             async with aiohttp.ClientSession() as session:
                 async with session.get(f"{etcd_url}/health") as response:
                     if response.status == HttpStatusCode.SUCCESS.value:
@@ -176,29 +175,26 @@ class Health:
             raise
 
     @staticmethod
-    async def health_check_qdrant(container) -> None:
-        """Health check method that verifies qdrant service health"""
+    async def health_check_vector_db(container) -> None:
+        """Health check method that verifies vector db service health"""
         logger = container.logger()
-        logger.info("🔍 Starting Qdrant health check...")
+        logger.info("🔍 Starting vector db service health check...")
         try:
-            qdrant_config = await container.config_service().get_config(
-                config_node_constants.QDRANT.value
-            )
-            host = qdrant_config["host"]
-            port = qdrant_config["port"]
-            api_key = qdrant_config["apiKey"]
+            # Check if vector_db_service is available in the container
+            if not hasattr(container, 'vector_db_service'):
+                logger.info("⚠️ vector_db_service not available in this container, skipping health check")
+                return
 
-            client = QdrantClient(host=host, port=port, api_key=api_key, https=False)
-            logger.debug(f"Checking Qdrant health at endpoint: {host}:{port}")
+            vector_db_service = await container.vector_db_service()
             try:
                 # Fetch collections to check connectivity
-                client.get_collections()
-                logger.info("Qdrant is healthy!")
+                await vector_db_service.get_collections()
+                logger.info("✅ vector db service is healthy!")
             except Exception as e:
-                error_msg = f"Qdrant health check failed: {str(e)}"
+                error_msg = f"vector db service health check failed: {str(e)}"
                 logger.error(f"❌ {error_msg}")
                 raise
         except Exception as e:
-            error_msg = f"Qdrant health check failed: {str(e)}"
+            error_msg = f"vector db service health check failed: {str(e)}"
             logger.error(f"❌ {error_msg}")
             raise

@@ -108,20 +108,10 @@ class ToolsDiscovery:
         # Get registered tools
         self.registered_tools = _global_tools_registry.list_tools()
 
-        if self.imported_modules:
-            self.logger.info("Imported modules:")
-            for module in self.imported_modules:
-                self.logger.info(f"      - {module}")
-
         if self.failed_imports:
             self.logger.info("Failed imports:")
             for failure in self.failed_imports:
                 self.logger.info(f"      - {failure}")
-
-        if self.registered_tools:
-            self.logger.info("Registered tools:")
-            for tool in self.registered_tools:
-                self.logger.info(f"      - {tool}")
 
         self.logger.info("Tools discovery completed!")
 
