@@ -1,11 +1,11 @@
-from typing import Any, Dict, Optional, Union
+from typing import Dict, Optional, Union
 
 from qdrant_client import AsyncQdrantClient, QdrantClient  # type: ignore
 from qdrant_client.http.models import Filter  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
-from app.services.vector_db.interface.vector_db import IVectorDBService
+from app.services.vector_db.interface.vector_db import FilterValue, IVectorDBService
 from app.services.vector_db.qdrant.config import QdrantConfig
 from app.services.vector_db.qdrant.filter import QdrantFilterMode
 from app.services.vector_db.qdrant.utils import QdrantUtils
@@ -189,11 +189,11 @@ class QdrantService(IVectorDBService):
     async def filter_collection(
         self,
         filter_mode: Union[str, QdrantFilterMode] = QdrantFilterMode.MUST,
-        must: Optional[Dict[str, Any]] = None,
-        should: Optional[Dict[str, Any]] = None,
-        must_not: Optional[Dict[str, Any]] = None,
+        must: Optional[Dict[str, FilterValue]] = None,
+        should: Optional[Dict[str, FilterValue]] = None,
+        must_not: Optional[Dict[str, FilterValue]] = None,
         min_should_match: Optional[int] = None,
-        **kwargs: Any,
+        **kwargs: FilterValue,
     ) -> Filter:
         """
         Simple filter builder supporting must (AND), should (OR), and must_not (NOT) conditions

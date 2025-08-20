@@ -1,9 +1,12 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, Union
+from typing import Dict, List, Optional, Union
 
 from qdrant_client.http.models import Filter  # type: ignore
 
 from app.services.vector_db.qdrant.filter import QdrantFilterMode
+
+# Type alias for filter values
+FilterValue = Union[str, int, float, bool, List[Union[str, int, float, bool]]]
 
 
 class IVectorDBService(ABC):
@@ -64,11 +67,11 @@ class IVectorDBService(ABC):
     async def filter_collection(
         self,
         filter_mode: Union[str, QdrantFilterMode] = QdrantFilterMode.MUST,
-        must: Optional[Dict[str, Any]] = None,
-        should: Optional[Dict[str, Any]] = None,
-        must_not: Optional[Dict[str, Any]] = None,
+        must: Optional[Dict[str, FilterValue]] = None,
+        should: Optional[Dict[str, FilterValue]] = None,
+        must_not: Optional[Dict[str, FilterValue]] = None,
         min_should_match: Optional[int] = None,
-        **filters: Any,
+        **filters: FilterValue,
     ) -> Filter:
         raise NotImplementedError("filter_collection() is not implemented")
 

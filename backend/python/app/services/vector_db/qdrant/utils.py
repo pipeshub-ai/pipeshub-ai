@@ -1,10 +1,13 @@
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Union
 
 from qdrant_client.http.models import (  # type: ignore
     FieldCondition,
     MatchAny,
     MatchValue,
 )
+
+# Type alias for filter values
+FilterValue = Union[str, int, float, bool, List[Union[str, int, float, bool]]]
 
 
 class QdrantUtils:
@@ -44,7 +47,7 @@ class QdrantUtils:
         return conditions
 
     @staticmethod
-    def _is_valid_value(value: Any) -> bool:
+    def _is_valid_value(value: FilterValue) -> bool:
         """Check if value is valid for filtering"""
         if value is None:
             return False

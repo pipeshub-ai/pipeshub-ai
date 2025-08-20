@@ -34,7 +34,7 @@ from app.utils.logger import create_logger
 # Note - Cannot make this a singleton as it is used in the container and DI does not work with static methods
 class ContainerUtils:
     """Utility class for container operations"""
-    def __init__(self):
+    def __init__(self) -> None:
         self.logger = create_logger("container_utils")
 
     async def get_vector_db_service(
