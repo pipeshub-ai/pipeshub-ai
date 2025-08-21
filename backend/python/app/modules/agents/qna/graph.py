@@ -1,3 +1,7 @@
+"""
+Updated graph.py with unified tool registry integration
+"""
+
 from langgraph.graph import END, StateGraph
 
 from app.modules.agents.qna.chat_state import ChatState
@@ -8,6 +12,7 @@ from app.modules.agents.qna.nodes import (
     conditional_retrieve_node,
     final_response_node,
     get_user_info_node,
+    initialize_tool_registry_node,  # NEW NODE
     prepare_clean_prompt_node,
     tool_execution_node,
 )
@@ -45,18 +50,19 @@ def should_continue_with_limit(state: ChatState) -> str:
         return "final"
 
 
-def llm_qna_graph() -> StateGraph:
-    """Create a pure LLM-driven QnA graph with complete tool autonomy and no ToolExecutor dependency"""
+def unified_qna_graph() -> StateGraph:
+    """Create a unified QnA graph with tool registry integration"""
 
     workflow = StateGraph(ChatState)
 
-    # Add nodes - each focused on specific functionality, LLM makes all tool decisions
+    # Add nodes - including the new tool registry initialization
     workflow.add_node("analyze", analyze_query_node)                    # Simple query analysis
     workflow.add_node("conditional_retrieve", conditional_retrieve_node) # Data retrieval when needed
     workflow.add_node("get_user", get_user_info_node)                   # User context
+    workflow.add_node("init_tools", initialize_tool_registry_node)      # NEW: Initialize tool registry
     workflow.add_node("prepare_prompt", prepare_clean_prompt_node)      # Present ALL tools to LLM
     workflow.add_node("agent", agent_node)                       # LLM decides everything autonomously
-    workflow.add_node("execute_tools", tool_execution_node)       # Execute ANY tool directly (no executor)
+    workflow.add_node("execute_tools", tool_execution_node)       # Execute ANY tool via unified registry
     workflow.add_node("final", final_response_node)               # Final response
 
     # Set entry point
@@ -81,8 +87,17 @@ def llm_qna_graph() -> StateGraph:
         }
     )
 
-    # Linear flow to prompt preparation
-    workflow.add_edge("get_user", "prepare_prompt")
+    # Linear flow through user info and tool initialization
+    workflow.add_edge("get_user", "init_tools")
+
+    workflow.add_conditional_edges(
+        "init_tools",
+        check_for_error,
+        {
+            "continue": "prepare_prompt",
+            "error": END
+        }
+    )
 
     workflow.add_conditional_edges(
         "prepare_prompt",
@@ -119,5 +134,5 @@ def llm_qna_graph() -> StateGraph:
     return workflow.compile()
 
 
-# Export the pure LLM-driven graph with direct tool execution
-qna_graph = llm_qna_graph()
+# Export the unified graph with tool registry integration
+qna_graph = unified_qna_graph()

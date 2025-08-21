@@ -86,7 +86,7 @@ class GoogleClient(IClient):
         arango_service,
         org_id: str,
         user_id: str,
-        is_individual: Optional[bool] = False,
+        is_individual: Optional[bool] = True,
         version: Optional[str] = "v3", # Version of the service to build the client for [v3, v1]
         scopes: Optional[List[str]] = None, # Scopes of the service to build the client
         calendar_id: Optional[str] = 'primary' # Calendar ID to build the client for
