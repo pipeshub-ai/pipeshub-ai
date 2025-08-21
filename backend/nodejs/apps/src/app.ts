@@ -231,6 +231,13 @@ export class Application {
         "https://graph.microsoft.com",
       ]),
       ...serviceUrls,
+      // Allow PDF.js to fetch cmaps and assets
+      'https://cdnjs.cloudflare.com',
+      // Common cloud storage hosts used by signed URLs
+      'https://s3.amazonaws.com',
+      'https://*.s3.amazonaws.com',
+      'https://*.amazonaws.com',
+      'https://*.blob.core.windows.net',
     ];
 
     const cspFrameSrc = [
@@ -249,7 +256,12 @@ export class Application {
           connectSrc: cspConnectSrc,
           objectSrc: ["'self'", "data:", "blob:"], // PDF rendering
           frameSrc: cspFrameSrc, // PDF rendering in frames
-          workerSrc: ["'self'", "blob:"], // PDF.js workers
+          workerSrc: [
+            "'self'",
+            "blob:",
+            // Allow PDF.js worker from CDN in dev
+            'https://cdnjs.cloudflare.com',
+          ], // PDF.js workers
           childSrc: ["'self'", "blob:"], // PDF rendering
           imgSrc: ["'self'", "data:", "blob:", "https:"], // Images in PDFs
           fontSrc: ["'self'", "data:", "https:"], // Fonts in PDFs
