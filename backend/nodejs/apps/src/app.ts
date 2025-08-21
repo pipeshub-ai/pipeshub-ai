@@ -206,62 +206,30 @@ export class Application {
   private configureMiddleware(): void {
     const isDev = process.env.NODE_ENV !== 'production';
     // Security middleware - configure helmet once with all options
-    const serviceUrls = [
-      process.env.CONNECTOR_BACKEND,
-      process.env.INDEXING_BACKEND,
-      process.env.QUERY_BACKEND,
-      process.env.FRONTEND_PUBLIC_URL,
-      process.env.CONNECTOR_PUBLIC_BACKEND,
-    ].filter((url): url is string => Boolean(url));
-
-    const cspScriptSrc = [
-      "'self'",
-      ...(process.env.CSP_SCRIPT_SRCS?.split(',') ?? [
-        "https://cdnjs.cloudflare.com",
-        "https://login.microsoftonline.com",
-        "https://graph.microsoft.com",
-      ]),
-      ...(isDev ? ["'unsafe-inline'", "'unsafe-eval'"] : []),
-    ];
-
-    const cspConnectSrc = [
-      "'self'",
-      ...(process.env.CSP_CONNECT_SRCS?.split(',') ?? [
-        "https://login.microsoftonline.com",
-        "https://graph.microsoft.com",
-      ]),
-      ...serviceUrls,
-      // Allow PDF.js to fetch cmaps and assets
-      'https://cdnjs.cloudflare.com',
-      // Common cloud storage hosts used by signed URLs
-      'https://s3.amazonaws.com',
-      'https://*.s3.amazonaws.com',
-      'https://*.amazonaws.com',
-      'https://*.blob.core.windows.net',
-    ];
-
-    const cspFrameSrc = [
-      "'self'",
-      "blob:",
-      ...serviceUrls,
-      ...(process.env.CSP_FRAME_SRCS?.split(',') ?? []),
-    ];
-
     this.app.use(helmet({
       crossOriginOpenerPolicy: { policy: "unsafe-none" }, // Required for MSAL popup
       contentSecurityPolicy: {
         directives: {
           defaultSrc: ["'self'"],
-          scriptSrc: cspScriptSrc,
-          connectSrc: cspConnectSrc,
-          objectSrc: ["'self'", "data:", "blob:"], // PDF rendering
-          frameSrc: cspFrameSrc, // PDF rendering in frames
-          workerSrc: [
+          scriptSrc: [
             "'self'",
-            "blob:",
-            // Allow PDF.js worker from CDN in dev
-            'https://cdnjs.cloudflare.com',
-          ], // PDF.js workers
+            ...(process.env.CSP_SCRIPT_SRCS?.split(',') ?? [
+              "https://cdnjs.cloudflare.com",
+              "https://login.microsoftonline.com",
+              "https://graph.microsoft.com",
+            ]),
+            ...(isDev ? ["'unsafe-inline'", "'unsafe-eval'"] : [])
+          ],
+          connectSrc: [
+            "'self'",
+            ...(process.env.CSP_CONNECT_SRCS?.split(',') ?? [
+              "https://login.microsoftonline.com",
+              "https://graph.microsoft.com",
+            ]),
+          ],
+          objectSrc: ["'self'", "data:", "blob:"], // PDF rendering
+          frameSrc: ["'self'", "blob:"], // PDF rendering in frames
+          workerSrc: ["'self'", "blob:"], // PDF.js workers
           childSrc: ["'self'", "blob:"], // PDF rendering
           imgSrc: ["'self'", "data:", "blob:", "https:"], // Images in PDFs
           fontSrc: ["'self'", "data:", "https:"], // Fonts in PDFs
