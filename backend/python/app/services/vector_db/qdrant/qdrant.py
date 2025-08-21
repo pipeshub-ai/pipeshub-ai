@@ -229,13 +229,8 @@ class QdrantService(IVectorDBService):
             field_schema = KeywordIndexParams(
                 type=KeywordIndexType.KEYWORD,
             )
-        if self.is_async:
-            await self.client.create_payload_index(collection_name, field_name, field_schema, index_type) # type: ignore
-        else:
-            # TODO: Create a thread pool manager to handle the index creation which can be used across the application
-            import asyncio
-            asyncio.to_thread(self.client.create_payload_index(collection_name, field_name, field_schema, index_type)) # type: ignore
-        logger.info(f"✅ Created index {field_name} on collection {collection_name}")
+        # TODO: Add handling for Async client
+        await self.client.create_payload_index(collection_name, field_name, field_schema, index_type)
 
     async def filter_collection(
         self,
