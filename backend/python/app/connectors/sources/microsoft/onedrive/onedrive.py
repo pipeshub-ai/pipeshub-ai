@@ -294,7 +294,7 @@ class OneDriveConnector():
             if record_update.is_deleted:
                 # Handle deletion
                 await self.data_entities_processor.on_record_deleted(
-                    record_id=record_update.record.external_record_id if record_update.record else None
+                    record_id=record_update.external_record_id
                 )
 
             elif record_update.is_new:
