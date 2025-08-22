@@ -50,7 +50,7 @@ class PermissionChange:
 @dataclass
 class RecordUpdate:
     """Track updates to a record"""
-    record: FileRecord
+    record: Optional[FileRecord]
     is_new: bool
     is_updated: bool
     is_deleted: bool
@@ -59,6 +59,7 @@ class RecordUpdate:
     permissions_changed: bool
     old_permissions: Optional[List[Permission]] = None
     new_permissions: Optional[List[Permission]] = None
+    external_record_id: Optional[str] = None
 
 @dataclass
 class DeltaGetResponse(BaseDeltaFunctionResponse, Parsable):
