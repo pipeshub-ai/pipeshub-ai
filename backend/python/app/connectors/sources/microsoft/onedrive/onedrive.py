@@ -80,6 +80,7 @@ class OneDriveConnector():
                 self.logger.info(f"Item {item.id} has been deleted")
                 return RecordUpdate(
                     record=None,
+                    external_record_id=item.id,
                     is_new=False,
                     is_updated=False,
                     is_deleted=True,
