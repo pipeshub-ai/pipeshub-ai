@@ -35,7 +35,7 @@ export function createMailServiceRouter(container: Container) {
       try {
         await mailController.sendMail(req, res, next);
       } catch (error) {
-        console.log(error);
+        container.get('Logger').error('Failed to send mail', { error });
         next(error);
       }
     },
