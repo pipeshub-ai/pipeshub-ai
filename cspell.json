@@ -6,6 +6,7 @@
     "words": [
         "aiconfig",
         "aimodels",
+        "APIHTTP",
         "arangodb",
         "asimilarity",
         "BAAI",

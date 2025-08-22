@@ -10,7 +10,7 @@ class HTTPResponse:
         data: The data of the response
         response: The response object
     """
-    def __init__(self, data: bytes, response: ClientResponse):
+    def __init__(self, data: bytes, response: ClientResponse) -> None:
         self.data = data
         self.response = response
 
@@ -46,11 +46,12 @@ class HTTPResponse:
 
     def json(self) -> dict[str, Any]:
         """Parse data as JSON"""
-        return json.loads(self.data.decode('utf-8'))
+        return json.loads(self.text())
 
     def text(self) -> str:
         """Get data as text string"""
-        return self.data.decode('utf-8')
+        encoding = self.response.charset or 'utf-8'
+        return self.data.decode(encoding, errors='replace')
 
     def bytes(self) -> bytes:
         """Get raw bytes data"""

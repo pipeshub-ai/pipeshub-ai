@@ -31,15 +31,20 @@ class HTTPClient(IClient):
         Returns:
             A HTTPResponse object containing the response from the server
         """
-        url = f"{self.base_url}{request.url}"
-        headers = request.headers
-        query_params = request.query_params
-        body = request.body
-        method = request.method
+        url = f"{self.base_url}{request.url.format(**request.path_params)}"
         session = await self._ensure_session()
-        headers = {**self.headers, **headers}
-        async with session.request(method, url, headers=headers, params=query_params, json=body, **kwargs) as response:
-            return HTTPResponse(response.content, response) # type: ignore
+        headers = {**self.headers, **request.headers}
+
+        request_kwargs = {"params": request.query_params, "headers": headers, **kwargs}
+
+        if isinstance(request.body, dict):
+            request_kwargs["json"] = request.body
+        elif isinstance(request.body, bytes):
+            request_kwargs["data"] = request.body
+
+        async with session.request(request.method, url, **request_kwargs) as response:
+            response_bytes = await response.read()
+            return HTTPResponse(response_bytes, response)
 
     async def close(self) -> None:
         """Close the session"""
