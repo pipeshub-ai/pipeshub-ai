@@ -1,7 +1,7 @@
 from typing import Any, Awaitable, Callable, Dict, List, Union
 
+from app.config.constants.arangodb import Connectors
 from app.config.constants.service import config_node_constants
-from app.config.utils.named_constants.arangodb_constants import Connectors
 from app.connectors.sources.google.gmail.services.event_service.event_service import (
     GmailEventService,
 )

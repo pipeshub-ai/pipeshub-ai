@@ -9,9 +9,9 @@ from app.config.constants.ai_models import (
 from app.config.constants.arangodb import (
     CollectionNames,
     ExtensionTypes,
+    MimeTypes,
 )
 from app.config.constants.service import config_node_constants
-from app.config.utils.named_constants.arangodb_constants import MimeTypes
 from app.models.entities import RecordType
 from app.modules.parsers.pdf.ocr_handler import OCRHandler
 from app.utils.llm import get_llm

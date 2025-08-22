@@ -1,11 +1,7 @@
 import asyncio
 from uuid import uuid4
 
-from app.config.utils.named_constants.arangodb_constants import (
-    AccountType,
-    CollectionNames,
-    Connectors,
-)
+from app.config.constants.arangodb import AccountType, CollectionNames, Connectors
 from app.connectors.core.base.event_service.event_service import BaseEventService
 from app.connectors.sources.google.common.arango_service import ArangoService
 from app.containers.connector import (

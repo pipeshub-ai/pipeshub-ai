@@ -425,7 +425,7 @@ class IndexingPipeline:
             ai_models = await self.config_service.get_config(
                 config_node_constants.AI_MODELS.value
             )
-            embedding_configs = ai_models["embedding"]
+            embedding_configs = ai_models.get("embedding", [])
             if not embedding_configs:
                 dense_embeddings = get_default_embedding_model()
             else:

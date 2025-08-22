@@ -218,8 +218,7 @@ class EventProcessor:
             else:
                 file_content = event_data.get("buffer")
 
-            self.logger.debug(f"file_content type: {type(file_content)} length: {len(file_content)} {file_content}")
-
+            self.logger.debug(f"file_content type: {type(file_content)} length: {len(file_content)}")
 
             record_type = doc.get("recordType")
             if record_type == RecordTypes.FILE.value:
