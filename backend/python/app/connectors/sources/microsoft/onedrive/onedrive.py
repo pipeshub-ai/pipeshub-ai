@@ -648,8 +648,8 @@ class OneDriveConnector():
             self.logger.info("Cleaning up OneDrive connector resources")
 
             # Clear caches
-            self.processed_items.clear()
-            self.permission_cache.clear()
+            # self.processed_items.clear()
+            # self.permission_cache.clear()
 
             # Close any open connections
             if hasattr(self, 'client') and self.client:
