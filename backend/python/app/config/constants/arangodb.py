@@ -189,6 +189,12 @@ class RecordTypes(Enum):
     LINK = "LINK"
     MAIL = "MAIL"
     DRIVE = "DRIVE"
+    WEBPAGE = "WEBPAGE"
+    TICKET = "TICKET"
+    MESSAGE = "MESSAGE"
+    WEBPAGE_COMMENT = "WEBPAGE_COMMENT"
+    NOTION_DATABASE = "NOTION_DATABASE"
+    NOTION_PAGE = "NOTION_PAGE"
 
 class RecordRelations(Enum):
     PARENT_CHILD = "PARENT_CHILD"

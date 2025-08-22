@@ -4,7 +4,6 @@ from typing import List, Optional
 
 import etcd3
 
-from app.config.utils.retry_policy import RetryPolicy
 from app.utils.logger import create_logger
 
 logger = create_logger("etcd")
@@ -61,7 +60,6 @@ class Etcd3ConnectionManager:
         self.state = ConnectionState.DISCONNECTED
         logger.debug("📋 Initial state: %s", self.state)
 
-        self.retry_policy = RetryPolicy()
         self._health_check_task: Optional[asyncio.Task] = None
         logger.debug("✅ Connection manager initialized")
 
