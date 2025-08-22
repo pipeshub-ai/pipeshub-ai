@@ -251,7 +251,8 @@ class MSGraphClient:
             async with self.rate_limiter:
                 request_info = RequestInformation(Method.GET, url)
                 error_mapping: Dict[str, type[ParsableFactory]] = {
-                    "XXX": ODataError,
+                    "4XX": ODataError,
+                    "5XX": ODataError,
                 }
                 # Send request using request_adapter with all required arguments
                 result = await self.client.request_adapter.send_async(
