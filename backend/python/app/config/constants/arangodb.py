@@ -32,10 +32,18 @@ class Connectors(Enum):
     GOOGLE_DRIVE = "DRIVE"
     GOOGLE_MAIL = "GMAIL"
     GOOGLE_CALENDAR = "CALENDAR"
-    KNOWLEDGE_BASE = "KB"
-    NOTION = "NOTION"
+
     ONEDRIVE = "ONEDRIVE"
     SHAREPOINT_ONLINE = "SHAREPOINT_ONLINE"
+    OUTLOOK = "OUTLOOK"
+    OUTLOOK_CALENDAR = "OUTLOOK_CALENDAR"
+    MICROSOFT_TEAMS = "MICROSOFT_TEAMS"
+
+    NOTION = "NOTION"
+    SLACK = "SLACK"
+
+    KNOWLEDGE_BASE = "KB"
+
     CONFLUENCE = "CONFLUENCE"
     JIRA = "JIRA"
 
@@ -45,35 +53,9 @@ class AppGroups(Enum):
     ATLASSIAN = "Atlassian"
     MICROSOFT = "Microsoft"
 
-class RecordTypes(Enum):
-    FILE = "FILE"
-    ATTACHMENT = "ATTACHMENT"
-    LINK = "LINK"
-    MAIL = "MAIL"
-    DRIVE = "DRIVE"
-    WEBPAGE = "WEBPAGE"
-    WEBPAGE_COMMENTS = "WEBPAGE_COMMENTS"
-    NOTION_DATABASE = "NOTION_DATABASE"
-
-
-class RecordRelations(Enum):
-    PARENT_CHILD = "PARENT_CHILD"
-    SIBLING = "SIBLING"
-    ATTACHMENT = "ATTACHMENT"
-
-
 class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"
     UPLOAD = "UPLOAD"
-
-
-class EventTypes(Enum):
-    NEW_RECORD = "newRecord"
-    UPDATE_RECORD = "updateRecord"
-    DELETE_RECORD = "deleteRecord"
-    REINDEX_RECORD = "reindexRecord"
-    REINDEX_FAILED = "reindexFailed"
-
 
 class CollectionNames(Enum):
     # Records and Record relations
@@ -171,7 +153,6 @@ class ExtensionTypes(Enum):
     MDX = "mdx"
     HTML = "html"
 
-
 class MimeTypes(Enum):
     PDF = "application/pdf"
     GMAIL = "text/gmail_content"
@@ -202,6 +183,24 @@ class ProgressStatus(Enum):
     FILE_TYPE_NOT_SUPPORTED = "FILE_TYPE_NOT_SUPPORTED"
     AUTO_INDEX_OFF = "AUTO_INDEX_OFF"
 
+class RecordTypes(Enum):
+    FILE = "FILE"
+    ATTACHMENT = "ATTACHMENT"
+    LINK = "LINK"
+    MAIL = "MAIL"
+    DRIVE = "DRIVE"
+
+class RecordRelations(Enum):
+    PARENT_CHILD = "PARENT_CHILD"
+    SIBLING = "SIBLING"
+    ATTACHMENT = "ATTACHMENT"
+
+class EventTypes(Enum):
+    NEW_RECORD = "newRecord"
+    UPDATE_RECORD = "updateRecord"
+    DELETE_RECORD = "deleteRecord"
+    REINDEX_RECORD = "reindexRecord"
+    REINDEX_FAILED = "reindexFailed"
 
 class AccountType(Enum):
     INDIVIDUAL = "individual"

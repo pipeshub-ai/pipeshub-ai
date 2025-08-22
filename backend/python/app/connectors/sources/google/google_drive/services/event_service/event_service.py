@@ -3,7 +3,7 @@
 import logging
 from typing import Any, Dict
 
-from app.config.utils.named_constants.arangodb_constants import Connectors
+from app.config.constants.arangodb import Connectors
 from app.connectors.core.base.event_service.event_service import BaseEventService
 from app.connectors.sources.google.common.arango_service import ArangoService
 from app.connectors.sources.google.google_drive.services.sync_service.sync_tasks import (

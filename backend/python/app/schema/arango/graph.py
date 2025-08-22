@@ -1,6 +1,4 @@
-from app.config.utils.named_constants.arangodb_constants import (
-    CollectionNames,
-)
+from app.config.constants.arangodb import CollectionNames
 
 # Define all edge definitions
 EDGE_DEFINITIONS = [

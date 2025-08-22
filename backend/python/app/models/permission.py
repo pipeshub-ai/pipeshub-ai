@@ -21,7 +21,7 @@ class EntityType(str, Enum):
 
 class Permission(BaseModel):
     external_id: Optional[str] = None
-    email: str
+    email: Optional[str] = None
     type: PermissionType
     entity_type: EntityType
     created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the permission creation")

@@ -400,11 +400,11 @@ class DataSourceEntitiesProcessor:
 
         # Get all users from the database(Active and Inactive)
         existing_users = await self.arango_service.get_users(self.org_id, active=False)
+        existing_user_emails = {existing_user.get("email") for existing_user in existing_users}
 
         for user in users:
             self.logger.info(f"Processing user: {user}")
 
-            existing_user_emails = {existing_user.get("email") for existing_user in existing_users}
             if user.email not in existing_user_emails:
                 user_record = user.to_arango_base_record()
                 user_record["isActive"] = False

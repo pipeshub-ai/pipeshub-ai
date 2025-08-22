@@ -8,11 +8,8 @@ from langchain.chat_models.base import BaseChatModel
 from pydantic import BaseModel
 
 from app.config.configuration_service import ConfigurationService
+from app.config.constants.arangodb import AccountType, CollectionNames
 from app.config.constants.service import config_node_constants
-from app.config.utils.named_constants.arangodb_constants import (
-    AccountType,
-    CollectionNames,
-)
 from app.containers.query import QueryAppContainer
 from app.modules.qna.prompt_templates import qna_prompt
 from app.modules.reranker.reranker import RerankerService

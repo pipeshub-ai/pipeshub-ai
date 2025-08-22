@@ -8,15 +8,15 @@ from jose import jwt  # type: ignore
 from tenacity import retry, stop_after_attempt, wait_exponential  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.http_status_code import HttpStatusCode
-from app.config.constants.service import config_node_constants
-from app.config.utils.named_constants.arangodb_constants import (
+from app.config.constants.arangodb import (
     CollectionNames,
     EventTypes,
     ExtensionTypes,
     MimeTypes,
     ProgressStatus,
 )
+from app.config.constants.http_status_code import HttpStatusCode
+from app.config.constants.service import config_node_constants
 from app.events.events import EventProcessor
 from app.exceptions.indexing_exceptions import IndexingError
 from app.services.messaging.kafka.handlers.entity import BaseEventService

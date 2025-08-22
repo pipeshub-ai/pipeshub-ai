@@ -20,9 +20,9 @@ def is_valid_email(email: str) -> bool:
     return email is not None and email != "" and "@" in email
 
 async def test_run() -> None:
-    user_email = os.getenv("TEST_USER_EMAIL")
-    if not is_valid_email(user_email):
-        raise ValueError("TEST_USER_EMAIL is not set or is not a valid email")
+    os.getenv("TEST_USER_EMAIL")
+    # if not is_valid_email(user_email):
+    #     raise ValueError("TEST_USER_EMAIL is not set or is not a valid email")
 
     async def create_test_users(user_email: str, arango_service: BaseArangoService) -> None:
         org_id = "org_1"
@@ -65,7 +65,7 @@ async def test_run() -> None:
     arango_service = BaseArangoService(logger, arango_client, config_service, kafka_service)
     await arango_service.connect()
 
-    await create_test_users(user_email, arango_service)
+    # await create_test_users(user_email, arango_service)
     data_entities_processor = DataSourceEntitiesProcessor(logger, OneDriveApp(), arango_service, config_service)
     await data_entities_processor.initialize()
     onedrive_connector = OneDriveConnector(logger, data_entities_processor, arango_service)
