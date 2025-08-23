@@ -362,3 +362,19 @@ export function createKnowledgeBaseRouter(container: Container): Router {
 
   return router;
 }
+
+export function createStreamRouter(container: Container): Router {
+  const router = Router();
+  const appConfig = container.get<AppConfig>('AppConfig');
+  const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
+
+  router.get(
+    '/record/:recordId',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(getRecordByIdSchema),
+    getRecordBuffer(appConfig.connectorBackend),
+  );
+
+  return router;
+}
