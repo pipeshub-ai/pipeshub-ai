@@ -343,14 +343,16 @@ class AgentApiService {
 
     // Transform tools to ensure they're in the correct format
     if (transformed.tools && Array.isArray(transformed.tools)) {
-      transformed.tools = transformed.tools.map((tool) => {
-        // If tool is already in app_name.tool_name format, keep it
-        if (tool.includes('.')) {
+      transformed.tools = transformed.tools
+        .filter((tool) => tool && typeof tool === 'string') // Filter out undefined/null/non-string tools
+        .map((tool) => {
+          // If tool is already in app_name.tool_name format, keep it
+          if (tool.includes('.')) {
+            return tool;
+          }
+          // Otherwise, assume it needs transformation (though this shouldn't happen with the new UI)
           return tool;
-        }
-        // Otherwise, assume it needs transformation (though this shouldn't happen with the new UI)
-        return tool;
-      });
+        });
     }
 
     // Ensure KB field contains IDs (this should already be the case with the new UI)
