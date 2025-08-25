@@ -48,6 +48,10 @@ export interface Agent {
   sharedWith: string[];
   version: number;
   icon?: string;
+  flow?: {
+    nodes: any[];
+    edges: any[];
+  };
 }
 
 export interface AgentConversation {
@@ -118,6 +122,10 @@ export interface AgentFormData {
   vectorDBs: string[];
   tags: string[];
   templateId?: string;
+  flow?: {
+    nodes: any[];
+    edges: any[];
+  };
 }
 
 export interface AgentStats {
@@ -139,4 +147,44 @@ export interface AgentFilterOptions {
     end: string;
   };
   searchQuery?: string;
+}
+
+
+
+export interface FlowNode {
+  id: string;
+  type: string;
+  position: { x: number; y: number };
+  data: {
+    type: string;
+    label: string;
+    config: Record<string, any>;
+    inputs?: string[];
+    outputs?: string[];
+    isConfigured?: boolean;
+  };
+}
+
+export interface FlowEdge {
+  id: string;
+  source: string;
+  target: string;
+  sourceHandle?: string;
+  targetHandle?: string;
+}
+
+export interface AgentFlowConfig {
+  nodes: FlowNode[];
+  edges: FlowEdge[];
+  metadata?: {
+    version: string;
+    createdAt: string;
+    updatedAt: string;
+  };
+}
+
+// Enhanced Agent interface with flow support
+export interface AgentWithFlow extends Agent {
+  flowConfig?: AgentFlowConfig;
+  builderType?: 'wizard' | 'flow';
 }
