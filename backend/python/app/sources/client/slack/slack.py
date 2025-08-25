@@ -33,7 +33,7 @@ class SlackRESTClientViaUsernamePassword():
         token_type: The type of token to use for authentication
     """
     def __init__(self, username: str, password: str, token_type: str = "Basic") -> None:
-        raise NotImplementedError
+        ...
 
 class SlackRESTClientViaApiKey():
     """Slack REST client via API key

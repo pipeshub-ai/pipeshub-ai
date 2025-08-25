@@ -12,7 +12,7 @@ class JiraRESTClientViaUsernamePassword(HTTPClient):
         password: The password to use for authentication
         token_type: The type of token to use for authentication
     """
-    def __init__(self, username: str, password: str, token_type: str = "Basic") -> None:
+    def __init__(self, base_url: str, username: str, password: str, token_type: str = "Basic") -> None:
         #TODO: Implement
         pass
 
@@ -22,13 +22,13 @@ class JiraRESTClientViaApiKey(HTTPClient):
         email: The email to use for authentication
         api_key: The API key to use for authentication
     """
-    def __init__(self, email: str, api_key: str) -> None:
+    def __init__(self, base_url: str, email: str, api_key: str) -> None:
         #TODO: Implement
         pass
 
 class JiraRESTClientViaToken(HTTPClient):
-    def __init__(self, token: str, token_type: str = "Bearer") -> None:
-        super().__init__(token, token_type)
+    def __init__(self, base_url: str, token: str, token_type: str = "Bearer") -> None:
+        super().__init__(base_url, token, token_type)
 
 @dataclass
 class JiraUsernamePasswordConfig():
@@ -45,7 +45,7 @@ class JiraUsernamePasswordConfig():
     ssl: bool = False
 
     def create_client(self) -> JiraRESTClientViaUsernamePassword:
-        return JiraRESTClientViaUsernamePassword(self.username, self.password, "Basic")
+        return JiraRESTClientViaUsernamePassword(self.base_url, self.username, self.password, "Basic")
 
     def to_dict(self) -> dict:
         """Convert the configuration to a dictionary"""
@@ -64,7 +64,7 @@ class JiraTokenConfig():
     ssl: bool = False
 
     def create_client(self) -> JiraRESTClientViaToken:
-        return JiraRESTClientViaToken(self.token)
+        return JiraRESTClientViaToken(self.base_url, self.token)
 
     def to_dict(self) -> dict:
         """Convert the configuration to a dictionary"""
@@ -85,7 +85,7 @@ class JiraApiKeyConfig():
     ssl: bool = False
 
     def create_client(self) -> JiraRESTClientViaApiKey:
-        return JiraRESTClientViaApiKey(self.email, self.api_key)
+        return JiraRESTClientViaApiKey(self.base_url, self.email, self.api_key)
 
     def to_dict(self) -> dict:
         """Convert the configuration to a dictionary"""

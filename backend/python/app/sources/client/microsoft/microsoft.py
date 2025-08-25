@@ -86,9 +86,9 @@ class MSGraphUsernamePasswordConfig():
 class MSGraphTokenConfig():
     """Configuration for Microsoft Graph client via token
     Args:
-        base_url: The base URL of the Microsoft Graph instance
-        token: The token to use for authentication
-        ssl: Whether to use SSL
+        azure_tenant_id: The Azure Tenant ID
+        azure_client_id: The Azure Client ID
+        azure_client_secret: The Azure Client Secret
     """
     azure_tenant_id: str
     azure_client_id: str

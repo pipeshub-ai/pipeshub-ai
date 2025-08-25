@@ -45,12 +45,9 @@ class HTTPClient(IClient):
             request_kwargs["json"] = request.body
         elif isinstance(request.body, bytes):
             request_kwargs["data"] = request.body
-        try:
-            async with session.request(request.method, url, **request_kwargs) as response:
-                response_bytes = await response.read()
-                return HTTPResponse(response_bytes, response)
-        except Exception as e:
-            raise e
+        async with session.request(request.method, url, **request_kwargs) as response:
+            response_bytes = await response.read()
+            return HTTPResponse(response_bytes, response)
 
     async def close(self) -> None:
         """Close the session"""

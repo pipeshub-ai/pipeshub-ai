@@ -87,9 +87,9 @@ class GoogleClient(IClient):
         org_id: str,
         user_id: str,
         is_individual: Optional[bool] = False,
-        version: Optional[str] = "v3", # Version of the service to build the client for [v3, v1]
-        scopes: Optional[List[str]] = None, # Scopes of the service to build the client
-        calendar_id: Optional[str] = 'primary' # Calendar ID to build the client for
+        version: Optional[str] = "v3",
+        scopes: Optional[List[str]] = None,
+        calendar_id: Optional[str] = 'primary'
     ) -> 'GoogleClient':
         """
         Build GoogleClient using configuration service and arango service
@@ -101,7 +101,9 @@ class GoogleClient(IClient):
             org_id: Organization ID
             user_id: User ID
             is_individual: Flag to indicate if the client is for an individual user or an enterprise account
-            version: Version of the service to build the client for
+            version: Version of the service to build the client for [v3, v1]
+            scopes: Scopes of the service to build the client for
+            calendar_id: Calendar ID to build the client for
         Returns:
             GoogleClient instance
         """
