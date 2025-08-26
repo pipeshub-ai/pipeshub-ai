@@ -128,9 +128,7 @@ class EventProcessor:
                         f"Download failed after {max_retries} attempts. "
                         f"Error: {error_type} - {str(e)}. File id: {record_id}"
                     )
-
                 await asyncio.sleep(delay)
-
             finally:
                 if not file_buffer.closed:
                     file_buffer.close()
@@ -156,7 +154,6 @@ class EventProcessor:
             record_id = event_data.get("recordId")
             org_id = event_data.get("orgId")
             virtual_record_id = event_data.get("virtualRecordId")
-
             self.logger.info(f"📥 Processing event: {event_type}: {record_id}")
 
             if not record_id:
@@ -370,16 +367,13 @@ class EventProcessor:
                 return result
 
             if extension == ExtensionTypes.PDF.value:
-                result = await self.processor.process_pdf_document(
+                result = await self.processor.process_pdf_with_docling(
                     recordName=record_name,
                     recordId=record_id,
-                    version=record_version,
-                    source=connector,
-                    orgId=org_id,
                     pdf_binary=file_content,
                     virtual_record_id = virtual_record_id
                 )
-
+         
             elif extension == ExtensionTypes.DOCX.value:
                 result = await self.processor.process_docx_document(
                     recordName=record_name,

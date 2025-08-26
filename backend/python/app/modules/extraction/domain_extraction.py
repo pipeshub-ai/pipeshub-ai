@@ -3,6 +3,7 @@ import uuid
 from typing import List, Literal
 
 import aiohttp
+from app.modules.transformers.document_extraction import DocumentClassification
 import jwt
 import numpy as np
 from langchain.output_parsers import PydanticOutputParser
@@ -36,33 +37,10 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 # Update the Literal types
 SentimentType = Literal["Positive", "Neutral", "Negative"]
 
-
 class SubCategories(BaseModel):
     level1: str = Field(description="Level 1 subcategory")
     level2: str = Field(description="Level 2 subcategory")
     level3: str = Field(description="Level 3 subcategory")
-
-
-class DocumentClassification(BaseModel):
-    departments: List[str] = Field(
-        description="The list of departments this document belongs to", max_items=3
-    )
-    categories: str = Field(description="Main category this document belongs to")
-    subcategories: SubCategories = Field(
-        description="Nested subcategories for the document"
-    )
-    languages: List[str] = Field(
-        description="List of languages detected in the document"
-    )
-    sentiment: SentimentType = Field(description="Overall sentiment of the document")
-    confidence_score: float = Field(
-        description="Confidence score of the classification", ge=0, le=1
-    )
-    topics: List[str] = Field(
-        description="List of key topics/themes extracted from the document"
-    )
-    summary: str = Field(description="Summary of the document")
-
 
 class DomainExtractor:
     def __init__(self, logger, base_arango_service, config_service) -> None:
@@ -98,10 +76,11 @@ class DomainExtractor:
             f"Retrying LLM call after error. Attempt {retry_state.attempt_number}"
         ),
     )
+    
     async def _call_llm(self, messages) -> dict | None:
         """Wrapper for LLM calls with retry logic"""
         return await self.llm.ainvoke(messages)
-
+    
     async def find_similar_topics(self, new_topic: str) -> str:
         """
         Find if a similar topic already exists in the topics store using TF-IDF similarity.
@@ -189,8 +168,9 @@ class DomainExtractor:
         Includes reflection logic to attempt recovery from parsing failures.
         """
         self.logger.info("🎯 Extracting domain metadata")
-        self.llm = await get_llm(self.config_service)
-
+        self.llm, config = await get_llm(self.config_service)
+        is_multimodal_llm = config.get("isMultimodal")
+        
         try:
             self.logger.info(f"🎯 Extracting departments for org_id: {org_id}")
             departments = await self.arango_service.get_departments(org_id)
@@ -355,7 +335,7 @@ class DomainExtractor:
             # Handle single category
             category_query = f"FOR c IN {CollectionNames.CATEGORIES.value} FILTER c.name == @name RETURN c"
             cursor = self.arango_service.db.aql.execute(
-                category_query, bind_vars={"name": metadata.categories}
+                category_query, bind_vars={"name": metadata.category}
             )
             try:
                 category_doc = cursor.next()
@@ -369,7 +349,7 @@ class DomainExtractor:
                 ).insert(
                     {
                         "_key": category_key,
-                        "name": metadata.categories,
+                        "name": metadata.category,
                     }
                 )
 
@@ -471,15 +451,19 @@ class DomainExtractor:
                 return key
 
             # Process subcategories
-            sub1_key = handle_subcategory(
-                metadata.subcategories.level1, "1", category_key, "categories"
-            )
-            sub2_key = handle_subcategory(
-                metadata.subcategories.level2, "2", sub1_key, "subcategories1"
-            )
-            handle_subcategory(
-                metadata.subcategories.level3, "3", sub2_key, "subcategories2"
-            )
+            if metadata.subcategories:
+                if metadata.subcategories.level1:
+                    sub1_key = handle_subcategory(
+                        metadata.subcategories.level1, "1", category_key, "categories"
+                    )
+                if metadata.subcategories.level2 and sub1_key:
+                    sub2_key = handle_subcategory(
+                        metadata.subcategories.level2, "2", sub1_key, "subcategories1"
+                    )
+                if metadata.subcategories.level3 and sub2_key:
+                    handle_subcategory(
+                        metadata.subcategories.level3, "3", sub2_key, "subcategories2"
+                    )
 
             # Handle languages
             for language in metadata.languages:
@@ -580,7 +564,6 @@ class DomainExtractor:
                 if document_id is None:
                     self.logger.error("❌ Failed to save summary to storage")
 
-
             self.logger.info(
                 f"🚀 Metadata saved successfully for document: {document_id}"
             )
@@ -604,7 +587,7 @@ class DomainExtractor:
             doc.update(
                 {
                     "departments": [dept for dept in metadata.departments],
-                    "categories": metadata.categories,
+                    "categories": metadata.category,
                     "subcategoryLevel1": metadata.subcategories.level1,
                     "subcategoryLevel2": metadata.subcategories.level2,
                     "subcategoryLevel3": metadata.subcategories.level3,
@@ -613,7 +596,7 @@ class DomainExtractor:
                     "summary": metadata.summary,
                 }
             )
-
+         
             return doc
 
         except Exception as e:
@@ -627,6 +610,7 @@ class DomainExtractor:
             f"Retrying API call after error. Attempt {retry_state.attempt_number}"
         ),
     )
+    
     async def _create_placeholder(self, session, url, data, headers) -> dict | None:
         """Helper method to create placeholder with retry logic"""
         try:
@@ -691,6 +675,7 @@ class DomainExtractor:
             f"Retrying API call after error. Attempt {retry_state.attempt_number}"
         ),
     )
+
     async def _upload_to_signed_url(self, session, signed_url, data) -> int | None:
         """Helper method to upload to signed URL with retry logic"""
         try:
