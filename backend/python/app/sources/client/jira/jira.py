@@ -12,9 +12,15 @@ class JiraRESTClientViaUsernamePassword(HTTPClient):
         password: The password to use for authentication
         token_type: The type of token to use for authentication
     """
+
     def __init__(self, base_url: str, username: str, password: str, token_type: str = "Basic") -> None:
+        self.base_url = base_url
         #TODO: Implement
         pass
+
+    def get_base_url(self) -> str:
+        """Get the base URL"""
+        return self.base_url
 
 class JiraRESTClientViaApiKey(HTTPClient):
     """JIRA REST client via API key
@@ -22,16 +28,27 @@ class JiraRESTClientViaApiKey(HTTPClient):
         email: The email to use for authentication
         api_key: The API key to use for authentication
     """
+
     def __init__(self, base_url: str, email: str, api_key: str) -> None:
+        self.base_url = base_url
         #TODO: Implement
         pass
 
+    def get_base_url(self) -> str:
+        """Get the base URL"""
+        return self.base_url
+
 class JiraRESTClientViaToken(HTTPClient):
     def __init__(self, base_url: str, token: str, token_type: str = "Bearer") -> None:
-        super().__init__(base_url, token, token_type)
+        super().__init__(token, token_type)
+        self.base_url = base_url
+
+    def get_base_url(self) -> str:
+        """Get the base URL"""
+        return self.base_url
 
 @dataclass
-class JiraUsernamePasswordConfig():
+class JiraUsernamePasswordConfig:
     """Configuration for JIRA REST client via username and password
     Args:
         base_url: The base URL of the JIRA instance
@@ -39,6 +56,7 @@ class JiraUsernamePasswordConfig():
         password: The password to use for authentication
         ssl: Whether to use SSL
     """
+
     base_url: str
     username: str
     password: str
@@ -52,13 +70,14 @@ class JiraUsernamePasswordConfig():
         return asdict(self)
 
 @dataclass
-class JiraTokenConfig():
+class JiraTokenConfig:
     """Configuration for JIRA REST client via token
     Args:
         base_url: The base URL of the JIRA instance
         token: The token to use for authentication
         ssl: Whether to use SSL
     """
+
     base_url: str
     token: str
     ssl: bool = False
@@ -71,7 +90,7 @@ class JiraTokenConfig():
         return asdict(self)
 
 @dataclass
-class JiraApiKeyConfig():
+class JiraApiKeyConfig:
     """Configuration for JIRA REST client via API key
     Args:
         base_url: The base URL of the JIRA instance
@@ -79,6 +98,7 @@ class JiraApiKeyConfig():
         api_key: The API key to use for authentication
         ssl: Whether to use SSL
     """
+
     base_url: str
     email: str
     api_key: str
@@ -103,13 +123,14 @@ class JiraClient(IClient):
         return self.client
 
     @classmethod
-    def build_with_config(cls, config: JiraUsernamePasswordConfig | JiraTokenConfig | JiraApiKeyConfig) -> 'JiraClient':
-        """
-        Build JiraClient with configuration (placeholder for future OAuth2/enterprise support)
+    def build_with_config(cls, config: JiraUsernamePasswordConfig | JiraTokenConfig | JiraApiKeyConfig) -> "JiraClient":
+        """Build JiraClient with configuration (placeholder for future OAuth2/enterprise support)
+
         Args:
             config: JiraConfigBase instance
         Returns:
             JiraClient instance with placeholder implementation
+
         """
         return cls(config.create_client())
 
@@ -121,9 +142,8 @@ class JiraClient(IClient):
         arango_service,
         org_id: str,
         user_id: str,
-    ) -> 'JiraClient':
-        """
-        Build JiraClient using configuration service and arango service
+    ) -> "JiraClient":
+        """Build JiraClient using configuration service and arango service
         Args:
             logger: Logger instance
             config_service: Configuration service instance

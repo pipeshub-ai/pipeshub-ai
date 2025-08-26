@@ -1,6 +1,6 @@
 import base64
 import json
-from typing import Any, Dict, Union
+from typing import Any
 
 from pydantic import BaseModel, Field  # type: ignore
 
@@ -15,16 +15,16 @@ class HTTPRequest(BaseModel):
         path_params: The path parameters to use
         query_params: The query parameters to use
     """
-    url: str = Field(alias="uri")
+
+    url: str = Field(alias="url")
     method: str = Field(default="GET")
-    headers: Dict[str, str] = Field(default_factory=dict)
-    body: Union[Dict[str, Any], bytes, None] = None
-    path_params: Dict[str, str] = Field(default_factory=dict, alias="path")
-    query_params: Dict[str, str] = Field(default_factory=dict, alias="query")
+    headers: dict[str, str] = Field(default_factory=dict)
+    body: dict[str, Any] | bytes | None = None
+    path_params: dict[str, str] = Field(default_factory=dict, alias="path")
+    query_params: dict[str, str] = Field(default_factory=dict, alias="query")
 
     def to_json(self) -> str:
-        """
-        Convert request to a JSON string.
+        """Convert request to a JSON string.
         Bytes are encoded as Base64 to preserve data integrity.
         """
         data = self.model_dump(by_alias=True)
@@ -34,7 +34,7 @@ class HTTPRequest(BaseModel):
             data["body"] = {
                 "type": "bytes",
                 "encoding": "base64",
-                "data": base64.b64encode(self.body).decode("ascii")
+                "data": base64.b64encode(self.body).decode("ascii"),
             }
 
         return json.dumps(data, indent=2)

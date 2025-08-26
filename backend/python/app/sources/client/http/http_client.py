@@ -6,20 +6,15 @@ from app.sources.client.iclient import IClient
 
 
 class HTTPClient(IClient):
-    def __init__(self, base_url: str, token: str, token_type: str = "Bearer") -> None:
-        self.base_url = base_url
+    def __init__(self, token: str, token_type: str = "Bearer") -> None:
         self.headers = {
             "Authorization": f"{token_type} {token}",
         }
         self.session = None
 
-    def get_client(self) -> 'HTTPClient':
+    def get_client(self) -> "HTTPClient":
         """Get the client"""
         return self
-
-    def get_base_url(self) -> str:
-        """Get the base URL"""
-        return self.base_url
 
     async def _ensure_session(self) -> aiohttp.ClientSession:
         """Ensure session is created and available"""
@@ -35,7 +30,7 @@ class HTTPClient(IClient):
         Returns:
             A HTTPResponse object containing the response from the server
         """
-        url = f"{self.base_url}{request.url.format(**request.path_params)}"
+        url = f"{request.url.format(**request.path_params)}"
         session = await self._ensure_session()
         headers = {**self.headers, **request.headers}
 

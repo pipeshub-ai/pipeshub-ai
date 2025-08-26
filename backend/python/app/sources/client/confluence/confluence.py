@@ -12,9 +12,15 @@ class ConfluenceRESTClientViaUsernamePassword(HTTPClient):
         password: The password to use for authentication
         token_type: The type of token to use for authentication
     """
+
     def __init__(self, base_url: str, username: str, password: str, token_type: str = "Basic") -> None:
+        self.base_url = base_url
         #TODO: Implement
         pass
+
+    def get_base_url(self) -> str:
+        """Get the base URL"""
+        return self.base_url
 
 class ConfluenceRESTClientViaApiKey(HTTPClient):
     """Confluence REST client via API key
@@ -22,17 +28,28 @@ class ConfluenceRESTClientViaApiKey(HTTPClient):
         email: The email to use for authentication
         api_key: The API key to use for authentication
     """
+
     def __init__(self, base_url: str, email: str, api_key: str) -> None:
+        self.base_url = base_url
         #TODO: Implement
         pass
+
+    def get_base_url(self) -> str:
+        """Get the base URL"""
+        return self.base_url
 
 
 class ConfluenceRESTClientViaToken(HTTPClient):
     def __init__(self, base_url: str, token: str, token_type: str = "Bearer") -> None:
-        super().__init__(base_url, token, token_type)
+        super().__init__(token, token_type)
+        self.base_url = base_url
+
+    def get_base_url(self) -> str:
+        """Get the base URL"""
+        return self.base_url
 
 @dataclass
-class ConfluenceUsernamePasswordConfig():
+class ConfluenceUsernamePasswordConfig:
     """Configuration for Confluence REST client via username and password
     Args:
         base_url: The base URL of the Confluence instance
@@ -40,6 +57,7 @@ class ConfluenceUsernamePasswordConfig():
         password: The password to use for authentication
         ssl: Whether to use SSL
     """
+
     base_url: str
     username: str
     password: str
@@ -54,13 +72,14 @@ class ConfluenceUsernamePasswordConfig():
 
 
 @dataclass
-class ConfluenceTokenConfig():
+class ConfluenceTokenConfig:
     """Configuration for Confluence REST client via token
     Args:
         base_url: The base URL of the Confluence instance
         token: The token to use for authentication
         ssl: Whether to use SSL
     """
+
     base_url: str
     token: str
     ssl: bool = False
@@ -74,7 +93,7 @@ class ConfluenceTokenConfig():
 
 
 @dataclass
-class ConfluenceApiKeyConfig():
+class ConfluenceApiKeyConfig:
     """Configuration for Confluence REST client via API key
     Args:
         base_url: The base URL of the Confluence instance
@@ -82,6 +101,7 @@ class ConfluenceApiKeyConfig():
         api_key: The API key to use for authentication
         ssl: Whether to use SSL
     """
+
     base_url: str
     email: str
     api_key: str
@@ -100,7 +120,7 @@ class ConfluenceClient(IClient):
 
     def __init__(
         self,
-        client: ConfluenceRESTClientViaUsernamePassword | ConfluenceRESTClientViaApiKey | ConfluenceRESTClientViaToken
+        client: ConfluenceRESTClientViaUsernamePassword | ConfluenceRESTClientViaApiKey | ConfluenceRESTClientViaToken,
     ) -> None:
         """Initialize with a Confluence client object"""
         self.client = client
@@ -113,13 +133,14 @@ class ConfluenceClient(IClient):
     def build_with_config(
         cls,
         config: ConfluenceUsernamePasswordConfig | ConfluenceTokenConfig | ConfluenceApiKeyConfig,
-    ) -> 'ConfluenceClient':
-        """
-        Build ConfluenceClient with configuration (placeholder for future OAuth2/enterprise support)
+    ) -> "ConfluenceClient":
+        """Build ConfluenceClient with configuration (placeholder for future OAuth2/enterprise support)
+
         Args:
             config: ConfluenceConfigBase instance
         Returns:
             ConfluenceClient instance with placeholder implementation
+
         """
         return cls(config.create_client())
 
@@ -131,9 +152,8 @@ class ConfluenceClient(IClient):
         arango_service,
         org_id: str,
         user_id: str,
-    ) -> 'ConfluenceClient':
-        """
-        Build ConfluenceClient using configuration service and arango service
+    ) -> "ConfluenceClient":
+        """Build ConfluenceClient using configuration service and arango service
         Args:
             logger: Logger instance
             config_service: Configuration service instance
