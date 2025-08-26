@@ -133,7 +133,7 @@ const AgentBuilderHeader: React.FC<AgentBuilderHeaderProps> = ({
       {/* Agent Name Input */}
       <TextField
         label="Agent Name"
-        value={agentName || 'New Agent'}
+        value={agentName}
         onChange={(e) => setAgentName(e.target.value)}
         size="small"
         placeholder="Enter agent name..."
