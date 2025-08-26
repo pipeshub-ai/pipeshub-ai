@@ -1,12 +1,13 @@
+from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
 from dependency_injector import containers, providers  # type: ignore
 from dotenv import load_dotenv  # type: ignore
-
 from app.config.configuration_service import ConfigurationService
 from app.config.providers.etcd.etcd3_encrypted_store import Etcd3EncryptedKeyValueStore
 from app.containers.container import BaseAppContainer
 from app.containers.utils.utils import ContainerUtils
 from app.health.health import Health
 from app.utils.logger import create_logger
+from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 
 load_dotenv(override=True)
 
@@ -45,28 +46,74 @@ class IndexingAppContainer(BaseAppContainer):
         arango_service=arango_service,
         vector_db_service=vector_db_service,
     )
-    domain_extractor = providers.Resource(
-        container_utils.create_domain_extractor,
+
+    # domain_extractor = providers.Resource(
+    #     container_utils.create_domain_extractor,
+    #     logger=logger,
+    #     arango_service=arango_service,
+    #     config_service=config_service,
+    # )
+
+    document_extractor = providers.Resource(
+        container_utils.create_document_extractor,
         logger=logger,
         arango_service=arango_service,
         config_service=config_service,
     )
+
+    blob_storage = providers.Resource(
+        container_utils.create_blob_storage,
+        logger=logger,
+        config_service=config_service,
+        arango_service=arango_service,
+    )
+    
+    arango = providers.Resource(
+        container_utils.create_arango,
+        arango_service=arango_service,
+        logger=logger,
+    )
+
+    vector_store = providers.Resource(
+        container_utils.create_vector_store,
+        logger=logger,
+        arango_service=arango_service,
+        config_service=config_service,
+        vector_db_service=vector_db_service,
+        collection_name=VECTOR_DB_COLLECTION_NAME,
+    )
+
+    sink_orchestrator = providers.Resource(
+        container_utils.create_sink_orchestrator,
+        logger=logger,
+        arango=arango,
+        blob_storage=blob_storage,
+        vector_store=vector_store,
+    )
+
+    # Parsers
     parsers = providers.Resource(container_utils.create_parsers, logger=logger)
+    domain_extractor = providers.Resource(container_utils.create_domain_extractor, logger=logger, arango_service=arango_service, config_service=config_service)
+    # Processor - depends on domain_extractor, indexing_pipeline, and arango_service
     processor = providers.Resource(
         container_utils.create_processor,
         logger=logger,
         config_service=config_service,
-        domain_extractor=domain_extractor,
         indexing_pipeline=indexing_pipeline,
         arango_service=arango_service,
         parsers=parsers,
+        document_extractor=document_extractor,
+        sink_orchestrator=sink_orchestrator,
+        domain_extractor=domain_extractor,
     )
+
     event_processor = providers.Resource(
         container_utils.create_event_processor,
         logger=logger,
         processor=processor,
         arango_service=arango_service,
     )
+
     redis_scheduler = providers.Resource(
         container_utils.create_redis_scheduler,
         logger=logger,

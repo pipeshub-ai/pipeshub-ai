@@ -134,6 +134,8 @@ class CollectionNames(Enum):
     NOTION_DATABASE_RECORD="notionDatabaseRecord"
     BELONGS_TO_RECORD_GROUP="belongsToRecordGroup"
 
+    # Storage mappings
+    VIRTUAL_RECORD_TO_DOC_ID_MAPPING = "virtualRecordToDocIdMapping"
     # Agent Builder collections
     AGENT_TEMPLATES = "agentTemplates"
     AGENT_INSTANCES = "agentInstances"

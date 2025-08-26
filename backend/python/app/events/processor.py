@@ -16,6 +16,37 @@ from app.models.entities import RecordType
 from app.modules.parsers.pdf.ocr_handler import OCRHandler
 from app.utils.llm import get_llm
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.modules.parsers.pdf.docling import DoclingPDFProcessor
+from app.models.entities import Record, RecordType, RecordStatus
+from app.modules.transformers.pipeline import IndexingPipeline
+from app.modules.transformers.transformer import TransformContext
+
+
+def convert_record_dict_to_record(record_dict: dict) -> Record:
+   
+    # Map the database fields to Record model fields
+    record = Record(
+        id=record_dict.get("_key"),
+        org_id=record_dict.get("orgId"),
+        record_name=record_dict.get("recordName"),
+        record_type=RecordType(record_dict.get("recordType", "FILE")),
+        record_status=RecordStatus(record_dict.get("indexingStatus", "NOT_STARTED")),
+        external_record_id=record_dict.get("externalRecordId"),
+        version=record_dict.get("version", 1),
+        origin=record_dict.get("origin"),
+        summary_document_id=record_dict.get("summaryDocumentId"),
+        created_at=record_dict.get("createdAtTimestamp"),
+        updated_at=record_dict.get("updatedAtTimestamp"),
+        source_created_at=record_dict.get("sourceCreatedAtTimestamp"),
+        source_updated_at=record_dict.get("sourceLastModifiedTimestamp"),
+        weburl=record_dict.get("webUrl"),
+        mime_type=record_dict.get("mimeType"),
+        external_revision_id=record_dict.get("externalRevisionId"),
+        connector_name = record_dict.get("connectorName"),
+       
+    )
+    
+    return record
 
 
 class Processor:
@@ -23,18 +54,22 @@ class Processor:
         self,
         logger,
         config_service,
-        domain_extractor,
         indexing_pipeline,
         arango_service,
         parsers,
+        document_extractor,
+        sink_orchestrator,
+        domain_extractor,
     ) -> None:
         self.logger = logger
         self.logger.info("🚀 Initializing Processor")
-        self.domain_extractor = domain_extractor
         self.indexing_pipeline = indexing_pipeline
         self.arango_service = arango_service
         self.parsers = parsers
         self.config_service = config_service
+        self.document_extraction = document_extractor
+        self.sink_orchestrator = sink_orchestrator
+        self.domain_extractor = domain_extractor
 
     async def process_google_slides(self, record_id, record_version, orgId, content, virtual_record_id) -> None:
         """Process Google Slides presentation and extract structured content
@@ -513,6 +548,8 @@ class Processor:
     async def process_gmail_message(
         self, recordName, recordId, version, source, orgId, html_content, virtual_record_id
     ) -> None:
+
+    
         self.logger.info("🚀 Processing Gmail Message")
 
         try:
@@ -682,6 +719,31 @@ class Processor:
 
         except Exception as e:
             self.logger.error(f"❌ Error processing HTML document: {str(e)}")
+            raise
+    
+    async def process_pdf_with_docling(self, recordName, recordId, pdf_binary, virtual_record_id) -> None:
+        self.logger.info(f"🚀 Starting PDF document processing for record: {recordName}")
+        try:
+            self.logger.debug("📄 Processing PDF binary content")
+            processor = DoclingPDFProcessor(logger=self.logger,config=self.config_service)
+            block_containers = await processor.load_document(recordName, pdf_binary)
+            record = await self.arango_service.get_document(
+                recordId, CollectionNames.RECORDS.value
+            )
+            if record is None:
+                self.logger.error(f"❌ Record {recordId} not found in database")
+                return
+            doc = dict(record)
+            record = convert_record_dict_to_record(doc)
+            record.block_containers = block_containers
+            record.virtual_record_id = virtual_record_id
+            ctx = TransformContext(record=record)
+            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            await pipeline.apply(ctx)
+            self.logger.info("✅ PDF processing completed successfully using docling")
+            return
+        except Exception as e:
+            self.logger.error(f"❌ Error processing PDF document with docling: {str(e)}")
             raise
 
     async def process_pdf_document(
@@ -1036,7 +1098,7 @@ class Processor:
 
         try:
             self.logger.debug("📊 Processing Excel content")
-            llm = await get_llm(self.config_service)
+            llm, _ = await get_llm(self.config_service)
             parser = self.parsers[ExtensionTypes.XLSX.value]
             excel_result = parser.parse(excel_binary)
 
@@ -1209,7 +1271,7 @@ class Processor:
             self.logger.debug("📊 Processing CSV content")
             parser = self.parsers[ExtensionTypes.CSV.value]
 
-            llm = await get_llm(self.config_service)
+            llm, _ = await get_llm(self.config_service)
 
             # Try different encodings to decode binary data
             encodings = ["utf-8", "latin1", "cp1252", "iso-8859-1"]
