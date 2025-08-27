@@ -1587,6 +1587,7 @@ class ArangoService:
                 return False
 
             # Share the agent to users
+            user_agent_edges = []
             if user_ids:
                 for user_id_to_share in user_ids:
                     user = await self.get_user_by_user_id(user_id_to_share)
@@ -1599,13 +1600,17 @@ class ArangoService:
                         "role": "READER",
                         "type": "USER",
                         "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                     }
-                    result = await self.batch_create_edges([edge], CollectionNames.PERMISSION.value)
-                    if not result:
-                        self.logger.error(f"Failed to share agent {agent_id} to user {user_id_to_share}")
-                        return False
+                    user_agent_edges.append(edge)
+                
+                result = await self.batch_create_edges(user_agent_edges, CollectionNames.PERMISSION.value)
+                if not result:
+                    self.logger.error(f"Failed to share agent {agent_id} to user {user_id_to_share}")
+                    return False
 
             # Share the agent to teams
+            team_agent_edges = []
             if team_ids:
                 for team_id in team_ids:
                     team = await self.get_team_by_team_id(team_id)
@@ -1618,12 +1623,156 @@ class ArangoService:
                         "role": "READER",
                         "type": "TEAM",
                         "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                     }
-                    result = await self.batch_create_edges([edge], CollectionNames.PERMISSION.value)
-                    if not result:
-                        self.logger.error(f"Failed to share agent {agent_id} to team {team_id}")
-                        return False
+                    team_agent_edges.append(edge)
+                result = await self.batch_create_edges(team_agent_edges, CollectionNames.PERMISSION.value)
+                if not result:
+                    self.logger.error(f"Failed to share agent {agent_id} to team {team_id}")
+                    return False
             return True
         except Exception as e:
             self.logger.error("❌ Failed to share agent: %s", str(e), exc_info=True)
             return False
+
+    async def unshare_agent(self, agent_id: str, user_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]]) -> Optional[Dict]:
+        """Unshare an agent from users and teams - direct deletion without validation"""
+        try:
+            # Check if user has permission to unshare the agent
+            agent_with_permission = await self.get_agent(agent_id, user_id)
+            if agent_with_permission is None or not agent_with_permission.get("can_share", False):
+                return {"success": False, "reason": "Insufficient permissions to unshare agent"}
+
+            # Build conditions for batch delete
+            conditions = []
+            bind_vars = {"agent_id": agent_id}
+            
+            if user_ids:
+                conditions.append("(perm._from IN @user_froms AND perm.type == 'USER' AND perm.role != 'OWNER')")
+                bind_vars["user_froms"] = [f"{CollectionNames.USERS.value}/{user_id}" for user_id in user_ids]
+            
+            if team_ids:
+                conditions.append("(perm._from IN @team_froms AND perm.type == 'TEAM')")
+                bind_vars["team_froms"] = [f"{CollectionNames.TEAMS.value}/{team_id}" for team_id in team_ids]
+            
+            if not conditions:
+                return {"success": False, "reason": "No users or teams provided"}
+
+            # Single batch delete query
+            batch_delete_query = f"""
+            FOR perm IN {CollectionNames.PERMISSION.value}
+                FILTER perm._to == CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', @agent_id)
+                FILTER ({' OR '.join(conditions)})
+                REMOVE perm IN {CollectionNames.PERMISSION.value}
+                RETURN OLD._key
+            """
+            
+            cursor = self.db.aql.execute(batch_delete_query, bind_vars=bind_vars)
+            deleted_permissions = list(cursor)
+            
+            self.logger.info(f"Unshared agent {agent_id}: removed {len(deleted_permissions)} permissions")
+            
+            return {
+                "success": True,
+                "agent_id": agent_id,
+                "deleted_permissions": len(deleted_permissions)
+            }
+
+        except Exception as e:
+            self.logger.error("Failed to unshare agent: %s", str(e), exc_info=True)
+            return {"success": False, "reason": f"Internal error: {str(e)}"}
+
+    async def update_agent_permission(self, agent_id: str, owner_user_id: str, target_user_id: str, new_role: str) -> Optional[bool]:
+        """Update permission role for a user on an agent (only OWNER can do this)"""
+        try:
+            # Check if the requesting user is the OWNER of the agent
+            agent_with_permission = await self.get_agent(agent_id, owner_user_id)
+            if agent_with_permission is None:
+                self.logger.warning(f"No permission found for user {owner_user_id} on agent {agent_id}")
+                return False
+
+            # Only OWNER can update permissions
+            if agent_with_permission.get("permission", {}).get("role") != "OWNER":
+                self.logger.warning(f"User {owner_user_id} is not the OWNER of agent {agent_id}")
+                return False
+
+            # Get the target user
+            target_user = await self.get_user_by_user_id(target_user_id)
+            if target_user is None:
+                self.logger.warning(f"Target user {target_user_id} not found")
+                return False
+
+            # Update the permission edge
+            update_query = f"""
+            FOR perm IN {CollectionNames.PERMISSION.value}
+                FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', @target_user_key)
+                FILTER perm._to == CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', @agent_id)
+                FILTER perm.type == "USER"
+                FILTER perm.role != "OWNER"  // Cannot change OWNER role
+                UPDATE perm WITH {{ role: @new_role, updatedAtTimestamp: @timestamp }} IN {CollectionNames.PERMISSION.value}
+                RETURN NEW
+            """
+            bind_vars = {
+                "target_user_key": target_user.get("_key"),
+                "agent_id": agent_id,
+                "new_role": new_role,
+                "timestamp": get_epoch_timestamp_in_ms(),
+            }
+            cursor = self.db.aql.execute(update_query, bind_vars=bind_vars)
+            result = list(cursor)
+
+            if not result:
+                self.logger.warning(f"No permission edge found to update for user {target_user_id}")
+                return False
+
+            self.logger.info(f"Successfully updated permission for user {target_user_id} to role {new_role}")
+            return True
+
+        except Exception as e:
+            self.logger.error("❌ Failed to update agent permission: %s", str(e), exc_info=True)
+            return False
+
+    async def get_agent_permissions(self, agent_id: str, user_id: str) -> Optional[List[Dict]]:
+        """Get all permissions for an agent (only OWNER can view all permissions)"""
+        try:
+            # Check if user has access to the agent
+            agent_with_permission = await self.get_agent(agent_id, user_id)
+            if agent_with_permission is None:
+                self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
+                return None
+
+            # Only OWNER can view all permissions
+            if agent_with_permission.get("permission", {}).get("role") != "OWNER":
+                self.logger.warning(f"User {user_id} is not the OWNER of agent {agent_id}")
+                return None
+
+            # Get all permissions for the agent
+            query = f"""
+            FOR perm IN {CollectionNames.PERMISSION.value}
+                FILTER perm._to == CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', @agent_id)
+                LET entity = DOCUMENT(perm._from)
+                FILTER entity != null
+                RETURN {{
+                    _id: perm._id,
+                    _key: perm._key,
+                    entity_id: perm._from,
+                    entity_key: SPLIT(perm._from, '/')[1],
+                    entity_name: entity.fullName || entity.name || entity.userName,
+                    entity_email: entity.email,
+                    entity_type: perm.type,
+                    role: perm.role,
+                    created_at: perm.createdAtTimestamp,
+                    updated_at: perm.updatedAtTimestamp
+                }}
+            """
+            bind_vars = {
+                "agent_id": agent_id,
+            }
+            cursor = self.db.aql.execute(query, bind_vars=bind_vars)
+            result = list(cursor)
+
+            return result
+
+        except Exception as e:
+            self.logger.error("❌ Failed to get agent permissions: %s", str(e), exc_info=True)
+            return None

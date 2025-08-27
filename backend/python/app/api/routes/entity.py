@@ -28,7 +28,6 @@ async def get_services(request: Request) -> Dict[str, Any]:
 @router.post("/team")
 async def create_team(request: Request) -> JSONResponse:
     """Create a team"""
-    print("Creating team")
     services = await get_services(request)
     arango_service = services["arango_service"]
     logger = services["logger"]
@@ -190,9 +189,9 @@ async def get_teams(
         "currentUserPermission": LENGTH(current_user_permission) > 0 ? current_user_permission[0] : null,
         "members": team_members,
         "memberCount": user_count,
-        "canEdit": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["ADMIN", "OWNER"],
+        "canEdit": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"],
         "canDelete": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role == "OWNER",
-        "canManageMembers": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["ADMIN", "OWNER"]
+        "canManageMembers": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"]
     }}
     """
 
@@ -267,7 +266,7 @@ async def get_teams(
         logger.error(f"Error in get_teams: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch teams")
 
-async def get_team_with_users(arango_service, team_key: str, user_key: str):
+async def get_team_with_users(arango_service, team_key: str, user_key: str) -> Optional[Dict]:
     """Helper function to get team with users and permissions"""
     team_query = f"""
     FOR team IN {CollectionNames.TEAMS.value}
@@ -305,9 +304,9 @@ async def get_team_with_users(arango_service, team_key: str, user_key: str):
         "currentUserPermission": LENGTH(current_user_permission) > 0 ? current_user_permission[0] : null,
         "members": team_members,
         "memberCount": user_count,
-        "canEdit": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["ADMIN", "OWNER"],
+        "canEdit": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"],
         "canDelete": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role == "OWNER",
-        "canManageMembers": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["ADMIN", "OWNER"]
+        "canManageMembers": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"]
     }}
     """
 
@@ -358,7 +357,7 @@ async def get_team(request: Request, team_id: str) -> JSONResponse:
 
 @router.put("/team/{team_id}")
 async def update_team(request: Request, team_id: str) -> JSONResponse:
-    """Update a team - requires ADMIN or OWNER role"""
+    """Update a team -  OWNER role"""
     services = await get_services(request)
     arango_service = services["arango_service"]
     logger = services["logger"]
@@ -421,7 +420,7 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
 
 @router.post("/team/{team_id}/users")
 async def add_users_to_team(request: Request, team_id: str) -> JSONResponse:
-    """Add users to a team - requires ADMIN or OWNER role"""
+    """Add users to a team - OWNER role"""
     services = await get_services(request)
     arango_service = services["arango_service"]
     logger = services["logger"]
@@ -489,7 +488,7 @@ async def add_users_to_team(request: Request, team_id: str) -> JSONResponse:
 
 @router.delete("/team/{team_id}/users")
 async def remove_user_from_team(request: Request, team_id: str) -> JSONResponse:
-    """Remove a user from a team - requires ADMIN or OWNER role"""
+    """Remove a user from a team - OWNER role"""
     services = await get_services(request)
     arango_service = services["arango_service"]
     logger = services["logger"]
@@ -548,7 +547,7 @@ async def remove_user_from_team(request: Request, team_id: str) -> JSONResponse:
         )
 
         # Convert cursor to list if needed
-        deleted_list = next(deleted_permissions, None)
+        deleted_list = list(deleted_permissions)
         if not deleted_list:
             raise HTTPException(status_code=404, detail="No users found in team to remove")
 
@@ -573,7 +572,7 @@ async def remove_user_from_team(request: Request, team_id: str) -> JSONResponse:
 
 @router.put("/team/{team_id}/users/permissions")
 async def update_user_permissions(request: Request, team_id: str) -> JSONResponse:
-    """Update user permissions in a team - requires ADMIN or OWNER role"""
+    """Update user permissions in a team - OWNER role"""
     services = await get_services(request)
     arango_service = services["arango_service"]
     logger = services["logger"]
@@ -770,9 +769,9 @@ async def get_user_teams(request: Request) -> JSONResponse:
         "currentUserPermission": permission,
         "members": team_members,
         "memberCount": member_count,
-        "canEdit": permission.role IN ["ADMIN", "OWNER"],
+        "canEdit": permission.role IN ["OWNER"],
         "canDelete": permission.role == "OWNER",
-        "canManageMembers": permission.role IN ["ADMIN", "OWNER"]
+        "canManageMembers": permission.role IN ["OWNER"]
     }
     """
 
@@ -976,9 +975,9 @@ async def get_team_users(request: Request, team_id: str) -> JSONResponse:
             "currentUserPermission": LENGTH(current_user_permission) > 0 ? current_user_permission[0] : null,
             "members": team_members,
             "memberCount": user_count,
-            "canEdit": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["ADMIN", "OWNER"],
+            "canEdit": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"],
             "canDelete": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role == "OWNER",
-            "canManageMembers": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["ADMIN", "OWNER"]
+            "canManageMembers": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"]
         }}
         """
 
@@ -1012,7 +1011,7 @@ async def get_team_users(request: Request, team_id: str) -> JSONResponse:
 
 @router.post("/team/{team_id}/bulk-users")
 async def bulk_manage_team_users(request: Request, team_id: str) -> JSONResponse:
-    """Bulk add/remove users from a team - requires ADMIN or OWNER role"""
+    """Bulk add/remove users from a team -OWNER role"""
     services = await get_services(request)
     arango_service = services["arango_service"]
     logger = services["logger"]
@@ -1161,9 +1160,9 @@ async def search_teams(request: Request) -> JSONResponse:
             "currentUserPermission": LENGTH(current_user_permission) > 0 ? current_user_permission[0] : null,
             "members": team_members,
             "memberCount": user_count,
-            "canEdit": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["ADMIN", "OWNER"],
+            "canEdit": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"],
             "canDelete": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role == "OWNER",
-            "canManageMembers": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["ADMIN", "OWNER"]
+            "canManageMembers": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"]
         }}
         """
 

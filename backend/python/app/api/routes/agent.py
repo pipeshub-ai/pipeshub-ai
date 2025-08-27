@@ -510,6 +510,7 @@ async def create_agent(request: Request) -> JSONResponse:
             "role": "OWNER",
             "type": "USER",
             "createdAtTimestamp": time,
+            "updatedAtTimestamp": time,
         }
         result = await arango_service.batch_create_edges([edge], CollectionNames.PERMISSION.value)
         if not result:
@@ -614,10 +615,14 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for updating agent")
 
-        #  check if user is the owner of the agent
-        agent = await arango_service.get_agent(agent_id, user.get("_key"))
-        if agent is None:
+        # Check if user has access to the agent and can edit it
+        agent_with_permission = await arango_service.get_agent(agent_id, user.get("_key"))
+        if agent_with_permission is None:
             raise HTTPException(status_code=404, detail="Agent not found")
+
+        # Only OWNER can edit the agent
+        if not agent_with_permission.get("can_edit", False):
+            raise HTTPException(status_code=403, detail="Only the owner can edit this agent")
 
         # Update the agent
         result = await arango_service.update_agent(agent_id, body_dict, user.get("_key"))
@@ -652,17 +657,19 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for deleting agent")
 
-        #  check if user is the owner of the agent
-        agent = await arango_service.get_agent(agent_id, user.get("_key"))
-        if agent is None:
+        # Check if user has access to the agent and can delete it
+        agent_with_permission = await arango_service.get_agent(agent_id, user.get("_key"))
+        if agent_with_permission is None:
             raise HTTPException(status_code=404, detail="Agent not found")
 
+        # Only OWNER can delete the agent
+        if not agent_with_permission.get("can_delete", False):
+            raise HTTPException(status_code=403, detail="Only the owner can delete this agent")
 
         # Delete the agent
         result = await arango_service.delete_agent(agent_id, user.get("_key"))
         if not result:
             raise HTTPException(status_code=400, detail="Failed to delete agent")
-
 
         return JSONResponse(
             status_code=200,
@@ -676,13 +683,18 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.post("/{agent_id}/share")
-async def share_agent(request: Request, agent_id: str, user_ids: List[str] = Body(...), team_ids: List[str] = Body(...)) -> JSONResponse:
+async def share_agent(request: Request, agent_id: str) -> JSONResponse:
     """Share an agent"""
     try:
         # Get all services
         services = await get_services(request)
         logger = services["logger"]
         arango_service = services["arango_service"]
+
+        body = await request.body()
+        body_dict = json.loads(body.decode('utf-8')) 
+        user_ids = body_dict.get("userIds", [])
+        team_ids = body_dict.get("teamIds", [])
 
         # Extract user info from request
         user_info = {
@@ -695,10 +707,18 @@ async def share_agent(request: Request, agent_id: str, user_ids: List[str] = Bod
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for sharing agent")
 
+        # Check if user has permission to share the agent
+        agent_with_permission = await arango_service.get_agent(agent_id, user.get("_key"))
+        if agent_with_permission is None:
+            raise HTTPException(status_code=404, detail="Agent not found")
+
+        # Only OWNER and ORGANIZER can share the agent
+        if not agent_with_permission.get("can_share", False):
+            raise HTTPException(status_code=403, detail="You don't have permission to share this agent")
+
         result = await arango_service.share_agent(agent_id, user.get("_key"), user_ids, team_ids)
         if not result:
             raise HTTPException(status_code=400, detail="Failed to share agent")
-
 
         return JSONResponse(
             status_code=200,
@@ -719,6 +739,10 @@ async def unshare_agent(request: Request, agent_id: str) -> JSONResponse:
         services = await get_services(request)
         logger = services["logger"]
         arango_service = services["arango_service"]
+        body = await request.body()
+        body_dict = json.loads(body.decode('utf-8')) 
+        user_ids = body_dict.get("userIds", [])
+        team_ids = body_dict.get("teamIds", [])
 
         # Extract user info from request
         user_info = {
@@ -731,7 +755,19 @@ async def unshare_agent(request: Request, agent_id: str) -> JSONResponse:
         if user is None:
             raise HTTPException(status_code=404, detail="User not found for unsharing agent")
 
+        # Check if user has permission to unshare the agent
+        agent_with_permission = await arango_service.get_agent(agent_id, user.get("_key"))
+        if agent_with_permission is None:
+            raise HTTPException(status_code=404, detail="Agent not found")
+
+        # Only OWNER and ORGANIZER can unshare the agent
+        if not agent_with_permission.get("can_share", False):
+            raise HTTPException(status_code=403, detail="You don't have permission to unshare this agent")
+
         # Unshare the agent
+        result = await arango_service.unshare_agent(agent_id, user.get("_key"), user_ids, team_ids)
+        if not result:
+            raise HTTPException(status_code=400, detail="Failed to unshare agent")
 
         return JSONResponse(
             status_code=200,
@@ -742,6 +778,88 @@ async def unshare_agent(request: Request, agent_id: str) -> JSONResponse:
         )
     except Exception as e:
         logger.error(f"Error in unshare_agent: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/{agent_id}/permissions")
+async def get_agent_permissions(request: Request, agent_id: str) -> JSONResponse:
+    """Get all permissions for an agent - only OWNER can view all permissions"""
+    try:
+        # Get all services
+        services = await get_services(request)
+        logger = services["logger"]
+        arango_service = services["arango_service"]
+
+        # Extract user info from request
+        user_info = {
+            "orgId": request.state.user.get("orgId"),
+            "userId": request.state.user.get("userId"),
+        }
+
+        user = await arango_service.get_user_by_user_id(user_info.get("userId"))
+        logger.info(f"User: {user}")
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found for viewing agent permissions")
+
+        # Get agent permissions (only OWNER can view all permissions)
+        permissions = await arango_service.get_agent_permissions(agent_id, user.get("_key"))
+        if permissions is None:
+            raise HTTPException(status_code=403, detail="You don't have permission to view permissions for this agent")
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "success",
+                "message": "Agent permissions retrieved successfully",
+                "permissions": permissions,
+            },
+        )
+    except Exception as e:
+        logger.error(f"Error in get_agent_permissions: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.put("/{agent_id}/permissions/{target_user_id}")
+async def update_agent_permission(request: Request, agent_id: str, target_user_id: str) -> JSONResponse:
+    """Update permission role for a user on an agent - only OWNER can do this"""
+    try:
+        # Get all services
+        services = await get_services(request)
+        logger = services["logger"]
+        arango_service = services["arango_service"]
+
+        # Extract user info from request
+        user_info = {
+            "orgId": request.state.user.get("orgId"),
+            "userId": request.state.user.get("userId"),
+        }
+
+        body = await request.body()
+        body_dict = json.loads(body.decode('utf-8'))
+        new_role = body_dict.get("role")
+
+        if not new_role:
+            raise HTTPException(status_code=400, detail="Role is required")
+
+        user = await arango_service.get_user_by_user_id(user_info.get("userId"))
+        logger.info(f"User: {user}")
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found for updating agent permission")
+
+        # Update the permission (only OWNER can do this)
+        result = await arango_service.update_agent_permission(agent_id, user.get("_key"), target_user_id, new_role)
+        if not result:
+            raise HTTPException(status_code=400, detail="Failed to update agent permission")
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "success",
+                "message": "Agent permission updated successfully",
+            },
+        )
+    except Exception as e:
+        logger.error(f"Error in update_agent_permission: {str(e)}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.post("/{agent_id}/chat")
