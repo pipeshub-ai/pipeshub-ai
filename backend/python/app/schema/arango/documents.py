@@ -492,6 +492,27 @@ agent_schema = {
     "message": "Document does not match the agent schema.",
 }
 
+team_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "minLength": 1},
+            "description": {"type": "string", "minLength": 1},
+            "orgId": {"type": ["string", "null"]},
+            "createdBy": {"type": ["string", "null"]},
+            "updatedByUserId": {"type": ["string", "null"]},
+            "deletedByUserId": {"type": ["string", "null"]},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+            "deletedAtTimestamp": {"type": "number"},
+            "isDeleted": {"type": "boolean", "default": False},
+        },
+        "required": ["name", "description"],
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the team schema.",
+}
 
 # future schema
 

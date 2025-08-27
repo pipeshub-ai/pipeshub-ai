@@ -88,8 +88,8 @@ EDGE_DEFINITIONS = [
         "to_vertex_collections": [CollectionNames.APPS.value],
     },
     {
-        "edge_collection": CollectionNames.TEMPLATE_ACCESS.value,
-        "from_vertex_collections": [CollectionNames.USERS.value],
-        "to_vertex_collections": [CollectionNames.AGENT_INSTANCES.value],
+        "edge_collection": CollectionNames.PERMISSION.value,
+        "from_vertex_collections": [CollectionNames.USERS.value, CollectionNames.TEAMS.value],
+        "to_vertex_collections": [CollectionNames.AGENT_INSTANCES.value, CollectionNames.AGENT_TEMPLATES.value, CollectionNames.TEAMS.value],
     },
 ]

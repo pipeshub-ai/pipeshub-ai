@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.middlewares.auth import authMiddleware
+from app.api.routes.entity import router as entity_router
 from app.config.constants.arangodb import AccountType, Connectors
 from app.connectors.api.router import router
 from app.connectors.sources.localKB.api.kb_router import kb_router
@@ -35,6 +36,7 @@ async def get_initialized_container() -> ConnectorAppContainer:
                 "app.connectors.sources.google.common.sync_tasks",
                 "app.connectors.api.router",
                 "app.connectors.sources.localKB.api.kb_router",
+                "app.api.routes.entity",
                 "app.connectors.api.middleware",
                 "app.core.signed_url",
             ]
@@ -312,7 +314,7 @@ app = FastAPI(
 )
 
 # List of paths to apply authentication to
-INCLUDE_PATHS = ["/api/v1/stream/record/", "/api/v1/delete/"]
+INCLUDE_PATHS = ["/api/v1/stream/record/", "/api/v1/delete/", "/api/v1/entity/"]
 
 
 @app.middleware("http")
@@ -375,9 +377,11 @@ async def health_check() -> JSONResponse:
         )
 
 
-# Include routes
-app.include_router(router)
+# Include routes - more specific routes first
+app.include_router(entity_router)
 app.include_router(kb_router)
+app.include_router(router)
+
 
 
 # Global error handler

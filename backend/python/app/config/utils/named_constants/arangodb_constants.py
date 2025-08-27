@@ -77,6 +77,7 @@ class CollectionNames(Enum):
     PERMISSIONS_TO_KNOWLEDGE_BASE = "permissionsToKnowledgeBase"
     BELONGS_TO_KB = "belongsToKB"
     PERMISSIONS_TO_KB = "permissionsToKB"
+    PERMISSION = "permission"
 
     # Drive related
     DRIVES = "drives"
@@ -97,6 +98,7 @@ class CollectionNames(Enum):
     ORGS = "organizations"
     ANYONE = "anyone"
     BELONGS_TO = "belongsTo"
+    TEAMS = "teams"
 
     # Departments
     DEPARTMENTS = "departments"
@@ -134,7 +136,7 @@ class CollectionNames(Enum):
     AGENT_TEMPLATES = "agentTemplates"
     AGENT_INSTANCES = "agentInstances"
     TEMPLATE_ACCESS = "templateAccess"
-
+    AGENT_ACCESS = "agentAccess"
 
 
 class QdrantCollectionNames(Enum):
