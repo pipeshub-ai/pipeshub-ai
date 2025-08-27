@@ -692,7 +692,7 @@ async def share_agent(request: Request, agent_id: str) -> JSONResponse:
         arango_service = services["arango_service"]
 
         body = await request.body()
-        body_dict = json.loads(body.decode('utf-8')) 
+        body_dict = json.loads(body.decode('utf-8'))
         user_ids = body_dict.get("userIds", [])
         team_ids = body_dict.get("teamIds", [])
 
@@ -740,7 +740,7 @@ async def unshare_agent(request: Request, agent_id: str) -> JSONResponse:
         logger = services["logger"]
         arango_service = services["arango_service"]
         body = await request.body()
-        body_dict = json.loads(body.decode('utf-8')) 
+        body_dict = json.loads(body.decode('utf-8'))
         user_ids = body_dict.get("userIds", [])
         team_ids = body_dict.get("teamIds", [])
 

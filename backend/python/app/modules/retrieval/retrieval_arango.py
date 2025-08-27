@@ -1603,7 +1603,7 @@ class ArangoService:
                         "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                     }
                     user_agent_edges.append(edge)
-                
+
                 result = await self.batch_create_edges(user_agent_edges, CollectionNames.PERMISSION.value)
                 if not result:
                     self.logger.error(f"Failed to share agent {agent_id} to user {user_id_to_share}")
@@ -1646,15 +1646,15 @@ class ArangoService:
             # Build conditions for batch delete
             conditions = []
             bind_vars = {"agent_id": agent_id}
-            
+
             if user_ids:
                 conditions.append("(perm._from IN @user_froms AND perm.type == 'USER' AND perm.role != 'OWNER')")
                 bind_vars["user_froms"] = [f"{CollectionNames.USERS.value}/{user_id}" for user_id in user_ids]
-            
+
             if team_ids:
                 conditions.append("(perm._from IN @team_froms AND perm.type == 'TEAM')")
                 bind_vars["team_froms"] = [f"{CollectionNames.TEAMS.value}/{team_id}" for team_id in team_ids]
-            
+
             if not conditions:
                 return {"success": False, "reason": "No users or teams provided"}
 
@@ -1666,12 +1666,12 @@ class ArangoService:
                 REMOVE perm IN {CollectionNames.PERMISSION.value}
                 RETURN OLD._key
             """
-            
+
             cursor = self.db.aql.execute(batch_delete_query, bind_vars=bind_vars)
             deleted_permissions = list(cursor)
-            
+
             self.logger.info(f"Unshared agent {agent_id}: removed {len(deleted_permissions)} permissions")
-            
+
             return {
                 "success": True,
                 "agent_id": agent_id,
