@@ -76,13 +76,7 @@ class KnowledgeBaseMigrationService:
             if not migration_results["success"]:
                 return migration_results
 
-            # Step 4: Update graph structure (remove old edges, rename graph)
-            await self._update_graph_structure()
-
-            # Step 5: Clean up old collections
-            await self._cleanup_old_collections(migration_data)
-
-            # Step 6: Verify migration
+            # Step 4: Verify migration
             await self._verify_migration(migration_results["details"])
 
             self.logger.info("🎉 Knowledge Base migration completed successfully")
@@ -692,7 +686,7 @@ class KnowledgeBaseMigrationService:
             self.logger.error(f"❌ Failed to update graph structure: {str(e)}")
             raise
 
-    async def _cleanup_old_collections(self, migration_data: Dict) -> None:
+    async def _cleanup_old_collections(self) -> None:
         """Clean up old collections after successful migration"""
         self.logger.info("🧹 Starting cleanup of old collections")
 
@@ -708,16 +702,20 @@ class KnowledgeBaseMigrationService:
 
             try:
                 # Delete old data
+
                 for collection_name in [self.OLD_KB_TO_RECORD_EDGES, self.OLD_USER_TO_KB_EDGES, self.OLD_KB_COLLECTION]:
                     if self.db.has_collection(collection_name):
                         delete_query = f"FOR doc IN {collection_name} REMOVE doc IN {collection_name}"
                         cleanup_transaction.aql.execute(delete_query)
                         self.logger.info(f"🗑️ Deleted data from {collection_name}")
+                    else:
+                        self.logger.info(f"⏭️ Collection '{collection_name}' does not exist - skipping deletion")
 
                 await asyncio.to_thread(lambda: cleanup_transaction.commit_transaction())
                 self.logger.info("✅ Old data deleted successfully")
 
-            except Exception:
+            except Exception as e:
+                self.logger.error(f"❌ Failed to cleanup old collections: {str(e)}")
                 await asyncio.to_thread(lambda: cleanup_transaction.abort_transaction())
                 raise
 
@@ -806,6 +804,13 @@ async def run_kb_migration(container) -> Dict:
 
         migration_service = KnowledgeBaseMigrationService(kb_arango_service,logger)
         result = await migration_service.run_migration()
+
+        # Step 2: Update graph structure (remove old edges, rename graph)
+        await migration_service._update_graph_structure()
+
+        # Step 3: Clean up old collections
+        await migration_service._cleanup_old_collections()
+
 
         if result['success']:
             if result['migrated_count'] == 0 and "no migration needed" in result['message'].lower():

@@ -30,12 +30,12 @@ import deleteIcon from '@iconify-icons/mdi/delete';
 import templateIcon from '@iconify-icons/mdi/file-document';
 
 import type { AgentTemplate, AgentTemplateFormData } from 'src/types/agent';
-import AgentApiService from '../services/agent-api-service';
+import AgentApiService from '../services/api';
 import {
   validateAgentTemplateForm,
   getInitialTemplateFormData,
   TEMPLATE_CATEGORIES,
-} from '../utils/agent-utils';
+} from '../utils/agent';
 import { createScrollableContainerStyle } from '../../chatbot/utils/styles/scrollbar';
 
 
