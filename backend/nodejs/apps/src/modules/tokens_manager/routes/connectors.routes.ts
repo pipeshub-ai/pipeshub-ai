@@ -590,7 +590,7 @@ export function createConnectorRouter(container: Container) {
         }
 
         let connector = await ConnectorsConfig.findOne({
-          name: connectorId,
+          name: ConnectorIdToNameMap[connectorId],
           orgId: req.user.orgId,
         });
         await eventService.start();
