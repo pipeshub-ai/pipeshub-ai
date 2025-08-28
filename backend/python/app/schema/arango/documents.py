@@ -378,9 +378,11 @@ agent_template_schema = {
                         "name": {"type": "string", "minLength": 1},
                         "description": {"type": "string", "minLength": 1},
                     },
+                    "nullable": True,
                     "required": ["name"],
                     "additionalProperties": True,
-                }
+                },
+                "default": [],
             },
             "models": {
                 "type": "array",
@@ -392,15 +394,18 @@ agent_template_schema = {
                         "provider": {"type": "string", "minLength": 1},
                         "config": {"type": "object"},
                     },
+                    "nullable": True,
                     "required": ["name", "role", "provider"],
                     "additionalProperties": True,
-                }
+                },
+                "default": [],
             },
             "memory": {
                 "type": "object",
                 "properties": {
                     "type": {"type": "array", "items": {"type": "string", "enum": ["CONVERSATIONS", "KNOWLEDGE_BASE", "APPS", "ACTIVITIES", "VECTOR_DB"]}},
                 },
+                "nullable": True,
                 "required": ["type"],
                 "additionalProperties": True,
             },
@@ -419,7 +424,7 @@ agent_template_schema = {
             "deletedAtTimestamp": {"type": ["number", "null"]},
             "isDeleted": {"type": "boolean", "default": False},
         },
-        "required": ["name", "description", "startMessage", "systemPrompt", "tools"],
+        "required": ["name", "description", "startMessage", "systemPrompt"],
         "additionalProperties": True,
     },
     "level": "strict",

@@ -194,6 +194,12 @@ async def create_agent_template(request: Request) -> JSONResponse:
         body = await request.body()
         body_dict = json.loads(body.decode('utf-8'))
 
+        # Validate required fields
+        required_fields = ["name", "description", "systemPrompt"]
+        for field in required_fields:
+            if not body_dict.get(field) or not body_dict.get(field).strip():
+                raise HTTPException(status_code=400, detail=f"Missing required field: {field}")
+
         # Extract user info from request
         user_info = {
             "orgId": request.state.user.get("orgId"),
@@ -201,30 +207,33 @@ async def create_agent_template(request: Request) -> JSONResponse:
         }
         time = get_epoch_timestamp_in_ms()
         template_key = str(uuid.uuid4())
-        logger.info(f"Creating agent template with key: {body_dict}")
-        # Create the template
-        template = {
-            "_key": template_key,
-            "name": body_dict.get("name"),
-            "description": body_dict.get("description"),
-            "startMessage": body_dict.get("startMessage"),
-            "systemPrompt": body_dict.get("systemPrompt"),
-            "tools": body_dict.get("tools"),
-            "models": body_dict.get("models"),
-            "memory": body_dict.get("memory"),
-            "tags": body_dict.get("tags"),
-            "orgId": user_info.get("orgId"),
-            "isActive": True,
-            "createdAtTimestamp": time,
-            "updatedAtTimestamp": time,
-            "isDeleted": False,
-        }
 
+        # Get user first
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
         logger.info(f"User: {user}")
         if user is None:
             raise HTTPException(status_code=404, detail="User not found")
-        template["createdBy"] = user.get("_key")
+
+        # Create the template with all required fields
+        template = {
+            "_key": template_key,
+            "name": body_dict.get("name").strip(),
+            "description": body_dict.get("description").strip(),
+            "startMessage": body_dict.get("startMessage", "").strip() or "Hello! How can I help you today?",  # Provide default
+            "systemPrompt": body_dict.get("systemPrompt").strip(),
+            "tools": body_dict.get("tools", []),
+            "models": body_dict.get("models", []),
+            "memory": body_dict.get("memory", {"type": []}),
+            "tags": body_dict.get("tags", []),
+            "orgId": user_info.get("orgId"),
+            "isActive": True,
+            "createdBy": user.get("_key"),
+            "createdAtTimestamp": time,
+            "updatedAtTimestamp": time,
+            "isDeleted": body_dict.get("isDeleted", False),
+        }
+
+        logger.info(f"Creating agent template: {template}")
 
         user_template_access = {
             "_from": f"{CollectionNames.USERS.value}/{user.get('_key')}",
@@ -252,10 +261,11 @@ async def create_agent_template(request: Request) -> JSONResponse:
                 "template": template,
             },
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error in create_agent_template: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
-
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.get("/template/list")
 async def get_agent_templates(request: Request) -> JSONResponse:

@@ -566,7 +566,7 @@ export const userChipStyle = (isDark: boolean, theme: Theme) => ({
 
 export const groupChipStyle = (isDark: boolean, theme: Theme) => ({
   borderRadius: 0.75,
-  height: 24,
+  height: 20,
   fontSize: '0.75rem',
   fontWeight: 500,
   bgcolor: isDark ? alpha('#ffffff', 0.9) : alpha(theme.palette.info.main, 0.1),

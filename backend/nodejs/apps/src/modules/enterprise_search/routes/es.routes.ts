@@ -47,6 +47,7 @@ import {
   shareAgent,
   unshareAgent,
   updateAgentPermissions,
+  getAgentPermissions,
 } from '../controller/es_controller';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import {
@@ -495,7 +496,7 @@ export function createAgentConversationalRouter(container: Container): Router {
   );
 
   router.post(
-    '/template/create',
+    '/template',
     authMiddleware.authenticate,
     metricsMiddleware(container),
     createAgentTemplate(appConfig),
@@ -572,6 +573,13 @@ export function createAgentConversationalRouter(container: Container): Router {
   );
 
   router.get(
+    '/:agentKey/permissions',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    getAgentPermissions(appConfig),
+  );
+
+  router.post(
     '/:agentKey/share',
     authMiddleware.authenticate,
     metricsMiddleware(container),
@@ -586,7 +594,7 @@ export function createAgentConversationalRouter(container: Container): Router {
   );
 
   router.put(
-    '/:agentKey/update/permissions',
+    '/:agentKey/permissions',
     authMiddleware.authenticate,
     metricsMiddleware(container),
     updateAgentPermissions(appConfig),

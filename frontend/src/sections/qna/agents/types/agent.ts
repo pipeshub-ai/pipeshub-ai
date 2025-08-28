@@ -45,6 +45,7 @@ export interface AgentBuilderHeaderProps {
   templateDialogOpen: boolean;
   setTemplateDialogOpen: (open: boolean) => void;
   templatesLoading: boolean;
+  agentId?: string;
 }
 
 export interface AgentBuilderCanvasWrapperProps {

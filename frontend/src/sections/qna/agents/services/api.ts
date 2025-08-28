@@ -103,7 +103,7 @@ class AgentApiService {
   static async updateAgent(agentKey: string, data: Partial<AgentFormData>): Promise<Agent> {
     // Transform data before sending
     const transformedData = this.transformAgentFormData(data);
-    const response = await axios.patch(`${this.baseUrl}/${agentKey}`, transformedData);
+    const response = await axios.put(`${this.baseUrl}/${agentKey}`, transformedData);
     return response.data.agent;
   }
 

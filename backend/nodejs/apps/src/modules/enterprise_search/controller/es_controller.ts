@@ -3547,6 +3547,7 @@ export const createAgentTemplate =
       if (!userId) {
         throw new BadRequestError('User ID is required');
       }
+      console.log('req.body', req.body);
       const aiCommandOptions: AICommandOptions = {
         uri: `${appConfig.aiBackend}/api/v1/agent/template/create`,
         method: HttpMethod.POST,
@@ -5672,3 +5673,33 @@ export const getAvailableTools = (appConfig: AppConfig) => async (
     next(error);
   }
 };
+
+export const getAgentPermissions = (appConfig: AppConfig) => async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  const requestId = req.context?.requestId;
+  const { agentKey } = req.params;
+
+  try {
+    const aiCommandOptions: AICommandOptions = {
+      uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/permissions`,
+      method: HttpMethod.GET,
+      headers: {
+        ...(req.headers as Record<string, string>),
+        'Content-Type': 'application/json',
+      },
+    };
+    const aiCommand = new AIServiceCommand(aiCommandOptions);
+    const aiResponse = await aiCommand.execute();
+    if (aiResponse && aiResponse.statusCode !== 200) {
+      throw new BadRequestError('Failed to get agent permissions');
+    }
+    const permissions = aiResponse.data;
+    res.status(200).json(permissions);    
+  } catch (error: any) {
+    logger.error('Error getting agent permissions', {
+      requestId,
+      message: 'Error getting agent permissions',
+      error: error.message,
+    });
+    next(error);
+  }
+};  

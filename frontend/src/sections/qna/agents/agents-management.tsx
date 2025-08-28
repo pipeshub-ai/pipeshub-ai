@@ -47,6 +47,7 @@ import clearIcon from '@iconify-icons/mdi/close';
 import folderIcon from '@iconify-icons/mdi/folder-multiple';
 import databaseIcon from '@iconify-icons/mdi/database';
 import flowIcon from '@iconify-icons/mdi/graph';
+import permissionsIcon from '@iconify-icons/mdi/account-key';
 
 import type { Agent, AgentTemplate, AgentFilterOptions } from 'src/types/agent';
 import { paths } from 'src/routes/paths';
@@ -54,6 +55,7 @@ import AgentApiService from './services/api';
 import { filterAgents, sortAgents, formatTimestamp } from './utils/agent';
 import TemplateBuilder from './components/template-builder';
 import TemplateSelector from './components/template-selector';
+import ManageAgentPermissionsDialog from './components/agent-builder/manage-permissions-dialog';
 
 interface AgentsManagementProps {
   onAgentSelect?: (agent: Agent) => void;
@@ -98,6 +100,12 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
   }>({
     open: false,
     template: null,
+  });
+
+  // Permissions dialog state
+  const [permissionsDialog, setPermissionsDialog] = useState<{ open: boolean; agent: Agent | null }>({
+    open: false,
+    agent: null,
   });
 
   // Enhanced color scheme
@@ -235,10 +243,20 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
     setActiveAgent(agent);
   }, []);
 
-  const handleMenuClose = useCallback(() => {
+  const handleMenuClose = () => {
     setAnchorEl(null);
     setActiveAgent(null);
-  }, []);
+  };
+
+  const handleOpenPermissions = (agent: Agent) => {
+    setPermissionsDialog({ open: true, agent });
+    handleMenuClose();
+  };
+
+  const handlePermissionsUpdated = () => {
+    // Refresh agents list if needed
+    loadAgents();
+  };
 
   const handleTemplateSelect = useCallback(
     (template: AgentTemplate) => {
@@ -919,8 +937,8 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
                   {!searchQuery && !selectedTags.length && (
                     <Stack direction="row" spacing={2} justifyContent="center">
                       <Button
-                        variant="contained"
-                        startIcon={<Icon icon={plusIcon} width={16} height={16} />}
+                        variant="outlined"
+                        startIcon={<Icon icon={flowIcon} width={16} height={16} />}
                         onClick={() => navigate(paths.dashboard.agent.new)}
                         sx={{
                           borderRadius: 1.5,
@@ -929,36 +947,8 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
                           fontWeight: 500,
                         }}
                       >
-                        Create New Agent
+                         Create New Agent
                       </Button>
-                      <Button
-                        variant="outlined"
-                        startIcon={<Icon icon={flowIcon} width={16} height={16} />}
-                        onClick={() => navigate(paths.dashboard.agent.flow)}
-                        sx={{
-                          borderRadius: 1.5,
-                          textTransform: 'none',
-                          fontSize: '0.875rem',
-                          fontWeight: 500,
-                        }}
-                      >
-                        Use Flow Builder
-                      </Button>
-                      {Array.isArray(templates) && templates.length > 0 && (
-                        <Button
-                          variant="outlined"
-                          startIcon={<Icon icon={templateIcon} width={16} height={16} />}
-                          onClick={() => setShowTemplateSelector(true)}
-                          sx={{
-                            borderRadius: 1.5,
-                            textTransform: 'none',
-                            fontSize: '0.875rem',
-                            fontWeight: 500,
-                          }}
-                        >
-                          Use Template
-                        </Button>
-                      )}
                     </Stack>
                   )}
                 </Paper>
@@ -977,12 +967,27 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
         anchorEl={anchorEl}
         open={Boolean(anchorEl)}
         onClose={handleMenuClose}
+        TransitionComponent={Fade}
+        transitionDuration={200}
         PaperProps={{
           sx: {
             borderRadius: 2,
-            minWidth: 200,
-            border: `1px solid ${borderColor}`,
-            bgcolor: bgPaper,
+            minWidth: 220,
+            border: `1px solid ${alpha(theme.palette.divider, 0.12)}`,
+            bgcolor: alpha(theme.palette.background.paper, 0.95),
+            backdropFilter: 'blur(8px)',
+            boxShadow: '0 8px 32px rgba(0, 0, 0, 0.12)',
+            overflow: 'hidden',
+            transform: 'scale(0.95)',
+            transition: 'transform 0.2s ease',
+            '&.MuiMenu-paper': {
+              transform: 'scale(1)',
+            },
+          },
+        }}
+        MenuListProps={{
+          sx: {
+            py: 0.5,
           },
         }}
       >
@@ -991,35 +996,111 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
             if (activeAgent) handleEditAgent(activeAgent);
             handleMenuClose();
           }}
+          sx={{
+            py: 1.5,
+            px: 2,
+            mx: 0.5,
+            borderRadius: 1,
+            '&:hover': {
+              bgcolor: alpha(theme.palette.primary.main, 0.08),
+              transform: 'translateX(2px)',
+            },
+            transition: 'all 0.15s ease',
+          }}
         >
-          <ListItemIcon>
-            <Icon icon={editIcon} width={16} height={16} />
+          <ListItemIcon sx={{ minWidth: 36 }}>
+            <Icon icon={editIcon} width={18} height={18} />
           </ListItemIcon>
-          <ListItemText>Edit Agent</ListItemText>
+          <ListItemText 
+            primary="Edit Agent"
+            primaryTypographyProps={{
+              sx: { fontSize: '0.875rem', fontWeight: 500 }
+            }}
+          />
         </MenuItem>
         <MenuItem
           onClick={() => {
             if (activeAgent) handleChatWithAgent(activeAgent);
             handleMenuClose();
           }}
+          sx={{
+            py: 1.5,
+            px: 2,
+            mx: 0.5,
+            borderRadius: 1,
+            '&:hover': {
+              bgcolor: alpha(theme.palette.primary.main, 0.08),
+              transform: 'translateX(2px)',
+            },
+            transition: 'all 0.15s ease',
+          }}
         >
-          <ListItemIcon>
-            <Icon icon={chatIcon} width={16} height={16} />
+          <ListItemIcon sx={{ minWidth: 36 }}>
+            <Icon icon={chatIcon} width={18} height={18} />
           </ListItemIcon>
-          <ListItemText>Start Chat</ListItemText>
+          <ListItemText 
+            primary="Start Chat"
+            primaryTypographyProps={{
+              sx: { fontSize: '0.875rem', fontWeight: 500 }
+            }}
+          />
         </MenuItem>
-        <Divider />
+        <Divider sx={{ my: 0.5, borderColor: alpha(theme.palette.divider, 0.08) }} />
+        <MenuItem
+          onClick={() => {
+            if (activeAgent) handleOpenPermissions(activeAgent);
+            handleMenuClose();
+          }}
+          sx={{
+            py: 1.5,
+            px: 2,
+            mx: 0.5,
+            borderRadius: 1,
+            '&:hover': {
+              bgcolor: alpha(theme.palette.info.main, 0.08),
+              transform: 'translateX(2px)',
+            },
+            transition: 'all 0.15s ease',
+          }}
+        >
+          <ListItemIcon sx={{ minWidth: 36 }}>
+            <Icon icon={permissionsIcon} width={18} height={18} />
+          </ListItemIcon>
+          <ListItemText 
+            primary="Manage Permissions"
+            primaryTypographyProps={{
+              sx: { fontSize: '0.875rem', fontWeight: 500 }
+            }}
+          />
+        </MenuItem>
+        <Divider sx={{ my: 0.5, borderColor: alpha(theme.palette.divider, 0.08) }} />
         <MenuItem
           onClick={() => {
             if (activeAgent) setDeleteDialog({ open: true, agent: activeAgent });
             handleMenuClose();
           }}
-          sx={{ color: 'error.main' }}
+          sx={{ 
+            color: 'error.main',
+            py: 1.5,
+            px: 2,
+            mx: 0.5,
+            borderRadius: 1,
+            '&:hover': {
+              bgcolor: alpha(theme.palette.error.main, 0.08),
+              transform: 'translateX(2px)',
+            },
+            transition: 'all 0.15s ease',
+          }}
         >
-          <ListItemIcon>
-            <Icon icon={deleteIcon} width={16} height={16} color={theme.palette.error.main} />
+          <ListItemIcon sx={{ minWidth: 36 }}>
+            <Icon icon={deleteIcon} width={18} height={18} color={theme.palette.error.main} />
           </ListItemIcon>
-          <ListItemText>Delete Agent</ListItemText>
+          <ListItemText 
+            primary="Delete Agent"
+            primaryTypographyProps={{
+              sx: { fontSize: '0.875rem', fontWeight: 500 }
+            }}
+          />
         </MenuItem>
       </Menu>
 
@@ -1123,6 +1204,15 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
         onEdit={handleEditTemplate}
         onDelete={handleDeleteTemplate}
         templates={Array.isArray(templates) ? templates : []}
+      />
+
+      {/* Manage Agent Permissions Dialog */}
+      <ManageAgentPermissionsDialog
+        open={permissionsDialog.open}
+        onClose={() => setPermissionsDialog({ open: false, agent: null })}
+        agentId={permissionsDialog.agent?._key || ''}
+        agentName={permissionsDialog.agent?.name || ''}
+        onPermissionsUpdated={handlePermissionsUpdated}
       />
     </Box>
   );

@@ -16,7 +16,7 @@ import type { AgentBuilderProps, NodeData } from './types/agent';
 import { useAgentBuilderData } from './hooks/agent-builder/useAgentBuilderData';
 import { useAgentBuilderState } from './hooks/agent-builder/useAgentBuilderState';
 import { useAgentBuilderNodeTemplates } from './hooks/agent-builder/useNodeTemplates';
-  import { useAgentBuilderReconstruction } from './hooks/agent-builder/useFlowReconstruction';
+import { useAgentBuilderReconstruction } from './hooks/agent-builder/useFlowReconstruction';
 
 // Components
 import AgentBuilderHeader from './components/agent-builder/header';
@@ -26,15 +26,10 @@ import AgentBuilderDialogManager from './components/agent-builder/dialog-manager
 import TemplateSelector from './components/template-selector';
 
 // Utils and types
-import { extractAgentConfigFromFlow , normalizeDisplayName, formattedProvider } from './utils/agent';
+import { extractAgentConfigFromFlow, normalizeDisplayName, formattedProvider } from './utils/agent';
 import AgentApiService from './services/api';
 
- 
-const AgentBuilder: React.FC<AgentBuilderProps> = ({
-  editingAgent,
-  onSuccess,
-  onClose,
-}) => {
+const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, onClose }) => {
   const theme = useTheme();
   const SIDEBAR_WIDTH = 280;
 
@@ -80,9 +75,12 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({
   const [templates, setTemplates] = useState<AgentTemplate[]>([]);
   const [templatesLoading, setTemplatesLoading] = useState(false);
 
-
   // Node templates hook
-  const { nodeTemplates } = useAgentBuilderNodeTemplates(availableTools, availableModels, availableKnowledgeBases);
+  const { nodeTemplates } = useAgentBuilderNodeTemplates(
+    availableTools,
+    availableModels,
+    availableKnowledgeBases
+  );
 
   // Flow reconstruction hook
   const { reconstructFlowFromAgent } = useAgentBuilderReconstruction();
@@ -135,10 +133,10 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({
   useEffect(() => {
     if (!loading && availableModels.length > 0 && nodes.length === 0) {
       const agentToUse = loadedAgent || editingAgent;
-      
-            // If editing an existing agent, load its flow configuration
+
+      // If editing an existing agent, load its flow configuration
       if (agentToUse && 'flow' in agentToUse && agentToUse.flow?.nodes && agentToUse.flow?.edges) {
-        setNodes(agentToUse.flow.nodes  as any);
+        setNodes(agentToUse.flow.nodes as any);
         setEdges(agentToUse.flow.edges as any);
         return;
       }
@@ -213,9 +211,12 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({
             icon: sparklesIcon,
             config: {
               systemPrompt:
-                (loadedAgent as any)?.systemPrompt || (editingAgent as any)?.systemPrompt || 'You are a helpful assistant.',
+                (loadedAgent as any)?.systemPrompt ||
+                (editingAgent as any)?.systemPrompt ||
+                'You are a helpful assistant.',
               startMessage:
-                (loadedAgent as any)?.startMessage || (editingAgent as any)?.startMessage ||
+                (loadedAgent as any)?.startMessage ||
+                (editingAgent as any)?.startMessage ||
                 'Hello! I am ready to assist you. How can I help you today?',
               routing: 'auto',
               allowMultipleLLMs: true,
@@ -324,11 +325,14 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({
   );
 
   // Handle edge selection and deletion
-  const onEdgeClick = useCallback((event: React.MouseEvent, edge: any) => {
+  const onEdgeClick = useCallback(
+    (event: React.MouseEvent, edge: any) => {
       event.preventDefault();
       setEdgeToDelete(edge);
       setEdgeDeleteDialogOpen(true);
-  }, [setEdgeToDelete, setEdgeDeleteDialogOpen]);
+    },
+    [setEdgeToDelete, setEdgeDeleteDialogOpen]
+  );
 
   // Delete edge
   const deleteEdge = useCallback(
@@ -382,8 +386,6 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({
     [setNodes]
   );
 
-
-
   // Delete node
   const deleteNode = useCallback(
     async (nodeId: string) => {
@@ -399,14 +401,25 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({
         setDeleting(false);
       }
     },
-    [setNodes, setEdges, setDeleteDialogOpen, setNodeToDelete, setConfigDialogOpen, setSelectedNode, setDeleting]
+    [
+      setNodes,
+      setEdges,
+      setDeleteDialogOpen,
+      setNodeToDelete,
+      setConfigDialogOpen,
+      setSelectedNode,
+      setDeleting,
+    ]
   );
 
   // Handle delete confirmation
-  const handleDeleteNode = useCallback((nodeId: string) => {
-    setNodeToDelete(nodeId);
-    setDeleteDialogOpen(true);
-  }, [setNodeToDelete, setDeleteDialogOpen]);
+  const handleDeleteNode = useCallback(
+    (nodeId: string) => {
+      setNodeToDelete(nodeId);
+      setDeleteDialogOpen(true);
+    },
+    [setNodeToDelete, setDeleteDialogOpen]
+  );
 
   // Drag and drop functionality
   const onDragOver = useCallback((event: React.DragEvent) => {
@@ -425,7 +438,12 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({
       setError(null);
 
       const currentAgent = loadedAgent || editingAgent;
-      const agentConfig: AgentFormData = extractAgentConfigFromFlow(agentName, nodes, edges, currentAgent);
+      const agentConfig: AgentFormData = extractAgentConfigFromFlow(
+        agentName,
+        nodes,
+        edges,
+        currentAgent
+      );
 
       const agent = currentAgent
         ? await AgentApiService.updateAgent(currentAgent._key, agentConfig)
@@ -441,7 +459,17 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({
     } finally {
       setSaving(false);
     }
-  }, [agentName, nodes, edges, loadedAgent, editingAgent, onSuccess, setSaving, setError, setSuccess]);
+  }, [
+    agentName,
+    nodes,
+    edges,
+    loadedAgent,
+    editingAgent,
+    onSuccess,
+    setSaving,
+    setError,
+    setSuccess,
+  ]);
 
   return (
     <Box sx={{ height: '90vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -459,24 +487,25 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({
         templateDialogOpen={templateDialogOpen}
         setTemplateDialogOpen={setTemplateDialogOpen}
         templatesLoading={templatesLoading}
+        agentId={editingAgent?._key || ''}
       />
 
       {/* Main Content */}
       <AgentBuilderCanvasWrapper
-          sidebarOpen={sidebarOpen}
+        sidebarOpen={sidebarOpen}
         sidebarWidth={SIDEBAR_WIDTH}
-          nodeTemplates={nodeTemplates}
-          loading={loading}
-          nodes={nodes}
-          edges={edges}
-          onNodesChange={onNodesChange}
-          onEdgesChange={onEdgesChange}
-          onConnect={onConnect}
-          onNodeClick={onNodeClick}
-          onEdgeClick={onEdgeClick}
-          onDrop={onDrop}
-          onDragOver={onDragOver}
-          setNodes={setNodes}
+        nodeTemplates={nodeTemplates}
+        loading={loading}
+        nodes={nodes}
+        edges={edges}
+        onNodesChange={onNodesChange}
+        onEdgesChange={onEdgesChange}
+        onConnect={onConnect}
+        onNodeClick={onNodeClick}
+        onEdgeClick={onEdgeClick}
+        onDrop={onDrop}
+        onDragOver={onDragOver}
+        setNodes={setNodes}
         onNodeEdit={(nodeId: string, data: any) => {
           if (data.type === 'agent-core') {
             console.log('Edit agent node:', nodeId, data);
@@ -533,7 +562,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({
         onClose={() => setTemplateDialogOpen(false)}
         onSelect={(template) => {
           // Apply template to the agent node
-          const agentNode = nodes.find(node => node.data.type === 'agent-core');
+          const agentNode = nodes.find((node) => node.data.type === 'agent-core');
           if (agentNode) {
             handleNodeConfig(agentNode.id, {
               ...agentNode.data.config,

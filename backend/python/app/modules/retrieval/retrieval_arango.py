@@ -922,60 +922,71 @@ class ArangoService:
         """Get all agent templates accessible to a user via individual or team access"""
         try:
             query = f"""
+            LET user_key = @user_id
+
             // Get user's teams
             LET user_teams = (
                 FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', @user_id)
-                    FILTER perm.type == "TEAM"
-                    FILTER DOCUMENT(perm._to).collection == '{CollectionNames.TEAMS.value}'
-                    FILTER DOCUMENT(perm._to).isDeleted == false
+                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
+                    FILTER perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.TEAMS.value}/')
                     RETURN perm._to
             )
 
             // Get templates with individual access
             LET individual_templates = (
                 FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', @user_id)
+                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
                     FILTER perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_TEMPLATES.value}/')
                     LET template = DOCUMENT(perm._to)
                     FILTER template != null
-                    FILTER template.collection == '{CollectionNames.AGENT_TEMPLATES.value}'
-                    FILTER template.isDeleted == false
-                    RETURN {{
-                        template: template,
-                        permission: perm,
+                    FILTER template.isDeleted != true
+                    RETURN MERGE(template, {{
                         access_type: perm.type,
+                        user_role: perm.role,
+                        permission_id: perm._key,
+                        permission_from: perm._from,
+                        permission_to: perm._to,
+                        permission_created_at: perm.createdAtTimestamp,
+                        permission_updated_at: perm.updatedAtTimestamp,
                         can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
                         can_delete: perm.role == "OWNER",
                         can_share: perm.role IN ["OWNER", "ORGANIZER"],
                         can_view: true
-                    }}
+                    }})
             )
 
             // Get templates with team access (excluding those already found via individual access)
+            LET individual_template_ids = (FOR ind_template IN individual_templates RETURN ind_template._id)
+
             LET team_templates = (
                 FOR perm IN {CollectionNames.PERMISSION.value}
                     FILTER perm._from IN user_teams
                     FILTER perm.type == "TEAM"
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_TEMPLATES.value}/')
+                    FILTER perm._to NOT IN individual_template_ids
                     LET template = DOCUMENT(perm._to)
                     FILTER template != null
-                    FILTER template.collection == '{CollectionNames.AGENT_TEMPLATES.value}'
-                    FILTER template.isDeleted == false
-                    // Exclude templates already found via individual access
-                    FILTER NOT (perm._to IN (FOR ind_template IN individual_templates RETURN ind_template.template._id))
-                    RETURN {{
-                        template: template,
-                        permission: perm,
+                    FILTER template.isDeleted != true
+                    RETURN MERGE(template, {{
                         access_type: perm.type,
+                        user_role: perm.role,
+                        permission_id: perm._key,
+                        permission_from: perm._from,
+                        permission_to: perm._to,
+                        permission_created_at: perm.createdAtTimestamp,
+                        permission_updated_at: perm.updatedAtTimestamp,
                         can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
                         can_delete: perm.role == "OWNER",
                         can_share: perm.role IN ["OWNER", "ORGANIZER"],
                         can_view: true
-                    }}
+                    }})
             )
 
-            // Combine both results
-            RETURN APPEND(individual_templates, team_templates)
+            // Flatten and return all templates
+            FOR template_result IN APPEND(individual_templates, team_templates)
+                RETURN template_result
             """
 
             bind_vars = {
@@ -994,65 +1005,72 @@ class ArangoService:
         """Get a template by ID with user permissions"""
         try:
             query = f"""
-            // Get user's teams
+            LET user_key = @user_id
+            LET template_path = CONCAT('{CollectionNames.AGENT_TEMPLATES.value}/', @template_id)
+
+            // Get user's teams first
             LET user_teams = (
                 FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', @user_id)
-                    FILTER perm.type == "TEAM"
-                    FILTER DOCUMENT(perm._to).collection == '{CollectionNames.TEAMS.value}'
-                    FILTER DOCUMENT(perm._to).isDeleted == false
+                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
+                    FILTER perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.TEAMS.value}/')
                     RETURN perm._to
             )
 
-            // Get template with highest permission level (individual access takes precedence)
-            LET template_permissions = (
-                // Individual access
+            // Check individual user permissions on the template
+            LET individual_access = (
                 FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm._to == CONCAT('{CollectionNames.AGENT_TEMPLATES.value}/', @template_id)
-                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', @user_id)
+                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
+                    FILTER perm._to == template_path
                     FILTER perm.type == "USER"
-                    LET template = DOCUMENT(perm._to)
+                    LET template = DOCUMENT(template_path)
                     FILTER template != null
-                    FILTER template.collection == '{CollectionNames.AGENT_TEMPLATES.value}'
-                    FILTER template.isDeleted == false
-                    RETURN {{
-                        template: template,
-                        permission: perm,
+                    FILTER template.isDeleted != true
+                    RETURN MERGE(template, {{
                         access_type: "INDIVIDUAL",
+                        user_role: perm.role,
+                        permission_id: perm._key,
+                        permission_from: perm._from,
+                        permission_to: perm._to,
+                        permission_created_at: perm.createdAtTimestamp,
+                        permission_updated_at: perm.updatedAtTimestamp,
                         can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
                         can_delete: perm.role == "OWNER",
                         can_share: perm.role IN ["OWNER", "ORGANIZER"],
                         can_view: true
-                    }}
+                    }})
             )
 
-            // Team access (only if no individual access found)
-            LET team_permissions = (
+            // Check team permissions on the template (only if no individual access)
+            LET team_access = LENGTH(individual_access) == 0 ? (
                 FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm._to == CONCAT('{CollectionNames.AGENT_TEMPLATES.value}/', @template_id)
                     FILTER perm._from IN user_teams
+                    FILTER perm._to == template_path
                     FILTER perm.type == "TEAM"
-                    LET template = DOCUMENT(perm._to)
+                    LET template = DOCUMENT(template_path)
                     FILTER template != null
-                    FILTER template.collection == '{CollectionNames.AGENT_TEMPLATES.value}'
-                    FILTER template.isDeleted == false
-                    RETURN {{
-                        template: template,
-                        permission: perm,
+                    FILTER template.isDeleted != true
+                    RETURN MERGE(template, {{
                         access_type: "TEAM",
+                        user_role: perm.role,
+                        permission_id: perm._key,
+                        permission_from: perm._from,
+                        permission_to: perm._to,
+                        permission_created_at: perm.createdAtTimestamp,
+                        permission_updated_at: perm.updatedAtTimestamp,
                         can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
                         can_delete: perm.role == "OWNER",
                         can_share: perm.role IN ["OWNER", "ORGANIZER"],
                         can_view: true
-                    }}
-            )
+                    }})
+            ) : []
 
-            // Return the first available permission (individual takes precedence)
-            LET final_permission = LENGTH(template_permissions) > 0 ?
-                FIRST(template_permissions) :
-                (LENGTH(team_permissions) > 0 ? FIRST(team_permissions) : null)
+            // Return individual access first, then team access
+            LET final_result = LENGTH(individual_access) > 0 ?
+                FIRST(individual_access) :
+                (LENGTH(team_access) > 0 ? FIRST(team_access) : null)
 
-            RETURN final_permission
+            RETURN final_result
             """
 
             bind_vars = {
@@ -1082,7 +1100,7 @@ class ArangoService:
             FOR perm IN {CollectionNames.PERMISSION.value}
                 FILTER perm._to == CONCAT('{CollectionNames.AGENT_TEMPLATES.value}/', @template_id)
                 FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', @user_id)
-                FILTER DOCUMENT(perm._to).collection == '{CollectionNames.AGENT_TEMPLATES.value}'
+                FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_TEMPLATES.value}/')
                 FILTER DOCUMENT(perm._to).isDeleted == false
                 LIMIT 1
                 RETURN DOCUMENT(perm._to)
@@ -1177,7 +1195,7 @@ class ArangoService:
                 FILTER perm._to == @template_document_id
                 FILTER perm._from == @user_document_id
                 FILTER perm.role == "OWNER"
-                FILTER DOCUMENT(perm._to).collection == '{CollectionNames.AGENT_TEMPLATES.value}'
+                FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_TEMPLATES.value}/')
                 FILTER DOCUMENT(perm._to).isDeleted == false
                 LIMIT 1
                 RETURN perm
@@ -1251,7 +1269,7 @@ class ArangoService:
                 FILTER perm._to == @template_document_id
                 FILTER perm._from == @user_document_id
                 FILTER perm.role == "OWNER"
-                FILTER DOCUMENT(perm._to).collection == '{CollectionNames.AGENT_TEMPLATES.value}'
+                FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_TEMPLATES.value}/')
                 FILTER DOCUMENT(perm._to).isDeleted == false
                 LIMIT 1
                 RETURN perm
@@ -1313,68 +1331,65 @@ class ArangoService:
             return False
 
     async def get_agent(self, agent_id: str, user_id: str) -> Optional[Dict]:
-        """Get an agent by ID with user permissions"""
+        """Get an agent by ID with user permissions - flattened response"""
         try:
             query = f"""
-            // Get user's teams
+            LET user_key = @user_id
+            LET agent_path = CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', @agent_id)
+
+            // Get user's teams first
             LET user_teams = (
                 FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', @user_id)
-                    FILTER perm.type == "TEAM"
-                    FILTER DOCUMENT(perm._to).collection == '{CollectionNames.TEAMS.value}'
-                    FILTER DOCUMENT(perm._to).isDeleted == false
+                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
+                    FILTER perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.TEAMS.value}/')
                     RETURN perm._to
             )
 
-            // Get agent with highest permission level (individual access takes precedence)
-            LET agent_permissions = (
-                // Individual access
+            // Check individual user permissions on the agent
+            LET individual_access = (
                 FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm._to == CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', @agent_id)
-                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', @user_id)
+                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
+                    FILTER perm._to == agent_path
                     FILTER perm.type == "USER"
-                    LET agent = DOCUMENT(perm._to)
+                    LET agent = DOCUMENT(agent_path)
                     FILTER agent != null
-                    FILTER agent.collection == '{CollectionNames.AGENT_INSTANCES.value}'
-                    FILTER agent.isDeleted == false
-                    RETURN {{
-                        agent: agent,
-                        permission: perm,
+                    FILTER agent.isDeleted != true
+                    RETURN MERGE(agent, {{
                         access_type: "INDIVIDUAL",
+                        user_role: perm.role,
                         can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
                         can_delete: perm.role == "OWNER",
                         can_share: perm.role IN ["OWNER", "ORGANIZER"],
                         can_view: true
-                    }}
+                    }})
             )
 
-            // Team access (only if no individual access found)
-            LET team_permissions = (
+            // Check team permissions on the agent (only if no individual access)
+            LET team_access = LENGTH(individual_access) == 0 ? (
                 FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm._to == CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', @agent_id)
                     FILTER perm._from IN user_teams
+                    FILTER perm._to == agent_path
                     FILTER perm.type == "TEAM"
-                    LET agent = DOCUMENT(perm._to)
+                    LET agent = DOCUMENT(agent_path)
                     FILTER agent != null
-                    FILTER agent.collection == '{CollectionNames.AGENT_INSTANCES.value}'
-                    FILTER agent.isDeleted == false
-                    RETURN {{
-                        agent: agent,
-                        permission: perm,
+                    FILTER agent.isDeleted != true
+                    RETURN MERGE(agent, {{
                         access_type: "TEAM",
+                        user_role: perm.role,
                         can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
                         can_delete: perm.role == "OWNER",
                         can_share: perm.role IN ["OWNER", "ORGANIZER"],
                         can_view: true
-                    }}
-            )
+                    }})
+            ) : []
 
-            // Return the first available permission (individual takes precedence)
-            LET final_permission = LENGTH(agent_permissions) > 0 ?
-                FIRST(agent_permissions) :
-                (LENGTH(team_permissions) > 0 ? FIRST(team_permissions) : null)
+            // Return individual access first, then team access
+            LET final_result = LENGTH(individual_access) > 0 ?
+                FIRST(individual_access) :
+                (LENGTH(team_access) > 0 ? FIRST(team_access) : null)
 
-            RETURN final_permission
+            RETURN final_result
             """
 
             bind_vars = {
@@ -1386,72 +1401,74 @@ class ArangoService:
             result = list(cursor)
 
             if len(result) == 0 or result[0] is None:
+                self.logger.warning(f"No permissions found for user {user_id} on agent {agent_id}")
                 return None
 
             return result[0]
 
         except Exception as e:
-            self.logger.error("❌ Failed to get agent: %s", str(e))
+            self.logger.error(f"Failed to get agent: {str(e)}")
             return None
 
     async def get_all_agents(self, user_id: str) -> List[Dict]:
-        """Get all agents accessible to a user via individual or team access"""
+        """Get all agents accessible to a user via individual or team access - flattened response"""
         try:
             query = f"""
+            LET user_key = @user_id
+
             // Get user's teams
             LET user_teams = (
                 FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', @user_id)
-                    FILTER perm.type == "TEAM"
-                    FILTER DOCUMENT(perm._to).collection == '{CollectionNames.TEAMS.value}'
-                    FILTER DOCUMENT(perm._to).isDeleted == false
+                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
+                    FILTER perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.TEAMS.value}/')
                     RETURN perm._to
             )
 
             // Get agents with individual access
             LET individual_agents = (
                 FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', @user_id)
+                    FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
                     FILTER perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
                     LET agent = DOCUMENT(perm._to)
                     FILTER agent != null
-                    FILTER agent.collection == '{CollectionNames.AGENT_INSTANCES.value}'
-                    FILTER agent.isDeleted == false
-                    RETURN {{
-                        agent: agent,
-                        permission: perm,
-                        access_type: perm.type,
+                    FILTER agent.isDeleted != true
+                    RETURN MERGE(agent, {{
+                        access_type: "INDIVIDUAL",
+                        user_role: perm.role,
                         can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
                         can_delete: perm.role == "OWNER",
                         can_share: perm.role IN ["OWNER", "ORGANIZER"],
                         can_view: true
-                    }}
+                    }})
             )
 
             // Get agents with team access (excluding those already found via individual access)
+            LET individual_agent_ids = (FOR ind_agent IN individual_agents RETURN ind_agent._id)
+
             LET team_agents = (
                 FOR perm IN {CollectionNames.PERMISSION.value}
                     FILTER perm._from IN user_teams
                     FILTER perm.type == "TEAM"
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
+                    FILTER perm._to NOT IN individual_agent_ids
                     LET agent = DOCUMENT(perm._to)
                     FILTER agent != null
-                    FILTER agent.collection == '{CollectionNames.AGENT_INSTANCES.value}'
-                    FILTER agent.isDeleted == false
-                    // Exclude agents already found via individual access
-                    FILTER NOT (perm._to IN (FOR ind_agent IN individual_agents RETURN ind_agent.agent._id))
-                    RETURN {{
-                        agent: agent,
-                        permission: perm,
-                        access_type: perm.type,
+                    FILTER agent.isDeleted != true
+                    RETURN MERGE(agent, {{
+                        access_type: "TEAM",
+                        user_role: perm.role,
                         can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
                         can_delete: perm.role == "OWNER",
                         can_share: perm.role IN ["OWNER", "ORGANIZER"],
                         can_view: true
-                    }}
+                    }})
             )
 
-            // Combine both results
-            RETURN APPEND(individual_agents, team_agents)
+            // Flatten and return all agents
+            FOR agent_result IN APPEND(individual_agents, team_agents)
+                RETURN agent_result
             """
 
             bind_vars = {
@@ -1462,7 +1479,7 @@ class ArangoService:
             return list(cursor)
 
         except Exception as e:
-            self.logger.error("❌ Failed to get all agents: %s", str(e))
+            self.logger.error(f"Failed to get all agents: {str(e)}")
             return []
 
     async def update_agent(self, agent_id: str, agent_updates: Dict[str, Any], user_id: str) -> Optional[bool]:
@@ -1491,8 +1508,8 @@ class ArangoService:
                 if field in agent_updates:
                     update_data[field] = agent_updates[field]
 
-            # Update the agent using AQL UPDATE statement
-            update_query = """
+            # Update the agent using AQL UPDATE statement - Fixed to use proper collection name
+            update_query = f"""
             UPDATE @agent_key
             WITH @update_data
             IN {CollectionNames.AGENT_INSTANCES.value}
@@ -1515,7 +1532,7 @@ class ArangoService:
             return True
 
         except Exception as e:
-            self.logger.error("❌ Failed to update agent: %s", str(e), exc_info=True)
+            self.logger.error(f"Failed to update agent: {str(e)}")
             return False
 
     async def delete_agent(self, agent_id: str, user_id: str) -> Optional[bool]:
@@ -1545,8 +1562,8 @@ class ArangoService:
                 "deletedByUserId": user_id
             }
 
-            # Soft delete the agent using AQL UPDATE
-            update_query = """
+            # Soft delete the agent using AQL UPDATE - Fixed to use f-string
+            update_query = f"""
             UPDATE @agent_key
             WITH @update_data
             IN {CollectionNames.AGENT_INSTANCES.value}
@@ -1569,7 +1586,7 @@ class ArangoService:
             return True
 
         except Exception as e:
-            self.logger.error("❌ Failed to delete agent: %s", str(e), exc_info=True)
+            self.logger.error(f"Failed to delete agent: {str(e)}")
             return False
 
     async def share_agent(self, agent_id: str, user_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]]) -> Optional[bool]:
@@ -1613,7 +1630,7 @@ class ArangoService:
             team_agent_edges = []
             if team_ids:
                 for team_id in team_ids:
-                    team = await self.get_team_by_team_id(team_id)
+                    team = await self.get_document(team_id, CollectionNames.TEAMS.value)
                     if team is None:
                         self.logger.warning(f"Team {team_id} not found")
                         continue
@@ -1691,8 +1708,8 @@ class ArangoService:
                 self.logger.warning(f"No permission found for user {owner_user_id} on agent {agent_id}")
                 return {"success": False, "reason": "Agent not found or no permission"}
 
-            # Only OWNER can update permissions
-            if agent_with_permission.get("permission", {}).get("role") != "OWNER":
+            # Only OWNER can update permissions - Fixed to use the flattened structure
+            if agent_with_permission.get("user_role") != "OWNER":
                 self.logger.warning(f"User {owner_user_id} is not the OWNER of agent {agent_id}")
                 return {"success": False, "reason": "Only OWNER can update permissions"}
 
@@ -1755,7 +1772,7 @@ class ArangoService:
             }
 
         except Exception as e:
-            self.logger.error("Failed to update agent permission: %s", str(e), exc_info=True)
+            self.logger.error(f"Failed to update agent permission: {str(e)}")
             return {"success": False, "reason": f"Internal error: {str(e)}"}
 
     async def get_agent_permissions(self, agent_id: str, user_id: str) -> Optional[List[Dict]]:
@@ -1767,8 +1784,8 @@ class ArangoService:
                 self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
                 return None
 
-            # Only OWNER can view all permissions
-            if agent_with_permission.get("permission", {}).get("role") != "OWNER":
+            # Only OWNER can view all permissions - Fixed to use the flattened structure
+            if agent_with_permission.get("user_role") != "OWNER":
                 self.logger.warning(f"User {user_id} is not the OWNER of agent {agent_id}")
                 return None
 
@@ -1800,5 +1817,5 @@ class ArangoService:
             return result
 
         except Exception as e:
-            self.logger.error("❌ Failed to get agent permissions: %s", str(e), exc_info=True)
+            self.logger.error(f"Failed to get agent permissions: {str(e)}")
             return None
