@@ -58,6 +58,7 @@ async def create_team(request: Request) -> JSONResponse:
 
     user_ids = body_dict.get("userIds", [])
     role = body_dict.get("role", "READER")
+    logger.info(f"Creating team with users: body_dict: {body_dict}")
     user_team_edges = []
     for user_id in user_ids:
         user_team_edges.append({
@@ -81,7 +82,7 @@ async def create_team(request: Request) -> JSONResponse:
         }
 
         user_team_edges.append(creator_permission)
-
+    logger.info(f"User team edges: {user_team_edges}")
     transaction = None
     try:
         transaction = arango_service.db.begin_transaction(
@@ -572,7 +573,7 @@ async def remove_user_from_team(request: Request, team_id: str) -> JSONResponse:
 
 @router.put("/team/{team_id}/users/permissions")
 async def update_user_permissions(request: Request, team_id: str) -> JSONResponse:
-    """Update user permissions in a team - OWNER role"""
+    """Update user permissions in a team - requires OWNER role"""
     services = await get_services(request)
     arango_service = services["arango_service"]
     logger = services["logger"]
@@ -587,7 +588,11 @@ async def update_user_permissions(request: Request, team_id: str) -> JSONRespons
         raise HTTPException(status_code=404, detail="User not found")
 
     # Check if user has permission to update the team
-    permission = await arango_service.get_edge(f"{CollectionNames.USERS.value}/{user['_key']}", f"{CollectionNames.TEAMS.value}/{team_id}", CollectionNames.PERMISSION.value)
+    permission = await arango_service.get_edge(
+        f"{CollectionNames.USERS.value}/{user['_key']}",
+        f"{CollectionNames.TEAMS.value}/{team_id}",
+        CollectionNames.PERMISSION.value
+    )
     if not permission:
         raise HTTPException(status_code=403, detail="User does not have permission to update this team")
 
@@ -609,43 +614,48 @@ async def update_user_permissions(request: Request, team_id: str) -> JSONRespons
         raise HTTPException(status_code=400, detail="Cannot change team owner's role")
 
     try:
-        # Find the permission edge
-        permission_query = f"""
+        # Batch update permissions using a single query
+        batch_update_query = f"""
         FOR permission IN {CollectionNames.PERMISSION.value}
-        FILTER permission._to == @teamId
-        FILTER SPLIT(permission._from, '/')[1] IN @userIds
-        RETURN permission._id
+        FILTER permission._to == @team_id
+        FILTER SPLIT(permission._from, '/')[1] IN @user_ids
+        UPDATE permission WITH {{
+            role: @role,
+            updatedAtTimestamp: @timestamp
+        }} IN {CollectionNames.PERMISSION.value}
+        RETURN {{
+            _key: NEW._key,
+            _from: NEW._from,
+            role: NEW.role,
+            updatedAt: NEW.updatedAtTimestamp
+        }}
         """
 
-        permissions_result = arango_service.db.aql.execute(
-            permission_query,
-            {"userIds": user_ids, "teamId": f"{CollectionNames.TEAMS.value}/{team_id}"}
-        )
-        permissions_result = list(permissions_result)
-        if not permissions_result:
-            raise HTTPException(status_code=404, detail="User not found in team")
-
-        # Update the permission edge
-        updates = {
-            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+        bind_vars = {
+            "team_id": f"{CollectionNames.TEAMS.value}/{team_id}",
+            "user_ids": user_ids,
+            "role": role,
+            "timestamp": get_epoch_timestamp_in_ms()
         }
 
-        if role:
-            updates["role"] = role
+        cursor = arango_service.db.aql.execute(batch_update_query, bind_vars=bind_vars)
+        updated_permissions = list(cursor)
 
-        for permission in permissions_result:
-            logger.info(f"Updating permission: {permission}")
-            await arango_service.update_edge_by_key(permission.get("_key"), updates, CollectionNames.PERMISSION.value)
+        if not updated_permissions:
+            raise HTTPException(status_code=404, detail="No user permissions found to update")
+
+        logger.info(f"Updated {len(updated_permissions)} user permissions to role {role}")
 
         # Return updated team with users
-        updated_team = await get_team_with_users(arango_service, team_id,user['_key'])
+        updated_team = await get_team_with_users(arango_service, team_id, user['_key'])
 
         return JSONResponse(
             status_code=200,
             content={
                 "status": "success",
                 "message": "User permissions updated successfully",
-                "team": updated_team
+                "team": updated_team,
+                "updated_count": len(updated_permissions)
             }
         )
     except HTTPException:

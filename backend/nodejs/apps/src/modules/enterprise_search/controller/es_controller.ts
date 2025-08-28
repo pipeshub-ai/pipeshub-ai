@@ -3966,6 +3966,127 @@ export const deleteAgent =
     }
   };
 
+  export const shareAgent =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    const requestId = req.context?.requestId;
+    try {
+      const orgId = req.user?.orgId;
+      const userId = req.user?.userId;
+      const agentKey = req.params.agentKey;
+      if (!orgId) {
+        throw new BadRequestError('Organization ID is required');
+      }
+      if (!userId) {
+        throw new BadRequestError('User ID is required');
+      }
+      const aiCommandOptions: AICommandOptions = {
+        uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/share`,
+        method: HttpMethod.POST,
+        headers: {
+          ...(req.headers as Record<string, string>),
+          'Content-Type': 'application/json',
+        },
+        body: req.body,
+      };
+      const aiCommand = new AIServiceCommand(aiCommandOptions);
+      const aiResponse = await aiCommand.execute();
+      if (aiResponse && aiResponse.statusCode !== 200) {
+        throw new BadRequestError('Failed to share agent');
+      }
+      const agent = aiResponse.data;
+      res.status(HTTP_STATUS.OK).json(agent);
+    } catch (error: any) {
+      logger.error('Error sharing agent', {
+        requestId,
+        message: 'Error sharing agent',
+        error: error.message,
+      });
+      next(error);
+    }
+  };
+
+
+export const unshareAgent =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    const requestId = req.context?.requestId;
+    try {
+      const orgId = req.user?.orgId;
+      const userId = req.user?.userId;
+      const agentKey = req.params.agentKey;
+      if (!orgId) {
+        throw new BadRequestError('Organization ID is required');
+      }
+      if (!userId) {
+        throw new BadRequestError('User ID is required');
+      }
+      const aiCommandOptions: AICommandOptions = {
+        uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/unshare`,
+        method: HttpMethod.POST,
+        headers: {
+          ...(req.headers as Record<string, string>),
+          'Content-Type': 'application/json',
+        },
+        body: req.body,
+      };
+      const aiCommand = new AIServiceCommand(aiCommandOptions);
+      const aiResponse = await aiCommand.execute();
+      if (aiResponse && aiResponse.statusCode !== 200) {
+        throw new BadRequestError('Failed to unshare agent');
+      }
+      const agent = aiResponse.data;
+      res.status(HTTP_STATUS.OK).json(agent);
+    } catch (error: any) {
+      logger.error('Error unsharing agent', {
+        requestId,
+        message: 'Error unsharing agent',
+        error: error.message,
+      });
+      next(error);
+    }
+  };
+
+  export const updateAgentPermissions =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    const requestId = req.context?.requestId;
+    try {
+      const orgId = req.user?.orgId;
+      const userId = req.user?.userId;
+      const agentKey = req.params.agentKey;
+      if (!orgId) {
+        throw new BadRequestError('Organization ID is required');
+      }
+      if (!userId) {
+        throw new BadRequestError('User ID is required');
+      }
+      const aiCommandOptions: AICommandOptions = {
+        uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/permissions`,
+        method: HttpMethod.PUT,
+        headers: {
+          ...(req.headers as Record<string, string>),
+          'Content-Type': 'application/json',
+        },
+        body: req.body,
+      };
+      const aiCommand = new AIServiceCommand(aiCommandOptions);
+      const aiResponse = await aiCommand.execute();
+      if (aiResponse && aiResponse.statusCode !== 200) {
+        throw new BadRequestError('Failed to update agent permissions');
+      }
+      const agent = aiResponse.data;
+      res.status(HTTP_STATUS.OK).json(agent);
+    } catch (error: any) {
+      logger.error('Error updating agent permissions', {
+        requestId,
+        message: 'Error updating agent permissions',
+        error: error.message,
+      });
+      next(error);
+    }
+  };
+
 
   export const streamAgentConversation =
   (appConfig: AppConfig) =>

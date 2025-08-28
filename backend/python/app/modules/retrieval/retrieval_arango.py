@@ -1682,55 +1682,81 @@ class ArangoService:
             self.logger.error("Failed to unshare agent: %s", str(e), exc_info=True)
             return {"success": False, "reason": f"Internal error: {str(e)}"}
 
-    async def update_agent_permission(self, agent_id: str, owner_user_id: str, target_user_id: str, new_role: str) -> Optional[bool]:
-        """Update permission role for a user on an agent (only OWNER can do this)"""
+    async def update_agent_permission(self, agent_id: str, owner_user_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]], role: str) -> Optional[Dict]:
+        """Update permission role for users and teams on an agent (only OWNER can do this)"""
         try:
             # Check if the requesting user is the OWNER of the agent
             agent_with_permission = await self.get_agent(agent_id, owner_user_id)
             if agent_with_permission is None:
                 self.logger.warning(f"No permission found for user {owner_user_id} on agent {agent_id}")
-                return False
+                return {"success": False, "reason": "Agent not found or no permission"}
 
             # Only OWNER can update permissions
             if agent_with_permission.get("permission", {}).get("role") != "OWNER":
                 self.logger.warning(f"User {owner_user_id} is not the OWNER of agent {agent_id}")
-                return False
+                return {"success": False, "reason": "Only OWNER can update permissions"}
 
-            # Get the target user
-            target_user = await self.get_user_by_user_id(target_user_id)
-            if target_user is None:
-                self.logger.warning(f"Target user {target_user_id} not found")
-                return False
-
-            # Update the permission edge
-            update_query = f"""
-            FOR perm IN {CollectionNames.PERMISSION.value}
-                FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', @target_user_key)
-                FILTER perm._to == CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', @agent_id)
-                FILTER perm.type == "USER"
-                FILTER perm.role != "OWNER"  // Cannot change OWNER role
-                UPDATE perm WITH {{ role: @new_role, updatedAtTimestamp: @timestamp }} IN {CollectionNames.PERMISSION.value}
-                RETURN NEW
-            """
+            # Build conditions for batch update
+            conditions = []
             bind_vars = {
-                "target_user_key": target_user.get("_key"),
                 "agent_id": agent_id,
-                "new_role": new_role,
+                "new_role": role,
                 "timestamp": get_epoch_timestamp_in_ms(),
             }
-            cursor = self.db.aql.execute(update_query, bind_vars=bind_vars)
-            result = list(cursor)
 
-            if not result:
-                self.logger.warning(f"No permission edge found to update for user {target_user_id}")
-                return False
+            if user_ids:
+                conditions.append("(perm._from IN @user_froms AND perm.type == 'USER' AND perm.role != 'OWNER')")
+                bind_vars["user_froms"] = [f"{CollectionNames.USERS.value}/{user_id}" for user_id in user_ids]
 
-            self.logger.info(f"Successfully updated permission for user {target_user_id} to role {new_role}")
-            return True
+            if team_ids:
+                conditions.append("(perm._from IN @team_froms AND perm.type == 'TEAM')")
+                bind_vars["team_froms"] = [f"{CollectionNames.TEAMS.value}/{team_id}" for team_id in team_ids]
+
+            if not conditions:
+                return {"success": False, "reason": "No users or teams provided"}
+
+            # Single batch update query
+            batch_update_query = f"""
+            FOR perm IN {CollectionNames.PERMISSION.value}
+                FILTER perm._to == CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', @agent_id)
+                FILTER ({' OR '.join(conditions)})
+                UPDATE perm WITH {{
+                    role: @new_role,
+                    updatedAtTimestamp: @timestamp
+                }} IN {CollectionNames.PERMISSION.value}
+                RETURN {{
+                    _key: NEW._key,
+                    _from: NEW._from,
+                    type: NEW.type,
+                    role: NEW.role
+                }}
+            """
+
+            cursor = self.db.aql.execute(batch_update_query, bind_vars=bind_vars)
+            updated_permissions = list(cursor)
+
+            if not updated_permissions:
+                self.logger.warning(f"No permission edges found to update for agent {agent_id}")
+                return {"success": False, "reason": "No permissions found to update"}
+
+            # Count updates by type
+            updated_users = sum(1 for perm in updated_permissions if perm["type"] == "USER")
+            updated_teams = sum(1 for perm in updated_permissions if perm["type"] == "TEAM")
+
+            self.logger.info(f"Successfully updated {len(updated_permissions)} permissions for agent {agent_id} to role {role}")
+
+            return {
+                "success": True,
+                "agent_id": agent_id,
+                "new_role": role,
+                "updated_permissions": len(updated_permissions),
+                "updated_users": updated_users,
+                "updated_teams": updated_teams
+            }
 
         except Exception as e:
-            self.logger.error("❌ Failed to update agent permission: %s", str(e), exc_info=True)
-            return False
+            self.logger.error("Failed to update agent permission: %s", str(e), exc_info=True)
+            return {"success": False, "reason": f"Internal error: {str(e)}"}
 
     async def get_agent_permissions(self, agent_id: str, user_id: str) -> Optional[List[Dict]]:
         """Get all permissions for an agent (only OWNER can view all permissions)"""

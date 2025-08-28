@@ -819,8 +819,8 @@ async def get_agent_permissions(request: Request, agent_id: str) -> JSONResponse
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.put("/{agent_id}/permissions/{target_user_id}")
-async def update_agent_permission(request: Request, agent_id: str, target_user_id: str) -> JSONResponse:
+@router.put("/{agent_id}/permissions")
+async def update_agent_permission(request: Request, agent_id: str) -> JSONResponse:
     """Update permission role for a user on an agent - only OWNER can do this"""
     try:
         # Get all services
@@ -836,10 +836,9 @@ async def update_agent_permission(request: Request, agent_id: str, target_user_i
 
         body = await request.body()
         body_dict = json.loads(body.decode('utf-8'))
-        new_role = body_dict.get("role")
-
-        if not new_role:
-            raise HTTPException(status_code=400, detail="Role is required")
+        user_ids = body_dict.get("userIds", [])
+        team_ids = body_dict.get("teamIds", [])
+        role = body_dict.get("role")
 
         user = await arango_service.get_user_by_user_id(user_info.get("userId"))
         logger.info(f"User: {user}")
@@ -847,7 +846,7 @@ async def update_agent_permission(request: Request, agent_id: str, target_user_i
             raise HTTPException(status_code=404, detail="User not found for updating agent permission")
 
         # Update the permission (only OWNER can do this)
-        result = await arango_service.update_agent_permission(agent_id, user.get("_key"), target_user_id, new_role)
+        result = await arango_service.update_agent_permission(agent_id, user.get("_key"), user_ids, team_ids, role)
         if not result:
             raise HTTPException(status_code=400, detail="Failed to update agent permission")
 
