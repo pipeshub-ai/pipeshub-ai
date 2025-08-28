@@ -54,8 +54,13 @@ const logger = Logger.getInstance({
   service: 'ConfigurationManagerController',
 });
 
-function getOrgIdFromRequest(req: AuthenticatedUserRequest | AuthenticatedServiceRequest): string | undefined {
-  return (req as AuthenticatedUserRequest).user?.orgId || (req as AuthenticatedServiceRequest).tokenPayload?.orgId;
+function getOrgIdFromRequest(
+  req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+): string | undefined {
+  return (
+    (req as AuthenticatedUserRequest).user?.orgId ||
+    (req as AuthenticatedServiceRequest).tokenPayload?.orgId
+  );
 }
 
 export const createStorageConfig =
@@ -1333,15 +1338,19 @@ export const getGoogleWorkspaceOauthConfig =
     }
   };
 
-  export const getAtlassianOauthConfig =
+export const getAtlassianOauthConfig =
   (keyValueStoreService: KeyValueStoreService) =>
-  async (req: AuthenticatedUserRequest|AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
+  async (
+    req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
     try {
       const configManagerConfig = loadConfigurationManagerConfig();
       const orgId = getOrgIdFromRequest(req);
       if (!orgId) {
         throw new BadRequestError('Organisaton not found');
-      } 
+      }
       const encryptedAtlassianConfig = await keyValueStoreService.get<string>(
         `${configPaths.connectors.atlassian.config}/${orgId}`,
       );
@@ -1349,7 +1358,7 @@ export const getGoogleWorkspaceOauthConfig =
         const atlassianConfig = JSON.parse(
           EncryptionService.getInstance(
             configManagerConfig.algorithm,
-            configManagerConfig.secretKey,  
+            configManagerConfig.secretKey,
           ).decrypt(encryptedAtlassianConfig),
         );
         res.status(200).json(atlassianConfig).end();
@@ -1360,11 +1369,15 @@ export const getGoogleWorkspaceOauthConfig =
       logger.error('Error getting Atlassian config', { error });
       next(error);
     }
-  }; 
-  
-  export const setAtlassianOauthConfig =
+  };
+
+export const setAtlassianOauthConfig =
   (keyValueStoreService: KeyValueStoreService) =>
-  async (req: AuthenticatedUserRequest|AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
+  async (
+    req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
     try {
       const oauthConfig = req.body;
       const orgId = getOrgIdFromRequest(req);
@@ -1380,30 +1393,37 @@ export const getGoogleWorkspaceOauthConfig =
         `${configPaths.connectors.atlassian.config}/${orgId}`,
         encryptedAtlassianConfig,
       );
-      res.status(200).json({ message: 'Atlassian config created successfully' });
+      res
+        .status(200)
+        .json({ message: 'Atlassian config created successfully' });
     } catch (error: any) {
       logger.error('Error creating Atlassian config', { error });
       next(error);
     }
   };
 
-  export const getAtlassianCredentials =
+export const getAtlassianCredentials =
   (keyValueStoreService: KeyValueStoreService) =>
-  async (req: AuthenticatedUserRequest|AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
+  async (
+    req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
     try {
       const configManagerConfig = loadConfigurationManagerConfig();
       const orgId = getOrgIdFromRequest(req);
       if (!orgId) {
         throw new BadRequestError('Organisation not found');
       }
-      const encryptedAtlassianCredentials = await keyValueStoreService.get<string>(
-        `${configPaths.connectors.atlassian.credentials}/${orgId}`,
-      );
+      const encryptedAtlassianCredentials =
+        await keyValueStoreService.get<string>(
+          `${configPaths.connectors.atlassian.credentials}/${orgId}`,
+        );
       if (encryptedAtlassianCredentials) {
         const atlassianCredentials = JSON.parse(
           EncryptionService.getInstance(
             configManagerConfig.algorithm,
-            configManagerConfig.secretKey,  
+            configManagerConfig.secretKey,
           ).decrypt(encryptedAtlassianCredentials),
         );
         res.status(200).json(atlassianCredentials).end();
@@ -1416,9 +1436,13 @@ export const getGoogleWorkspaceOauthConfig =
     }
   };
 
-  export const setAtlassianCredentials =
+export const setAtlassianCredentials =
   (keyValueStoreService: KeyValueStoreService) =>
-  async (req: AuthenticatedUserRequest|AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
+  async (
+    req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
     try {
       const credentials = req.body;
       const configManagerConfig = loadConfigurationManagerConfig();
@@ -1428,16 +1452,150 @@ export const getGoogleWorkspaceOauthConfig =
       }
       // Todo: Do a health check for the credentials
       const encryptedAtlassianCredentials = EncryptionService.getInstance(
-        configManagerConfig.algorithm,  
+        configManagerConfig.algorithm,
         configManagerConfig.secretKey,
       ).encrypt(JSON.stringify(credentials));
       await keyValueStoreService.set<string>(
         `${configPaths.connectors.atlassian.credentials}/${orgId}`,
         encryptedAtlassianCredentials,
       );
-      res.status(200).json({ message: 'Atlassian credentials created successfully' });
+      res
+        .status(200)
+        .json({ message: 'Atlassian credentials created successfully' });
     } catch (error: any) {
       logger.error('Error creating Atlassian credentials', { error });
+      next(error);
+    }
+  };
+
+export const getOneDriveCredentials =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (
+    req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const orgId = getOrgIdFromRequest(req);
+      if (!orgId) {
+        throw new BadRequestError('Organisation not found');
+      }
+      const encryptedOneDriveCredentials =
+        await keyValueStoreService.get<string>(
+          `${configPaths.connectors.onedrive.config}/${orgId}`,
+        );
+      if (encryptedOneDriveCredentials) {
+        const oneDriveCredentials = JSON.parse(
+          EncryptionService.getInstance(
+            configManagerConfig.algorithm,
+            configManagerConfig.secretKey,
+          ).decrypt(encryptedOneDriveCredentials),
+        );
+        res.status(200).json(oneDriveCredentials).end();
+      } else {
+        res.status(200).json({}).end();
+      }
+    } catch (error: any) {
+      logger.error('Error getting OneDrive credentials', { error });
+      next(error);
+    }
+  };
+
+export const setOneDriveCredentials =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (
+    req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      const credentials = req.body;
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const orgId = getOrgIdFromRequest(req);
+      if (!orgId) {
+        throw new BadRequestError('Organisation not found');
+      }
+      // Todo: Do a health check for the credentials
+      const encryptedOneDriveCredentials = EncryptionService.getInstance(
+        configManagerConfig.algorithm,
+        configManagerConfig.secretKey,
+      ).encrypt(JSON.stringify(credentials));
+      await keyValueStoreService.set<string>(
+        `${configPaths.connectors.onedrive.config}/${orgId}`,
+        encryptedOneDriveCredentials,
+      );
+      res
+        .status(200)
+        .json({ message: 'OneDrive credentials created successfully' });
+    } catch (error: any) {
+      logger.error('Error creating OneDrive credentials', { error });
+      next(error);
+    }
+  };
+
+export const getSharePointCredentials =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (
+    req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const orgId = getOrgIdFromRequest(req);
+      if (!orgId) {
+        throw new BadRequestError('Organisation not found');
+      }
+      const encryptedSharePointCredentials =
+        await keyValueStoreService.get<string>(
+          `${configPaths.connectors.sharepoint.config}/${orgId}`,
+        );
+      if (encryptedSharePointCredentials) {
+        const sharePointCredentials = JSON.parse(
+          EncryptionService.getInstance(
+            configManagerConfig.algorithm,
+            configManagerConfig.secretKey,
+          ).decrypt(encryptedSharePointCredentials),
+        );
+        res.status(200).json(sharePointCredentials).end();
+      } else {
+        res.status(200).json({}).end();
+      }
+    } catch (error: any) {
+      logger.error('Error getting SharePoint credentials', { error });
+      next(error);
+    }
+  };
+
+export const setSharePointCredentials =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (
+    req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      const credentials = req.body;
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const orgId = getOrgIdFromRequest(req);
+      if (!orgId) {
+        throw new BadRequestError('Organisation not found');
+      }
+      // Todo: Do a health check for the credentials
+      const encryptedSharePointCredentials = EncryptionService.getInstance(
+        configManagerConfig.algorithm,
+        configManagerConfig.secretKey,
+      ).encrypt(JSON.stringify(credentials));
+      await keyValueStoreService.set<string>(
+        `${configPaths.connectors.sharepoint.config}/${orgId}`,
+        encryptedSharePointCredentials,
+      );
+      res
+        .status(200)
+        .json({ message: 'SharePoint credentials created successfully' });
+    } catch (error: any) {
+      logger.error('Error creating SharePoint credentials', { error });
       next(error);
     }
   };

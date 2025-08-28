@@ -15,8 +15,8 @@ import {
 
 import { Iconify } from 'src/components/iconify';
 
+import { ConnectorId } from 'src/sections/accountdetails/types/connector';
 import GoogleWorkspaceConfigForm from './google-workspace-config-individual-form';
-
 import type { GoogleWorkspaceConfigFormRef } from './google-workspace-config-individual-form';
 
 // Method configurations
@@ -38,6 +38,16 @@ const CONNECTOR_CONFIG: ConnectorConfigType = {
     src: '/assets/icons/connectors/atlassian.svg',
     title: 'Atlassian',
     color: '#0052CC',
+  },
+  onedrive: {
+    src: '/assets/icons/connectors/onedrive.svg',
+    title: 'OneDrive',
+    color: '#0078D4',
+  },
+  sharepoint: {
+    src: '/assets/icons/connectors/sharepoint.svg',
+    title: 'SharePoint Online',
+    color: '#0078D4',
   },
 };
 
@@ -80,7 +90,7 @@ const ConfigureConnectorDialog = ({
 
     // Determine which form ref to use based on connector type
     switch (connectorType) {
-      case 'googleWorkspace':
+      case ConnectorId.GOOGLE_WORKSPACE:
         currentRef = googleWorkspaceFormRef;
         break;
       default:
@@ -172,7 +182,7 @@ const ConfigureConnectorDialog = ({
             }}
           >
             <Box>
-              {connectorType === 'googleWorkspace' && (
+              {connectorType === ConnectorId.GOOGLE_WORKSPACE && (
                 <GoogleWorkspaceConfigForm
                   onValidationChange={handleValidationChange}
                   onSaveSuccess={handleFormSaveSuccess}

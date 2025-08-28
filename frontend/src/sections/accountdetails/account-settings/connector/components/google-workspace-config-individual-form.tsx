@@ -9,6 +9,7 @@ import editOutlineIcon from '@iconify-icons/eva/edit-outline';
 import saveOutlineIcon from '@iconify-icons/eva/save-outline';
 import fileTextIcon from '@iconify-icons/mdi/file-text-outline';
 import closeOutlineIcon from '@iconify-icons/eva/close-outline';
+import linkIcon from '@iconify-icons/eva/link-outline';
 import { useRef, useState, useEffect, forwardRef, useCallback, useImperativeHandle } from 'react';
 
 import { alpha, useTheme } from '@mui/material/styles';
@@ -26,6 +27,7 @@ import {
   IconButton,
   InputAdornment,
   CircularProgress,
+  Divider,
 } from '@mui/material';
 
 import axios from 'src/utils/axios';
@@ -119,6 +121,11 @@ const GoogleWorkspaceConfigForm = forwardRef<
   const [formEditMode, setFormEditMode] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
 
+  // OAuth authorization states
+  const [isAuthorizing, setIsAuthorizing] = useState(false);
+  const [authorizationError, setAuthorizationError] = useState<string | null>(null);
+  const [isAuthorized, setIsAuthorized] = useState(false);
+
   // Store original values for cancel operation
   const [originalState, setOriginalState] = useState({
     clientId: '',
@@ -209,6 +216,101 @@ const GoogleWorkspaceConfigForm = forwardRef<
     setSaveError(null);
   };
 
+  // Handle OAuth authorization
+  const handleOAuthAuthorization = async () => {
+    setIsAuthorizing(true);
+    setAuthorizationError(null);
+
+    try {
+      // Check if we have the required credentials
+      if (!formData.clientId || !formData.clientSecret) {
+        throw new Error('Please configure OAuth credentials before authorizing');
+      }
+
+              // Create OAuth authorization URL
+        const params = new URLSearchParams({
+          client_id: formData.clientId,
+          response_type: 'code',
+          scope: [
+            'https://www.googleapis.com/auth/userinfo.email',
+            'https://www.googleapis.com/auth/userinfo.profile',
+            'https://www.googleapis.com/auth/gmail.readonly',
+            'https://www.googleapis.com/auth/gmail.modify',
+            'https://www.googleapis.com/auth/drive.readonly',
+            'https://www.googleapis.com/auth/drive.metadata.readonly',
+            'https://www.googleapis.com/auth/calendar.readonly',
+            'https://www.googleapis.com/auth/calendar.events.readonly',
+          ].join(' '),
+          redirect_uri: `${window.location.origin}/account/individual/settings/connector/googleWorkspace/oauth/callback`,
+          access_type: 'offline',
+          prompt: 'consent',
+          state: btoa(JSON.stringify({ 
+            service: 'googleWorkspace',
+            timestamp: Date.now()
+          })),
+        });
+
+      const oauthUrl = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+
+      // Open OAuth flow in popup
+      const popupWidth = 500;
+      const popupHeight = 600;
+      const left = window.screen.width / 2 - popupWidth / 2;
+      const top = window.screen.height / 2 - popupHeight / 2;
+
+      const popup = window.open(
+        oauthUrl,
+        'Google Workspace Authorization',
+        `width=${popupWidth},height=${popupHeight},top=${top},left=${left},resizable=no,scrollbars=yes,status=no`
+      );
+
+      if (!popup) {
+        throw new Error('Popup blocked! Please enable popups for this site.');
+      }
+
+      // Listen for messages from the popup
+      const handleMessage = (event: MessageEvent) => {
+        if (event.origin !== window.location.origin) {
+          return;
+        }
+
+        if (event.data.type === 'GOOGLE_WORKSPACE_OAUTH_SUCCESS') {
+          window.removeEventListener('message', handleMessage);
+          popup.close();
+          setIsAuthorized(true);
+          setIsAuthorizing(false);
+          
+          // Show success message
+          setSaveSuccess(true);
+          setTimeout(() => setSaveSuccess(false), 5000);
+        } else if (event.data.type === 'GOOGLE_WORKSPACE_OAUTH_ERROR') {
+          window.removeEventListener('message', handleMessage);
+          popup.close();
+          setAuthorizationError(event.data.error || 'OAuth authorization failed');
+          setIsAuthorizing(false);
+        }
+      };
+
+      window.addEventListener('message', handleMessage);
+
+      // Monitor popup for closure
+      const checkPopupClosed = setInterval(() => {
+        if (popup.closed) {
+          clearInterval(checkPopupClosed);
+          window.removeEventListener('message', handleMessage);
+          if (isAuthorizing) {
+            setAuthorizationError('OAuth authorization was cancelled');
+            setIsAuthorizing(false);
+          }
+        }
+      }, 1000);
+
+    } catch (err) {
+      setAuthorizationError(err instanceof Error ? err.message : 'Failed to initialize OAuth authorization');
+      setIsAuthorizing(false);
+    }
+  };
+
   useEffect(() => {
     const initializeForm = async () => {
       setIsLoading(true);
@@ -245,6 +347,16 @@ const GoogleWorkspaceConfigForm = forwardRef<
             if (response.data.topicName) {
               setTopicName(response.data.topicName);
             }
+          }
+
+          // Check if OAuth is authorized
+          if (response.data.isAuthorized) {
+            setIsAuthorized(true);
+          }
+
+          // Also check if we have tokens (indicating authorization)
+          if (response.data.accessToken || response.data.refreshToken) {
+            setIsAuthorized(true);
           }
 
           // Set original state
@@ -560,6 +672,18 @@ const GoogleWorkspaceConfigForm = forwardRef<
             </Alert>
           )}
 
+          {authorizationError && (
+            <Alert
+              severity="error"
+              sx={{
+                mb: 3,
+                borderRadius: 1,
+              }}
+            >
+              {authorizationError}
+            </Alert>
+          )}
+
           {saveSuccess && (
             <Alert
               severity="success"
@@ -834,6 +958,99 @@ const GoogleWorkspaceConfigForm = forwardRef<
               />
             </Grid>
           </Grid>
+
+          {/* OAuth Authorization Section */}
+          {isConfigured && !formEditMode && (
+            <Box sx={{ mt: 4 }}>
+              <Divider sx={{ mb: 3 }}>
+                <Typography variant="subtitle2" color="text.secondary">
+                  OAuth Authorization
+                </Typography>
+              </Divider>
+
+              <Paper
+                variant="outlined"
+                sx={{
+                  p: 3,
+                  borderRadius: 1,
+                  bgcolor: alpha(theme.palette.background.default, 0.8),
+                  borderColor: alpha(theme.palette.divider, 0.2),
+                }}
+              >
+                <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 2 }}>
+                  <Box
+                    sx={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      width: 48,
+                      height: 48,
+                      borderRadius: '12px',
+                      bgcolor: alpha(theme.palette.success.main, 0.1),
+                      color: theme.palette.success.main,
+                    }}
+                  >
+                    <Iconify
+                      icon={isAuthorized ? 'eva:checkmark-circle-fill' : 'eva:link-outline'}
+                      width={24}
+                      height={24}
+                    />
+                  </Box>
+
+                  <Box sx={{ flexGrow: 1 }}>
+                    <Typography variant="subtitle1" sx={{ mb: 1, fontWeight: 600 }}>
+                      {isAuthorized ? 'Google Workspace Authorized' : 'Authorize Google Workspace'}
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                      {isAuthorized
+                        ? 'Your Google Workspace account has been successfully authorized. You can now enable the connector.'
+                        : 'Click the button below to authorize this application to access your Google Workspace data (Gmail, Drive, Calendar).'}
+                    </Typography>
+
+                    {!isAuthorized && (
+                      <Button
+                        variant="contained"
+                        startIcon={<Iconify icon={linkIcon} width={18} height={18} />}
+                        onClick={handleOAuthAuthorization}
+                        disabled={isAuthorizing || !formData.clientId || !formData.clientSecret}
+                        sx={{
+                          bgcolor: theme.palette.primary.main,
+                          '&:hover': {
+                            bgcolor: theme.palette.primary.dark,
+                          },
+                        }}
+                      >
+                        {isAuthorizing ? (
+                          <>
+                            <CircularProgress size={16} sx={{ mr: 1 }} />
+                            Authorizing...
+                          </>
+                        ) : (
+                          'Authorize Google Workspace'
+                        )}
+                      </Button>
+                    )}
+
+                    {isAuthorized && (
+                      <Box
+                        sx={{
+                          p: 2,
+                          borderRadius: 1,
+                          bgcolor: alpha(theme.palette.success.main, 0.1),
+                          border: `1px solid ${alpha(theme.palette.success.main, 0.2)}`,
+                        }}
+                      >
+                        <Typography variant="body2" color="success.main" sx={{ fontWeight: 500 }}>
+                          ✓ Authorization successful! Your Google Workspace account is now connected.
+                        </Typography>
+                      </Box>
+                    )}
+                  </Box>
+                </Box>
+              </Paper>
+            </Box>
+          )}
+
           <Box sx={{ mb: 3, mt: 3 }}>
             <Paper
               variant="outlined"

@@ -7,6 +7,7 @@ import editOutlineIcon from '@iconify-icons/eva/edit-outline';
 import saveOutlineIcon from '@iconify-icons/eva/save-outline';
 import closeOutlineIcon from '@iconify-icons/eva/close-outline';
 import linkIcon from '@iconify-icons/eva/link-outline';
+import buildingIcon from '@iconify-icons/mdi/microsoft-onedrive';
 import { useState, useEffect, forwardRef, useCallback, useImperativeHandle } from 'react';
 
 import { alpha, useTheme } from '@mui/material/styles';
@@ -24,39 +25,44 @@ import {
   IconButton,
   InputAdornment,
   CircularProgress,
+  FormControlLabel,
+  Checkbox,
 } from '@mui/material';
 
 import axios from 'src/utils/axios';
 
 import { Iconify } from 'src/components/iconify';
 
-import { ConnectorId } from 'src/sections/accountdetails/types/connector';
 import { getConnectorPublicUrl } from '../../services/utils/services-configuration-service';
 
-interface AtlassianConfigFormProps {
+interface SharePointConfigFormProps {
   onValidationChange: (isValid: boolean) => void;
   onSaveSuccess?: () => void;
   isEnabled?: boolean;
 }
 
-export interface AtlassianConfigFormRef {
+export interface SharePointConfigFormRef {
   handleSave: () => Promise<boolean>;
 }
 
 // Define Zod schema for form validation
-const atlassianConfigSchema = z.object({
+const sharepointConfigSchema = z.object({
   clientId: z.string().min(1, { message: 'Client ID is required' }),
   clientSecret: z.string().min(1, { message: 'Client Secret is required' }),
+  tenantId: z.string().min(1, { message: 'Tenant ID is required' }),
+  hasAdminConsent: z.boolean(),
 });
 
-type AtlassianConfigFormData = z.infer<typeof atlassianConfigSchema>;
+type SharePointConfigFormData = z.infer<typeof sharepointConfigSchema>;
 
-const AtlassianConfigForm = forwardRef<AtlassianConfigFormRef, AtlassianConfigFormProps>(
+const SharePointConfigForm = forwardRef<SharePointConfigFormRef, SharePointConfigFormProps>(
   ({ onValidationChange, onSaveSuccess, isEnabled }, ref) => {
     const theme = useTheme();
-    const [formData, setFormData] = useState<AtlassianConfigFormData>({
+    const [formData, setFormData] = useState<SharePointConfigFormData>({
       clientId: '',
       clientSecret: '',
+      tenantId: '',
+      hasAdminConsent: true,
     });
 
     const [errors, setErrors] = useState<Record<string, string>>({});
@@ -76,6 +82,8 @@ const AtlassianConfigForm = forwardRef<AtlassianConfigFormRef, AtlassianConfigFo
     const [originalState, setOriginalState] = useState({
       clientId: '',
       clientSecret: '',
+      tenantId: '',
+      hasAdminConsent: true,
       realTimeUpdatesEnabled: false,
     });
 
@@ -96,6 +104,8 @@ const AtlassianConfigForm = forwardRef<AtlassianConfigFormRef, AtlassianConfigFo
       setOriginalState({
         clientId: formData.clientId,
         clientSecret: formData.clientSecret,
+        tenantId: formData.tenantId,
+        hasAdminConsent: formData.hasAdminConsent,
         realTimeUpdatesEnabled,
       });
 
@@ -107,6 +117,8 @@ const AtlassianConfigForm = forwardRef<AtlassianConfigFormRef, AtlassianConfigFo
       setFormData({
         clientId: originalState.clientId,
         clientSecret: originalState.clientSecret,
+        tenantId: originalState.tenantId,
+        hasAdminConsent: originalState.hasAdminConsent,
       });
       setRealTimeUpdatesEnabled(originalState.realTimeUpdatesEnabled);
 
@@ -124,7 +136,7 @@ const AtlassianConfigForm = forwardRef<AtlassianConfigFormRef, AtlassianConfigFo
         try {
           const response = await axios.get('/api/v1/connectors/config', {
             params: {
-              service: ConnectorId.ATLASSIAN,
+              service: 'sharepoint',
             },
           });
 
@@ -132,6 +144,8 @@ const AtlassianConfigForm = forwardRef<AtlassianConfigFormRef, AtlassianConfigFo
             const formValues = {
               clientId: response.data.clientId || '',
               clientSecret: response.data.clientSecret || '',
+              tenantId: response.data.tenantId || '',
+              hasAdminConsent: response.data.hasAdminConsent !== undefined ? response.data.hasAdminConsent : true,
             };
 
             setFormData(formValues);
@@ -144,13 +158,15 @@ const AtlassianConfigForm = forwardRef<AtlassianConfigFormRef, AtlassianConfigFo
             setOriginalState({
               clientId: formValues.clientId,
               clientSecret: formValues.clientSecret,
+              tenantId: formValues.tenantId,
+              hasAdminConsent: formValues.hasAdminConsent,
               realTimeUpdatesEnabled: response.data.realTimeUpdatesEnabled || false,
             });
 
             setIsConfigured(true);
           }
         } catch (error) {
-          console.error('Error fetching Atlassian config:', error);
+          console.error('Error fetching SharePoint config:', error);
           setSaveError('Failed to fetch configuration.');
         } finally {
           setIsLoading(false);
@@ -183,7 +199,7 @@ const AtlassianConfigForm = forwardRef<AtlassianConfigFormRef, AtlassianConfigFo
     useEffect(() => {
       try {
         // Parse the data with zod schema
-        atlassianConfigSchema.parse(formData);
+        sharepointConfigSchema.parse(formData);
         setErrors({});
         onValidationChange(true);
       } catch (validationError) {
@@ -215,6 +231,21 @@ const AtlassianConfigForm = forwardRef<AtlassianConfigFormRef, AtlassianConfigFo
       });
     };
 
+    // Handle checkbox change
+    const handleCheckboxChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+      if (!formEditMode && isConfigured) {
+        // If trying to edit when not in edit mode, enter edit mode first
+        handleEnterEditMode();
+        return;
+      }
+
+      const { name, checked } = e.target;
+      setFormData({
+        ...formData,
+        [name]: checked,
+      });
+    };
+
     // Toggle secret visibility
     const handleToggleClientSecretVisibility = () => {
       setShowClientSecret(!showClientSecret);
@@ -228,7 +259,7 @@ const AtlassianConfigForm = forwardRef<AtlassianConfigFormRef, AtlassianConfigFo
 
       try {
         // Validate the form data with Zod before saving
-        atlassianConfigSchema.parse(formData);
+        sharepointConfigSchema.parse(formData);
 
         const payload = {
           ...formData,
@@ -238,7 +269,7 @@ const AtlassianConfigForm = forwardRef<AtlassianConfigFormRef, AtlassianConfigFo
         // Send the update request
         await axios.post('/api/v1/connectors/config', payload, {
           params: {
-            service: ConnectorId.ATLASSIAN,
+            service: 'sharepoint',
           },
         });
 
@@ -266,8 +297,8 @@ const AtlassianConfigForm = forwardRef<AtlassianConfigFormRef, AtlassianConfigFo
           setSaveError('Please correct the form errors before saving');
         } else {
           // Handle API errors
-          setSaveError('Failed to save Atlassian configuration');
-          console.error('Error saving Atlassian config:', error);
+          setSaveError('Failed to save SharePoint configuration');
+          console.error('Error saving SharePoint config:', error);
         }
         return false;
       } finally {
@@ -283,7 +314,7 @@ const AtlassianConfigForm = forwardRef<AtlassianConfigFormRef, AtlassianConfigFo
         <Alert variant="outlined" severity="info" sx={{ my: 3 }}>
           Refer to{' '}
           <Link
-            href="https://docs.pipeshub.com/individual/connectors/atlassian"
+            href="https://docs.pipeshub.com/business/connectors/sharepoint"
             target="_blank"
             rel="noopener"
           >
@@ -307,7 +338,7 @@ const AtlassianConfigForm = forwardRef<AtlassianConfigFormRef, AtlassianConfigFo
                   mb: 3,
                 }}
               >
-                <Typography variant="h6">Atlassian Configuration</Typography>
+                <Typography variant="h6">SharePoint Configuration</Typography>
 
                 {!formEditMode ? (
                   !isEnabled ? (
@@ -375,54 +406,56 @@ const AtlassianConfigForm = forwardRef<AtlassianConfigFormRef, AtlassianConfigFo
                   borderRadius: 1,
                 }}
               >
-                Configuration saved successfully! You can now use OAuth2 to authenticate with Atlassian.
+                Configuration saved successfully! You can now use OAuth2 to authenticate with SharePoint.
               </Alert>
             )}
 
-            {/* Tenant URL Display */}
-            <Box
-              sx={{
-                mb: 3,
-                p: 2,
-                borderRadius: 1,
-                bgcolor: alpha(theme.palette.primary.main, 0.04),
-                border: `1px solid ${alpha(theme.palette.primary.main, 0.15)}`,
-                display: 'flex',
-                alignItems: 'flex-start',
-                gap: 1,
-              }}
-            >
-              <Iconify
-                icon={linkIcon}
-                width={20}
-                height={20}
-                color={theme.palette.primary.main}
-                style={{ marginTop: 2 }}
-              />
-              <Box>
-                <Typography variant="subtitle2" color="primary.main" sx={{ mb: 0.5 }}>
-                  Redirect URL
-                </Typography>
-                <Typography variant="body2" color="text.secondary">
-                    Use this URL when configuring your Atlassian OAuth2 App.
-                </Typography>
-                <Typography
-                  variant="body2"
-                  sx={{
-                    mt: 1,
-                    p: 1,
-                    borderRadius: 0.5,
-                    bgcolor: alpha(theme.palette.background.paper, 0.8),
-                    border: `1px solid ${alpha(theme.palette.divider, 0.2)}`,
-                    fontFamily: 'monospace',
-                    fontSize: '0.875rem',
-                    wordBreak: 'break-all',
-                  }}
-                >
-                  {tenantUrl}/atlassian/oauth/callback
-                </Typography>
+            {/* Tenant URL Display - Only show when admin consent is not granted */}
+            {!formData.hasAdminConsent && (
+              <Box
+                sx={{
+                  mb: 3,
+                  p: 2,
+                  borderRadius: 1,
+                  bgcolor: alpha(theme.palette.primary.main, 0.04),
+                  border: `1px solid ${alpha(theme.palette.primary.main, 0.15)}`,
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: 1,
+                }}
+              >
+                <Iconify
+                  icon={linkIcon}
+                  width={20}
+                  height={20}
+                  color={theme.palette.primary.main}
+                  style={{ marginTop: 2 }}
+                />
+                <Box>
+                  <Typography variant="subtitle2" color="primary.main" sx={{ mb: 0.5 }}>
+                    Redirect URL
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                      Use this URL when configuring your Azure AD App registration.
+                  </Typography>
+                  <Typography
+                    variant="body2"
+                    sx={{
+                      mt: 1,
+                      p: 1,
+                      borderRadius: 0.5,
+                      bgcolor: alpha(theme.palette.background.paper, 0.8),
+                      border: `1px solid ${alpha(theme.palette.divider, 0.2)}`,
+                      fontFamily: 'monospace',
+                      fontSize: '0.875rem',
+                      wordBreak: 'break-all',
+                    }}
+                  >
+                    {tenantUrl}/sharepoint/oauth/callback
+                  </Typography>
+                </Box>
               </Box>
-            </Box>
+            )}
 
             <Box
               sx={{
@@ -445,40 +478,40 @@ const AtlassianConfigForm = forwardRef<AtlassianConfigFormRef, AtlassianConfigFo
               />
               <Box>
                 <Typography variant="body2" color="text.secondary">
-                  To configure Atlassian integration, you will need to create an OAuth2 App in the{' '}
+                  To configure SharePoint integration, you will need to create an App registration in{' '}
                   <Link
-                    href="https://developer.atlassian.com/console/myapps/"
+                    href="https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"
                     target="_blank"
                     rel="noopener"
                     sx={{ fontWeight: 500 }}
                   >
-                    Atlassian Developer Console
+                    Azure Active Directory
                   </Link>
-                  . Enter your Client ID and Client Secret from your OAuth2 App below.
+                  . Enter your Application (client) ID, Client Secret, and Directory (tenant) ID from your App registration below.
                 </Typography>
                 <Typography variant="body2" color="primary.main" sx={{ mt: 1, fontWeight: 500 }}>
-                  Important: Configure the redirect URI in your Atlassian app to point to your application.
+                  Important: Add the redirect URI above to your Azure AD app registration and ensure proper Microsoft Graph API permissions are granted.
                 </Typography>
               </Box>
             </Box>
 
             <Typography variant="subtitle2" sx={{ mb: 1.5 }}>
-              OAuth2 Credentials
+              Azure AD App Registration Credentials
             </Typography>
 
             <Grid container spacing={2.5}>
               <Grid item xs={12}>
                 <TextField
                   fullWidth
-                  label="Client ID"
+                  label="Application (Client) ID"
                   name="clientId"
                   type="text"
                   value={formData.clientId}
                   onChange={handleChange}
-                  placeholder="Enter your OAuth2 Client ID"
+                  placeholder="Enter your Azure AD Application (Client) ID"
                   error={Boolean(getFieldError('clientId'))}
                   helperText={
-                    getFieldError('clientId') || 'The Client ID from your Atlassian OAuth2 App'
+                    getFieldError('clientId') || 'The Application (client) ID from your Azure AD App registration'
                   }
                   required
                   size="small"
@@ -503,16 +536,49 @@ const AtlassianConfigForm = forwardRef<AtlassianConfigFormRef, AtlassianConfigFo
               <Grid item xs={12}>
                 <TextField
                   fullWidth
+                  label="Directory (Tenant) ID"
+                  name="tenantId"
+                  type="text"
+                  value={formData.tenantId}
+                  onChange={handleChange}
+                  placeholder="Enter your Azure AD Directory (Tenant) ID"
+                  error={Boolean(getFieldError('tenantId'))}
+                  helperText={
+                    getFieldError('tenantId') || 'The Directory (tenant) ID from your Azure AD tenant'
+                  }
+                  required
+                  size="small"
+                  disabled={isConfigured && !formEditMode}
+                  InputProps={{
+                    startAdornment: (
+                      <InputAdornment position="start">
+                        <Iconify icon={buildingIcon} width={18} height={18} />
+                      </InputAdornment>
+                    ),
+                  }}
+                  sx={{
+                    '& .MuiOutlinedInput-root': {
+                      '& fieldset': {
+                        borderColor: alpha(theme.palette.text.primary, 0.15),
+                      },
+                    },
+                  }}
+                />
+              </Grid>
+
+              <Grid item xs={12}>
+                <TextField
+                  fullWidth
                   label="Client Secret"
                   name="clientSecret"
                   type={showClientSecret ? 'text' : 'password'}
                   value={formData.clientSecret}
                   onChange={handleChange}
-                  placeholder="Enter your OAuth2 Client Secret"
+                  placeholder="Enter your Azure AD Client Secret"
                   error={Boolean(getFieldError('clientSecret'))}
                   helperText={
                     getFieldError('clientSecret') ||
-                    'The Client Secret from your Atlassian OAuth2 App configuration'
+                    'The Client Secret value from your Azure AD App registration'
                   }
                   required
                   size="small"
@@ -549,6 +615,28 @@ const AtlassianConfigForm = forwardRef<AtlassianConfigFormRef, AtlassianConfigFo
                   }}
                 />
               </Grid>
+
+              <Grid item xs={12}>
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      name="hasAdminConsent"
+                      checked={formData.hasAdminConsent}
+                      onChange={handleCheckboxChange}
+                      disabled={isConfigured && !formEditMode}
+                    />
+                  }
+                  label="My Azure AD app has admin consent granted for Microsoft Graph API permissions"
+                  sx={{
+                    alignItems: 'center',
+                    '& .MuiFormControlLabel-label': {
+                      fontSize: '0.875rem',
+                      color: 'text.secondary',
+                      lineHeight: 1.4,
+                    },
+                  }}
+                />
+              </Grid>
             </Grid>
 
             {isSaving && (
@@ -563,4 +651,4 @@ const AtlassianConfigForm = forwardRef<AtlassianConfigFormRef, AtlassianConfigFo
   }
 );
 
-export default AtlassianConfigForm;
+export default SharePointConfigForm;

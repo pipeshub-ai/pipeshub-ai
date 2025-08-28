@@ -34,13 +34,18 @@ const ConnectorSettings = lazy(
 );
 
 const GoogleWorkspaceBusinessPage = lazy(
-  () => import('src/pages/dashboard/account/connectors/googleWorkspace-business-config')
+  () => import('src/pages/dashboard/account/connectors/googleWorkspace-business')
 );
 
 const GoogleWorkspaceIndividualPage = lazy(
-  () => import('src/pages/dashboard/account/connectors/googleWorkspace-individual-config')
+  () => import('src/pages/dashboard/account/connectors/googleWorkspace-individual')
 );
-const AtlassianPage = lazy(() => import('src/pages/dashboard/account/connectors/atlassian-config'));
+const GoogleWorkspaceOAuthCallback = lazy(
+  () => import('src/pages/dashboard/account/connectors/googleWorkspace-oauth-callback')
+);
+const AtlassianPage = lazy(() => import('src/pages/dashboard/account/connectors/atlassian'));
+const OneDrivePage = lazy(() => import('src/pages/dashboard/account/connectors/onedrive'));
+const SharepointPage = lazy(() => import('src/pages/dashboard/account/connectors/sharepoint'));
 
 const SamlSsoConfigPage = lazy(() => import('src/pages/dashboard/account/saml-sso-config'));
 
@@ -329,6 +334,14 @@ export const dashboardRoutes = [
                         path: 'atlassian',
                         element: <BusinessAdminOnlyRoute component={AtlassianPage} />,
                       },
+                      {
+                        path: 'onedrive',
+                        element: <BusinessAdminOnlyRoute component={OneDrivePage} />,
+                      },
+                      {
+                        path: 'sharepoint',
+                        element: <BusinessAdminOnlyRoute component={SharepointPage} />,
+                      },
                     ],
                   },
                   {
@@ -430,6 +443,22 @@ export const dashboardRoutes = [
                         ) : (
                           <IndividualOnlyRoute component={GoogleWorkspaceIndividualPage} />
                         ),
+                      },
+                      {
+                        path: 'googleWorkspace/oauth/callback',
+                        element: <GoogleWorkspaceOAuthCallback />,
+                      },
+                      {
+                        path: 'atlassian',
+                        element: <IndividualOnlyRoute component={AtlassianPage} />,
+                      },
+                      {
+                        path: 'onedrive',
+                        element: <IndividualOnlyRoute component={OneDrivePage} />,
+                      },
+                      {
+                        path: 'sharepoint',
+                        element: <IndividualOnlyRoute component={SharepointPage} />,
                       },
                     ],
                   },

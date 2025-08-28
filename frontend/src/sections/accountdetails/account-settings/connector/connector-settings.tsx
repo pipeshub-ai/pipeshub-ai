@@ -24,7 +24,6 @@ import { useAuthContext } from 'src/auth/hooks';
 
 import { CONNECTORS_LIST } from './components/connectors-list';
 
-// Define connector types and interfaces
 interface ConnectorStatusMap {
   [connectorId: string]: boolean;
 }
@@ -65,34 +64,23 @@ const ConnectorSettings = () => {
     }
   }, []);
 
-  // Fetch connector status (enabled/disabled)
-  const fetchConnectorStatus = useCallback(async (connectorId: string) => {
-    try {
-      const response = await axios.get(`/api/v1/connectors/status`, {
-        params: {
-          service: connectorId,
-        },
-      });
-      return response.data?.enabled || false;
-    } catch (err) {
-      console.error(`Error fetching ${connectorId} status:`, err);
-      return false;
-    }
-  }, []);
-
   // Check configurations separately
   const checkConnectorConfigurations = useCallback(async () => {
     setCheckingConfigs(true);
     try {
       // Check all configurations in parallel
-      const results = await Promise.allSettled([fetchConnectorConfig('googleWorkspace')]);
+      const results = await Promise.allSettled(CONNECTORS_LIST.map(connector => fetchConnectorConfig(connector.id)));
 
       // Check if the configuration is valid
-      const googleConfigured = results[0].status === 'fulfilled' && results[0].value;
-
-      const newConfigStatus = {
-        googleWorkspace: googleConfigured,
-      };
+      const newConfigStatus: ConnectorStatusMap = {};
+      CONNECTORS_LIST.forEach((connector, index) => {
+        const result = results[index];
+        if (result.status === 'fulfilled' && result.value) {
+          newConfigStatus[connector.id] = Object.keys(result.value).length > 0;
+        } else {
+          newConfigStatus[connector.id] = false;
+        }
+      });
 
       setConfiguredStatus(newConfigStatus);
     } catch (err) {
@@ -116,7 +104,7 @@ const ConnectorSettings = () => {
       // Process data from API
       if (data) {
         data.forEach((connector: any) => {
-          enabledMap[connector.key] = Boolean(connector.isEnabled);
+          enabledMap[connector.id] = Boolean(connector.isEnabled);
         });
       }
 
@@ -151,12 +139,6 @@ const ConnectorSettings = () => {
     const currentPath = window.location.pathname;
     const basePath = currentPath.endsWith('/') ? currentPath : `${currentPath}/`;
     navigate(`${basePath}${connectorId}`);
-  };
-
-  // Helper to get connector title from ID
-  const getConnectorTitle = (connectorId: string): string => {
-    const connector = CONNECTORS_LIST.find((c) => c.id === connectorId);
-    return connector?.title || 'Connector';
   };
 
   return (
@@ -268,6 +250,7 @@ const ConnectorSettings = () => {
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'space-between',
+                    gap: 2,
                     borderRadius: 1,
                     border: '1px solid',
                     borderColor: isEnabled
@@ -331,8 +314,8 @@ const ConnectorSettings = () => {
                     </Box>
                   </Box>
 
-                  {/* Status badges */}
-                  <Box sx={{ display: 'flex', mr: 2, gap: 1 }}>
+                  {/* Right side elements - Status badges and Configure Button */}
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 'fit-content' }}>
                     {/* Configuration Status badge */}
                     <Box
                       sx={{
@@ -348,6 +331,8 @@ const ConnectorSettings = () => {
                         color: isConfigured
                           ? theme.palette.warning.main
                           : theme.palette.text.disabled,
+                        minWidth: 'fit-content',
+                        height: 24,
                       }}
                     >
                       <Box
@@ -364,92 +349,97 @@ const ConnectorSettings = () => {
                         sx={{
                           fontWeight: 600,
                           fontSize: '0.6875rem',
+                          whiteSpace: 'nowrap',
                         }}
                       >
                         {isConfigured ? 'Configured' : 'Not Configured'}
                       </Typography>
                     </Box>
 
-                    {/* Enabled Status badge - only show if configured */}
-                    {isConfigured && (
-                      <Box
-                        sx={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          px: 1,
-                          py: 0.5,
-                          borderRadius: 0.75,
-                          bgcolor: alpha(
-                            isEnabled ? connector.color : theme.palette.error.main,
-                            theme.palette.mode === 'dark' ? 0.15 : 0.08
-                          ),
-                          color: isEnabled ? connector.color : theme.palette.error.main,
-                        }}
-                      >
-                        <Box
-                          sx={{
-                            width: 6,
-                            height: 6,
-                            borderRadius: '50%',
-                            bgcolor: 'currentColor',
-                            mr: 0.5,
-                          }}
-                        />
-                        <Typography
-                          variant="caption"
-                          sx={{
-                            fontWeight: 600,
-                            fontSize: '0.6875rem',
-                          }}
-                        >
-                          {isEnabled ? 'Active' : 'Inactive'}
-                        </Typography>
-                      </Box>
-                    )}
-                  </Box>
-
-                  {/* Configure Button */}
-                  <Box
-                    onClick={() => handleConfigureConnector(connector.id)}
-                    sx={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      px: 1,
-                      py: 0.5,
-                      borderRadius: 0.75,
-                      cursor: 'pointer',
-                      bgcolor: alpha(
-                        theme.palette.primary.main,
-                        theme.palette.mode === 'dark' ? 0.15 : 0.08
-                      ),
-                      color: theme.palette.primary.main,
-                      transition: 'all 0.2s',
-                      '&:hover': {
-                        bgcolor: alpha(
-                          theme.palette.primary.main,
-                          theme.palette.mode === 'dark' ? 0.25 : 0.15
-                        ),
-                      },
-                    }}
-                  >
+                    {/* Enabled Status badge - always show */}
                     <Box
                       sx={{
-                        width: 6,
-                        height: 6,
-                        borderRadius: '50%',
-                        bgcolor: 'currentColor',
-                        mr: 0.5,
-                      }}
-                    />
-                    <Typography
-                      variant="caption"
-                      sx={{
-                        fontWeight: 600,
-                        fontSize: '0.6875rem',
+                        display: 'flex',
+                        alignItems: 'center',
+                        px: 1,
+                        py: 0.5,
+                        borderRadius: 0.75,
+                        bgcolor: alpha(
+                          isConfigured && isEnabled ? connector.color : theme.palette.error.main,
+                          theme.palette.mode === 'dark' ? 0.15 : 0.08
+                        ),
+                        color: isConfigured && isEnabled ? connector.color : theme.palette.error.main,
+                        minWidth: 'fit-content',
+                        height: 24,
                       }}
                     >
-                      View Details
-                    </Typography>
+                      <Box
+                        sx={{
+                          width: 6,
+                          height: 6,
+                          borderRadius: '50%',
+                          bgcolor: 'currentColor',
+                          mr: 0.5,
+                        }}
+                      />
+                      <Typography
+                        variant="caption"
+                        sx={{
+                          fontWeight: 600,
+                          fontSize: '0.6875rem',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {isConfigured && isEnabled ? 'Active' : 'Inactive'}
+                      </Typography>
+                    </Box>
+
+                    {/* Configure Button */}
+                    <Box
+                      onClick={() => handleConfigureConnector(connector.id)}
+                      sx={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        px: 1,
+                        py: 0.5,
+                        borderRadius: 0.75,
+                        cursor: 'pointer',
+                        bgcolor: alpha(
+                          theme.palette.primary.main,
+                          theme.palette.mode === 'dark' ? 0.15 : 0.08
+                        ),
+                        color: theme.palette.primary.main,
+                        transition: 'all 0.2s',
+                        minWidth: 'fit-content',
+                        height: 24,
+                        '&:hover': {
+                          bgcolor: alpha(
+                            theme.palette.primary.main,
+                            theme.palette.mode === 'dark' ? 0.25 : 0.15
+                          ),
+                        },
+                      }}
+                    >
+                      <Box
+                        sx={{
+                          width: 6,
+                          height: 6,
+                          borderRadius: '50%',
+                          bgcolor: 'currentColor',
+                          mr: 0.5,
+                        }}
+                      />
+                      <Typography
+                        variant="caption"
+                        sx={{
+                          fontWeight: 600,
+                          fontSize: '0.6875rem',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        View Details
+                      </Typography>
+                    </Box>
                   </Box>
                 </Paper>
               </Grid>

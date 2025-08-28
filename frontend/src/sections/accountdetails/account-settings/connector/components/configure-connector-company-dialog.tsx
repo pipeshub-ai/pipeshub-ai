@@ -15,10 +15,12 @@ import {
 
 import { Iconify } from 'src/components/iconify';
 
+import { ConnectorId } from 'src/sections/accountdetails/types/connector';
 import GoogleWorkSpaceConfigForm from './google-workspace-config-company-form';
-
 import type { GoogleWorkspaceConfigFormRef } from './google-workspace-config-company-form';
 import AtlassianConfigForm, { AtlassianConfigFormRef } from './atlassian-config-form';
+import OneDriveConfigForm, { OneDriveConfigFormRef } from './onedrive-form';
+import SharePointConfigForm, { SharePointConfigFormRef } from './sharepoint-form';
 
 // Method configurations
 interface ConnectorConfigType {
@@ -39,6 +41,11 @@ const CONNECTOR_CONFIG: ConnectorConfigType = {
     src: '/assets/icons/connectors/atlassian.svg',
     title: 'Atlassian',
     color: '#0052CC',
+  },
+  onedrive: {
+    src: '/assets/icons/connectors/onedrive.svg',
+    title: 'OneDrive',
+    color: '#0078D4',
   },
 };
 
@@ -69,7 +76,8 @@ const ConfigureConnectorDialog = ({
 
   const googleWorkspaceFormRef = useRef<GoogleWorkspaceConfigFormRef>(null);
   const atlassianFormRef = useRef<AtlassianConfigFormRef>(null);
-
+  const onedriveFormRef = useRef<OneDriveConfigFormRef>(null);
+  const sharepointFormRef = useRef<SharePointConfigFormRef>(null);
   // Get connector config if available
   const connectorConfig = connectorType ? CONNECTOR_CONFIG[connectorType] : null;
 
@@ -84,11 +92,17 @@ const ConfigureConnectorDialog = ({
 
     // Determine which form ref to use based on connector type
     switch (connectorType) {
-      case 'googleWorkspace':
+      case ConnectorId.GOOGLE_WORKSPACE:
         currentRef = googleWorkspaceFormRef;
         break;
-      case 'atlassian':
+      case ConnectorId.ATLASSIAN:
         currentRef = atlassianFormRef;
+        break;
+      case ConnectorId.ONEDRIVE:
+        currentRef = onedriveFormRef;
+        break;
+      case ConnectorId.SHAREPOINT:
+        currentRef = sharepointFormRef;
         break;
       default:
         currentRef = null;
@@ -179,7 +193,7 @@ const ConfigureConnectorDialog = ({
             }}
           >
             <Box>
-              {connectorType === 'googleWorkspace' && (
+              {connectorType === ConnectorId.GOOGLE_WORKSPACE && (
                 <GoogleWorkSpaceConfigForm
                   onValidationChange={handleValidationChange}
                   onSaveSuccess={handleFormSaveSuccess}
@@ -188,11 +202,27 @@ const ConfigureConnectorDialog = ({
                   isEnabled={isEnabled || false}
                 />
               )}
-              {connectorType === 'atlassian' && (
+              {connectorType === ConnectorId.ATLASSIAN && (
                 <AtlassianConfigForm
                   onValidationChange={handleValidationChange}
                   onSaveSuccess={handleFormSaveSuccess}
                   ref={atlassianFormRef}
+                  isEnabled={isEnabled || false}
+                />
+              )}
+              {connectorType === ConnectorId.ONEDRIVE && (
+                <OneDriveConfigForm
+                  onValidationChange={handleValidationChange}
+                  onSaveSuccess={handleFormSaveSuccess}
+                  ref={onedriveFormRef}
+                  isEnabled={isEnabled || false}
+                />
+              )}
+              {connectorType === ConnectorId.SHAREPOINT && (
+                <SharePointConfigForm
+                  onValidationChange={handleValidationChange}
+                  onSaveSuccess={handleFormSaveSuccess}
+                  ref={sharepointFormRef}
                   isEnabled={isEnabled || false}
                 />
               )}

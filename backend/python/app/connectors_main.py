@@ -14,8 +14,8 @@ from app.connectors.sources.localKB.api.kb_router import kb_router
 from app.containers.connector import (
     ConnectorAppContainer,
     initialize_container,
-    initialize_enterprise_account_services_fn,
-    initialize_individual_account_services_fn,
+    initialize_enterprise_google_account_services_fn,
+    initialize_individual_google_account_services_fn,
 )
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
@@ -66,9 +66,9 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
 
             # Ensure the method is called on the correct object
             if accountType == AccountType.ENTERPRISE.value or accountType == AccountType.BUSINESS.value:
-                await initialize_enterprise_account_services_fn(org_id, app_container)
+                await initialize_enterprise_google_account_services_fn(org_id, app_container)
             elif accountType == AccountType.INDIVIDUAL.value:
-                await initialize_individual_account_services_fn(org_id, app_container)
+                await initialize_individual_google_account_services_fn(org_id, app_container)
             else:
                 logger.error("Account Type not valid")
                 continue

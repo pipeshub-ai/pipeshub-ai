@@ -1,15 +1,10 @@
 import mongoose, { Schema, Document, Types, Model } from 'mongoose';
-
-// Enum for Connector Types
-export enum ConnectorsType {
-  GOOGLE_WORKSPACE = 'Google Workspace',
-  ATLASIAN = 'Atlassian',
-}
+import { ConnectorNames } from '../../../libs/types/connector.types';
 
 // Interface for ConnectorsConfig
 interface IConnectorsConfig extends Document {
   orgId: Types.ObjectId;
-  name: ConnectorsType;
+  name: ConnectorNames;
   isEnabled: boolean;
   lastUpdatedBy: Types.ObjectId;
   createdAt?: Date;
@@ -20,7 +15,7 @@ interface IConnectorsConfig extends Document {
 const ConnectorsConfigSchema = new Schema<IConnectorsConfig>(
   {
     orgId: { type: Schema.Types.ObjectId, required: true },
-    name: { type: String, enum: Object.values(ConnectorsType), required: true },
+    name: { type: String, enum: Object.values(ConnectorNames), required: true },
     isEnabled: { type: Boolean, default: true },
     lastUpdatedBy: { type: Schema.Types.ObjectId, required: true },
   },

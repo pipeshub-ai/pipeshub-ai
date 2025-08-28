@@ -6,8 +6,8 @@ from app.connectors.core.base.event_service.event_service import BaseEventServic
 from app.connectors.sources.google.common.arango_service import ArangoService
 from app.containers.connector import (
     ConnectorAppContainer,
-    initialize_enterprise_account_services_fn,
-    initialize_individual_account_services_fn,
+    initialize_enterprise_google_account_services_fn,
+    initialize_individual_google_account_services_fn,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -360,6 +360,16 @@ class EntityEventService(BaseEventService):
             self.logger.error(f"❌ Error deleting user: {str(e)}")
             return False
 
+    async def __handle_google_app_account_services(self, org_id: str, account_type: str) -> bool:
+        """Handle Google account services"""
+        if account_type == AccountType.ENTERPRISE.value or account_type == AccountType.BUSINESS.value:
+            await initialize_enterprise_google_account_services_fn(org_id, self.app_container)
+        elif account_type == AccountType.INDIVIDUAL.value:
+            await initialize_individual_google_account_services_fn(org_id, self.app_container)
+        else:
+            self.logger.error("Account Type not valid")
+            return False
+
     # APP EVENTS
     async def __handle_app_enabled(self, payload: dict) -> bool:
         """Handle app enabled event"""
@@ -421,20 +431,10 @@ class EntityEventService(BaseEventService):
             if enabled_apps:
                 self.logger.info(f"Enabled apps are: {enabled_apps}")
                 # Initialize services based on account type
-                if self.app_container:
+                if self.app_container and "google" in app_group:
                     accountType = org["accountType"]
                     # Use the existing app container to initialize services
-                    if accountType == AccountType.ENTERPRISE.value or accountType == AccountType.BUSINESS.value:
-                        await initialize_enterprise_account_services_fn(
-                            org_id, self.app_container
-                        )
-                    elif accountType == AccountType.INDIVIDUAL.value:
-                        await initialize_individual_account_services_fn(
-                            org_id, self.app_container
-                        )
-                    else:
-                        self.logger.error("Account Type not valid")
-                        return False
+                    await self.__handle_google_app_account_services(org_id, accountType)
                     self.logger.info(
                         f"✅ Successfully initialized services for account type: {org['accountType']}"
                     )

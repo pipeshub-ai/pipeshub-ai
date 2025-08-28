@@ -111,7 +111,6 @@ class DataSourceEntitiesProcessor:
             raise Exception("No organizations found in the database. Cannot initialize DataSourceEntitiesProcessor.")
         self.org_id = orgs[0]["_key"]
 
-
     async def _handle_parent_record(self, record: Record, transaction: TransactionDatabase) -> None:
         if record.parent_external_record_id:
             parent_record = await self.arango_service.get_record_by_external_id(connector_name=record.connector_name,
@@ -368,7 +367,7 @@ class DataSourceEntitiesProcessor:
                     read=read_collections,
                     write=write_collections,
             )
-        for record_group, permissions in record_groups:
+        for record_group, _permissions in record_groups:
             record_group.org_id = self.org_id
 
             self.logger.info(f"Processing record group: {record_group}")
@@ -401,7 +400,7 @@ class DataSourceEntitiesProcessor:
         # Get all users from the database(Active and Inactive)
         existing_users = await self.arango_service.get_users(self.org_id, active=False)
         existing_user_emails = {existing_user.get("email") for existing_user in existing_users}
-
+        print(f"Existing user emails: {existing_user_emails}")
         for user in users:
             self.logger.info(f"Processing user: {user}")
 
@@ -415,28 +414,31 @@ class DataSourceEntitiesProcessor:
                     collection=CollectionNames.USERS.value, transaction=transaction
                 )
 
-                #  # Create a edge between the user and the org if it doesn't exist
-                #  user_org_relation = {
-                #     "_from": f"{CollectionNames.USERS.value}/{user.id}",
-                #     "_to": f"{CollectionNames.ORGS.value}/{self.org_id}",
-                #     "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                #     "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                #     "entityType": "USER",
-                #  }
-                #  await self.arango_service.batch_create_edges(
-                #     [user_org_relation], collection=CollectionNames.BELONGS_TO.value, transaction=transaction
-                #  )
+                 # Create a edge between the user and the org if it doesn't exist
+                user_org_relation = {
+                    "_from": f"{CollectionNames.USERS.value}/{user_record['_key']}",
+                    "_to": f"{CollectionNames.ORGS.value}/{self.org_id}",
+                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    "entityType": "ORGANIZATION",
+                }
+
+                await self.arango_service.batch_create_edges(
+                    [user_org_relation], collection=CollectionNames.BELONGS_TO.value, transaction=transaction
+                )
 
                 # Create a edge between the user and the app with sync status if it doesn't exist
                 # user_app_relation = {
-                #     "_from": f"{CollectionNames.USERS.value}/{user.id}",
+                #     "_from": f"{CollectionNames.USERS.value}/{user_record['_key']}",
                 #     "_to": f"{CollectionNames.APPS.value}/{self.app.id}",
                 #     "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                 #     "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                #     "entityType": "USER",
-                #  }
+                #     "syncState": "PENDING",
+                # }
 
-
+                # await self.arango_service.batch_create_edges(
+                #     [user_app_relation], collection=CollectionNames.BELONGS_TO.value, transaction=transaction
+                # )
 
         # Commit the transaction
         transaction.commit_transaction()

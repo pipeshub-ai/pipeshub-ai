@@ -41,6 +41,7 @@ import {
 import axios from 'src/utils/axios';
 
 import { Iconify } from 'src/components/iconify';
+import { ConnectorId, ConnectorIdToNameMap } from '../../types/connector';
 
 // Enhanced types to match backend response structure
 interface IndexingStatusStats {
@@ -92,17 +93,17 @@ interface ConnectorStatisticsProps {
 // Connector to app mapping
 // This maps backend connector names to frontend display names
 const CONNECTOR_DISPLAY_NAMES: Record<string, string> = {
-  ONEDRIVE: 'OneDrive',
-  DRIVE: 'Google Drive',
-  GMAIL: 'Gmail',
-  SLACK: 'Slack',
-  JIRA: 'Jira',
-  TEAMS: 'Microsoft Teams',
-  SHAREPOINT: 'SharePoint',
-  OUTLOOK: 'Outlook',
-  DROPBOX: 'Dropbox',
-  BOX: 'Box',
-  UPLOAD: 'Uploaded Files',
+  ONEDRIVE: ConnectorIdToNameMap[ConnectorId.ONEDRIVE],
+  DRIVE: ConnectorIdToNameMap[ConnectorId.DRIVE],
+  GMAIL: ConnectorIdToNameMap[ConnectorId.GMAIL],
+  SLACK: ConnectorIdToNameMap[ConnectorId.SLACK],
+  JIRA: ConnectorIdToNameMap[ConnectorId.JIRA],
+  TEAMS: ConnectorIdToNameMap[ConnectorId.MICROSOFT_TEAMS],
+  SHAREPOINT: ConnectorIdToNameMap[ConnectorId.SHAREPOINT],
+  OUTLOOK: ConnectorIdToNameMap[ConnectorId.OUTLOOK],
+  DROPBOX: ConnectorIdToNameMap[ConnectorId.DROPBOX],
+  BOX: ConnectorIdToNameMap[ConnectorId.BOX],
+  UPLOAD: ConnectorIdToNameMap[ConnectorId.UPLOAD],
 };
 
 // Connector icon mapping (updated to match backend connector names)
@@ -112,6 +113,8 @@ const CONNECTOR_ICONS: Record<string, string> = {
   SLACK: '/assets/icons/connectors/slack.svg',
   JIRA: '/assets/icons/connectors/jira.svg',
   CONFLUENCE: '/assets/icons/connectors/confluence.svg',
+  ONEDRIVE: '/assets/icons/connectors/onedrive.svg',
+  SHAREPOINT: '/assets/icons/connectors/sharepoint.svg',
 };
 
 // Ultra-minimalistic SaaS color palette - monochromatic with a single accent
@@ -757,8 +760,12 @@ const ConnectorCard = ({ connector }: { connector: ConnectorData }): JSX.Element
         open={snackbar.open}
         autoHideDuration={4000}
         onClose={handleCloseSnackbar}
-        anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
-        sx={{ mt: 6 }}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        sx={{ 
+          mb: 2,
+          mr: 2,
+          zIndex: 9999
+        }}
       >
         <Alert
           onClose={handleCloseSnackbar}

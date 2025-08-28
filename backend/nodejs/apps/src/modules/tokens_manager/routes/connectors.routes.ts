@@ -27,7 +27,10 @@ import {
   GOOGLE_WORKSPACE_BUSINESS_CREDENTIALS_PATH,
   GOOGLE_WORKSPACE_INDIVIDUAL_CREDENTIALS_PATH,
   GOOGLE_WORKSPACE_TOKEN_EXCHANGE_PATH,
+  ONE_DRIVE_INTERNAL_CONFIG_PATH,
+  ATLASIAN_CONFIG_PATH,
   REFRESH_TOKEN_PATH,
+  SHAREPOINT_INTERNAL_CONFIG_PATH,
 } from '../consts/constants';
 import {
   deleteGoogleWorkspaceCredentials,
@@ -41,6 +44,10 @@ import {
   setRefreshTokenCredentials,
   getAtlassianOauthConfig,
   setAtlassianOauthConfig,
+  getSharePointConfig,
+  getOneDriveConfig,
+  setOneDriveConfig,
+  setSharePointConfig,
 } from '../services/connectors-config.service';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import { verifyGoogleWorkspaceToken } from '../utils/verifyToken';
@@ -54,11 +61,8 @@ import {
   Event,
 } from '../services/entity_event.service';
 import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck';
+import { ConnectorId, ConnectorIdToNameMap } from '../../../libs/types/connector.types';
 
-const CONNECTORS = [
-  { key: 'googleWorkspace', name: 'Google Workspace' },
-  { key: 'atlassian', name: 'Atlassian' },
-];
 const logger = Logger.getInstance({
   service: 'Connectors Routes',
 });
@@ -85,22 +89,25 @@ const oAuthConfigSchema = z.object({
     .string()
     .min(1, 'Client Secret cannot be empty')
     .max(255, 'Client Secret exceeds maximum length of 255 characters'),
+  tenantId: z.string().optional(),
   enableRealTimeUpdates: z.union([z.boolean(), z.string()]).optional(),
   topicName: z.string().optional(),
+  hasAdminConsent: z.boolean().optional(),
 });
 
 const oAuthValidationSchema = z.object({
   body: oAuthConfigSchema,
   query: z.object({
-    service: z.enum(['googleWorkspace', 'atlassian']), // Enum validation
+    service: z.enum(['googleWorkspace', 'atlassian', 'onedrive', 'sharepoint']), // Enum validation
   }),
   params: z.object({}),
   headers: z.object({}),
 });
+
 const ServiceValidationSchema = z.object({
   body: z.object({}),
   query: z.object({
-    service: z.enum(['googleWorkspace', 'atlassian']), // Enum validation
+    service: z.enum(['googleWorkspace', 'atlassian', 'onedrive', 'sharepoint']), // Enum validation
   }),
   params: z.object({}),
   headers: z.object({}),
@@ -277,11 +284,14 @@ export function createConnectorRouter(container: Container) {
           'name isEnabled',
         );
 
-        const statuses = CONNECTORS.map(({ key, name }) => {
-          const connector = connectors.find((c) => c.name === name);
-          return { key, isEnabled: connector ? connector.isEnabled : false };
+        const statuses = connectors.map((connector) => {
+          // Get ConnectorId from connector name using reverse mapping
+          const connectorId = Object.entries(ConnectorIdToNameMap).find(
+            ([_, name]) => name === connector.name
+          )?.[0] as ConnectorId;
+          
+          return { id: connectorId, name: connector.name, isEnabled: connector.isEnabled };
         });
-        logger.info('statuses', statuses);
 
         res.status(200).json(statuses);
       } catch (error) {
@@ -313,18 +323,36 @@ export function createConnectorRouter(container: Container) {
 
         let response;
         const { service } = req.query;
-        if (service === 'atlassian') {
+        const serviceStr = service as string;
+        
+        if (serviceStr === ConnectorId.ATLASSIAN.toLowerCase()) {
           response = await getAtlassianOauthConfig(
             req,
             config.cmBackend,
-            config.scopedJwtSecret,
           );
           if (response.statusCode !== 200) {
             throw new InternalServerError('Error getting config', response?.data);
           }
           res.status(200).json(response.data);
           return;
-        } else if (service == 'googleWorkspace') {
+        } 
+        else if (serviceStr.toLowerCase() == ConnectorId.ONEDRIVE.toLowerCase()) {
+          response = await getOneDriveConfig(req, config.cmBackend);
+          if (response.statusCode !== 200) {
+            throw new InternalServerError('Error getting config', response?.data);
+          }
+          res.status(200).json(response.data);
+          return;
+        }
+        else if (serviceStr.toLowerCase() == ConnectorId.SHAREPOINT.toLowerCase()) {
+          response = await getSharePointConfig(req, config.cmBackend);
+          if (response.statusCode !== 200) {
+            throw new InternalServerError('Error getting config', response?.data);
+          }
+          res.status(200).json(response.data);
+          return;
+        }
+        else if (serviceStr.toLowerCase() == ConnectorId.GOOGLE_WORKSPACE.toLowerCase()) {
           switch (userType.toLowerCase()) {
             case googleWorkspaceTypes.INDIVIDUAL.toLowerCase():
               response = await getGoogleWorkspaceConfig(
@@ -431,17 +459,29 @@ export function createConnectorRouter(container: Container) {
       try {
         let service = req.query.service;
         let response;
-        if (service === 'atlassian') {
+        console.log('req.body', req.body);
+        if (service === ConnectorId.ATLASSIAN.toLowerCase()) {
           response = await setAtlassianOauthConfig(
             req,
             config.cmBackend,
-            config.scopedJwtSecret,
           );
-        } else if (service === 'googleWorkspace') { 
+        } else if (service === ConnectorId.GOOGLE_WORKSPACE.toLowerCase()) { 
           response = await setGoogleWorkspaceConfig(
             req,
             config.cmBackend,
             config.scopedJwtSecret,
+          );
+        }
+        else if (service === ConnectorId.ONEDRIVE.toLowerCase()) {
+          response = await setOneDriveConfig(
+            req,
+            config.cmBackend,
+          );
+        }
+        else if (service === ConnectorId.SHAREPOINT.toLowerCase()) {
+          response = await setSharePointConfig(
+            req,
+            config.cmBackend,
           );
         }
         else {
@@ -462,6 +502,7 @@ export function createConnectorRouter(container: Container) {
     '/disable',
     authMiddleware.authenticate,
     userAdminCheck,
+    ValidationMiddleware.validate(ServiceValidationSchema),
     async (
       req: AuthenticatedUserRequest,
       res: Response,
@@ -472,19 +513,29 @@ export function createConnectorRouter(container: Container) {
           throw new NotFoundError('User not found');
         }
         const { service } = req.query;
-        const connectorData = CONNECTORS.find((c) => c.key === service);
-        if (!connectorData) {
+        const connectorId = service as ConnectorId;
+        if (!connectorId) {
           throw new NotFoundError('Invalid service name');
         }
 
         let connector = await ConnectorsConfig.findOne({
-          name: connectorData.name,
+          name: ConnectorIdToNameMap[connectorId],
+          orgId: req.user.orgId,
         });
         await eventService.start();
         if (connector) {
           connector.isEnabled = false;
           connector.lastUpdatedBy = req.user.userId;
+          let apps: string[] = [];
+          const connectorName = ConnectorIdToNameMap[connectorId];
 
+          if (connectorName === ConnectorId.GOOGLE_WORKSPACE) {
+            apps = [
+              GoogleWorkspaceApp.Drive.toLowerCase(),
+              GoogleWorkspaceApp.Gmail.toLowerCase(),
+              GoogleWorkspaceApp.Calendar.toLowerCase(),
+            ];
+          }
           const event: Event = {
             eventType: EventType.AppDisabledEvent,
             timestamp: Date.now(),
@@ -492,11 +543,7 @@ export function createConnectorRouter(container: Container) {
               orgId: req.user.orgId,
               appGroup: connector.name,
               appGroupId: connector._id,
-              apps: [
-                GoogleWorkspaceApp.Drive,
-                GoogleWorkspaceApp.Gmail,
-                GoogleWorkspaceApp.Calendar,
-              ],
+              apps: apps,
             } as AppDisabledEvent,
           };
 
@@ -526,6 +573,7 @@ export function createConnectorRouter(container: Container) {
     '/enable',
     authMiddleware.authenticate,
     userAdminCheck,
+    ValidationMiddleware.validate(ServiceValidationSchema),
     async (
       req: AuthenticatedUserRequest,
       res: Response,
@@ -536,81 +584,82 @@ export function createConnectorRouter(container: Container) {
           throw new NotFoundError('User not found');
         }
         const { service } = req.query;
-        const connectorData = CONNECTORS.find((c) => c.key === service);
-        if (!connectorData) {
+        const connectorId = service as ConnectorId;
+        if (!connectorId) {
           throw new NotFoundError('Invalid service name');
         }
 
         let connector = await ConnectorsConfig.findOne({
-          name: connectorData.name,
+          name: connectorId,
+          orgId: req.user.orgId,
         });
         await eventService.start();
         let event: Event;
-
+        let status = 200;
+        let message = `Connector ${service} is now enabled`;
         if (connector) {
           connector.isEnabled = true;
           connector.lastUpdatedBy = req.user.userId;
-          event = {
-            eventType: EventType.AppEnabledEvent,
-            timestamp: Date.now(),
-            payload: {
-              orgId: req.user.orgId,
-              appGroup: connector.name,
-              appGroupId: connector._id,
-              credentialsRoute: `${config.cmBackend}/${GOOGLE_WORKSPACE_BUSINESS_CREDENTIALS_PATH}`,
-              apps: [
-                GoogleWorkspaceApp.Drive,
-                GoogleWorkspaceApp.Gmail,
-                GoogleWorkspaceApp.Calendar,
-              ],
-              syncAction: 'immediate',
-            } as AppEnabledEvent,
-          };
-          await eventService.publishEvent(event);
           await connector.save();
-          await eventService.stop();
-          res.status(200).json({
-            message: `Connector ${service} is now enabled`,
-            connector,
-          });
+
         } else {
           connector = new ConnectorsConfig({
             orgId: req.user.orgId,
-            name: connectorData.name,
+            name: ConnectorIdToNameMap[connectorId],
             lastUpdatedBy: req.user.userId,
             isEnabled: true,
           });
 
           await connector.save();
           connector = await ConnectorsConfig.findOne({
-            name: connectorData.name,
+            name: ConnectorIdToNameMap[connectorId],
+            orgId: req.user.orgId,
           });
           if (!connector) {
             throw new InternalServerError('Error in creating connector');
           }
-          event = {
-            eventType: EventType.AppEnabledEvent,
-            timestamp: Date.now(),
-            payload: {
-              orgId: req.user.orgId,
-              appGroup: connector.name,
-              appGroupId: connector._id,
-              credentialsRoute: `${config.cmBackend}/${GOOGLE_WORKSPACE_BUSINESS_CREDENTIALS_PATH}`,
-              apps: [
-                GoogleWorkspaceApp.Drive,
-                GoogleWorkspaceApp.Gmail,
-                GoogleWorkspaceApp.Calendar,
-              ],
-              syncAction: 'immediate',
-            } as AppEnabledEvent,
-          };
-          await eventService.publishEvent(event);
-          await eventService.stop();
-          res.status(201).json({
-            message: `Connector ${connectorData.name} created and enabled`,
-            connector,
-          });
+
+          status = 201;
+          message = `Connector ${connectorId} created and enabled`;
         }
+
+        let apps: string[] = [];
+        let credentialsRoute = "";
+        if (connector.name === ConnectorIdToNameMap[ConnectorId.GOOGLE_WORKSPACE]) {
+          apps = [GoogleWorkspaceApp.Drive, GoogleWorkspaceApp.Gmail, GoogleWorkspaceApp.Calendar];
+          credentialsRoute = `${config.cmBackend}/${GOOGLE_WORKSPACE_BUSINESS_CREDENTIALS_PATH}`;
+        }
+        else if (connector.name === ConnectorIdToNameMap[ConnectorId.ONEDRIVE]) {
+          apps = ["onedrive"];
+          credentialsRoute = `${config.cmBackend}/${ONE_DRIVE_INTERNAL_CONFIG_PATH}`;
+        }
+        else if (connector.name === ConnectorIdToNameMap[ConnectorId.SHAREPOINT]) {
+          apps = ["sharepoint"];
+          credentialsRoute = `${config.cmBackend}/${SHAREPOINT_INTERNAL_CONFIG_PATH}`;
+        }
+        else if (connector.name === ConnectorIdToNameMap[ConnectorId.ATLASSIAN]) {
+          apps = ["jira", "confluence"];
+          credentialsRoute = `${config.cmBackend}/${ATLASIAN_CONFIG_PATH}`;
+        }
+        event = {
+          eventType: EventType.AppEnabledEvent,
+          timestamp: Date.now(),
+          
+          payload: {
+            orgId: req.user.orgId,
+            appGroup: connector.name,
+            appGroupId: connector._id,
+            credentialsRoute: credentialsRoute,
+            apps: apps,
+            syncAction: 'immediate',
+          } as AppEnabledEvent,
+        };
+        await eventService.publishEvent(event);
+        await eventService.stop();
+        res.status(status).json({
+          message: message,
+          connector,
+        });
       } catch (err) {
         try {
           await eventService.stop();
@@ -694,17 +743,16 @@ export function createConnectorRouter(container: Container) {
             response?.data,
           );
         }
-        const connectorData = CONNECTORS.find(
-          (c) => c.key === 'googleWorkspace',
-        );
-        if (!connectorData) {
+        const connectorId = ConnectorId.GOOGLE_WORKSPACE;
+        if (!connectorId) {
           throw new NotFoundError(
             'Google Workspace connector not found in config',
           );
         }
 
         let connector = await ConnectorsConfig.findOne({
-          name: connectorData.name,
+          name: ConnectorIdToNameMap[connectorId],
+          orgId: req.user.orgId,
         });
 
         // Extract received scopes from the request
@@ -744,14 +792,15 @@ export function createConnectorRouter(container: Container) {
         } else {
           connector = new ConnectorsConfig({
             orgId: req.user.orgId,
-            name: connectorData.name,
+            name: ConnectorIdToNameMap[connectorId],
             lastUpdatedBy: req.user.userId,
             isEnabled: true,
           });
 
           await connector.save();
           connector = await ConnectorsConfig.findOne({
-            name: connectorData.name,
+            name: ConnectorIdToNameMap[connectorId],
+            orgId: req.user.orgId,
           });
           if (!connector) {
             throw new InternalServerError('Error in creating connector');
@@ -776,7 +825,7 @@ export function createConnectorRouter(container: Container) {
           await eventService.publishEvent(event);
           await eventService.stop();
           res.status(201).json({
-            message: `Connector ${connectorData.name} created and enabled`,
+            message: `Connector ${connectorId} created and enabled`,
             connector,
           });
         }

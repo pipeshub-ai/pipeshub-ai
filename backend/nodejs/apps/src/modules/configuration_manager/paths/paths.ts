@@ -17,6 +17,14 @@ export const configPaths = {
       credentials: '/services/connectors/atlassian/credentials',
       config: '/services/connectors/atlassian/config',
     },
+    onedrive: {
+      base: '/services/connectors/onedrive/',
+      config: '/services/connectors/onedrive/config',
+    },
+    sharepoint: {
+      base: '/services/connectors/sharepoint/',
+      config: '/services/connectors/sharepoint/config',
+    },
   },
   smtp: '/services/smtp',
   auth: {

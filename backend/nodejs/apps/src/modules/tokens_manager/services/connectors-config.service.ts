@@ -14,8 +14,10 @@ import {
   GOOGLE_WORKSPACE_CONFIG_PATH,
   GOOGLE_WORKSPACE_CREDENTIALS_PATH,
   GOOGLE_WORKSPACE_INDIVIDUAL_CREDENTIALS_PATH,
-  ATLASIAN_OAUTH_CONFIG_PATH,
-} from '../consts/constants';
+  ATLASIAN_CONFIG_PATH,
+  ONE_DRIVE_CONFIG_PATH,
+  SHAREPOINT_CONFIG_PATH,
+  } from '../consts/constants';
 import { generateFetchConfigToken } from '../utils/generateToken';
 
 export const getGoogleWorkspaceBusinessCredentials = async (
@@ -151,25 +153,108 @@ export const getGoogleWorkspaceConfig = async (
 export const getAtlassianOauthConfig = async (
   req: AuthenticatedUserRequest,
   url: string,
-  scopedJwtSecret: string,
 ): Promise<ConfigurationManagerResponse> => {
   if (!req.user) {
     throw new NotFoundError('User Not Found');
   }
   const configurationManagerCommandOptions: ConfigurationManagerCommandOptions =
     {
-      uri: `${url}/${ATLASIAN_OAUTH_CONFIG_PATH}/${req.user.org_id}`,
+      uri: `${url}/${ATLASIAN_CONFIG_PATH}`,
       method: HttpMethod.GET,
-      headers: {
-        Authorization: `Bearer ${await generateFetchConfigToken(req.user, scopedJwtSecret)}`,
-        'Content-Type': 'application/json',
-      },
+      headers: req.headers as Record<string, string>,
     };
 
   const cmCommand = new ConfigurationManagerServiceCommand(
     configurationManagerCommandOptions,
   );
   const response = await cmCommand.execute();
+  return response;
+};
+
+export const getOneDriveConfig = async (
+  req: AuthenticatedUserRequest,
+  url: string,
+): Promise<ConfigurationManagerResponse> => {
+  if (!req.user) {
+    throw new NotFoundError('User Not Found');
+  }
+  const configurationManagerCommandOptions: ConfigurationManagerCommandOptions =
+    {
+      uri: `${url}/${ONE_DRIVE_CONFIG_PATH}`,
+      method: HttpMethod.GET,
+      headers: req.headers as Record<string, string>,
+    };
+
+  const cmCommand = new ConfigurationManagerServiceCommand(
+    configurationManagerCommandOptions,
+  );
+  const response = await cmCommand.execute();
+  return response;
+};
+
+export const getSharePointConfig = async (
+
+  req: AuthenticatedUserRequest,
+  url: string,
+): Promise<ConfigurationManagerResponse> => {
+  if (!req.user) {
+    throw new NotFoundError('User Not Found');
+  } 
+  const configurationManagerCommandOptions: ConfigurationManagerCommandOptions =
+    {
+      uri: `${url}/${SHAREPOINT_CONFIG_PATH}`,
+      method: HttpMethod.GET,
+      headers: req.headers as Record<string, string>,
+    };
+
+  const cmCommand = new ConfigurationManagerServiceCommand(
+    configurationManagerCommandOptions,
+  );
+  const response = await cmCommand.execute();
+  return response;
+};
+
+export const setOneDriveConfig = async ( 
+  req: AuthenticatedUserRequest,
+  url: string,
+): Promise<ConfigurationManagerResponse> => {
+  if (!req.user) {
+    throw new NotFoundError('User Not Found');
+  }
+  const configurationManagerCommandOptions: ConfigurationManagerCommandOptions =
+    {
+      uri: `${url}/${ONE_DRIVE_CONFIG_PATH}`,
+      method: HttpMethod.POST,
+      headers: req.headers as Record<string, string>,
+      body: req.body,
+    };
+
+  const cmCommand = new ConfigurationManagerServiceCommand(
+    configurationManagerCommandOptions,
+  );
+  const response = await cmCommand.execute();
+  return response;
+};
+
+export const setSharePointConfig = async (
+  req: AuthenticatedUserRequest,
+  url: string,
+): Promise<ConfigurationManagerResponse> => {
+  if (!req.user) {
+    throw new NotFoundError('User Not Found');
+  }
+  const configurationManagerCommandOptions: ConfigurationManagerCommandOptions =
+    {
+      uri: `${url}/${SHAREPOINT_CONFIG_PATH}`,
+      method: HttpMethod.POST,
+      headers: req.headers as Record<string, string>,
+      body: req.body,
+    };
+
+  const cmCommand = new ConfigurationManagerServiceCommand(
+    configurationManagerCommandOptions,
+  );
+  const response = await cmCommand.execute(); 
   return response;
 };
 
@@ -202,19 +287,15 @@ export const setGoogleWorkspaceConfig = async (
 export const setAtlassianOauthConfig = async (
   req: AuthenticatedUserRequest,
   url: string,
-  scopedJwtSecret: string,
 ): Promise<ConfigurationManagerResponse> => {
   if (!req.user) {
     throw new NotFoundError('User Not Found');
   }
   const configurationManagerCommandOptions: ConfigurationManagerCommandOptions =
     {
-      uri: `${url}/${ATLASIAN_OAUTH_CONFIG_PATH}/${req.user.org_id}`,
+      uri: `${url}/${ATLASIAN_CONFIG_PATH}`,
       method: HttpMethod.POST,
-      headers: {
-        Authorization: `Bearer ${await generateFetchConfigToken(req.user, scopedJwtSecret)}`,
-        'Content-Type': 'application/json',
-      },
+      headers: req.headers as Record<string, string>,
       body: req.body,
     };
 

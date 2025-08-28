@@ -5,11 +5,11 @@ import { Box } from '@mui/material';
 import { CONFIG } from 'src/config-global';
 
 import Sidebar from 'src/sections/accountdetails/Sidebar';
-import AtlassianConfig from 'src/sections/accountdetails/account-settings/connector/atlassian-config';
+import SharePointConnector from 'src/sections/accountdetails/account-settings/connector/sharepoint';
 
 // ----------------------------------------------------------------------
 
-const metadata = { title: `Connector Config - ${CONFIG.appName}` };
+const metadata = { title: `SharePoint Connector` };
 
 export default function Page() {
   return (
@@ -19,7 +19,7 @@ export default function Page() {
       </Helmet>
       <Box sx={{ display: 'flex', flexGrow: 1, overflow: 'hidden', zIndex: 0 }}>
         <Sidebar />
-        <AtlassianConfig />
+        <SharePointConnector />
       </Box>
     </>
   );

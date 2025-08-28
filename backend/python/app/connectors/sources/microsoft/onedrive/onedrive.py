@@ -1,6 +1,6 @@
 import asyncio
-import os
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from logging import Logger
 from typing import AsyncGenerator, Dict, List, Optional, Tuple
@@ -31,9 +31,15 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.models.users import User
 
 
+@dataclass
+class OneDriveCredentials:
+    tenant_id: str
+    client_id: str
+    client_secret: str
+
 class OneDriveConnector():
     def __init__(self, logger, data_entities_processor: DataSourceEntitiesProcessor,
-        arango_service: BaseArangoService) -> None:
+        arango_service: BaseArangoService, credentials: OneDriveCredentials) -> None:
         self.logger = logger
         self.data_entities_processor = data_entities_processor
         self.arango_service = arango_service
@@ -49,9 +55,9 @@ class OneDriveConnector():
 
         # Initialize MS Graph client
         credential = ClientSecretCredential(
-            tenant_id=os.getenv("AZURE_TENANT_ID"),
-            client_id=os.getenv("AZURE_CLIENT_ID"),
-            client_secret=os.getenv("AZURE_CLIENT_SECRET"),
+            tenant_id=credentials.tenant_id,
+            client_id=credentials.client_id,
+            client_secret=credentials.client_secret,
         )
         self.client = GraphServiceClient(credential, scopes=["https://graph.microsoft.com/.default"])
         self.msgraph_client = MSGraphClient(self.client, self.logger)

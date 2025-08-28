@@ -66,7 +66,7 @@ from app.modules.parsers.google_files.parser_user_service import ParserUserServi
 from app.utils.logger import create_logger
 
 
-async def initialize_individual_account_services_fn(org_id, container) -> None:
+async def initialize_individual_google_account_services_fn(org_id, container) -> None:
     """Initialize services for an individual account type."""
     try:
         logger = container.logger()
@@ -246,7 +246,7 @@ async def initialize_individual_account_services_fn(org_id, container) -> None:
     logger.info("✅ Successfully initialized services for individual account")
 
 
-async def initialize_enterprise_account_services_fn(org_id, container) -> None:
+async def initialize_enterprise_google_account_services_fn(org_id, container) -> None:
     """Initialize services for an enterprise account type."""
 
     try:

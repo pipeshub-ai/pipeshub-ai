@@ -11,7 +11,10 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 )
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.connectors.sources.microsoft.common.apps import OneDriveApp
-from app.connectors.sources.microsoft.onedrive.onedrive import OneDriveConnector
+from app.connectors.sources.microsoft.onedrive.onedrive import (
+    OneDriveConnector,
+    OneDriveCredentials,
+)
 from app.services.kafka_consumer import KafkaConsumerManager
 from app.utils.logger import create_logger
 
@@ -20,9 +23,7 @@ def is_valid_email(email: str) -> bool:
     return email is not None and email != "" and "@" in email
 
 async def test_run() -> None:
-    os.getenv("TEST_USER_EMAIL")
-    # if not is_valid_email(user_email):
-    #     raise ValueError("TEST_USER_EMAIL is not set or is not a valid email")
+    user_email = os.getenv("TEST_USER_EMAIL")
 
     async def create_test_users(user_email: str, arango_service: BaseArangoService) -> None:
         org_id = "org_1"
@@ -65,10 +66,17 @@ async def test_run() -> None:
     arango_service = BaseArangoService(logger, arango_client, config_service, kafka_service)
     await arango_service.connect()
 
-    # await create_test_users(user_email, arango_service)
+    if user_email:
+        await create_test_users(user_email, arango_service)
+
     data_entities_processor = DataSourceEntitiesProcessor(logger, OneDriveApp(), arango_service, config_service)
     await data_entities_processor.initialize()
-    onedrive_connector = OneDriveConnector(logger, data_entities_processor, arango_service)
+    credentials = OneDriveCredentials(
+        tenant_id=os.getenv("AZURE_TENANT_ID"),
+        client_id=os.getenv("AZURE_CLIENT_ID"),
+        client_secret=os.getenv("AZURE_CLIENT_SECRET"),
+    )
+    onedrive_connector = OneDriveConnector(logger, data_entities_processor, arango_service, credentials)
     await onedrive_connector.run()
 
 if __name__ == "__main__":

@@ -155,7 +155,7 @@ const GoogleWorkspaceBusinessPage = () => {
       // Process data from API
       if (data) {
         data.forEach((connector: any) => {
-          enabledMap[connector.key] = Boolean(connector.isEnabled);
+          enabledMap[connector.id] = Boolean(connector.isEnabled);
         });
       }
 
@@ -647,8 +647,12 @@ const GoogleWorkspaceBusinessPage = () => {
         open={success}
         autoHideDuration={4000}
         onClose={handleCloseSuccess}
-        anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
-        sx={{ mt: 6 }}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        sx={{ 
+          mb: 2,
+          mr: 2,
+          zIndex: 9999
+        }}
       >
         <Alert
           onClose={handleCloseSuccess}

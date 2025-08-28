@@ -2,14 +2,13 @@ import { Helmet } from 'react-helmet-async';
 
 import { Box } from '@mui/material';
 
-import { CONFIG } from 'src/config-global';
 
 import Sidebar from 'src/sections/accountdetails/Sidebar';
 import GoogleWorkspaceIndividualPage from 'src/sections/accountdetails/account-settings/connector/googleWorkspace-individual-config';
 
 // ----------------------------------------------------------------------
 
-const metadata = { title: `Connector Settings  - ${CONFIG.appName}` };
+const metadata = { title: `Google Workspace Connector` };
 
 export default function Page() {
   return (

@@ -78,7 +78,7 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
   },
   {
     id: 'azureOpenAI',
-    label: 'Azure OpenAI Service',
+    label: 'Azure OpenAI',
     description: 'You need an active Azure subscription with Azure OpenAI Service enabled.',
     modelPlaceholder: 'e.g., gpt-4o-mini, gpt-4o',
     fields: ['endpoint', 'apiKey', 'deploymentName', 'model'],
@@ -211,7 +211,7 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
   },
   {
     id: 'azureOpenAI',
-    label: 'Azure OpenAI Service',
+    label: 'Azure OpenAI',
     description: 'Configure Azure OpenAI for embeddings.',
     modelPlaceholder: 'e.g., text-embedding-3-small',
     fields: ['endpoint', 'apiKey', 'deploymentName', 'model'],
