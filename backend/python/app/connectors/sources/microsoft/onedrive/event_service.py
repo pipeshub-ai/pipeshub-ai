@@ -41,6 +41,8 @@ class OneDriveEventService(BaseEventService):
                 return await self._handle_onedrive_init(payload)
             elif event_type == "onedrive.start":
                 return await self._handle_onedrive_start_sync(payload)
+            elif event_type == "onedrive.resync":
+                return await self._handle_onedrive_start_sync(payload)
             else:
                 self.logger.error(f"Unknown OneDrive connector event type: {event_type}")
                 return False
@@ -69,7 +71,10 @@ class OneDriveEventService(BaseEventService):
             tenant_id = credentials_config.get("tenantId")
             client_id = credentials_config.get("clientId")
             client_secret = credentials_config.get("clientSecret")
-            has_admin_consent = credentials_config.get("hasAdminConsent")
+            if not all((tenant_id, client_id, client_secret)):
+                self.logger.error(f"Incomplete OneDrive credentials for org_id: {org_id}. Ensure tenantId, clientId, and clientSecret are configured.")
+                return False
+            has_admin_consent = credentials_config.get("hasAdminConsent", False)
             credentials = OneDriveCredentials(
                 tenant_id=tenant_id,
                 client_id=client_id,
@@ -82,7 +87,7 @@ class OneDriveEventService(BaseEventService):
             # Initialize directly since we can't use BackgroundTasks in Kafka consumer
             return True
         except Exception as e:
-            self.logger.error("Failed to queue OneDrive sync service initialization: %s", str(e))
+            self.logger.error("Failed to initialize OneDrive connector for org_id %s: %s", org_id, e, exc_info=True)
             return False
 
     async def _handle_onedrive_start_sync(self, payload: Dict[str, Any]) -> bool:

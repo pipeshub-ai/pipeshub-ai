@@ -36,6 +36,7 @@ class OneDriveCredentials:
     tenant_id: str
     client_id: str
     client_secret: str
+    has_admin_consent: bool = False
 
 class OneDriveConnector():
     def __init__(self, logger, data_entities_processor: DataSourceEntitiesProcessor,

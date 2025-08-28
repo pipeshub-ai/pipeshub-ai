@@ -75,6 +75,7 @@ async def test_run() -> None:
         tenant_id=os.getenv("AZURE_TENANT_ID"),
         client_id=os.getenv("AZURE_CLIENT_ID"),
         client_secret=os.getenv("AZURE_CLIENT_SECRET"),
+        has_admin_consent=True,
     )
     onedrive_connector = OneDriveConnector(logger, data_entities_processor, arango_service, credentials)
     await onedrive_connector.run()
