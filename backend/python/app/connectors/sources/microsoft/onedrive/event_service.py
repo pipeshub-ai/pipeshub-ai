@@ -50,11 +50,12 @@ class OneDriveEventService(BaseEventService):
             return False
 
     async def _handle_onedrive_init(self, payload: Dict[str, Any]) -> bool:
-        """Initialize sync service and wait for schedule"""
+        """Initializes the OneDrive connector and its dependencies."""
         try:
             org_id = payload.get("orgId")
             if not org_id:
-                raise ValueError("orgId is required")
+                self.logger.error("'orgId' is required in the payload for 'onedrive.init' event.")
+                return False
 
             self.logger.info(f"Initializing OneDrive init sync service for org_id: {org_id}")
             config_service = self.app_container.config_service()
