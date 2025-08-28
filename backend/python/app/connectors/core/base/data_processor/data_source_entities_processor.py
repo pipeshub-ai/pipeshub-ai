@@ -400,7 +400,6 @@ class DataSourceEntitiesProcessor:
         # Get all users from the database(Active and Inactive)
         existing_users = await self.arango_service.get_users(self.org_id, active=False)
         existing_user_emails = {existing_user.get("email") for existing_user in existing_users}
-        print(f"Existing user emails: {existing_user_emails}")
         for user in users:
             self.logger.info(f"Processing user: {user}")
 

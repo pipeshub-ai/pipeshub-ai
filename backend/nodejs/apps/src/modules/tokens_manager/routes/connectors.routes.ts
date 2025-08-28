@@ -325,32 +325,23 @@ export function createConnectorRouter(container: Container) {
         const { service } = req.query;
         const serviceStr = service as string;
         
-        if (serviceStr === ConnectorId.ATLASSIAN.toLowerCase()) {
-          response = await getAtlassianOauthConfig(
-            req,
-            config.cmBackend,
-          );
+        const configGetters = {
+          [ConnectorId.ATLASSIAN]: getAtlassianOauthConfig,
+          [ConnectorId.ONEDRIVE]: getOneDriveConfig,
+          [ConnectorId.SHAREPOINT]: getSharePointConfig,
+        };
+
+        
+        const serviceKey = service as ConnectorId;
+        const getter = configGetters[serviceKey as keyof typeof configGetters];
+        if (getter) {
+          response = await getter(req, config.cmBackend);
           if (response.statusCode !== 200) {
             throw new InternalServerError('Error getting config', response?.data);
           }
-          res.status(200).json(response.data);
-          return;
-        } 
-        else if (serviceStr.toLowerCase() == ConnectorId.ONEDRIVE.toLowerCase()) {
-          response = await getOneDriveConfig(req, config.cmBackend);
-          if (response.statusCode !== 200) {
-            throw new InternalServerError('Error getting config', response?.data);
+          else {
+            res.status(200).json(response.data);
           }
-          res.status(200).json(response.data);
-          return;
-        }
-        else if (serviceStr.toLowerCase() == ConnectorId.SHAREPOINT.toLowerCase()) {
-          response = await getSharePointConfig(req, config.cmBackend);
-          if (response.statusCode !== 200) {
-            throw new InternalServerError('Error getting config', response?.data);
-          }
-          res.status(200).json(response.data);
-          return;
         }
         else if (serviceStr.toLowerCase() == ConnectorId.GOOGLE_WORKSPACE.toLowerCase()) {
           switch (userType.toLowerCase()) {
@@ -439,6 +430,9 @@ export function createConnectorRouter(container: Container) {
                 `Unsupported google workspace type: ${userType}`,
               );
           }
+        }
+        else {
+          throw new BadRequestError(`Unsupported connector: ${service}`);
         }
       } catch (error) {
         next(error);
