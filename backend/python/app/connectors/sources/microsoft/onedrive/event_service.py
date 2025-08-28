@@ -46,7 +46,7 @@ class OneDriveEventService(BaseEventService):
                 return False
 
         except Exception as e:
-            self.logger.error(f"Error handling OneDrive connector event {event_type}: {str(e)}")
+            self.logger.error(f"Error handling OneDrive connector event {event_type}: {e}", exc_info=True)
             return False
 
     async def _handle_onedrive_init(self, payload: Dict[str, Any]) -> bool:
