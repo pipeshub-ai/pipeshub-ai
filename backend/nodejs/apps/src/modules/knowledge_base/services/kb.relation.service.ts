@@ -2795,6 +2795,7 @@ export class RecordRelationService {
                 return SyncEventType.SyncDriveEvent;
             }
           })()
+        ,
         timestamp: Date.now(),
         payload: resyncConnectorEventPayload,
       };
@@ -2815,7 +2816,7 @@ export class RecordRelationService {
   }
 
   async createResyncConnectorEventPayload(
-    resyncConnectorEventPayload: ResyncConnectorEventPayload,
+    resyncConnectorEventPayload: any,
   ): Promise<SyncDriveEvent | SyncGmailEvent | SyncOneDriveEvent> {
     const connectorName = resyncConnectorEventPayload.connectorName;
 
