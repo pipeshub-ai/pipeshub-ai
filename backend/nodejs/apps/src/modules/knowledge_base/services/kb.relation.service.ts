@@ -2785,11 +2785,16 @@ export class RecordRelationService {
 
       const event: SyncEvent = {
         eventType:
-          resyncConnectorEventPayload.connector === 'GMAIL'
-            ? SyncEventType.SyncGmailEvent
-            : resyncConnectorEventPayload.connector === 'ONEDRIVE'
-            ? SyncEventType.SyncOneDriveEvent
-            : SyncEventType.SyncDriveEvent,
+          (() => {
+            switch (resyncConnectorEventPayload.connector) {
+              case 'GMAIL':
+                return SyncEventType.SyncGmailEvent;
+              case 'ONEDRIVE':
+                return SyncEventType.SyncOneDriveEvent;
+              default:
+                return SyncEventType.SyncDriveEvent;
+            }
+          })()
         timestamp: Date.now(),
         payload: resyncConnectorEventPayload,
       };
