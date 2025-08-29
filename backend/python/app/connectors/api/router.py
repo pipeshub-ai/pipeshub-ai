@@ -311,6 +311,48 @@ async def handle_record_deletion(
             detail=f"Internal server error while deleting record: {str(e)}",
         )
 
+async def stream_onedrive_file_content(request: Request, record_id: str) -> StreamingResponse:
+    """
+    Helper function to stream content from OneDrive.
+    """
+    try:
+        onedrive_connector: OneDriveConnector = await get_onedrive_connector(request)
+        if not onedrive_connector:
+            raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="OneDrive connector not found")
+
+        record, signed_url = await onedrive_connector.create_signed_url(record_id)
+
+        if not signed_url:
+            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
+
+        async def stream_content() -> AsyncGenerator[bytes, None]:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(signed_url) as response:
+                        if response.status != HttpStatusCode.SUCCESS.value:
+                            raise HTTPException(
+                                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                                detail=f"Failed to fetch file content: {response.status}"
+                            )
+                        async for chunk in response.content.iter_chunked(8192):
+                            yield chunk
+            except aiohttp.ClientError as e:
+                logger.error(f"Error fetching file from signed URL: {str(e)}")
+                raise HTTPException(
+                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                    detail="Failed to fetch file content"
+                )
+
+        return StreamingResponse(
+            stream_content(),
+            media_type=record.mime_type,
+            headers={
+                "Content-Disposition": f"attachment; filename={record.record_name}"
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error accessing OneDrive connector or streaming file: {str(e)}")
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="OneDrive connector not available or file streaming failed")
 
 @router.get("/api/v1/index/{org_id}/{connector}/record/{record_id}", response_model=None)
 @inject
@@ -718,45 +760,7 @@ async def download_file(
                 )
 
             elif connector.lower() == Connectors.ONEDRIVE.value.lower():
-                try:
-                    onedrive_connector: OneDriveConnector = await get_onedrive_connector(request)
-                    if not onedrive_connector:
-                        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="OneDrive connector not found")
-                    record, signed_url = await onedrive_connector.create_signed_url(record_id)
-
-                    if not signed_url:
-                        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
-
-                    # Fetch content from signed URL and stream it
-                    async def stream_file_content() -> AsyncGenerator[bytes, None]:
-                        try:
-                            async with aiohttp.ClientSession() as session:
-                                async with session.get(signed_url) as response:
-                                    if response.status != HttpStatusCode.SUCCESS.value:
-                                        raise HTTPException(
-                                            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                                            detail=f"Failed to fetch file content: {response.status}"
-                                        )
-
-                                    async for chunk in response.content.iter_chunked(8192):
-                                        yield chunk
-                        except aiohttp.ClientError as e:
-                            logger.error(f"Error fetching file from signed URL: {str(e)}")
-                            raise HTTPException(
-                                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                                detail="Failed to fetch file content"
-                            )
-
-                    return StreamingResponse(
-                        stream_file_content(),
-                        media_type=record.mime_type,
-                        headers={
-                            "Content-Disposition": f"attachment; filename={record.record_name}"
-                        }
-                    )
-                except Exception as e:
-                    logger.error(f"Error accessing OneDrive connector: {str(e)}")
-                    raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="OneDrive connector not available")
+                return await stream_onedrive_file_content(request, record_id)
             else:
                 raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Invalid connector type")
 
@@ -1373,7 +1377,7 @@ async def stream_record(
                 )
 
             elif connector.lower() == Connectors.ONEDRIVE.value.lower():
-                return await _stream_onedrive_file_content(request, record_id)
+                return await stream_onedrive_file_content(request, record_id)
 
             else:
                 raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Invalid connector type")
