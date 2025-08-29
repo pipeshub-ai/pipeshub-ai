@@ -648,5 +648,33 @@ export function createUserRouter(container: Container) {
     },
   );
 
+  router.get(
+    '/graph/list',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const userController = container.get<UserController>('UserController');
+        await userController.listUsers(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.get(
+    '/teams/list',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const userController = container.get<UserController>('UserController');
+        await userController.getUserTeams(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
   return router;
 }
