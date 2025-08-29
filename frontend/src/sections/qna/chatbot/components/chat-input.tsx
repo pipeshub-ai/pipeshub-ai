@@ -96,6 +96,48 @@ const normalizeDisplayName = (name: string): string =>
     })
     .join(' ');
 
+export const formattedProvider = (provider: string): string => {
+  switch (provider) {
+    case 'azureOpenAI':
+      return 'Azure OpenAI';
+    case 'openAI':
+      return 'OpenAI';
+    case 'anthropic':
+      return 'Anthropic';
+    case 'gemini':
+      return 'Gemini';
+    case 'claude':
+      return 'Claude';
+    case 'ollama':
+      return 'Ollama';
+    case 'bedrock':
+      return 'AWS Bedrock';
+    case 'xai':
+      return 'xAI';
+    case 'together':
+      return 'Together';
+    case 'groq':
+      return 'Groq';
+    case 'fireworks':
+      return 'Fireworks';
+    case 'cohere':
+      return 'Cohere';
+    case 'openAICompatible':
+      return 'OpenAI API Compatible';
+    case 'mistral':
+      return 'Mistral';
+    case 'voyage':
+      return 'Voyage';
+    case 'jinaAI':
+      return 'Jina AI';
+    case 'sentenceTransformers':
+    case 'default':
+      return 'Default';
+    default:
+      return normalizeDisplayName(provider);
+  }
+};
+
 const ChatInput: React.FC<ChatInputProps> = ({
   onSubmit,
   isLoading,
@@ -457,7 +499,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
               <Box sx={{ display: 'flex', gap: 2, flexDirection: 'row', mr: 2 }}>
                 {/* Model Selector */}
                 <Tooltip
-                  title={`AI Model: ${selectedModel ? `${selectedModel.provider} - ${selectedModel.modelName}` : 'Select AI model'}`}
+                  title={`AI Model: ${selectedModel ? `${formattedProvider(selectedModel.provider)} - ${selectedModel.modelName}` : 'Select AI model'}`}
                 >
                   <Box
                     onClick={handleModelMenuOpen}
@@ -485,7 +527,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
                       variant="body2"
                       sx={{ fontSize: '0.8rem', fontWeight: 500, minWidth: '60px' }}
                     >
-                      {normalizeDisplayName(selectedModel?.modelName || '')}
+                      {selectedModel?.modelName || ''}
                     </Typography>
                     <Icon icon={chevronDownIcon} width={12} height={12} />
                   </Box>
@@ -629,7 +671,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
                     fontWeight="medium"
                     sx={{ fontSize: '0.9rem', mb: 0.5 }}
                   >
-                    {normalizeDisplayName(model.modelName)}
+                    {model.modelName}
                   </Typography>
                   <Typography
                     variant="caption"
@@ -644,7 +686,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
                       overflow: 'hidden',
                     }}
                   >
-                    {normalizeDisplayName(model.provider)} {model.isMultimodal ? '• Multimodal' : ''}{' '}
+                    {formattedProvider(model.provider)} {model.isMultimodal ? '• Multimodal' : ''}{' '}
                     {model.isDefault ? '• Default' : ''}
                   </Typography>
                 </Box>
