@@ -2810,7 +2810,7 @@ export class RecordRelationService {
   }
 
   async createResyncConnectorEventPayload(
-    resyncConnectorEventPayload: any,
+    resyncConnectorEventPayload: ResyncConnectorEventPayload,
   ): Promise<SyncDriveEvent | SyncGmailEvent | SyncOneDriveEvent> {
     const connectorName = resyncConnectorEventPayload.connectorName;
 
