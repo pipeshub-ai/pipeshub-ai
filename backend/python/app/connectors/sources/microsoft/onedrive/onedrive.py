@@ -164,7 +164,7 @@ class OneDriveConnector():
                 sha1_hash=item.file.hashes.sha1_hash if item.file and item.file.hashes else None,
                 sha256_hash=item.file.hashes.sha256_hash if item.file and item.file.hashes else None,
             )
-            if file_record.is_file is not None and file_record.extension is None:
+            if file_record.is_file and file_record.extension is None:
                 return None
 
             # Get current permissions
