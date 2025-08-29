@@ -55,7 +55,7 @@ import AgentApiService from './services/api';
 import { filterAgents, sortAgents, formatTimestamp } from './utils/agent';
 import TemplateBuilder from './components/template-builder';
 import TemplateSelector from './components/template-selector';
-import ManageAgentPermissionsDialog from './components/agent-builder/manage-permissions-dialog';
+import AgentPermissionsDialog from './components/agent-builder/agent-permissions-dialog';
 
 interface AgentsManagementProps {
   onAgentSelect?: (agent: Agent) => void;
@@ -251,11 +251,6 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
   const handleOpenPermissions = (agent: Agent) => {
     setPermissionsDialog({ open: true, agent });
     handleMenuClose();
-  };
-
-  const handlePermissionsUpdated = () => {
-    // Refresh agents list if needed
-    loadAgents();
   };
 
   const handleTemplateSelect = useCallback(
@@ -1206,13 +1201,11 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
         templates={Array.isArray(templates) ? templates : []}
       />
 
-      {/* Manage Agent Permissions Dialog */}
-      <ManageAgentPermissionsDialog
+      <AgentPermissionsDialog
         open={permissionsDialog.open}
         onClose={() => setPermissionsDialog({ open: false, agent: null })}
         agentId={permissionsDialog.agent?._key || ''}
         agentName={permissionsDialog.agent?.name || ''}
-        onPermissionsUpdated={handlePermissionsUpdated}
       />
     </Box>
   );
