@@ -14,14 +14,13 @@ class SlackDataSource:
     - All responses wrapped in standardized SlackResponse format
     """
     def __init__(self, client: SlackClient) -> None:
-        self.client = client
+        self.client = client.get_web_client()
 
-    def _handle_slack_response(self, response: Any) -> SlackResponse:  # noqa: ANN401
+    async def _handle_slack_response(self, response: Any) -> SlackResponse:  # noqa: ANN401
         """Handle Slack API response and convert to standardized format"""
         try:
             if not response:
                 return SlackResponse(success=False, error="Empty response from Slack API")
-
             # Extract data from SlackResponse object
             if hasattr(response, 'data'):
                 data = response.data
@@ -54,16 +53,15 @@ class SlackDataSource:
             logger.error(f"Error handling Slack response: {e}")
             return SlackResponse(success=False, error=str(e))
 
-    def _handle_slack_error(self, error: Exception) -> SlackResponse:
+    async def _handle_slack_error(self, error: Exception) -> SlackResponse:
         """Handle Slack API errors and convert to standardized format"""
         error_msg = str(error)
         logger.error(f"Slack API error: {error_msg}")
         return SlackResponse(success=False, error=error_msg)
 
 
-    def admin_apps_approve(self,
+    async def admin_apps_approve(self,
         *,
-        token: str,
         app_id: Optional[str] = None,
         request_id: Optional[str] = None,
         team_id: Optional[str] = None,
@@ -72,9 +70,9 @@ class SlackDataSource:
         """admin_apps_approve
 
         Slack method: `admin_apps_approve`  (HTTP POST /admin.apps.approve)
+        Requires scope: `admin.apps:write`
 
         Args:
-            token (required): Authentication token. Requires scope: `admin.apps:write`
             app_id (optional): The id of the app to approve.
             request_id (optional): The id of the request to approve.
             team_id (optional): The ID of the team.
@@ -86,8 +84,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if app_id is not None:
             kwargs_api['app_id'] = app_id
         if request_id is not None:
@@ -105,13 +101,11 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_apps_approve')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_apps_approved_list(self,
-        *,
-        token: str,
+    async def admin_apps_approved_list(self,
         limit: Optional[int] = None,
         cursor: Optional[str] = None,
         team_id: Optional[str] = None,
@@ -121,9 +115,8 @@ class SlackDataSource:
         """admin_apps_approved_list
 
         Slack method: `admin_apps_approved_list`  (HTTP GET /admin.apps.approved.list)
-
+        Requires scope: `admin.apps:read`
         Args:
-            token (required): Authentication token. Requires scope: `admin.apps:read`
             limit (optional): The maximum number of items to return. Must be between 1 - 1000 both inclusive.
             cursor (optional): Set `cursor` to `next_cursor` returned by the previous call to list items in the next page
             team_id (optional): The ID of the team.
@@ -136,8 +129,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if limit is not None:
             kwargs_api['limit'] = limit
         if cursor is not None:
@@ -157,13 +148,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_apps_approved_list')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_apps_requests_list(self,
+    async def admin_apps_requests_list(self,
         *,
-        token: str,
         limit: Optional[int] = None,
         cursor: Optional[str] = None,
         team_id: Optional[str] = None,
@@ -172,9 +162,8 @@ class SlackDataSource:
         """admin_apps_requests_list
 
         Slack method: `admin_apps_requests_list`  (HTTP GET /admin.apps.requests.list)
-
+        Requires scope: `admin.apps:read`
         Args:
-            token (required): Authentication token. Requires scope: `admin.apps:read`
             limit (optional): The maximum number of items to return. Must be between 1 - 1000 both inclusive.
             cursor (optional): Set `cursor` to `next_cursor` returned by the previous call to list items in the next page
             team_id (optional): The ID of the team.
@@ -186,8 +175,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if limit is not None:
             kwargs_api['limit'] = limit
         if cursor is not None:
@@ -205,13 +192,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_apps_requests_list')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_apps_restrict(self,
+    async def admin_apps_restrict(self,
         *,
-        token: str,
         app_id: Optional[str] = None,
         request_id: Optional[str] = None,
         team_id: Optional[str] = None,
@@ -221,8 +207,8 @@ class SlackDataSource:
 
         Slack method: `admin_apps_restrict`  (HTTP POST /admin.apps.restrict)
 
+        Requires scope: `admin.apps:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.apps:write`
             app_id (optional): The id of the app to restrict.
             request_id (optional): The id of the request to restrict.
             team_id (optional): The ID of the team.
@@ -234,8 +220,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if app_id is not None:
             kwargs_api['app_id'] = app_id
         if request_id is not None:
@@ -253,13 +237,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_apps_restrict')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_apps_restricted_list(self,
+    async def admin_apps_restricted_list(self,
         *,
-        token: str,
         limit: Optional[int] = None,
         cursor: Optional[str] = None,
         team_id: Optional[str] = None,
@@ -270,8 +253,8 @@ class SlackDataSource:
 
         Slack method: `admin_apps_restricted_list`  (HTTP GET /admin.apps.restricted.list)
 
+        Requires scope: `admin.apps:read`
         Args:
-            token (required): Authentication token. Requires scope: `admin.apps:read`
             limit (optional): The maximum number of items to return. Must be between 1 - 1000 both inclusive.
             cursor (optional): Set `cursor` to `next_cursor` returned by the previous call to list items in the next page
             team_id (optional): The ID of the team.
@@ -284,8 +267,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if limit is not None:
             kwargs_api['limit'] = limit
         if cursor is not None:
@@ -305,22 +286,20 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_apps_restricted_list')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_conversations_archive(self,
+    async def admin_conversations_archive(self,
         *,
-        token: str,
         channel_id: str,
         **kwargs
     ) -> SlackResponse:
         """admin_conversations_archive
 
         Slack method: `admin_conversations_archive`  (HTTP POST /admin.conversations.archive)
-
+        Requires scope: `admin.conversations:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.conversations:write`
             channel_id (required): The channel to archive.
 
         Returns:
@@ -331,8 +310,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if channel_id is not None:
             kwargs_api['channel_id'] = channel_id
         if kwargs:
@@ -346,22 +323,20 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_conversations_archive')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_conversations_convert_to_private(self,
+    async def admin_conversations_convert_to_private(self,
         *,
-        token: str,
         channel_id: str,
         **kwargs
     ) -> SlackResponse:
         """admin_conversations_convertToPrivate
 
         Slack method: `admin_conversations_convertToPrivate`  (HTTP POST /admin.conversations.convertToPrivate)
-
+        Requires scope: `admin.conversations:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.conversations:write`
             channel_id (required): The channel to convert to private.
 
         Returns:
@@ -372,8 +347,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if channel_id is not None:
             kwargs_api['channel_id'] = channel_id
         if kwargs:
@@ -387,13 +360,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_conversations_convertToPrivate')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_conversations_create(self,
+    async def admin_conversations_create(self,
         *,
-        token: str,
         name: str,
         is_private: bool,
         description: Optional[str] = None,
@@ -405,8 +377,8 @@ class SlackDataSource:
 
         Slack method: `admin_conversations_create`  (HTTP POST /admin.conversations.create)
 
+        Requires scope: `admin.conversations:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.conversations:write`
             name (required): Name of the public or private channel to create.
             description (optional): Description of the public or private channel to create.
             is_private (required): When `true`, creates a private channel instead of a public channel
@@ -421,8 +393,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if name is not None:
             kwargs_api['name'] = name
         if description is not None:
@@ -444,13 +414,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_conversations_create')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_conversations_delete(self,
+    async def admin_conversations_delete(self,
         *,
-        token: str,
         channel_id: str,
         **kwargs
     ) -> SlackResponse:
@@ -458,8 +427,8 @@ class SlackDataSource:
 
         Slack method: `admin_conversations_delete`  (HTTP POST /admin.conversations.delete)
 
+        Requires scope: `admin.conversations:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.conversations:write`
             channel_id (required): The channel to delete.
 
         Returns:
@@ -470,8 +439,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if channel_id is not None:
             kwargs_api['channel_id'] = channel_id
         if kwargs:
@@ -485,13 +452,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_conversations_delete')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_conversations_disconnect_shared(self,
+    async def admin_conversations_disconnect_shared(self,
         *,
-        token: str,
         channel_id: str,
         leaving_team_ids: Optional[List[str]] = None,
         **kwargs
@@ -500,8 +466,8 @@ class SlackDataSource:
 
         Slack method: `admin_conversations_disconnectShared`  (HTTP POST /admin.conversations.disconnectShared)
 
+        Requires scope: `admin.conversations:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.conversations:write`
             channel_id (required): The channel to be disconnected from some workspaces.
             leaving_team_ids (optional): The team to be removed from the channel. Currently only a single team id can be specified.
 
@@ -513,8 +479,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if channel_id is not None:
             kwargs_api['channel_id'] = channel_id
         if leaving_team_ids is not None:
@@ -530,13 +494,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_conversations_disconnectShared')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_conversations_ekm_list_original_connected_channel_info(self,
+    async def admin_conversations_ekm_list_original_connected_channel_info(self,
         *,
-        token: str,
         channel_ids: Optional[List[str]] = None,
         team_ids: Optional[List[str]] = None,
         limit: Optional[int] = None,
@@ -546,9 +509,8 @@ class SlackDataSource:
         """admin_conversations_ekm_listOriginalConnectedChannelInfo
 
         Slack method: `admin_conversations_ekm_listOriginalConnectedChannelInfo`  (HTTP GET /admin.conversations.ekm.listOriginalConnectedChannelInfo)
-
+        Requires scope: `admin.conversations:read`
         Args:
-            token (required): Authentication token. Requires scope: `admin.conversations:read`
             channel_ids (optional): A comma-separated list of channels to filter to.
             team_ids (optional): A comma-separated list of the workspaces to which the channels you would like returned belong.
             limit (optional): The maximum number of items to return. Must be between 1 - 1000 both inclusive.
@@ -562,8 +524,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if channel_ids is not None:
             kwargs_api['channel_ids'] = channel_ids
         if team_ids is not None:
@@ -583,13 +544,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_conversations_ekm_listOriginalConnectedChannelInfo')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_conversations_get_conversation_prefs(self,
+    async def admin_conversations_get_conversation_prefs(self,
         *,
-        token: str,
         channel_id: str,
         **kwargs
     ) -> SlackResponse:
@@ -597,8 +557,8 @@ class SlackDataSource:
 
         Slack method: `admin_conversations_getConversationPrefs`  (HTTP GET /admin.conversations.getConversationPrefs)
 
+        Requires scope: `admin.conversations:read`
         Args:
-            token (required): Authentication token. Requires scope: `admin.conversations:read`
             channel_id (required): The channel to get preferences for.
 
         Returns:
@@ -609,13 +569,10 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if channel_id is not None:
             kwargs_api['channel_id'] = channel_id
         if kwargs:
             kwargs_api.update(kwargs)
-
         if not hasattr(self.client, 'admin_conversations_getConversationPrefs') or not callable(getattr(self.client, 'admin_conversations_getConversationPrefs')):
             return SlackResponse(
                 success=False,
@@ -624,13 +581,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_conversations_getConversationPrefs')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_conversations_get_teams(self,
+    async def admin_conversations_get_teams(self,
         *,
-        token: str,
         channel_id: str,
         cursor: Optional[str] = None,
         limit: Optional[int] = None,
@@ -640,8 +596,8 @@ class SlackDataSource:
 
         Slack method: `admin_conversations_getTeams`  (HTTP GET /admin.conversations.getTeams)
 
+        Requires scope: `admin.conversations:read`
         Args:
-            token (required): Authentication token. Requires scope: `admin.conversations:read`
             channel_id (required): The channel to determine connected workspaces within the organization for.
             cursor (optional): Set `cursor` to `next_cursor` returned by the previous call to list items in the next page
             limit (optional): The maximum number of items to return. Must be between 1 - 1000 both inclusive.
@@ -654,8 +610,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if channel_id is not None:
             kwargs_api['channel_id'] = channel_id
         if cursor is not None:
@@ -673,13 +627,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_conversations_getTeams')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_conversations_invite(self,
+    async def admin_conversations_invite(self,
         *,
-        token: str,
         user_ids: List[str],
         channel_id: str,
         **kwargs
@@ -687,9 +640,8 @@ class SlackDataSource:
         """admin_conversations_invite
 
         Slack method: `admin_conversations_invite`  (HTTP POST /admin.conversations.invite)
-
+        Requires scope: `admin.conversations:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.conversations:write`
             user_ids (required): The users to invite.
             channel_id (required): The channel that the users will be invited to.
 
@@ -701,8 +653,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if user_ids is not None:
             kwargs_api['user_ids'] = user_ids
         if channel_id is not None:
@@ -718,13 +668,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_conversations_invite')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_conversations_rename(self,
+    async def admin_conversations_rename(self,
         *,
-        token: str,
         channel_id: str,
         name: str,
         **kwargs
@@ -733,8 +682,8 @@ class SlackDataSource:
 
         Slack method: `admin_conversations_rename`  (HTTP POST /admin.conversations.rename)
 
+        Requires scope: `admin.conversations:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.conversations:write`
             channel_id (required): The channel to rename.
             name (required):
         Returns:
@@ -745,8 +694,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if channel_id is not None:
             kwargs_api['channel_id'] = channel_id
         if name is not None:
@@ -762,13 +709,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_conversations_rename')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_conversations_restrict_access_add_group(self,
+    async def admin_conversations_restrict_access_add_group(self,
         *,
-        token: str,
         group_id: str,
         channel_id: str,
         team_id: Optional[str] = None,
@@ -778,8 +724,8 @@ class SlackDataSource:
 
         Slack method: `admin_conversations_restrictAccess_addGroup`  (HTTP POST /admin.conversations.restrictAccess.addGroup)
 
+        Requires scope: `admin.conversations:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.conversations:write`
             team_id (optional): The workspace where the channel exists. This argument is required for channels only tied to one workspace, and optional for channels that are shared across an organization.
             group_id (required): The [IDP Group](https://slack.com/help/articles/115001435788-Connect-identity-provider-groups-to-your-Enterprise-Grid-org) ID to be an allowlist for the private channel.
             channel_id (required): The channel to link this group to.
@@ -792,8 +738,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if team_id is not None:
             kwargs_api['team_id'] = team_id
         if group_id is not None:
@@ -811,13 +755,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_conversations_restrictAccess_addGroup')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_conversations_restrict_access_list_groups(self,
+    async def admin_conversations_restrict_access_list_groups(self,
         *,
-        token: str,
         channel_id: str,
         team_id: Optional[str] = None,
         **kwargs
@@ -826,8 +769,8 @@ class SlackDataSource:
 
         Slack method: `admin_conversations_restrictAccess_listGroups`  (HTTP GET /admin.conversations.restrictAccess.listGroups)
 
+        Requires scope: `admin.conversations:read`
         Args:
-            token (required): Authentication token. Requires scope: `admin.conversations:read`
             channel_id (required): The channel to list groups for.
             team_id (optional): The workspace where the channel exists. This argument is required for channels only tied to one workspace, and optional for channels that are shared across an organization.
 
@@ -839,8 +782,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if channel_id is not None:
             kwargs_api['channel_id'] = channel_id
         if team_id is not None:
@@ -856,13 +797,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_conversations_restrictAccess_listGroups')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_conversations_restrict_access_remove_group(self,
+    async def admin_conversations_restrict_access_remove_group(self,
         *,
-        token: str,
         team_id: str,
         group_id: str,
         channel_id: str,
@@ -872,8 +812,8 @@ class SlackDataSource:
 
         Slack method: `admin_conversations_restrictAccess_removeGroup`  (HTTP POST /admin.conversations.restrictAccess.removeGroup)
 
+        Requires scope: `admin.conversations:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.conversations:write`
             team_id (required): The workspace where the channel exists. This argument is required for channels only tied to one workspace, and optional for channels that are shared across an organization.
             group_id (required): The [IDP Group](https://slack.com/help/articles/115001435788-Connect-identity-provider-groups-to-your-Enterprise-Grid-org) ID to remove from the private channel.
             channel_id (required): The channel to remove the linked group from.
@@ -886,8 +826,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if team_id is not None:
             kwargs_api['team_id'] = team_id
         if group_id is not None:
@@ -905,13 +844,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_conversations_restrictAccess_removeGroup')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_conversations_search(self,
+    async def admin_conversations_search(self,
         *,
-        token: str,
         team_ids: Optional[List[str]] = None,
         query: Optional[str] = None,
         limit: Optional[int] = None,
@@ -925,8 +863,8 @@ class SlackDataSource:
 
         Slack method: `admin_conversations_search`  (HTTP GET /admin.conversations.search)
 
+        Requires scope: `admin.conversations:read`
         Args:
-            token (required): Authentication token. Requires scope: `admin.conversations:read`
             team_ids (optional): Comma separated string of team IDs, signifying the workspaces to search through.
             query (optional): Name of the the channel to query by.
             limit (optional): Maximum number of items to be returned. Must be between 1 - 20 both inclusive. Default is 10.
@@ -943,8 +881,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if team_ids is not None:
             kwargs_api['team_ids'] = team_ids
         if query is not None:
@@ -970,13 +907,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_conversations_search')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_conversations_set_conversation_prefs(self,
+    async def admin_conversations_set_conversation_prefs(self,
         *,
-        token: str,
         channel_id: str,
         prefs: Dict[str, Any],
         **kwargs
@@ -985,8 +921,8 @@ class SlackDataSource:
 
         Slack method: `admin_conversations_setConversationPrefs`  (HTTP POST /admin.conversations.setConversationPrefs)
 
+        Requires scope: `admin.conversations:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.conversations:write`
             channel_id (required): The channel to set the prefs for
             prefs (required): The prefs for this channel in a stringified JSON format.
 
@@ -998,8 +934,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if channel_id is not None:
             kwargs_api['channel_id'] = channel_id
         if prefs is not None:
@@ -1015,13 +950,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_conversations_setConversationPrefs')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_conversations_set_teams(self,
+    async def admin_conversations_set_teams(self,
         *,
-        token: str,
         channel_id: str,
         team_id: Optional[str] = None,
         target_team_ids: Optional[List[str]] = None,
@@ -1032,8 +966,8 @@ class SlackDataSource:
 
         Slack method: `admin_conversations_setTeams`  (HTTP POST /admin.conversations.setTeams)
 
+        Requires scope: `admin.conversations:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.conversations:write`
             channel_id (required): The encoded `channel_id` to add or remove to workspaces.
             team_id (optional): The workspace to which the channel belongs. Omit this argument if the channel is a cross-workspace shared channel.
             target_team_ids (optional): A comma-separated list of workspaces to which the channel should be shared. Not required if the channel is being shared org-wide.
@@ -1047,8 +981,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if channel_id is not None:
             kwargs_api['channel_id'] = channel_id
         if team_id is not None:
@@ -1068,13 +1001,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_conversations_setTeams')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_conversations_unarchive(self,
+    async def admin_conversations_unarchive(self,
         *,
-        token: str,
         channel_id: str,
         **kwargs
     ) -> SlackResponse:
@@ -1082,8 +1014,8 @@ class SlackDataSource:
 
         Slack method: `admin_conversations_unarchive`  (HTTP POST /admin.conversations.unarchive)
 
+        Requires scope: `admin.conversations:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.conversations:write`
             channel_id (required): The channel to unarchive.
 
         Returns:
@@ -1094,8 +1026,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if channel_id is not None:
             kwargs_api['channel_id'] = channel_id
         if kwargs:
@@ -1109,13 +1040,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_conversations_unarchive')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_emoji_add(self,
+    async def admin_emoji_add(self,
         *,
-        token: str,
         name: str,
         url: str,
         **kwargs
@@ -1124,8 +1054,8 @@ class SlackDataSource:
 
         Slack method: `admin_emoji_add`  (HTTP POST /admin.emoji.add)
 
+        Requires scope: `admin.teams:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.teams:write`
             name (required): The name of the emoji to be removed. Colons (`:myemoji:`) around the value are not required, although they may be included.
             url (required): The URL of a file to use as an image for the emoji. Square images under 128KB and with transparent backgrounds work best.
 
@@ -1137,8 +1067,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if name is not None:
             kwargs_api['name'] = name
         if url is not None:
@@ -1154,13 +1083,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_emoji_add')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_emoji_add_alias(self,
+    async def admin_emoji_add_alias(self,
         *,
-        token: str,
         name: str,
         alias_for: str,
         **kwargs
@@ -1168,9 +1096,8 @@ class SlackDataSource:
         """admin_emoji_addAlias
 
         Slack method: `admin_emoji_addAlias`  (HTTP POST /admin.emoji.addAlias)
-
+        Requires scope: `admin.teams:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.teams:write`
             name (required): The name of the emoji to be aliased. Colons (`:myemoji:`) around the value are not required, although they may be included.
             alias_for (required): The alias of the emoji.
 
@@ -1182,8 +1109,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if name is not None:
             kwargs_api['name'] = name
         if alias_for is not None:
@@ -1199,13 +1125,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_emoji_addAlias')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_emoji_list(self,
+    async def admin_emoji_list(self,
         *,
-        token: str,
         cursor: Optional[str] = None,
         limit: Optional[int] = None,
         **kwargs
@@ -1214,8 +1139,8 @@ class SlackDataSource:
 
         Slack method: `admin_emoji_list`  (HTTP GET /admin.emoji.list)
 
+        Requires scope: `admin.teams:read`
         Args:
-            token (required): Authentication token. Requires scope: `admin.teams:read`
             cursor (optional): Set `cursor` to `next_cursor` returned by the previous call to list items in the next page
             limit (optional): The maximum number of items to return. Must be between 1 - 1000 both inclusive.
 
@@ -1227,8 +1152,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if cursor is not None:
             kwargs_api['cursor'] = cursor
         if limit is not None:
@@ -1244,13 +1168,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_emoji_list')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_emoji_remove(self,
+    async def admin_emoji_remove(self,
         *,
-        token: str,
         name: str,
         **kwargs
     ) -> SlackResponse:
@@ -1258,8 +1181,8 @@ class SlackDataSource:
 
         Slack method: `admin_emoji_remove`  (HTTP POST /admin.emoji.remove)
 
+        Requires scope: `admin.teams:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.teams:write`
             name (required): The name of the emoji to be removed. Colons (`:myemoji:`) around the value are not required, although they may be included.
 
         Returns:
@@ -1270,8 +1193,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if name is not None:
             kwargs_api['name'] = name
         if kwargs:
@@ -1285,13 +1207,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_emoji_remove')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_emoji_rename(self,
+    async def admin_emoji_rename(self,
         *,
-        token: str,
         name: str,
         new_name: str,
         **kwargs
@@ -1300,8 +1221,8 @@ class SlackDataSource:
 
         Slack method: `admin_emoji_rename`  (HTTP POST /admin.emoji.rename)
 
+        Requires scope: `admin.teams:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.teams:write`
             name (required): The name of the emoji to be renamed. Colons (`:myemoji:`) around the value are not required, although they may be included.
             new_name (required): The new name of the emoji.
 
@@ -1313,8 +1234,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if name is not None:
             kwargs_api['name'] = name
         if new_name is not None:
@@ -1330,13 +1250,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_emoji_rename')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_invite_requests_approve(self,
+    async def admin_invite_requests_approve(self,
         *,
-        token: str,
         invite_request_id: str,
         team_id: Optional[str] = None,
         **kwargs
@@ -1344,9 +1263,8 @@ class SlackDataSource:
         """admin_inviteRequests_approve
 
         Slack method: `admin_inviteRequests_approve`  (HTTP POST /admin.inviteRequests.approve)
-
+        Requires scope: `admin.invites:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.invites:write`
             team_id (optional): ID for the workspace where the invite request was made.
             invite_request_id (required): ID of the request to invite.
 
@@ -1358,8 +1276,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if team_id is not None:
             kwargs_api['team_id'] = team_id
         if invite_request_id is not None:
@@ -1375,13 +1292,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_inviteRequests_approve')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_invite_requests_approved_list(self,
+    async def admin_invite_requests_approved_list(self,
         *,
-        token: str,
         team_id: Optional[str] = None,
         cursor: Optional[str] = None,
         limit: Optional[int] = None,
@@ -1391,8 +1307,8 @@ class SlackDataSource:
 
         Slack method: `admin_inviteRequests_approved_list`  (HTTP GET /admin.inviteRequests.approved.list)
 
+        Requires scope: `admin.invites:read`
         Args:
-            token (required): Authentication token. Requires scope: `admin.invites:read`
             team_id (optional): ID for the workspace where the invite requests were made.
             cursor (optional): Value of the `next_cursor` field sent as part of the previous API response
             limit (optional): The number of results that will be returned by the API on each invocation. Must be between 1 - 1000, both inclusive
@@ -1405,8 +1321,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if team_id is not None:
             kwargs_api['team_id'] = team_id
         if cursor is not None:
@@ -1424,13 +1339,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_inviteRequests_approved_list')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_invite_requests_denied_list(self,
+    async def admin_invite_requests_denied_list(self,
         *,
-        token: str,
         team_id: Optional[str] = None,
         cursor: Optional[str] = None,
         limit: Optional[int] = None,
@@ -1440,8 +1354,8 @@ class SlackDataSource:
 
         Slack method: `admin_inviteRequests_denied_list`  (HTTP GET /admin.inviteRequests.denied.list)
 
+        Requires scope: `admin.invites:read`
         Args:
-            token (required): Authentication token. Requires scope: `admin.invites:read`
             team_id (optional): ID for the workspace where the invite requests were made.
             cursor (optional): Value of the `next_cursor` field sent as part of the previous api response
             limit (optional): The number of results that will be returned by the API on each invocation. Must be between 1 - 1000 both inclusive
@@ -1454,8 +1368,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if team_id is not None:
             kwargs_api['team_id'] = team_id
         if cursor is not None:
@@ -1473,13 +1386,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_inviteRequests_denied_list')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_invite_requests_deny(self,
+    async def admin_invite_requests_deny(self,
         *,
-        token: str,
         invite_request_id: str,
         team_id: Optional[str] = None,
         **kwargs
@@ -1488,8 +1400,8 @@ class SlackDataSource:
 
         Slack method: `admin_inviteRequests_deny`  (HTTP POST /admin.inviteRequests.deny)
 
+        Requires scope: `admin.invites:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.invites:write`
             team_id (optional): ID for the workspace where the invite request was made.
             invite_request_id (required): ID of the request to invite.
 
@@ -1501,8 +1413,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if team_id is not None:
             kwargs_api['team_id'] = team_id
         if invite_request_id is not None:
@@ -1518,13 +1429,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_inviteRequests_deny')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_invite_requests_list(self,
+    async def admin_invite_requests_list(self,
         *,
-        token: str,
         team_id: Optional[str] = None,
         cursor: Optional[str] = None,
         limit: Optional[int] = None,
@@ -1534,8 +1444,8 @@ class SlackDataSource:
 
         Slack method: `admin_inviteRequests_list`  (HTTP GET /admin.inviteRequests.list)
 
+        Requires scope: `admin.invites:read`
         Args:
-            token (required): Authentication token. Requires scope: `admin.invites:read`
             team_id (optional): ID for the workspace where the invite requests were made.
             cursor (optional): Value of the `next_cursor` field sent as part of the previous API response
             limit (optional): The number of results that will be returned by the API on each invocation. Must be between 1 - 1000, both inclusive
@@ -1548,8 +1458,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if team_id is not None:
             kwargs_api['team_id'] = team_id
         if cursor is not None:
@@ -1567,13 +1476,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_inviteRequests_list')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_teams_admins_list(self,
+    async def admin_teams_admins_list(self,
         *,
-        token: str,
         team_id: str,
         limit: Optional[int] = None,
         cursor: Optional[str] = None,
@@ -1583,8 +1491,8 @@ class SlackDataSource:
 
         Slack method: `admin_teams_admins_list`  (HTTP GET /admin.teams.admins.list)
 
+        Requires scope: `admin.teams:read`
         Args:
-            token (required): Authentication token. Requires scope: `admin.teams:read`
             limit (optional): The maximum number of items to return.
             cursor (optional): Set `cursor` to `next_cursor` returned by the previous call to list items in the next page.
             team_id (required):
@@ -1596,8 +1504,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if limit is not None:
             kwargs_api['limit'] = limit
         if cursor is not None:
@@ -1615,13 +1522,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_teams_admins_list')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_teams_create(self,
+    async def admin_teams_create(self,
         *,
-        token: str,
         team_domain: str,
         team_name: str,
         team_description: Optional[str] = None,
@@ -1632,8 +1538,8 @@ class SlackDataSource:
 
         Slack method: `admin_teams_create`  (HTTP POST /admin.teams.create)
 
+        Requires scope: `admin.teams:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.teams:write`
             team_domain (required): Team domain (for example, slacksoftballteam).
             team_name (required): Team name (for example, Slack Softball Team).
             team_description (optional): Description for the team.
@@ -1647,8 +1553,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if team_domain is not None:
             kwargs_api['team_domain'] = team_domain
         if team_name is not None:
@@ -1668,13 +1573,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_teams_create')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_teams_list(self,
+    async def admin_teams_list(self,
         *,
-        token: str,
         limit: Optional[int] = None,
         cursor: Optional[str] = None,
         **kwargs
@@ -1683,8 +1587,8 @@ class SlackDataSource:
 
         Slack method: `admin_teams_list`  (HTTP GET /admin.teams.list)
 
+        Requires scope: `admin.teams:read`
         Args:
-            token (required): Authentication token. Requires scope: `admin.teams:read`
             limit (optional): The maximum number of items to return. Must be between 1 - 100 both inclusive.
             cursor (optional): Set `cursor` to `next_cursor` returned by the previous call to list items in the next page.
 
@@ -1696,8 +1600,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if limit is not None:
             kwargs_api['limit'] = limit
         if cursor is not None:
@@ -1713,13 +1616,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_teams_list')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_teams_owners_list(self,
+    async def admin_teams_owners_list(self,
         *,
-        token: str,
         team_id: str,
         limit: Optional[int] = None,
         cursor: Optional[str] = None,
@@ -1729,8 +1631,8 @@ class SlackDataSource:
 
         Slack method: `admin_teams_owners_list`  (HTTP GET /admin.teams.owners.list)
 
+        Requires scope: `admin.teams:read`
         Args:
-            token (required): Authentication token. Requires scope: `admin.teams:read`
             team_id (required):
             limit (optional): The maximum number of items to return. Must be between 1 - 1000 both inclusive.
             cursor (optional): Set `cursor` to `next_cursor` returned by the previous call to list items in the next page.
@@ -1743,8 +1645,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if team_id is not None:
             kwargs_api['team_id'] = team_id
         if limit is not None:
@@ -1762,13 +1663,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_teams_owners_list')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_teams_settings_info(self,
+    async def admin_teams_settings_info(self,
         *,
-        token: str,
         team_id: str,
         **kwargs
     ) -> SlackResponse:
@@ -1776,8 +1676,8 @@ class SlackDataSource:
 
         Slack method: `admin_teams_settings_info`  (HTTP GET /admin.teams.settings.info)
 
+        Requires scope: `admin.teams:read`
         Args:
-            token (required): Authentication token. Requires scope: `admin.teams:read`
             team_id (required):
         Returns:
             SlackResponse: Standardized response wrapper with success/data/error
@@ -1787,8 +1687,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if team_id is not None:
             kwargs_api['team_id'] = team_id
         if kwargs:
@@ -1802,13 +1701,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_teams_settings_info')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_teams_settings_set_default_channels(self,
+    async def admin_teams_settings_set_default_channels(self,
         *,
-        token: str,
         team_id: str,
         channel_ids: List[str],
         **kwargs
@@ -1817,8 +1715,8 @@ class SlackDataSource:
 
         Slack method: `admin_teams_settings_setDefaultChannels`  (HTTP POST /admin.teams.settings.setDefaultChannels)
 
+        Requires scope: `admin.teams:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.teams:write`
             team_id (required): ID for the workspace to set the default channel for.
             channel_ids (required): An array of channel IDs.
 
@@ -1830,8 +1728,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if team_id is not None:
             kwargs_api['team_id'] = team_id
         if channel_ids is not None:
@@ -1847,13 +1744,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_teams_settings_setDefaultChannels')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_teams_settings_set_description(self,
+    async def admin_teams_settings_set_description(self,
         *,
-        token: str,
         team_id: str,
         description: str,
         **kwargs
@@ -1862,8 +1758,8 @@ class SlackDataSource:
 
         Slack method: `admin_teams_settings_setDescription`  (HTTP POST /admin.teams.settings.setDescription)
 
+        Requires scope: `admin.teams:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.teams:write`
             team_id (required): ID for the workspace to set the description for.
             description (required): The new description for the workspace.
 
@@ -1875,8 +1771,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if team_id is not None:
             kwargs_api['team_id'] = team_id
         if description is not None:
@@ -1892,13 +1787,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_teams_settings_setDescription')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_teams_settings_set_discoverability(self,
+    async def admin_teams_settings_set_discoverability(self,
         *,
-        token: str,
         team_id: str,
         discoverability: str,
         **kwargs
@@ -1907,8 +1801,8 @@ class SlackDataSource:
 
         Slack method: `admin_teams_settings_setDiscoverability`  (HTTP POST /admin.teams.settings.setDiscoverability)
 
+        Requires scope: `admin.teams:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.teams:write`
             team_id (required): The ID of the workspace to set discoverability on.
             discoverability (required): This workspace's discovery setting. It must be set to one of `open`, `invite_only`, `closed`, or `unlisted`.
 
@@ -1920,8 +1814,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if team_id is not None:
             kwargs_api['team_id'] = team_id
         if discoverability is not None:
@@ -1937,13 +1830,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_teams_settings_setDiscoverability')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_teams_settings_set_icon(self,
+    async def admin_teams_settings_set_icon(self,
         *,
-        token: str,
         image_url: str,
         team_id: str,
         **kwargs
@@ -1952,8 +1844,8 @@ class SlackDataSource:
 
         Slack method: `admin_teams_settings_setIcon`  (HTTP POST /admin.teams.settings.setIcon)
 
+        Requires scope: `admin.teams:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.teams:write`
             image_url (required): Image URL for the icon
             team_id (required): ID for the workspace to set the icon for.
 
@@ -1965,8 +1857,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if image_url is not None:
             kwargs_api['image_url'] = image_url
         if team_id is not None:
@@ -1982,13 +1873,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_teams_settings_setIcon')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_teams_settings_set_name(self,
+    async def admin_teams_settings_set_name(self,
         *,
-        token: str,
         team_id: str,
         name: str,
         **kwargs
@@ -1997,8 +1887,8 @@ class SlackDataSource:
 
         Slack method: `admin_teams_settings_setName`  (HTTP POST /admin.teams.settings.setName)
 
+        Requires scope: `admin.teams:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.teams:write`
             team_id (required): ID for the workspace to set the name for.
             name (required): The new name of the workspace.
 
@@ -2010,8 +1900,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if team_id is not None:
             kwargs_api['team_id'] = team_id
         if name is not None:
@@ -2027,13 +1916,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_teams_settings_setName')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_usergroups_add_channels(self,
+    async def admin_usergroups_add_channels(self,
         *,
-        token: str,
         usergroup_id: str,
         channel_ids: List[str],
         team_id: Optional[str] = None,
@@ -2043,8 +1931,8 @@ class SlackDataSource:
 
         Slack method: `admin_usergroups_addChannels`  (HTTP POST /admin.usergroups.addChannels)
 
+        Requires scope: `admin.usergroups:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.usergroups:write`
             usergroup_id (required): ID of the IDP group to add default channels for.
             team_id (optional): The workspace to add default channels in.
             channel_ids (required): Comma separated string of channel IDs.
@@ -2057,8 +1945,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if usergroup_id is not None:
             kwargs_api['usergroup_id'] = usergroup_id
         if team_id is not None:
@@ -2076,13 +1963,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_usergroups_addChannels')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_usergroups_add_teams(self,
+    async def admin_usergroups_add_teams(self,
         *,
-        token: str,
         usergroup_id: str,
         team_ids: List[str],
         auto_provision: Optional[bool] = None,
@@ -2092,8 +1978,8 @@ class SlackDataSource:
 
         Slack method: `admin_usergroups_addTeams`  (HTTP POST /admin.usergroups.addTeams)
 
+        Requires scope: `admin.teams:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.teams:write`
             usergroup_id (required): An encoded usergroup (IDP Group) ID.
             team_ids (required): A comma separated list of encoded team (workspace) IDs. Each workspace *MUST* belong to the organization associated with the token.
             auto_provision (optional): When `true`, this method automatically creates new workspace accounts for the IDP group members.
@@ -2106,8 +1992,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if usergroup_id is not None:
             kwargs_api['usergroup_id'] = usergroup_id
         if team_ids is not None:
@@ -2125,13 +2010,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_usergroups_addTeams')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_usergroups_list_channels(self,
+    async def admin_usergroups_list_channels(self,
         *,
-        token: str,
         usergroup_id: str,
         team_id: Optional[str] = None,
         include_num_members: Optional[bool] = None,
@@ -2141,8 +2025,8 @@ class SlackDataSource:
 
         Slack method: `admin_usergroups_listChannels`  (HTTP GET /admin.usergroups.listChannels)
 
+        Requires scope: `admin.usergroups:read`
         Args:
-            token (required): Authentication token. Requires scope: `admin.usergroups:read`
             usergroup_id (required): ID of the IDP group to list default channels for.
             team_id (optional): ID of the the workspace.
             include_num_members (optional): Flag to include or exclude the count of members per channel.
@@ -2155,8 +2039,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if usergroup_id is not None:
             kwargs_api['usergroup_id'] = usergroup_id
         if team_id is not None:
@@ -2174,13 +2057,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_usergroups_listChannels')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_usergroups_remove_channels(self,
+    async def admin_usergroups_remove_channels(self,
         *,
-        token: str,
         usergroup_id: str,
         channel_ids: List[str],
         **kwargs
@@ -2189,8 +2071,8 @@ class SlackDataSource:
 
         Slack method: `admin_usergroups_removeChannels`  (HTTP POST /admin.usergroups.removeChannels)
 
+        Requires scope: `admin.usergroups:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.usergroups:write`
             usergroup_id (required): ID of the IDP Group
             channel_ids (required): Comma-separated string of channel IDs
 
@@ -2202,8 +2084,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if usergroup_id is not None:
             kwargs_api['usergroup_id'] = usergroup_id
         if channel_ids is not None:
@@ -2219,13 +2100,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_usergroups_removeChannels')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_users_assign(self,
+    async def admin_users_assign(self,
         *,
-        token: str,
         team_id: str,
         user_id: str,
         is_restricted: Optional[bool] = None,
@@ -2236,9 +2116,8 @@ class SlackDataSource:
         """admin_users_assign
 
         Slack method: `admin_users_assign`  (HTTP POST /admin.users.assign)
-
+        Requires scope: `admin.users:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.users:write`
             team_id (required): The ID (`T1234`) of the workspace.
             user_id (required): The ID of the user to add to the workspace.
             is_restricted (optional): True if user should be added to the workspace as a guest.
@@ -2253,8 +2132,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if team_id is not None:
             kwargs_api['team_id'] = team_id
         if user_id is not None:
@@ -2276,13 +2154,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_users_assign')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_users_invite(self,
+    async def admin_users_invite(self,
         *,
-        token: str,
         team_id: str,
         email: str,
         channel_ids: List[str],
@@ -2298,8 +2175,8 @@ class SlackDataSource:
 
         Slack method: `admin_users_invite`  (HTTP POST /admin.users.invite)
 
+        Requires scope: `admin.users:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.users:write`
             team_id (required): The ID (`T1234`) of the workspace.
             email (required): The email address of the person to invite.
             channel_ids (required): A comma-separated list of `channel_id`s for this user to join. At least one channel is required.
@@ -2318,8 +2195,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if team_id is not None:
             kwargs_api['team_id'] = team_id
         if email is not None:
@@ -2349,13 +2225,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_users_invite')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_users_list(self,
+    async def admin_users_list(self,
         *,
-        token: str,
         team_id: str,
         cursor: Optional[str] = None,
         limit: Optional[int] = None,
@@ -2364,9 +2239,8 @@ class SlackDataSource:
         """admin_users_list
 
         Slack method: `admin_users_list`  (HTTP GET /admin.users.list)
-
+        Requires scope: `admin.users:read`
         Args:
-            token (required): Authentication token. Requires scope: `admin.users:read`
             team_id (required): The ID (`T1234`) of the workspace.
             cursor (optional): Set `cursor` to `next_cursor` returned by the previous call to list items in the next page.
             limit (optional): Limit for how many users to be retrieved per page
@@ -2379,8 +2253,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if team_id is not None:
             kwargs_api['team_id'] = team_id
         if cursor is not None:
@@ -2398,13 +2271,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_users_list')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_users_remove(self,
+    async def admin_users_remove(self,
         *,
-        token: str,
         team_id: str,
         user_id: str,
         **kwargs
@@ -2412,9 +2284,8 @@ class SlackDataSource:
         """admin_users_remove
 
         Slack method: `admin_users_remove`  (HTTP POST /admin.users.remove)
-
+        Requires scope: `admin.users:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.users:write`
             team_id (required): The ID (`T1234`) of the workspace.
             user_id (required): The ID of the user to remove.
 
@@ -2426,8 +2297,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if team_id is not None:
             kwargs_api['team_id'] = team_id
         if user_id is not None:
@@ -2443,13 +2313,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_users_remove')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_users_session_invalidate(self,
+    async def admin_users_session_invalidate(self,
         *,
-        token: str,
         team_id: str,
         session_id: str,
         **kwargs
@@ -2457,9 +2326,8 @@ class SlackDataSource:
         """admin_users_session_invalidate
 
         Slack method: `admin_users_session_invalidate`  (HTTP POST /admin.users.session.invalidate)
-
+        Requires scope: `admin.users:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.users:write`
             team_id (required): ID of the team that the session belongs to
             session_id (required):
         Returns:
@@ -2470,8 +2338,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if team_id is not None:
             kwargs_api['team_id'] = team_id
         if session_id is not None:
@@ -2487,13 +2354,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_users_session_invalidate')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_users_session_reset(self,
+    async def admin_users_session_reset(self,
         *,
-        token: str,
         user_id: str,
         mobile_only: Optional[bool] = None,
         web_only: Optional[bool] = None,
@@ -2503,8 +2369,8 @@ class SlackDataSource:
 
         Slack method: `admin_users_session_reset`  (HTTP POST /admin.users.session.reset)
 
+        Requires scope: `admin.users:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.users:write`
             user_id (required): The ID of the user to wipe sessions for
             mobile_only (optional): Only expire mobile sessions (default: false)
             web_only (optional): Only expire web sessions (default: false)
@@ -2517,8 +2383,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if user_id is not None:
             kwargs_api['user_id'] = user_id
         if mobile_only is not None:
@@ -2536,13 +2401,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_users_session_reset')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_users_set_admin(self,
+    async def admin_users_set_admin(self,
         *,
-        token: str,
         team_id: str,
         user_id: str,
         **kwargs
@@ -2551,8 +2415,8 @@ class SlackDataSource:
 
         Slack method: `admin_users_setAdmin`  (HTTP POST /admin.users.setAdmin)
 
+        Requires scope: `admin.users:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.users:write`
             team_id (required): The ID (`T1234`) of the workspace.
             user_id (required): The ID of the user to designate as an admin.
 
@@ -2564,8 +2428,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if team_id is not None:
             kwargs_api['team_id'] = team_id
         if user_id is not None:
@@ -2581,13 +2444,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_users_setAdmin')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_users_set_expiration(self,
+    async def admin_users_set_expiration(self,
         *,
-        token: str,
         team_id: str,
         user_id: str,
         expiration_ts: str,
@@ -2597,8 +2459,8 @@ class SlackDataSource:
 
         Slack method: `admin_users_setExpiration`  (HTTP POST /admin.users.setExpiration)
 
+        Requires scope: `admin.users:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.users:write`
             team_id (required): The ID (`T1234`) of the workspace.
             user_id (required): The ID of the user to set an expiration for.
             expiration_ts (required): Timestamp when guest account should be disabled.
@@ -2611,8 +2473,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if team_id is not None:
             kwargs_api['team_id'] = team_id
         if user_id is not None:
@@ -2630,13 +2491,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_users_setExpiration')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_users_set_owner(self,
+    async def admin_users_set_owner(self,
         *,
-        token: str,
         team_id: str,
         user_id: str,
         **kwargs
@@ -2645,8 +2505,8 @@ class SlackDataSource:
 
         Slack method: `admin_users_setOwner`  (HTTP POST /admin.users.setOwner)
 
+        Requires scope: `admin.users:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.users:write`
             team_id (required): The ID (`T1234`) of the workspace.
             user_id (required): Id of the user to promote to owner.
 
@@ -2658,8 +2518,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if team_id is not None:
             kwargs_api['team_id'] = team_id
         if user_id is not None:
@@ -2675,13 +2534,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_users_setOwner')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def admin_users_set_regular(self,
+    async def admin_users_set_regular(self,
         *,
-        token: str,
         team_id: str,
         user_id: str,
         **kwargs
@@ -2689,9 +2547,8 @@ class SlackDataSource:
         """admin_users_setRegular
 
         Slack method: `admin_users_setRegular`  (HTTP POST /admin.users.setRegular)
-
+        Requires scope: `admin.users:write`
         Args:
-            token (required): Authentication token. Requires scope: `admin.users:write`
             team_id (required): The ID (`T1234`) of the workspace.
             user_id (required): The ID of the user to designate as a regular user.
 
@@ -2703,8 +2560,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if team_id is not None:
             kwargs_api['team_id'] = team_id
         if user_id is not None:
@@ -2720,11 +2576,11 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'admin_users_setRegular')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def api_test(self,
+    async def api_test(self,
         *,
         error: Optional[str] = None,
         foo: Optional[str] = None,
@@ -2733,7 +2589,7 @@ class SlackDataSource:
         """api_test
 
         Slack method: `api_test`  (HTTP GET /api.test)
-
+        Requires scope: `none`
         Args:
             error (optional): Error response to return
             foo (optional): example property to return
@@ -2761,13 +2617,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'api_test')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def apps_event_authorizations_list(self,
+    async def apps_event_authorizations_list(self,
         *,
-        token: str,
         event_context: str,
         cursor: Optional[str] = None,
         limit: Optional[int] = None,
@@ -2777,8 +2632,8 @@ class SlackDataSource:
 
         Slack method: `apps_event_authorizations_list`  (HTTP GET /apps.event.authorizations.list)
 
+        Requires scope: `authorizations:read`
         Args:
-            token (required): Authentication token. Requires scope: `authorizations:read`
             event_context (required):
             cursor (optional):
             limit (optional):
@@ -2790,8 +2645,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if event_context is not None:
             kwargs_api['event_context'] = event_context
         if cursor is not None:
@@ -2809,17 +2663,17 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'apps_event_authorizations_list')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def apps_permissions_info(self, *, token: Optional[str] = None, **kwargs) -> SlackResponse:
+    async def apps_permissions_info(self, **kwargs) -> SlackResponse:
         """apps_permissions_info
 
         Slack method: `apps_permissions_info`  (HTTP GET /apps.permissions.info)
 
+        Requires scope: `none`
         Args:
-            token (optional): Authentication token. Requires scope: `none`
 
         Returns:
             SlackResponse: Standardized response wrapper with success/data/error
@@ -2829,8 +2683,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if kwargs:
             kwargs_api.update(kwargs)
 
@@ -2842,13 +2695,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'apps_permissions_info')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def apps_permissions_request(self,
+    async def apps_permissions_request(self,
         *,
-        token: str,
         scopes: str,
         trigger_id: str,
         **kwargs
@@ -2857,8 +2709,8 @@ class SlackDataSource:
 
         Slack method: `apps_permissions_request`  (HTTP GET /apps.permissions.request)
 
+        Requires scope: `none`
         Args:
-            token (required): Authentication token. Requires scope: `none`
             scopes (required): A comma separated list of scopes to request for
             trigger_id (required): Token used to trigger the permissions API
 
@@ -2870,8 +2722,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if scopes is not None:
             kwargs_api['scopes'] = scopes
         if trigger_id is not None:
@@ -2887,13 +2738,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'apps_permissions_request')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def apps_permissions_resources_list(self,
+    async def apps_permissions_resources_list(self,
         *,
-        token: str,
         cursor: Optional[str] = None,
         limit: Optional[int] = None,
         **kwargs
@@ -2902,8 +2752,8 @@ class SlackDataSource:
 
         Slack method: `apps_permissions_resources_list`  (HTTP GET /apps.permissions.resources.list)
 
+        Requires scope: `none`
         Args:
-            token (required): Authentication token. Requires scope: `none`
             cursor (optional): Paginate through collections of data by setting the `cursor` parameter to a `next_cursor` attribute returned by a previous request's `response_metadata`. Default value fetches the first "page" of the collection. See [pagination](/docs/pagination) for more detail.
             limit (optional): The maximum number of items to return.
 
@@ -2915,8 +2765,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if cursor is not None:
             kwargs_api['cursor'] = cursor
         if limit is not None:
@@ -2932,17 +2781,17 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'apps_permissions_resources_list')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def apps_permissions_scopes_list(self, *, token: str, **kwargs) -> SlackResponse:
+    async def apps_permissions_scopes_list(self, **kwargs) -> SlackResponse:
         """apps_permissions_scopes_list
 
         Slack method: `apps_permissions_scopes_list`  (HTTP GET /apps.permissions.scopes.list)
 
+        Requires scope: `none`
         Args:
-            token (required): Authentication token. Requires scope: `none`
 
         Returns:
             SlackResponse: Standardized response wrapper with success/data/error
@@ -2952,8 +2801,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if kwargs:
             kwargs_api.update(kwargs)
 
@@ -2965,13 +2813,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'apps_permissions_scopes_list')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def apps_permissions_users_list(self,
+    async def apps_permissions_users_list(self,
         *,
-        token: str,
         cursor: Optional[str] = None,
         limit: Optional[int] = None,
         **kwargs
@@ -2980,8 +2827,8 @@ class SlackDataSource:
 
         Slack method: `apps_permissions_users_list`  (HTTP GET /apps.permissions.users.list)
 
+        Requires scope: `none`
         Args:
-            token (required): Authentication token. Requires scope: `none`
             cursor (optional): Paginate through collections of data by setting the `cursor` parameter to a `next_cursor` attribute returned by a previous request's `response_metadata`. Default value fetches the first "page" of the collection. See [pagination](/docs/pagination) for more detail.
             limit (optional): The maximum number of items to return.
 
@@ -2993,8 +2840,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if cursor is not None:
             kwargs_api['cursor'] = cursor
         if limit is not None:
@@ -3010,13 +2856,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'apps_permissions_users_list')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def apps_permissions_users_request(self,
+    async def apps_permissions_users_request(self,
         *,
-        token: str,
         scopes: str,
         trigger_id: str,
         user: str,
@@ -3026,8 +2871,8 @@ class SlackDataSource:
 
         Slack method: `apps_permissions_users_request`  (HTTP GET /apps.permissions.users.request)
 
+        Requires scope: `none`
         Args:
-            token (required): Authentication token. Requires scope: `none`
             scopes (required): A comma separated list of user scopes to request for
             trigger_id (required): Token used to trigger the request
             user (required): The user this scope is being requested for
@@ -3040,8 +2885,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if scopes is not None:
             kwargs_api['scopes'] = scopes
         if trigger_id is not None:
@@ -3059,13 +2903,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'apps_permissions_users_request')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def apps_uninstall(self,
+    async def apps_uninstall(self,
         *,
-        token: Optional[str] = None,
         client_id: Optional[str] = None,
         client_secret: Optional[str] = None,
         **kwargs
@@ -3074,8 +2917,8 @@ class SlackDataSource:
 
         Slack method: `apps_uninstall`  (HTTP GET /apps.uninstall)
 
+        Requires scope: `none`
         Args:
-            token (optional): Authentication token. Requires scope: `none`
             client_id (optional): Issued when you created your application.
             client_secret (optional): Issued when you created your application.
 
@@ -3087,8 +2930,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if client_id is not None:
             kwargs_api['client_id'] = client_id
         if client_secret is not None:
@@ -3104,13 +2946,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'apps_uninstall')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def auth_revoke(self,
+    async def auth_revoke(self,
         *,
-        token: str,
         test: Optional[str] = None,
         **kwargs
     ) -> SlackResponse:
@@ -3118,8 +2959,8 @@ class SlackDataSource:
 
         Slack method: `auth_revoke`  (HTTP GET /auth.revoke)
 
+        Requires scope: `none`
         Args:
-            token (required): Authentication token. Requires scope: `none`
             test (optional): Setting this parameter to `1` triggers a _testing mode_ where the specified token will not actually be revoked.
 
         Returns:
@@ -3130,8 +2971,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if test is not None:
             kwargs_api['test'] = test
         if kwargs:
@@ -3145,18 +2985,16 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'auth_revoke')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def auth_test(self, *, token: str, **kwargs) -> SlackResponse:
+    async def auth_test(self, **kwargs) -> SlackResponse:
         """auth_test
 
         Slack method: `auth_test`  (HTTP GET /auth.test)
-
+        Requires scope: `none`
         Args:
-            token (required): Authentication token. Requires scope: `none`
-
         Returns:
             SlackResponse: Standardized response wrapper with success/data/error
 
@@ -3165,8 +3003,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if kwargs:
             kwargs_api.update(kwargs)
 
@@ -3178,22 +3015,20 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'auth_test')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def bots_info(self,
+    async def bots_info(self,
         *,
-        token: str,
         bot: Optional[str] = None,
         **kwargs
     ) -> SlackResponse:
         """bots_info
 
         Slack method: `bots_info`  (HTTP GET /bots.info)
-
+        Requires scope: `users:read`
         Args:
-            token (required): Authentication token. Requires scope: `users:read`
             bot (optional): Bot user to get info on
 
         Returns:
@@ -3204,8 +3039,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if bot is not None:
             kwargs_api['bot'] = bot
         if kwargs:
@@ -3219,13 +3053,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'bots_info')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def calls_add(self,
+    async def calls_add(self,
         *,
-        token: str,
         external_unique_id: str,
         join_url: str,
         external_display_id: Optional[str] = None,
@@ -3239,9 +3072,8 @@ class SlackDataSource:
         """calls_add
 
         Slack method: `calls_add`  (HTTP POST /calls.add)
-
+        Requires scope: `calls:write`
         Args:
-            token (required): Authentication token. Requires scope: `calls:write`
             external_unique_id (required): An ID supplied by the 3rd-party Call provider. It must be unique across all Calls from that service.
             external_display_id (optional): An optional, human-readable ID supplied by the 3rd-party Call provider. If supplied, this ID will be displayed in the Call object.
             join_url (required): The URL required for a client to join the Call.
@@ -3259,8 +3091,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if external_unique_id is not None:
             kwargs_api['external_unique_id'] = external_unique_id
         if external_display_id is not None:
@@ -3288,13 +3119,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'calls_add')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def calls_end(self,
+    async def calls_end(self,
         *,
-        token: str,
         id: str,
         duration: Optional[int] = None,
         **kwargs
@@ -3302,9 +3132,8 @@ class SlackDataSource:
         """calls_end
 
         Slack method: `calls_end`  (HTTP POST /calls.end)
-
+        Requires scope: `calls:write`
         Args:
-            token (required): Authentication token. Requires scope: `calls:write`
             id (required): `id` returned when registering the call using the [`calls.add`](/methods/calls.add) method.
             duration (optional): Call duration in seconds
 
@@ -3316,8 +3145,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if id is not None:
             kwargs_api['id'] = id
         if duration is not None:
@@ -3333,22 +3161,20 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'calls_end')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def calls_info(self,
+    async def calls_info(self,
         *,
-        token: str,
         id: str,
         **kwargs
     ) -> SlackResponse:
         """calls_info
 
         Slack method: `calls_info`  (HTTP GET /calls.info)
-
+        Requires scope: `calls:read`
         Args:
-            token (required): Authentication token. Requires scope: `calls:read`
             id (required): `id` of the Call returned by the [`calls.add`](/methods/calls.add) method.
 
         Returns:
@@ -3359,8 +3185,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if id is not None:
             kwargs_api['id'] = id
         if kwargs:
@@ -3374,13 +3199,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'calls_info')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def calls_participants_add(self,
+    async def calls_participants_add(self,
         *,
-        token: str,
         id: str,
         users: List[str],
         **kwargs
@@ -3388,9 +3212,8 @@ class SlackDataSource:
         """calls_participants_add
 
         Slack method: `calls_participants_add`  (HTTP POST /calls.participants.add)
-
+        Requires scope: `calls:write`
         Args:
-            token (required): Authentication token. Requires scope: `calls:write`
             id (required): `id` returned by the [`calls.add`](/methods/calls.add) method.
             users (required): The list of users to add as participants in the Call. [Read more on how to specify users here](/apis/calls#users).
 
@@ -3402,8 +3225,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if id is not None:
             kwargs_api['id'] = id
         if users is not None:
@@ -3419,13 +3241,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'calls_participants_add')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def calls_participants_remove(self,
+    async def calls_participants_remove(self,
         *,
-        token: str,
         id: str,
         users: List[str],
         **kwargs
@@ -3433,9 +3254,8 @@ class SlackDataSource:
         """calls_participants_remove
 
         Slack method: `calls_participants_remove`  (HTTP POST /calls.participants.remove)
-
+        Requires scope: `calls:write`
         Args:
-            token (required): Authentication token. Requires scope: `calls:write`
             id (required): `id` returned by the [`calls.add`](/methods/calls.add) method.
             users (required): The list of users to remove as participants in the Call. [Read more on how to specify users here](/apis/calls#users).
 
@@ -3447,8 +3267,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if id is not None:
             kwargs_api['id'] = id
         if users is not None:
@@ -3464,13 +3283,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'calls_participants_remove')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def calls_update(self,
+    async def calls_update(self,
         *,
-        token: str,
         id: str,
         title: Optional[str] = None,
         join_url: Optional[str] = None,
@@ -3480,9 +3298,8 @@ class SlackDataSource:
         """calls_update
 
         Slack method: `calls_update`  (HTTP POST /calls.update)
-
+        Requires scope: `calls:write`
         Args:
-            token (required): Authentication token. Requires scope: `calls:write`
             id (required): `id` returned by the [`calls.add`](/methods/calls.add) method.
             title (optional): The name of the Call.
             join_url (optional): The URL required for a client to join the Call.
@@ -3496,8 +3313,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if id is not None:
             kwargs_api['id'] = id
         if title is not None:
@@ -3517,13 +3332,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'calls_update')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def chat_delete(self,
+    async def chat_delete(self,
         *,
-        token: Optional[str] = None,
         ts: Optional[str] = None,
         channel: Optional[str] = None,
         as_user: Optional[str] = None,
@@ -3532,9 +3346,8 @@ class SlackDataSource:
         """chat_delete
 
         Slack method: `chat_delete`  (HTTP POST /chat.delete)
-
+        Requires scope: `chat:write`
         Args:
-            token (optional): Authentication token. Requires scope: `chat:write`
             ts (optional): Timestamp of the message to be deleted.
             channel (optional): Channel containing the message to be deleted.
             as_user (optional): Pass true to delete the message as the authed user with `chat:write:user` scope. [Bot users](/bot-users) in this context are considered authed users. If unused or false, the message will be deleted with `chat:write:bot` scope.
@@ -3547,8 +3360,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if ts is not None:
             kwargs_api['ts'] = ts
         if channel is not None:
@@ -3566,13 +3377,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'chat_delete')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def chat_delete_scheduled_message(self,
+    async def chat_delete_scheduled_message(self,
         *,
-        token: str,
         channel: str,
         scheduled_message_id: str,
         as_user: Optional[str] = None,
@@ -3581,9 +3391,8 @@ class SlackDataSource:
         """chat_deleteScheduledMessage
 
         Slack method: `chat_deleteScheduledMessage`  (HTTP POST /chat.deleteScheduledMessage)
-
+        Requires scope: `chat:write`
         Args:
-            token (required): Authentication token. Requires scope: `chat:write`
             as_user (optional): Pass true to delete the message as the authed user with `chat:write:user` scope. [Bot users](/bot-users) in this context are considered authed users. If unused or false, the message will be deleted with `chat:write:bot` scope.
             channel (required): The channel the scheduled_message is posting to
             scheduled_message_id (required): `scheduled_message_id` returned from call to chat.scheduleMessage
@@ -3596,8 +3405,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if as_user is not None:
             kwargs_api['as_user'] = as_user
         if channel is not None:
@@ -3615,13 +3423,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'chat_deleteScheduledMessage')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def chat_get_permalink(self,
+    async def chat_get_permalink(self,
         *,
-        token: str,
         channel: str,
         message_ts: str,
         **kwargs
@@ -3629,9 +3436,9 @@ class SlackDataSource:
         """chat_getPermalink
 
         Slack method: `chat_getPermalink`  (HTTP GET /chat.getPermalink)
+        Requires scope: `none`
 
         Args:
-            token (required): Authentication token. Requires scope: `none`
             channel (required): The ID of the conversation or channel containing the message
             message_ts (required): A message's `ts` value, uniquely identifying it within a channel
 
@@ -3643,8 +3450,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if channel is not None:
             kwargs_api['channel'] = channel
         if message_ts is not None:
@@ -3660,13 +3466,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'chat_getPermalink')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def chat_me_message(self,
+    async def chat_me_message(self,
         *,
-        token: Optional[str] = None,
         channel: Optional[str] = None,
         text: Optional[str] = None,
         **kwargs
@@ -3674,9 +3479,8 @@ class SlackDataSource:
         """chat_meMessage
 
         Slack method: `chat_meMessage`  (HTTP POST /chat.meMessage)
-
+        Requires scope: `chat:write`
         Args:
-            token (optional): Authentication token. Requires scope: `chat:write`
             channel (optional): Channel to send message to. Can be a public channel, private group or IM channel. Can be an encoded ID, or a name.
             text (optional): Text of the message to send.
 
@@ -3688,8 +3492,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if channel is not None:
             kwargs_api['channel'] = channel
         if text is not None:
@@ -3705,13 +3508,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'chat_meMessage')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def chat_post_ephemeral(self,
+    async def chat_post_ephemeral(self,
         *,
-        token: str,
         channel: str,
         user: str,
         as_user: Optional[str] = None,
@@ -3729,9 +3531,8 @@ class SlackDataSource:
         """chat_postEphemeral
 
         Slack method: `chat_postEphemeral`  (HTTP POST /chat.postEphemeral)
-
+        Requires scope: `chat:write`
         Args:
-            token (required): Authentication token. Requires scope: `chat:write`
             as_user (optional): Pass true to post the message as the authed user. Defaults to true if the chat:write:bot scope is not included. Otherwise, defaults to false.
             attachments (optional): A JSON-based array of structured attachments, presented as a URL-encoded string.
             blocks (optional): A JSON-based array of structured blocks, presented as a URL-encoded string.
@@ -3753,8 +3554,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if as_user is not None:
             kwargs_api['as_user'] = as_user
         if attachments is not None:
@@ -3790,13 +3590,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'chat_postEphemeral')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def chat_post_message(self,
+    async def chat_post_message(self,
         *,
-        token: str,
         channel: str,
         as_user: Optional[str] = None,
         attachments: Optional[List[Dict[str, Any]]] = None,
@@ -3819,7 +3618,6 @@ class SlackDataSource:
         Slack method: `chat_postMessage`  (HTTP POST /chat.postMessage)
 
         Args:
-            token (required): Authentication token. Requires scope: `chat:write`
             as_user (optional): Pass true to post the message as the authed user, instead of as a bot. Defaults to false. See [authorship](#authorship) below.
             attachments (optional): A JSON-based array of structured attachments, presented as a URL-encoded string.
             blocks (optional): A JSON-based array of structured blocks, presented as a URL-encoded string.
@@ -3844,8 +3642,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if as_user is not None:
             kwargs_api['as_user'] = as_user
         if attachments is not None:
@@ -3887,13 +3684,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'chat_postMessage')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def chat_schedule_message(self,
+    async def chat_schedule_message(self,
         *,
-        token: Optional[str] = None,
         channel: Optional[str] = None,
         text: Optional[str] = None,
         post_at: Optional[str] = None,
@@ -3911,9 +3707,8 @@ class SlackDataSource:
         """chat_scheduleMessage
 
         Slack method: `chat_scheduleMessage`  (HTTP POST /chat.scheduleMessage)
-
+        Requires scope: `chat:write`
         Args:
-            token (optional): Authentication token. Requires scope: `chat:write`
             channel (optional): Channel, private group, or DM channel to send message to. Can be an encoded ID, or a name. See [below](#channels) for more details.
             text (optional): How this field works and whether it is required depends on other fields you use in your API call. [See below](#text_usage) for more detail.
             post_at (optional): Unix EPOCH timestamp of time in future to send the message.
@@ -3935,8 +3730,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if channel is not None:
             kwargs_api['channel'] = channel
         if text is not None:
@@ -3972,13 +3766,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'chat_scheduleMessage')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def chat_scheduled_messages_list(self,
+    async def chat_scheduled_messages_list(self,
         *,
-        token: Optional[str] = None,
         channel: Optional[str] = None,
         latest: Optional[str] = None,
         oldest: Optional[str] = None,
@@ -3989,9 +3782,8 @@ class SlackDataSource:
         """chat_scheduledMessages_list
 
         Slack method: `chat_scheduledMessages_list`  (HTTP GET /chat.scheduledMessages.list)
-
+        Requires scope: `none`
         Args:
-            token (optional): Authentication token. Requires scope: `none`
             channel (optional): The channel of the scheduled messages
             latest (optional): A UNIX timestamp of the latest value in the time range
             oldest (optional): A UNIX timestamp of the oldest value in the time range
@@ -4006,8 +3798,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if channel is not None:
             kwargs_api['channel'] = channel
         if latest is not None:
@@ -4029,13 +3820,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'chat_scheduledMessages_list')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def chat_unfurl(self,
+    async def chat_unfurl(self,
         *,
-        token: str,
         channel: str,
         ts: str,
         unfurls: Optional[Dict[str, Any]] = None,
@@ -4047,9 +3837,8 @@ class SlackDataSource:
         """chat_unfurl
 
         Slack method: `chat_unfurl`  (HTTP POST /chat.unfurl)
-
+        Requires scope: `links:write`
         Args:
-            token (required): Authentication token. Requires scope: `links:write`
             channel (required): Channel ID of the message
             ts (required): Timestamp of the message to add unfurl behavior to.
             unfurls (optional): URL-encoded JSON map with keys set to URLs featured in the the message, pointing to their unfurl blocks or message attachments.
@@ -4065,8 +3854,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if channel is not None:
             kwargs_api['channel'] = channel
         if ts is not None:
@@ -4090,13 +3878,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'chat_unfurl')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def chat_update(self,
+    async def chat_update(self,
         *,
-        token: str,
         channel: str,
         ts: str,
         as_user: Optional[str] = None,
@@ -4110,9 +3897,8 @@ class SlackDataSource:
         """chat_update
 
         Slack method: `chat_update`  (HTTP POST /chat.update)
-
+        Requires scope: `chat:write`
         Args:
-            token (required): Authentication token. Requires scope: `chat:write`
             as_user (optional): Pass true to update the message as the authed user. [Bot users](/bot-users) in this context are considered authed users.
             attachments (optional): A JSON-based array of structured attachments, presented as a URL-encoded string. This field is required when not presenting `text`. If you don't include this field, the message's previous `attachments` will be retained. To remove previous `attachments`, include an empty array for this field.
             blocks (optional): A JSON-based array of [structured blocks](/block-kit/building), presented as a URL-encoded string. If you don't include this field, the message's previous `blocks` will be retained. To remove previous `blocks`, include an empty array for this field.
@@ -4130,8 +3916,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if as_user is not None:
             kwargs_api['as_user'] = as_user
         if attachments is not None:
@@ -4159,22 +3944,20 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'chat_update')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def conversations_archive(self,
+    async def conversations_archive(self,
         *,
-        token: Optional[str] = None,
         channel: Optional[str] = None,
         **kwargs
     ) -> SlackResponse:
         """conversations_archive
 
         Slack method: `conversations_archive`  (HTTP POST /conversations.archive)
-
+        Requires scope: `conversations:write`
         Args:
-            token (optional): Authentication token. Requires scope: `conversations:write`
             channel (optional): ID of conversation to archive
 
         Returns:
@@ -4185,8 +3968,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if channel is not None:
             kwargs_api['channel'] = channel
         if kwargs:
@@ -4200,22 +3982,20 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'conversations_archive')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def conversations_close(self,
+    async def conversations_close(self,
         *,
-        token: Optional[str] = None,
         channel: Optional[str] = None,
         **kwargs
     ) -> SlackResponse:
         """conversations_close
 
         Slack method: `conversations_close`  (HTTP POST /conversations.close)
-
+        Requires scope: `conversations:write`
         Args:
-            token (optional): Authentication token. Requires scope: `conversations:write`
             channel (optional): Conversation to close.
 
         Returns:
@@ -4226,8 +4006,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if channel is not None:
             kwargs_api['channel'] = channel
         if kwargs:
@@ -4241,13 +4020,13 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'conversations_close')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def conversations_create(self,
+    async def conversations_create(self,
         *,
-        token: Optional[str] = None,
+
         name: Optional[str] = None,
         is_private: Optional[bool] = None,
         **kwargs
@@ -4255,9 +4034,8 @@ class SlackDataSource:
         """conversations_create
 
         Slack method: `conversations_create`  (HTTP POST /conversations.create)
-
+        Requires scope: `conversations:write`
         Args:
-            token (optional): Authentication token. Requires scope: `conversations:write`
             name (optional): Name of the public or private channel to create
             is_private (optional): Create a private channel instead of a public one
 
@@ -4269,8 +4047,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if name is not None:
             kwargs_api['name'] = name
         if is_private is not None:
@@ -4286,14 +4063,13 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'conversations_create')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def conversations_history(self,
+    async def conversations_history(self,
         *,
-        token: Optional[str] = None,
-        channel: Optional[str] = None,
+        channel: str,
         latest: Optional[str] = None,
         oldest: Optional[str] = None,
         inclusive: Optional[bool] = None,
@@ -4304,9 +4080,8 @@ class SlackDataSource:
         """conversations_history
 
         Slack method: `conversations_history`  (HTTP GET /conversations.history)
-
+        Requires scope: `conversations:history`
         Args:
-            token (optional): Authentication token. Requires scope: `conversations:history`
             channel (optional): Conversation ID to fetch history for.
             latest (optional): End of time range of messages to include in results.
             oldest (optional): Start of time range of messages to include in results.
@@ -4322,8 +4097,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if channel is not None:
             kwargs_api['channel'] = channel
         if latest is not None:
@@ -4347,13 +4121,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'conversations_history')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def conversations_info(self,
+    async def conversations_info(self,
         *,
-        token: Optional[str] = None,
         channel: Optional[str] = None,
         include_locale: Optional[bool] = None,
         include_num_members: Optional[bool] = None,
@@ -4362,9 +4135,8 @@ class SlackDataSource:
         """conversations_info
 
         Slack method: `conversations_info`  (HTTP GET /conversations.info)
-
+        Requires scope: `conversations:read`
         Args:
-            token (optional): Authentication token. Requires scope: `conversations:read`
             channel (optional): Conversation ID to learn more about
             include_locale (optional): Set this to `true` to receive the locale for this conversation. Defaults to `false`
             include_num_members (optional): Set to `true` to include the member count for the specified conversation. Defaults to `false`
@@ -4377,8 +4149,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if channel is not None:
             kwargs_api['channel'] = channel
         if include_locale is not None:
@@ -4396,13 +4167,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'conversations_info')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def conversations_invite(self,
+    async def conversations_invite(self,
         *,
-        token: Optional[str] = None,
         channel: Optional[str] = None,
         users: Optional[List[str]] = None,
         **kwargs
@@ -4410,9 +4180,8 @@ class SlackDataSource:
         """conversations_invite
 
         Slack method: `conversations_invite`  (HTTP POST /conversations.invite)
-
+        Requires scope: `conversations:write`
         Args:
-            token (optional): Authentication token. Requires scope: `conversations:write`
             channel (optional): The ID of the public or private channel to invite user(s) to.
             users (optional): A comma separated list of user IDs. Up to 1000 users may be listed.
 
@@ -4424,8 +4193,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if channel is not None:
             kwargs_api['channel'] = channel
         if users is not None:
@@ -4441,22 +4209,20 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'conversations_invite')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def conversations_join(self,
+    async def conversations_join(self,
         *,
-        token: Optional[str] = None,
         channel: Optional[str] = None,
         **kwargs
     ) -> SlackResponse:
         """conversations_join
 
         Slack method: `conversations_join`  (HTTP POST /conversations.join)
-
+        Requires scope: `channels:write`
         Args:
-            token (optional): Authentication token. Requires scope: `channels:write`
             channel (optional): ID of conversation to join
 
         Returns:
@@ -4467,8 +4233,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if channel is not None:
             kwargs_api['channel'] = channel
         if kwargs:
@@ -4482,13 +4247,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'conversations_join')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def conversations_kick(self,
+    async def conversations_kick(self,
         *,
-        token: Optional[str] = None,
         channel: Optional[str] = None,
         user: Optional[str] = None,
         **kwargs
@@ -4496,9 +4260,8 @@ class SlackDataSource:
         """conversations_kick
 
         Slack method: `conversations_kick`  (HTTP POST /conversations.kick)
-
+        Requires scope: `conversations:write`
         Args:
-            token (optional): Authentication token. Requires scope: `conversations:write`
             channel (optional): ID of conversation to remove user from.
             user (optional): User ID to be removed.
 
@@ -4510,8 +4273,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if channel is not None:
             kwargs_api['channel'] = channel
         if user is not None:
@@ -4527,22 +4288,20 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'conversations_kick')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def conversations_leave(self,
+    async def conversations_leave(self,
         *,
-        token: Optional[str] = None,
         channel: Optional[str] = None,
         **kwargs
     ) -> SlackResponse:
         """conversations_leave
 
         Slack method: `conversations_leave`  (HTTP POST /conversations.leave)
-
+        Requires scope: `conversations:write`
         Args:
-            token (optional): Authentication token. Requires scope: `conversations:write`
             channel (optional): Conversation to leave
 
         Returns:
@@ -4553,8 +4312,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if channel is not None:
             kwargs_api['channel'] = channel
         if kwargs:
@@ -4568,13 +4326,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'conversations_leave')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def conversations_list(self,
+    async def conversations_list(self,
         *,
-        token: Optional[str] = None,
         exclude_archived: Optional[bool] = None,
         types: Optional[str] = None,
         limit: Optional[int] = None,
@@ -4584,9 +4341,8 @@ class SlackDataSource:
         """conversations_list
 
         Slack method: `conversations_list`  (HTTP GET /conversations.list)
-
+        Requires scope: `conversations:read`
         Args:
-            token (optional): Authentication token. Requires scope: `conversations:read`
             exclude_archived (optional): Set to `true` to exclude archived channels from the list
             types (optional): Mix and match channel types by providing a comma-separated list of any combination of `public_channel`, `private_channel`, `mpim`, `im`
             limit (optional): The maximum number of items to return. Fewer than the requested number of items may be returned, even if the end of the list hasn't been reached. Must be an integer no larger than 1000.
@@ -4600,8 +4356,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if exclude_archived is not None:
             kwargs_api['exclude_archived'] = exclude_archived
         if types is not None:
@@ -4621,13 +4376,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'conversations_list')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def conversations_mark(self,
+    async def conversations_mark(self,
         *,
-        token: Optional[str] = None,
         channel: Optional[str] = None,
         ts: Optional[str] = None,
         **kwargs
@@ -4635,9 +4389,8 @@ class SlackDataSource:
         """conversations_mark
 
         Slack method: `conversations_mark`  (HTTP POST /conversations.mark)
-
+        Requires scope: `conversations:write`
         Args:
-            token (optional): Authentication token. Requires scope: `conversations:write`
             channel (optional): Channel or conversation to set the read cursor for.
             ts (optional): Unique identifier of message you want marked as most recently seen in this conversation.
 
@@ -4649,8 +4402,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if channel is not None:
             kwargs_api['channel'] = channel
         if ts is not None:
@@ -4666,13 +4417,13 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'conversations_mark')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def conversations_members(self,
+    async def conversations_members(self,
         *,
-        token: Optional[str] = None,
+
         channel: Optional[str] = None,
         limit: Optional[int] = None,
         cursor: Optional[str] = None,
@@ -4681,9 +4432,8 @@ class SlackDataSource:
         """conversations_members
 
         Slack method: `conversations_members`  (HTTP GET /conversations.members)
-
+        Requires scope: `conversations:read`
         Args:
-            token (optional): Authentication token. Requires scope: `conversations:read`
             channel (optional): ID of the conversation to retrieve members for
             limit (optional): The maximum number of items to return. Fewer than the requested number of items may be returned, even if the end of the users list hasn't been reached.
             cursor (optional): Paginate through collections of data by setting the `cursor` parameter to a `next_cursor` attribute returned by a previous request's `response_metadata`. Default value fetches the first "page" of the collection. See [pagination](/docs/pagination) for more detail.
@@ -4696,8 +4446,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if channel is not None:
             kwargs_api['channel'] = channel
         if limit is not None:
@@ -4715,13 +4464,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'conversations_members')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def conversations_open(self,
+    async def conversations_open(self,
         *,
-        token: Optional[str] = None,
         channel: Optional[str] = None,
         users: Optional[List[str]] = None,
         return_im: Optional[bool] = None,
@@ -4730,9 +4478,8 @@ class SlackDataSource:
         """conversations_open
 
         Slack method: `conversations_open`  (HTTP POST /conversations.open)
-
+        Requires scope: `conversations:write`
         Args:
-            token (optional): Authentication token. Requires scope: `conversations:write`
             channel (optional): Resume a conversation by supplying an `im` or `mpim`'s ID. Or provide the `users` field instead.
             users (optional): Comma separated lists of users. If only one user is included, this creates a 1:1 DM.  The ordering of the users is preserved whenever a multi-person direct message is returned. Supply a `channel` when not supplying `users`.
             return_im (optional): Boolean, indicates you want the full IM channel definition in the response.
@@ -4745,8 +4492,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if channel is not None:
             kwargs_api['channel'] = channel
         if users is not None:
@@ -4764,13 +4510,13 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'conversations_open')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def conversations_rename(self,
+    async def conversations_rename(self,
         *,
-        token: Optional[str] = None,
+
         channel: Optional[str] = None,
         name: Optional[str] = None,
         **kwargs
@@ -4778,9 +4524,8 @@ class SlackDataSource:
         """conversations_rename
 
         Slack method: `conversations_rename`  (HTTP POST /conversations.rename)
-
+        Requires scope: `conversations:write`
         Args:
-            token (optional): Authentication token. Requires scope: `conversations:write`
             channel (optional): ID of conversation to rename
             name (optional): New name for conversation.
 
@@ -4792,8 +4537,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if channel is not None:
             kwargs_api['channel'] = channel
         if name is not None:
@@ -4809,13 +4553,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'conversations_rename')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def conversations_replies(self,
+    async def conversations_replies(self,
         *,
-        token: Optional[str] = None,
         channel: Optional[str] = None,
         ts: Optional[str] = None,
         latest: Optional[str] = None,
@@ -4828,9 +4571,8 @@ class SlackDataSource:
         """conversations_replies
 
         Slack method: `conversations_replies`  (HTTP GET /conversations.replies)
-
+        Requires scope: `conversations:history`
         Args:
-            token (optional): Authentication token. Requires scope: `conversations:history`
             channel (optional): Conversation ID to fetch thread from.
             ts (optional): Unique identifier of a thread's parent message. `ts` must be the timestamp of an existing message with 0 or more replies. If there are no replies then just the single message referenced by `ts` will return - it is just an ordinary, unthreaded message.
             latest (optional): End of time range of messages to include in results.
@@ -4847,8 +4589,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if channel is not None:
             kwargs_api['channel'] = channel
         if ts is not None:
@@ -4874,13 +4615,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'conversations_replies')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def conversations_set_purpose(self,
+    async def conversations_set_purpose(self,
         *,
-        token: Optional[str] = None,
         channel: Optional[str] = None,
         purpose: Optional[str] = None,
         **kwargs
@@ -4888,9 +4628,8 @@ class SlackDataSource:
         """conversations_setPurpose
 
         Slack method: `conversations_setPurpose`  (HTTP POST /conversations.setPurpose)
-
+        Requires scope: `conversations:write`
         Args:
-            token (optional): Authentication token. Requires scope: `conversations:write`
             channel (optional): Conversation to set the purpose of
             purpose (optional): A new, specialer purpose
 
@@ -4902,8 +4641,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if channel is not None:
             kwargs_api['channel'] = channel
         if purpose is not None:
@@ -4919,13 +4657,13 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'conversations_setPurpose')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def conversations_set_topic(self,
+    async def conversations_set_topic(self,
         *,
-        token: Optional[str] = None,
+
         channel: Optional[str] = None,
         topic: Optional[str] = None,
         **kwargs
@@ -4933,9 +4671,8 @@ class SlackDataSource:
         """conversations_setTopic
 
         Slack method: `conversations_setTopic`  (HTTP POST /conversations.setTopic)
-
+        Requires scope: `conversations:write`
         Args:
-            token (optional): Authentication token. Requires scope: `conversations:write`
             channel (optional): Conversation to set the topic of
             topic (optional): The new topic string. Does not support formatting or linkification.
 
@@ -4947,8 +4684,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if channel is not None:
             kwargs_api['channel'] = channel
         if topic is not None:
@@ -4964,22 +4700,21 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'conversations_setTopic')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def conversations_unarchive(self,
+    async def conversations_unarchive(self,
         *,
-        token: Optional[str] = None,
+
         channel: Optional[str] = None,
         **kwargs
     ) -> SlackResponse:
         """conversations_unarchive
 
         Slack method: `conversations_unarchive`  (HTTP POST /conversations.unarchive)
-
+        Requires scope: `conversations:write`
         Args:
-            token (optional): Authentication token. Requires scope: `conversations:write`
             channel (optional): ID of conversation to unarchive
 
         Returns:
@@ -4990,8 +4725,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if channel is not None:
             kwargs_api['channel'] = channel
         if kwargs:
@@ -5005,13 +4739,13 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'conversations_unarchive')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def dialog_open(self,
+    async def dialog_open(self,
         *,
-        token: str,
+
         dialog: Dict[str, Any],
         trigger_id: str,
         **kwargs
@@ -5019,9 +4753,8 @@ class SlackDataSource:
         """dialog_open
 
         Slack method: `dialog_open`  (HTTP GET /dialog.open)
-
+        Requires scope: `none`
         Args:
-            token (required): Authentication token. Requires scope: `none`
             dialog (required): The dialog definition. This must be a JSON-encoded string.
             trigger_id (required): Exchange a trigger to post to the user.
 
@@ -5033,8 +4766,7 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
+
         if dialog is not None:
             kwargs_api['dialog'] = dialog
         if trigger_id is not None:
@@ -5050,18 +4782,16 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'dialog_open')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def dnd_end_dnd(self, *, token: str, **kwargs) -> SlackResponse:
+    async def dnd_end_dnd(self, **kwargs) -> SlackResponse:
         """dnd_endDnd
 
         Slack method: `dnd_endDnd`  (HTTP POST /dnd.endDnd)
-
+        Requires scope: `dnd:write`
         Args:
-            token (required): Authentication token. Requires scope: `dnd:write`
-
         Returns:
             SlackResponse: Standardized response wrapper with success/data/error
 
@@ -5070,8 +4800,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if kwargs:
             kwargs_api.update(kwargs)
 
@@ -5083,18 +4811,16 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'dnd_endDnd')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def dnd_end_snooze(self, *, token: str, **kwargs) -> SlackResponse:
+    async def dnd_end_snooze(self, **kwargs) -> SlackResponse:
         """dnd_endSnooze
 
         Slack method: `dnd_endSnooze`  (HTTP POST /dnd.endSnooze)
-
+        Requires scope: `dnd:write`
         Args:
-            token (required): Authentication token. Requires scope: `dnd:write`
-
         Returns:
             SlackResponse: Standardized response wrapper with success/data/error
 
@@ -5103,8 +4829,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if kwargs:
             kwargs_api.update(kwargs)
 
@@ -5116,22 +4840,20 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'dnd_endSnooze')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def dnd_info(self,
+    async def dnd_info(self,
         *,
-        token: Optional[str] = None,
         user: Optional[str] = None,
         **kwargs
     ) -> SlackResponse:
         """dnd_info
 
         Slack method: `dnd_info`  (HTTP GET /dnd.info)
-
+        Requires scope: `dnd:read`
         Args:
-            token (optional): Authentication token. Requires scope: `dnd:read`
             user (optional): User to fetch status for (defaults to current user)
 
         Returns:
@@ -5142,8 +4864,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if user is not None:
             kwargs_api['user'] = user
         if kwargs:
@@ -5157,22 +4877,20 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'dnd_info')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def dnd_set_snooze(self,
+    async def dnd_set_snooze(self,
         *,
-        token: str,
         num_minutes: int,
         **kwargs
     ) -> SlackResponse:
         """dnd_setSnooze
 
         Slack method: `dnd_setSnooze`  (HTTP POST /dnd.setSnooze)
-
+        Requires scope: `dnd:write`
         Args:
-            token (required): Authentication token. Requires scope: `dnd:write`
             num_minutes (required): Number of minutes, from now, to snooze until.
 
         Returns:
@@ -5183,8 +4901,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if num_minutes is not None:
             kwargs_api['num_minutes'] = num_minutes
         if kwargs:
@@ -5198,22 +4914,20 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'dnd_setSnooze')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def dnd_team_info(self,
+    async def dnd_team_info(self,
         *,
-        token: Optional[str] = None,
         users: Optional[List[str]] = None,
         **kwargs
     ) -> SlackResponse:
         """dnd_teamInfo
 
         Slack method: `dnd_teamInfo`  (HTTP GET /dnd.teamInfo)
-
+        Requires scope: `dnd:read`
         Args:
-            token (optional): Authentication token. Requires scope: `dnd:read`
             users (optional): Comma-separated list of users to fetch Do Not Disturb status for
 
         Returns:
@@ -5224,8 +4938,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if users is not None:
             kwargs_api['users'] = users
         if kwargs:
@@ -5239,18 +4951,16 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'dnd_teamInfo')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def emoji_list(self, *, token: str, **kwargs) -> SlackResponse:
+    async def emoji_list(self, **kwargs) -> SlackResponse:
         """emoji_list
 
         Slack method: `emoji_list`  (HTTP GET /emoji.list)
-
+        Requires scope: `emoji:read`
         Args:
-            token (required): Authentication token. Requires scope: `emoji:read`
-
         Returns:
             SlackResponse: Standardized response wrapper with success/data/error
 
@@ -5259,8 +4969,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if kwargs:
             kwargs_api.update(kwargs)
 
@@ -5272,13 +4980,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'emoji_list')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def files_comments_delete(self,
+    async def files_comments_delete(self,
         *,
-        token: Optional[str] = None,
         file: Optional[str] = None,
         id: Optional[str] = None,
         **kwargs
@@ -5286,9 +4993,8 @@ class SlackDataSource:
         """files_comments_delete
 
         Slack method: `files_comments_delete`  (HTTP POST /files.comments.delete)
-
+        Requires scope: `files:write:user`
         Args:
-            token (optional): Authentication token. Requires scope: `files:write:user`
             file (optional): File to delete a comment from.
             id (optional): The comment to delete.
 
@@ -5300,8 +5006,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if file is not None:
             kwargs_api['file'] = file
         if id is not None:
@@ -5317,22 +5021,20 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'files_comments_delete')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def files_delete(self,
+    async def files_delete(self,
         *,
-        token: Optional[str] = None,
         file: Optional[str] = None,
         **kwargs
     ) -> SlackResponse:
         """files_delete
 
         Slack method: `files_delete`  (HTTP POST /files.delete)
-
+        Requires scope: `files:write:user`
         Args:
-            token (optional): Authentication token. Requires scope: `files:write:user`
             file (optional): ID of file to delete.
 
         Returns:
@@ -5343,8 +5045,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if file is not None:
             kwargs_api['file'] = file
         if kwargs:
@@ -5358,13 +5058,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'files_delete')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def files_info(self,
+    async def files_info(self,
         *,
-        token: Optional[str] = None,
         file: Optional[str] = None,
         count: Optional[int] = None,
         page: Optional[int] = None,
@@ -5375,9 +5074,8 @@ class SlackDataSource:
         """files_info
 
         Slack method: `files_info`  (HTTP GET /files.info)
-
+        Requires scope: `files:read`
         Args:
-            token (optional): Authentication token. Requires scope: `files:read`
             file (optional): Specify a file by providing its ID.
             count (optional):
             page (optional):
@@ -5392,8 +5090,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if file is not None:
             kwargs_api['file'] = file
         if count is not None:
@@ -5415,13 +5111,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'files_info')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def files_list(self,
+    async def files_list(self,
         *,
-        token: Optional[str] = None,
         user: Optional[str] = None,
         channel: Optional[str] = None,
         ts_from: Optional[str] = None,
@@ -5435,9 +5130,8 @@ class SlackDataSource:
         """files_list
 
         Slack method: `files_list`  (HTTP GET /files.list)
-
+        Requires scope: `files:read`
         Args:
-            token (optional): Authentication token. Requires scope: `files:read`
             user (optional): Filter files created by a single user.
             channel (optional): Filter files appearing in a specific channel, indicated by its ID.
             ts_from (optional): Filter files created after this timestamp (inclusive).
@@ -5455,8 +5149,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if user is not None:
             kwargs_api['user'] = user
         if channel is not None:
@@ -5484,13 +5176,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'files_list')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def files_remote_add(self,
+    async def files_remote_add(self,
         *,
-        token: Optional[str] = None,
         external_id: Optional[str] = None,
         title: Optional[str] = None,
         filetype: Optional[str] = None,
@@ -5502,9 +5193,8 @@ class SlackDataSource:
         """files_remote_add
 
         Slack method: `files_remote_add`  (HTTP POST /files.remote.add)
-
+        Requires scope: `remote_files:write`
         Args:
-            token (optional): Authentication token. Requires scope: `remote_files:write`
             external_id (optional): Creator defined GUID for the file.
             title (optional): Title of the file being shared.
             filetype (optional): type of file
@@ -5520,8 +5210,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if external_id is not None:
             kwargs_api['external_id'] = external_id
         if title is not None:
@@ -5545,13 +5233,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'files_remote_add')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def files_remote_info(self,
+    async def files_remote_info(self,
         *,
-        token: Optional[str] = None,
         file: Optional[str] = None,
         external_id: Optional[str] = None,
         **kwargs
@@ -5559,9 +5246,8 @@ class SlackDataSource:
         """files_remote_info
 
         Slack method: `files_remote_info`  (HTTP GET /files.remote.info)
-
+        Requires scope: `remote_files:read`
         Args:
-            token (optional): Authentication token. Requires scope: `remote_files:read`
             file (optional): Specify a file by providing its ID.
             external_id (optional): Creator defined GUID for the file.
 
@@ -5573,8 +5259,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if file is not None:
             kwargs_api['file'] = file
         if external_id is not None:
@@ -5590,13 +5274,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'files_remote_info')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def files_remote_list(self,
+    async def files_remote_list(self,
         *,
-        token: Optional[str] = None,
         channel: Optional[str] = None,
         ts_from: Optional[str] = None,
         ts_to: Optional[str] = None,
@@ -5607,9 +5290,8 @@ class SlackDataSource:
         """files_remote_list
 
         Slack method: `files_remote_list`  (HTTP GET /files.remote.list)
-
+        Requires scope: `remote_files:read`
         Args:
-            token (optional): Authentication token. Requires scope: `remote_files:read`
             channel (optional): Filter files appearing in a specific channel, indicated by its ID.
             ts_from (optional): Filter files created after this timestamp (inclusive).
             ts_to (optional): Filter files created before this timestamp (inclusive).
@@ -5624,8 +5306,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if channel is not None:
             kwargs_api['channel'] = channel
         if ts_from is not None:
@@ -5647,13 +5327,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'files_remote_list')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def files_remote_remove(self,
+    async def files_remote_remove(self,
         *,
-        token: Optional[str] = None,
         file: Optional[str] = None,
         external_id: Optional[str] = None,
         **kwargs
@@ -5661,9 +5340,8 @@ class SlackDataSource:
         """files_remote_remove
 
         Slack method: `files_remote_remove`  (HTTP POST /files.remote.remove)
-
+        Requires scope: `remote_files:write`
         Args:
-            token (optional): Authentication token. Requires scope: `remote_files:write`
             file (optional): Specify a file by providing its ID.
             external_id (optional): Creator defined GUID for the file.
 
@@ -5675,8 +5353,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if file is not None:
             kwargs_api['file'] = file
         if external_id is not None:
@@ -5692,13 +5368,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'files_remote_remove')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def files_remote_share(self,
+    async def files_remote_share(self,
         *,
-        token: Optional[str] = None,
         file: Optional[str] = None,
         external_id: Optional[str] = None,
         channels: Optional[List[str]] = None,
@@ -5707,9 +5382,8 @@ class SlackDataSource:
         """files_remote_share
 
         Slack method: `files_remote_share`  (HTTP GET /files.remote.share)
-
+        Requires scope: `remote_files:share`
         Args:
-            token (optional): Authentication token. Requires scope: `remote_files:share`
             file (optional): Specify a file registered with Slack by providing its ID. Either this field or `external_id` or both are required.
             external_id (optional): The globally unique identifier (GUID) for the file, as set by the app registering the file with Slack.  Either this field or `file` or both are required.
             channels (optional): Comma-separated list of channel IDs where the file will be shared.
@@ -5722,8 +5396,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if file is not None:
             kwargs_api['file'] = file
         if external_id is not None:
@@ -5741,13 +5413,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'files_remote_share')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def files_remote_update(self,
+    async def files_remote_update(self,
         *,
-        token: Optional[str] = None,
         file: Optional[str] = None,
         external_id: Optional[str] = None,
         title: Optional[str] = None,
@@ -5760,9 +5431,8 @@ class SlackDataSource:
         """files_remote_update
 
         Slack method: `files_remote_update`  (HTTP POST /files.remote.update)
-
+        Requires scope: `remote_files:write`
         Args:
-            token (optional): Authentication token. Requires scope: `remote_files:write`
             file (optional): Specify a file by providing its ID.
             external_id (optional): Creator defined GUID for the file.
             title (optional): Title of the file being shared.
@@ -5779,8 +5449,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if file is not None:
             kwargs_api['file'] = file
         if external_id is not None:
@@ -5806,22 +5474,20 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'files_remote_update')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def files_revoke_public_url(self,
+    async def files_revoke_public_url(self,
         *,
-        token: Optional[str] = None,
         file: Optional[str] = None,
         **kwargs
     ) -> SlackResponse:
         """files_revokePublicURL
 
         Slack method: `files_revokePublicURL`  (HTTP POST /files.revokePublicURL)
-
+        Requires scope: `files:write:user`
         Args:
-            token (optional): Authentication token. Requires scope: `files:write:user`
             file (optional): File to revoke
 
         Returns:
@@ -5832,8 +5498,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if file is not None:
             kwargs_api['file'] = file
         if kwargs:
@@ -5847,22 +5511,20 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'files_revokePublicURL')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def files_shared_public_url(self,
+    async def files_shared_public_url(self,
         *,
-        token: Optional[str] = None,
         file: Optional[str] = None,
         **kwargs
     ) -> SlackResponse:
         """files_sharedPublicURL
 
         Slack method: `files_sharedPublicURL`  (HTTP POST /files.sharedPublicURL)
-
+        Requires scope: `files:write:user`
         Args:
-            token (optional): Authentication token. Requires scope: `files:write:user`
             file (optional): File to share
 
         Returns:
@@ -5873,8 +5535,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if file is not None:
             kwargs_api['file'] = file
         if kwargs:
@@ -5888,13 +5548,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'files_sharedPublicURL')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def files_upload(self,
+    async def files_upload(self,
         *,
-        token: Optional[str] = None,
         file: Optional[str] = None,
         content: Optional[str] = None,
         filetype: Optional[str] = None,
@@ -5908,9 +5567,8 @@ class SlackDataSource:
         """files_upload
 
         Slack method: `files_upload`  (HTTP POST /files.upload)
-
+        Requires scope: `files:write:user`
         Args:
-            token (optional): Authentication token. Requires scope: `files:write:user`
             file (optional): File contents via `multipart/form-data`. If omitting this parameter, you must submit `content`.
             content (optional): File contents via a POST variable. If omitting this parameter, you must provide a `file`.
             filetype (optional): A [file type](/types/file#file_types) identifier.
@@ -5928,8 +5586,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if file is not None:
             kwargs_api['file'] = file
         if content is not None:
@@ -5957,13 +5613,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'files_upload')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def migration_exchange(self,
+    async def migration_exchange(self,
         *,
-        token: str,
         users: List[str],
         team_id: Optional[str] = None,
         to_old: Optional[bool] = None,
@@ -5972,9 +5627,8 @@ class SlackDataSource:
         """migration_exchange
 
         Slack method: `migration_exchange`  (HTTP GET /migration.exchange)
-
+        Requires scope: `tokens.basic`
         Args:
-            token (required): Authentication token. Requires scope: `tokens.basic`
             users (required): A comma-separated list of user ids, up to 400 per request
             team_id (optional): Specify team_id starts with `T` in case of Org Token
             to_old (optional): Specify `true` to convert `W` global user IDs to workspace-specific `U` IDs. Defaults to `false`.
@@ -5987,8 +5641,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if users is not None:
             kwargs_api['users'] = users
         if team_id is not None:
@@ -6006,11 +5658,11 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'migration_exchange')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def oauth_access(self,
+    async def oauth_access(self,
         *,
         client_id: Optional[str] = None,
         client_secret: Optional[str] = None,
@@ -6022,7 +5674,7 @@ class SlackDataSource:
         """oauth_access
 
         Slack method: `oauth_access`  (HTTP GET /oauth.access)
-
+        Requires scope: `none`
         Args:
             client_id (optional): Issued when you created your application.
             client_secret (optional): Issued when you created your application.
@@ -6059,11 +5711,11 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'oauth_access')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def oauth_token(self,
+    async def oauth_token(self,
         *,
         client_id: Optional[str] = None,
         client_secret: Optional[str] = None,
@@ -6075,7 +5727,7 @@ class SlackDataSource:
         """oauth_token
 
         Slack method: `oauth_token`  (HTTP GET /oauth.token)
-
+        Requires scope: `none`
         Args:
             client_id (optional): Issued when you created your application.
             client_secret (optional): Issued when you created your application.
@@ -6112,11 +5764,11 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'oauth_token')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def oauth_v2_access(self,
+    async def oauth_v2_access(self,
         *,
         code: str,
         client_id: Optional[str] = None,
@@ -6127,7 +5779,7 @@ class SlackDataSource:
         """oauth_v2_access
 
         Slack method: `oauth_v2_access`  (HTTP GET /oauth.v2.access)
-
+        Requires scope: `none`
         Args:
             client_id (optional): Issued when you created your application.
             client_secret (optional): Issued when you created your application.
@@ -6161,13 +5813,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'oauth_v2_access')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def pins_add(self,
+    async def pins_add(self,
         *,
-        token: str,
         channel: str,
         timestamp: Optional[str] = None,
         **kwargs
@@ -6175,9 +5826,8 @@ class SlackDataSource:
         """pins_add
 
         Slack method: `pins_add`  (HTTP POST /pins.add)
-
+        Requires scope: `pins:write`
         Args:
-            token (required): Authentication token. Requires scope: `pins:write`
             channel (required): Channel to pin the item in.
             timestamp (optional): Timestamp of the message to pin.
 
@@ -6189,8 +5839,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if channel is not None:
             kwargs_api['channel'] = channel
         if timestamp is not None:
@@ -6206,22 +5854,20 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'pins_add')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def pins_list(self,
+    async def pins_list(self,
         *,
-        token: str,
         channel: str,
         **kwargs
     ) -> SlackResponse:
         """pins_list
 
         Slack method: `pins_list`  (HTTP GET /pins.list)
-
+        Requires scope: `pins:read`
         Args:
-            token (required): Authentication token. Requires scope: `pins:read`
             channel (required): Channel to get pinned items for.
 
         Returns:
@@ -6232,8 +5878,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if channel is not None:
             kwargs_api['channel'] = channel
         if kwargs:
@@ -6247,13 +5891,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'pins_list')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def pins_remove(self,
+    async def pins_remove(self,
         *,
-        token: str,
         channel: str,
         timestamp: Optional[str] = None,
         **kwargs
@@ -6261,9 +5904,8 @@ class SlackDataSource:
         """pins_remove
 
         Slack method: `pins_remove`  (HTTP POST /pins.remove)
-
+        Requires scope: `pins:write`
         Args:
-            token (required): Authentication token. Requires scope: `pins:write`
             channel (required): Channel where the item is pinned to.
             timestamp (optional): Timestamp of the message to un-pin.
 
@@ -6275,8 +5917,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if channel is not None:
             kwargs_api['channel'] = channel
         if timestamp is not None:
@@ -6292,27 +5932,26 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'pins_remove')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def reactions_add(self,
+    async def reactions_add(self,
         *,
         channel: str,
         name: str,
         timestamp: str,
-        token: str,
+
         **kwargs
     ) -> SlackResponse:
         """reactions_add
 
         Slack method: `reactions_add`  (HTTP POST /reactions.add)
-
+        Requires scope: `reactions:write`
         Args:
             channel (required): Channel where the message to add reaction to was posted.
             name (required): Reaction (emoji) name.
             timestamp (required): Timestamp of the message to add reaction to.
-            token (required): Authentication token. Requires scope: `reactions:write`
 
         Returns:
             SlackResponse: Standardized response wrapper with success/data/error
@@ -6328,8 +5967,6 @@ class SlackDataSource:
             kwargs_api['name'] = name
         if timestamp is not None:
             kwargs_api['timestamp'] = timestamp
-        if token is not None:
-            kwargs_api['token'] = token
         if kwargs:
             kwargs_api.update(kwargs)
 
@@ -6341,13 +5978,13 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'reactions_add')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def reactions_get(self,
+    async def reactions_get(self,
         *,
-        token: str,
+
         channel: Optional[str] = None,
         file: Optional[str] = None,
         file_comment: Optional[str] = None,
@@ -6358,9 +5995,8 @@ class SlackDataSource:
         """reactions_get
 
         Slack method: `reactions_get`  (HTTP GET /reactions.get)
-
+        Requires scope: `reactions:read`
         Args:
-            token (required): Authentication token. Requires scope: `reactions:read`
             channel (optional): Channel where the message to get reactions for was posted.
             file (optional): File to get reactions for.
             file_comment (optional): File comment to get reactions for.
@@ -6375,8 +6011,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if channel is not None:
             kwargs_api['channel'] = channel
         if file is not None:
@@ -6398,13 +6032,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'reactions_get')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def reactions_list(self,
+    async def reactions_list(self,
         *,
-        token: str,
         user: Optional[str] = None,
         full: Optional[bool] = None,
         count: Optional[int] = None,
@@ -6416,9 +6049,8 @@ class SlackDataSource:
         """reactions_list
 
         Slack method: `reactions_list`  (HTTP GET /reactions.list)
-
+        Requires scope: `reactions:read`
         Args:
-            token (required): Authentication token. Requires scope: `reactions:read`
             user (optional): Show reactions made by this user. Defaults to the authed user.
             full (optional): If true always return the complete reaction list.
             count (optional):
@@ -6434,8 +6066,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if user is not None:
             kwargs_api['user'] = user
         if full is not None:
@@ -6459,13 +6089,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'reactions_list')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def reactions_remove(self,
+    async def reactions_remove(self,
         *,
-        token: str,
         name: str,
         file: Optional[str] = None,
         file_comment: Optional[str] = None,
@@ -6476,9 +6105,8 @@ class SlackDataSource:
         """reactions_remove
 
         Slack method: `reactions_remove`  (HTTP POST /reactions.remove)
-
+        Requires scope: `reactions:write`
         Args:
-            token (required): Authentication token. Requires scope: `reactions:write`
             name (required): Reaction (emoji) name.
             file (optional): File to remove reaction from.
             file_comment (optional): File comment to remove reaction from.
@@ -6493,8 +6121,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if name is not None:
             kwargs_api['name'] = name
         if file is not None:
@@ -6516,13 +6142,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'reactions_remove')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def reminders_add(self,
+    async def reminders_add(self,
         *,
-        token: str,
         text: str,
         time: str,
         user: Optional[str] = None,
@@ -6531,9 +6156,8 @@ class SlackDataSource:
         """reminders_add
 
         Slack method: `reminders_add`  (HTTP POST /reminders.add)
-
+        Requires scope: `reminders:write`
         Args:
-            token (required): Authentication token. Requires scope: `reminders:write`
             text (required): The content of the reminder
             time (required): When this reminder should happen: the Unix timestamp (up to five years from now), the number of seconds until the reminder (if within 24 hours), or a natural language description (Ex. "in 15 minutes," or "every Thursday")
             user (optional): The user who will receive the reminder. If no user is specified, the reminder will go to user who created it.
@@ -6546,8 +6170,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if text is not None:
             kwargs_api['text'] = text
         if time is not None:
@@ -6565,22 +6187,20 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'reminders_add')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def reminders_complete(self,
+    async def reminders_complete(self,
         *,
-        token: Optional[str] = None,
         reminder: Optional[str] = None,
         **kwargs
     ) -> SlackResponse:
         """reminders_complete
 
         Slack method: `reminders_complete`  (HTTP POST /reminders.complete)
-
+        Requires scope: `reminders:write`
         Args:
-            token (optional): Authentication token. Requires scope: `reminders:write`
             reminder (optional): The ID of the reminder to be marked as complete
 
         Returns:
@@ -6591,8 +6211,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if reminder is not None:
             kwargs_api['reminder'] = reminder
         if kwargs:
@@ -6606,22 +6224,20 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'reminders_complete')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def reminders_delete(self,
+    async def reminders_delete(self,
         *,
-        token: Optional[str] = None,
         reminder: Optional[str] = None,
         **kwargs
     ) -> SlackResponse:
         """reminders_delete
 
         Slack method: `reminders_delete`  (HTTP POST /reminders.delete)
-
+        Requires scope: `reminders:write`
         Args:
-            token (optional): Authentication token. Requires scope: `reminders:write`
             reminder (optional): The ID of the reminder
 
         Returns:
@@ -6632,8 +6248,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if reminder is not None:
             kwargs_api['reminder'] = reminder
         if kwargs:
@@ -6647,22 +6261,20 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'reminders_delete')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def reminders_info(self,
+    async def reminders_info(self,
         *,
-        token: Optional[str] = None,
         reminder: Optional[str] = None,
         **kwargs
     ) -> SlackResponse:
         """reminders_info
 
         Slack method: `reminders_info`  (HTTP GET /reminders.info)
-
+        Requires scope: `reminders:read`
         Args:
-            token (optional): Authentication token. Requires scope: `reminders:read`
             reminder (optional): The ID of the reminder
 
         Returns:
@@ -6673,8 +6285,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if reminder is not None:
             kwargs_api['reminder'] = reminder
         if kwargs:
@@ -6688,17 +6298,16 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'reminders_info')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def reminders_list(self, *, token: Optional[str] = None, **kwargs) -> SlackResponse:
+    async def reminders_list(self, **kwargs) -> SlackResponse:
         """reminders_list
 
         Slack method: `reminders_list`  (HTTP GET /reminders.list)
-
+        Requires scope: `reminders:read`
         Args:
-            token (optional): Authentication token. Requires scope: `reminders:read`
 
         Returns:
             SlackResponse: Standardized response wrapper with success/data/error
@@ -6708,8 +6317,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if kwargs:
             kwargs_api.update(kwargs)
 
@@ -6721,13 +6328,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'reminders_list')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def rtm_connect(self,
+    async def rtm_connect(self,
         *,
-        token: str,
         batch_presence_aware: Optional[bool] = None,
         presence_sub: Optional[bool] = None,
         **kwargs
@@ -6735,9 +6341,8 @@ class SlackDataSource:
         """rtm_connect
 
         Slack method: `rtm_connect`  (HTTP GET /rtm.connect)
-
+        Requires scope: `rtm:stream`
         Args:
-            token (required): Authentication token. Requires scope: `rtm:stream`
             batch_presence_aware (optional): Batch presence deliveries via subscription. Enabling changes the shape of `presence_change` events. See [batch presence](/docs/presence-and-status#batching).
             presence_sub (optional): Only deliver presence events when requested by subscription. See [presence subscriptions](/docs/presence-and-status#subscriptions).
 
@@ -6749,8 +6354,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if batch_presence_aware is not None:
             kwargs_api['batch_presence_aware'] = batch_presence_aware
         if presence_sub is not None:
@@ -6766,13 +6369,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'rtm_connect')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def search_messages(self,
+    async def search_messages(self,
         *,
-        token: str,
         query: str,
         count: Optional[int] = None,
         highlight: Optional[str] = None,
@@ -6782,11 +6384,9 @@ class SlackDataSource:
         **kwargs
     ) -> SlackResponse:
         """search_messages
-
         Slack method: `search_messages`  (HTTP GET /search.messages)
-
+        Requires scope: `search:read`
         Args:
-            token (required): Authentication token. Requires scope: `search:read`
             count (optional): Pass the number of results you want per "page". Maximum of `100`.
             highlight (optional): Pass a value of `true` to enable query highlight markers (see below).
             page (optional):
@@ -6802,8 +6402,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if count is not None:
             kwargs_api['count'] = count
         if highlight is not None:
@@ -6827,13 +6425,13 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'search_messages')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def stars_add(self,
+    async def stars_add(self,
         *,
-        token: str,
+
         channel: Optional[str] = None,
         file: Optional[str] = None,
         file_comment: Optional[str] = None,
@@ -6843,9 +6441,8 @@ class SlackDataSource:
         """stars_add
 
         Slack method: `stars_add`  (HTTP POST /stars.add)
-
+        Requires scope: `stars:write`
         Args:
-            token (required): Authentication token. Requires scope: `stars:write`
             channel (optional): Channel to add star to, or channel where the message to add star to was posted (used with `timestamp`).
             file (optional): File to add star to.
             file_comment (optional): File comment to add star to.
@@ -6859,8 +6456,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if channel is not None:
             kwargs_api['channel'] = channel
         if file is not None:
@@ -6880,13 +6475,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'stars_add')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def stars_list(self,
+    async def stars_list(self,
         *,
-        token: Optional[str] = None,
         count: Optional[int] = None,
         page: Optional[int] = None,
         cursor: Optional[str] = None,
@@ -6896,9 +6490,8 @@ class SlackDataSource:
         """stars_list
 
         Slack method: `stars_list`  (HTTP GET /stars.list)
-
+        Requires scope: `stars:read`
         Args:
-            token (optional): Authentication token. Requires scope: `stars:read`
             count (optional):
             page (optional):
             cursor (optional): Parameter for pagination. Set `cursor` equal to the `next_cursor` attribute returned by the previous request's `response_metadata`. This parameter is optional, but pagination is mandatory: the default value simply fetches the first "page" of the collection. See [pagination](/docs/pagination) for more details.
@@ -6912,8 +6505,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if count is not None:
             kwargs_api['count'] = count
         if page is not None:
@@ -6933,13 +6524,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'stars_list')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def stars_remove(self,
+    async def stars_remove(self,
         *,
-        token: str,
         channel: Optional[str] = None,
         file: Optional[str] = None,
         file_comment: Optional[str] = None,
@@ -6949,9 +6539,8 @@ class SlackDataSource:
         """stars_remove
 
         Slack method: `stars_remove`  (HTTP POST /stars.remove)
-
+        Requires scope: `stars:write`
         Args:
-            token (required): Authentication token. Requires scope: `stars:write`
             channel (optional): Channel to remove star from, or channel where the message to remove star from was posted (used with `timestamp`).
             file (optional): File to remove star from.
             file_comment (optional): File comment to remove star from.
@@ -6965,8 +6554,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if channel is not None:
             kwargs_api['channel'] = channel
         if file is not None:
@@ -6986,13 +6573,13 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'stars_remove')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def team_access_logs(self,
+    async def team_access_logs(self,
         *,
-        token: str,
+
         before: Optional[str] = None,
         count: Optional[int] = None,
         page: Optional[int] = None,
@@ -7001,9 +6588,8 @@ class SlackDataSource:
         """team_accessLogs
 
         Slack method: `team_accessLogs`  (HTTP GET /team.accessLogs)
-
+        Requires scope: `admin`
         Args:
-            token (required): Authentication token. Requires scope: `admin`
             before (optional): End of time range of logs to include in results (inclusive).
             count (optional):
             page (optional):
@@ -7015,8 +6601,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if before is not None:
             kwargs_api['before'] = before
         if count is not None:
@@ -7034,22 +6618,21 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'team_accessLogs')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def team_billable_info(self,
+    async def team_billable_info(self,
         *,
-        token: str,
+
         user: Optional[str] = None,
         **kwargs
     ) -> SlackResponse:
         """team_billableInfo
 
         Slack method: `team_billableInfo`  (HTTP GET /team.billableInfo)
-
+        Requires scope: `admin`
         Args:
-            token (required): Authentication token. Requires scope: `admin`
             user (optional): A user to retrieve the billable information for. Defaults to all users.
 
         Returns:
@@ -7060,8 +6643,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if user is not None:
             kwargs_api['user'] = user
         if kwargs:
@@ -7075,22 +6656,21 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'team_billableInfo')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def team_info(self,
+    async def team_info(self,
         *,
-        token: str,
+
         team: Optional[str] = None,
         **kwargs
     ) -> SlackResponse:
         """team_info
 
         Slack method: `team_info`  (HTTP GET /team.info)
-
+        Requires scope: `team:read`
         Args:
-            token (required): Authentication token. Requires scope: `team:read`
             team (optional): Team to get info on, if omitted, will return information about the current team. Will only return team that the authenticated token is allowed to see through external shared channels
 
         Returns:
@@ -7101,8 +6681,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if team is not None:
             kwargs_api['team'] = team
         if kwargs:
@@ -7116,13 +6694,13 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'team_info')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def team_integration_logs(self,
+    async def team_integration_logs(self,
         *,
-        token: str,
+
         app_id: Optional[str] = None,
         change_type: Optional[str] = None,
         count: Optional[int] = None,
@@ -7134,9 +6712,8 @@ class SlackDataSource:
         """team_integrationLogs
 
         Slack method: `team_integrationLogs`  (HTTP GET /team.integrationLogs)
-
+        Requires scope: `admin`
         Args:
-            token (required): Authentication token. Requires scope: `admin`
             app_id (optional): Filter logs to this Slack app. Defaults to all logs.
             change_type (optional): Filter logs with this change type. Defaults to all logs.
             count (optional):
@@ -7152,8 +6729,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if app_id is not None:
             kwargs_api['app_id'] = app_id
         if change_type is not None:
@@ -7177,22 +6752,21 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'team_integrationLogs')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def team_profile_get(self,
+    async def team_profile_get(self,
         *,
-        token: str,
+
         visibility: Optional[str] = None,
         **kwargs
     ) -> SlackResponse:
         """team_profile_get
 
         Slack method: `team_profile_get`  (HTTP GET /team.profile.get)
-
+        Requires scope: `users.profile:read`
         Args:
-            token (required): Authentication token. Requires scope: `users.profile:read`
             visibility (optional): Filter by visibility.
 
         Returns:
@@ -7203,8 +6777,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if visibility is not None:
             kwargs_api['visibility'] = visibility
         if kwargs:
@@ -7218,13 +6790,13 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'team_profile_get')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def usergroups_create(self,
+    async def usergroups_create(self,
         *,
-        token: str,
+
         name: str,
         channels: Optional[List[str]] = None,
         description: Optional[str] = None,
@@ -7235,9 +6807,8 @@ class SlackDataSource:
         """usergroups_create
 
         Slack method: `usergroups_create`  (HTTP POST /usergroups.create)
-
+        Requires scope: `usergroups:write`
         Args:
-            token (required): Authentication token. Requires scope: `usergroups:write`
             channels (optional): A comma separated string of encoded channel IDs for which the User Group uses as a default.
             description (optional): A short description of the User Group.
             handle (optional): A mention handle. Must be unique among channels, users and User Groups.
@@ -7252,8 +6823,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if channels is not None:
             kwargs_api['channels'] = channels
         if description is not None:
@@ -7275,13 +6844,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'usergroups_create')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def usergroups_disable(self,
+    async def usergroups_disable(self,
         *,
-        token: str,
         usergroup: str,
         include_count: Optional[int] = None,
         **kwargs
@@ -7289,9 +6857,8 @@ class SlackDataSource:
         """usergroups_disable
 
         Slack method: `usergroups_disable`  (HTTP POST /usergroups.disable)
-
+        Requires scope: `usergroups:write`
         Args:
-            token (required): Authentication token. Requires scope: `usergroups:write`
             include_count (optional): Include the number of users in the User Group.
             usergroup (required): The encoded ID of the User Group to disable.
 
@@ -7303,8 +6870,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if include_count is not None:
             kwargs_api['include_count'] = include_count
         if usergroup is not None:
@@ -7320,13 +6885,13 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'usergroups_disable')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def usergroups_enable(self,
+    async def usergroups_enable(self,
         *,
-        token: str,
+
         usergroup: str,
         include_count: Optional[int] = None,
         **kwargs
@@ -7334,9 +6899,8 @@ class SlackDataSource:
         """usergroups_enable
 
         Slack method: `usergroups_enable`  (HTTP POST /usergroups.enable)
-
+        Requires scope: `usergroups:write`
         Args:
-            token (required): Authentication token. Requires scope: `usergroups:write`
             include_count (optional): Include the number of users in the User Group.
             usergroup (required): The encoded ID of the User Group to enable.
 
@@ -7348,8 +6912,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if include_count is not None:
             kwargs_api['include_count'] = include_count
         if usergroup is not None:
@@ -7365,13 +6927,13 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'usergroups_enable')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def usergroups_list(self,
+    async def usergroups_list(self,
         *,
-        token: str,
+
         include_users: Optional[bool] = None,
         include_count: Optional[int] = None,
         include_disabled: Optional[bool] = None,
@@ -7380,10 +6942,9 @@ class SlackDataSource:
         """usergroups_list
 
         Slack method: `usergroups_list`  (HTTP GET /usergroups.list)
-
+        Requires scope: `usergroups:read`
         Args:
             include_users (optional): Include the list of users for each User Group.
-            token (required): Authentication token. Requires scope: `usergroups:read`
             include_count (optional): Include the number of users in each User Group.
             include_disabled (optional): Include disabled User Groups.
 
@@ -7397,8 +6958,6 @@ class SlackDataSource:
         kwargs_api: Dict[str, Any] = {}
         if include_users is not None:
             kwargs_api['include_users'] = include_users
-        if token is not None:
-            kwargs_api['token'] = token
         if include_count is not None:
             kwargs_api['include_count'] = include_count
         if include_disabled is not None:
@@ -7414,13 +6973,13 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'usergroups_list')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def usergroups_update(self,
+    async def usergroups_update(self,
         *,
-        token: str,
+
         usergroup: str,
         handle: Optional[str] = None,
         description: Optional[str] = None,
@@ -7432,12 +6991,11 @@ class SlackDataSource:
         """usergroups_update
 
         Slack method: `usergroups_update`  (HTTP POST /usergroups.update)
-
+        Requires scope: `usergroups:write`
         Args:
             handle (optional): A mention handle. Must be unique among channels, users and User Groups.
             description (optional): A short description of the User Group.
             channels (optional): A comma separated string of encoded channel IDs for which the User Group uses as a default.
-            token (required): Authentication token. Requires scope: `usergroups:write`
             include_count (optional): Include the number of users in the User Group.
             usergroup (required): The encoded ID of the User Group to update.
             name (optional): A name for the User Group. Must be unique among User Groups.
@@ -7456,8 +7014,6 @@ class SlackDataSource:
             kwargs_api['description'] = description
         if channels is not None:
             kwargs_api['channels'] = channels
-        if token is not None:
-            kwargs_api['token'] = token
         if include_count is not None:
             kwargs_api['include_count'] = include_count
         if usergroup is not None:
@@ -7475,13 +7031,13 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'usergroups_update')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def usergroups_users_list(self,
+    async def usergroups_users_list(self,
         *,
-        token: str,
+
         usergroup: str,
         include_disabled: Optional[bool] = None,
         **kwargs
@@ -7489,9 +7045,8 @@ class SlackDataSource:
         """usergroups_users_list
 
         Slack method: `usergroups_users_list`  (HTTP GET /usergroups.users.list)
-
+        Requires scope: `usergroups:read`
         Args:
-            token (required): Authentication token. Requires scope: `usergroups:read`
             include_disabled (optional): Allow results that involve disabled User Groups.
             usergroup (required): The encoded ID of the User Group to update.
 
@@ -7503,8 +7058,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if include_disabled is not None:
             kwargs_api['include_disabled'] = include_disabled
         if usergroup is not None:
@@ -7520,13 +7073,13 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'usergroups_users_list')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def usergroups_users_update(self,
+    async def usergroups_users_update(self,
         *,
-        token: str,
+
         usergroup: str,
         users: List[str],
         include_count: Optional[int] = None,
@@ -7535,9 +7088,8 @@ class SlackDataSource:
         """usergroups_users_update
 
         Slack method: `usergroups_users_update`  (HTTP POST /usergroups.users.update)
-
+        Requires scope: `usergroups:write`
         Args:
-            token (required): Authentication token. Requires scope: `usergroups:write`
             include_count (optional): Include the number of users in the User Group.
             usergroup (required): The encoded ID of the User Group to update.
             users (required): A comma separated string of encoded user IDs that represent the entire list of users for the User Group.
@@ -7550,8 +7102,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if include_count is not None:
             kwargs_api['include_count'] = include_count
         if usergroup is not None:
@@ -7569,13 +7119,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'usergroups_users_update')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def users_conversations(self,
+    async def users_conversations(self,
         *,
-        token: Optional[str] = None,
         user: Optional[str] = None,
         types: Optional[str] = None,
         exclude_archived: Optional[bool] = None,
@@ -7586,9 +7135,8 @@ class SlackDataSource:
         """users_conversations
 
         Slack method: `users_conversations`  (HTTP GET /users.conversations)
-
+        Requires scope: `conversations:read`
         Args:
-            token (optional): Authentication token. Requires scope: `conversations:read`
             user (optional): Browse conversations by a specific user ID's membership. Non-public channels are restricted to those where the calling user shares membership.
             types (optional): Mix and match channel types by providing a comma-separated list of any combination of `public_channel`, `private_channel`, `mpim`, `im`
             exclude_archived (optional): Set to `true` to exclude archived channels from the list
@@ -7603,8 +7151,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if user is not None:
             kwargs_api['user'] = user
         if types is not None:
@@ -7626,18 +7172,16 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'users_conversations')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def users_delete_photo(self, *, token: str, **kwargs) -> SlackResponse:
+    async def users_delete_photo(self, **kwargs) -> SlackResponse:
         """users_deletePhoto
 
         Slack method: `users_deletePhoto`  (HTTP POST /users.deletePhoto)
-
+        Requires scope: `users:write`
         Args:
-            token (required): Authentication token. Requires scope: `users.profile:write`
-
         Returns:
             SlackResponse: Standardized response wrapper with success/data/error
 
@@ -7646,8 +7190,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if kwargs:
             kwargs_api.update(kwargs)
 
@@ -7659,22 +7201,21 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'users_deletePhoto')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def users_get_presence(self,
+    async def users_get_presence(self,
         *,
-        token: str,
+
         user: Optional[str] = None,
         **kwargs
     ) -> SlackResponse:
         """users_getPresence
 
         Slack method: `users_getPresence`  (HTTP GET /users.getPresence)
-
+        Requires scope: `users:read`
         Args:
-            token (required): Authentication token. Requires scope: `users:read`
             user (optional): User to get presence info on. Defaults to the authed user.
 
         Returns:
@@ -7685,8 +7226,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if user is not None:
             kwargs_api['user'] = user
         if kwargs:
@@ -7700,17 +7239,16 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'users_getPresence')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def users_identity(self, *, token: Optional[str] = None, **kwargs) -> SlackResponse:
+    async def users_identity(self, **kwargs) -> SlackResponse:
         """users_identity
 
         Slack method: `users_identity`  (HTTP GET /users.identity)
-
+        Requires scope: `identity.basic`
         Args:
-            token (optional): Authentication token. Requires scope: `identity.basic`
 
         Returns:
             SlackResponse: Standardized response wrapper with success/data/error
@@ -7720,8 +7258,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if kwargs:
             kwargs_api.update(kwargs)
 
@@ -7733,13 +7269,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'users_identity')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def users_info(self,
+    async def users_info(self,
         *,
-        token: str,
         include_locale: Optional[bool] = None,
         user: Optional[str] = None,
         **kwargs
@@ -7747,9 +7282,8 @@ class SlackDataSource:
         """users_info
 
         Slack method: `users_info`  (HTTP GET /users.info)
-
+        Requires scope: `users:read`
         Args:
-            token (required): Authentication token. Requires scope: `users:read`
             include_locale (optional): Set this to `true` to receive the locale for this user. Defaults to `false`
             user (optional): User to get info on
 
@@ -7761,8 +7295,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if include_locale is not None:
             kwargs_api['include_locale'] = include_locale
         if user is not None:
@@ -7778,13 +7310,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'users_info')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def users_list(self,
+    async def users_list(self,
         *,
-        token: Optional[str] = None,
         limit: Optional[int] = None,
         cursor: Optional[str] = None,
         include_locale: Optional[bool] = None,
@@ -7793,9 +7324,8 @@ class SlackDataSource:
         """users_list
 
         Slack method: `users_list`  (HTTP GET /users.list)
-
+        Requires scope: `users:read`
         Args:
-            token (optional): Authentication token. Requires scope: `users:read`
             limit (optional): The maximum number of items to return. Fewer than the requested number of items may be returned, even if the end of the users list hasn't been reached. Providing no `limit` value will result in Slack attempting to deliver you the entire result set. If the collection is too large you may experience `limit_required` or HTTP 500 errors.
             cursor (optional): Paginate through collections of data by setting the `cursor` parameter to a `next_cursor` attribute returned by a previous request's `response_metadata`. Default value fetches the first "page" of the collection. See [pagination](/docs/pagination) for more detail.
             include_locale (optional): Set this to `true` to receive the locale for users. Defaults to `false`
@@ -7808,8 +7338,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if limit is not None:
             kwargs_api['limit'] = limit
         if cursor is not None:
@@ -7827,22 +7355,20 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'users_list')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def users_lookup_by_email(self,
+    async def users_lookup_by_email(self,
         *,
-        token: str,
         email: str,
         **kwargs
     ) -> SlackResponse:
         """users_lookupByEmail
 
         Slack method: `users_lookupByEmail`  (HTTP GET /users.lookupByEmail)
-
+        Requires scope: `users:read.email`
         Args:
-            token (required): Authentication token. Requires scope: `users:read.email`
             email (required): An email address belonging to a user in the workspace
 
         Returns:
@@ -7853,8 +7379,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if email is not None:
             kwargs_api['email'] = email
         if kwargs:
@@ -7868,13 +7392,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'users_lookupByEmail')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def users_profile_get(self,
+    async def users_profile_get(self,
         *,
-        token: str,
         include_labels: Optional[bool] = None,
         user: Optional[str] = None,
         **kwargs
@@ -7882,9 +7405,8 @@ class SlackDataSource:
         """users_profile_get
 
         Slack method: `users_profile_get`  (HTTP GET /users.profile.get)
-
+        Requires scope: `users.profile:read`
         Args:
-            token (required): Authentication token. Requires scope: `users.profile:read`
             include_labels (optional): Include labels for each ID in custom profile fields
             user (optional): User to retrieve profile info for
 
@@ -7896,8 +7418,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if include_labels is not None:
             kwargs_api['include_labels'] = include_labels
         if user is not None:
@@ -7913,13 +7433,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'users_profile_get')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def users_profile_set(self,
+    async def users_profile_set(self,
         *,
-        token: str,
         name: Optional[str] = None,
         profile: Optional[str] = None,
         user: Optional[str] = None,
@@ -7929,9 +7448,8 @@ class SlackDataSource:
         """users_profile_set
 
         Slack method: `users_profile_set`  (HTTP POST /users.profile.set)
-
+        Requires scope: `users.profile:write`
         Args:
-            token (required): Authentication token. Requires scope: `users.profile:write`
             name (optional): Name of a single key to set. Usable only if `profile` is not passed.
             profile (optional): Collection of key:value pairs presented as a URL-encoded JSON hash. At most 50 fields may be set. Each field name is limited to 255 characters.
             user (optional): ID of user to change. This argument may only be specified by team admins on paid teams.
@@ -7945,8 +7463,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if name is not None:
             kwargs_api['name'] = name
         if profile is not None:
@@ -7966,18 +7482,15 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'users_profile_set')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def users_set_active(self, *, token: str, **kwargs) -> SlackResponse:
+    async def users_set_active(self, **kwargs) -> SlackResponse:
         """users_setActive
-
         Slack method: `users_setActive`  (HTTP POST /users.setActive)
-
+        Requires scope: `users:write`
         Args:
-            token (required): Authentication token. Requires scope: `users:write`
-
         Returns:
             SlackResponse: Standardized response wrapper with success/data/error
 
@@ -7986,8 +7499,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if kwargs:
             kwargs_api.update(kwargs)
 
@@ -7999,13 +7510,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'users_setActive')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def users_set_photo(self,
+    async def users_set_photo(self,
         *,
-        token: str,
         crop_w: Optional[int] = None,
         crop_x: Optional[int] = None,
         crop_y: Optional[int] = None,
@@ -8015,9 +7525,8 @@ class SlackDataSource:
         """users_setPhoto
 
         Slack method: `users_setPhoto`  (HTTP POST /users.setPhoto)
-
+        Requires scope: `users.profile:write`
         Args:
-            token (required): Authentication token. Requires scope: `users.profile:write`
             crop_w (optional): Width/height of crop box (always square)
             crop_x (optional): X coordinate of top-left corner of crop box
             crop_y (optional): Y coordinate of top-left corner of crop box
@@ -8031,8 +7540,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if crop_w is not None:
             kwargs_api['crop_w'] = crop_w
         if crop_x is not None:
@@ -8052,22 +7559,20 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'users_setPhoto')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def users_set_presence(self,
+    async def users_set_presence(self,
         *,
-        token: str,
         presence: str,
         **kwargs
     ) -> SlackResponse:
         """users_setPresence
 
         Slack method: `users_setPresence`  (HTTP POST /users.setPresence)
-
+        Requires scope: `users:write`
         Args:
-            token (required): Authentication token. Requires scope: `users:write`
             presence (required): Either `auto` or `away`
 
         Returns:
@@ -8078,8 +7583,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if presence is not None:
             kwargs_api['presence'] = presence
         if kwargs:
@@ -8093,13 +7596,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'users_setPresence')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def views_open(self,
+    async def views_open(self,
         *,
-        token: str,
         trigger_id: str,
         view: Dict[str, Any],
         **kwargs
@@ -8107,9 +7609,8 @@ class SlackDataSource:
         """views_open
 
         Slack method: `views_open`  (HTTP GET /views.open)
-
+        Requires scope: `none`
         Args:
-            token (required): Authentication token. Requires scope: `none`
             trigger_id (required): Exchange a trigger to post to the user.
             view (required): A [view payload](/reference/surfaces/views). This must be a JSON-encoded string.
 
@@ -8121,8 +7622,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if trigger_id is not None:
             kwargs_api['trigger_id'] = trigger_id
         if view is not None:
@@ -8138,13 +7637,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'views_open')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def views_publish(self,
+    async def views_publish(self,
         *,
-        token: str,
         user_id: str,
         view: Dict[str, Any],
         hash: Optional[str] = None,
@@ -8153,9 +7651,8 @@ class SlackDataSource:
         """views_publish
 
         Slack method: `views_publish`  (HTTP GET /views.publish)
-
+        Requires scope: `none`
         Args:
-            token (required): Authentication token. Requires scope: `none`
             user_id (required): `id` of the user you want publish a view to.
             view (required): A [view payload](/reference/surfaces/views). This must be a JSON-encoded string.
             hash (optional): A string that represents view state to protect against possible race conditions.
@@ -8168,8 +7665,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if user_id is not None:
             kwargs_api['user_id'] = user_id
         if view is not None:
@@ -8187,13 +7682,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'views_publish')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def views_push(self,
+    async def views_push(self,
         *,
-        token: str,
         trigger_id: str,
         view: Dict[str, Any],
         **kwargs
@@ -8201,9 +7695,8 @@ class SlackDataSource:
         """views_push
 
         Slack method: `views_push`  (HTTP GET /views.push)
-
+        Requires scope: `none`
         Args:
-            token (required): Authentication token. Requires scope: `none`
             trigger_id (required): Exchange a trigger to post to the user.
             view (required): A [view payload](/reference/surfaces/views). This must be a JSON-encoded string.
 
@@ -8215,8 +7708,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if trigger_id is not None:
             kwargs_api['trigger_id'] = trigger_id
         if view is not None:
@@ -8232,13 +7723,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'views_push')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def views_update(self,
+    async def views_update(self,
         *,
-        token: str,
         view_id: Optional[str] = None,
         external_id: Optional[str] = None,
         view: Optional[Dict[str, Any]] = None,
@@ -8248,9 +7738,8 @@ class SlackDataSource:
         """views_update
 
         Slack method: `views_update`  (HTTP GET /views.update)
-
+        Requires scope: `none`
         Args:
-            token (required): Authentication token. Requires scope: `none`
             view_id (optional): A unique identifier of the view to be updated. Either `view_id` or `external_id` is required.
             external_id (optional): A unique identifier of the view set by the developer. Must be unique for all views on a team. Max length of 255 characters. Either `view_id` or `external_id` is required.
             view (optional): A [view object](/reference/surfaces/views). This must be a JSON-encoded string.
@@ -8264,8 +7753,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if view_id is not None:
             kwargs_api['view_id'] = view_id
         if external_id is not None:
@@ -8285,13 +7772,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'views_update')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def workflows_step_completed(self,
+    async def workflows_step_completed(self,
         *,
-        token: str,
         workflow_step_execute_id: str,
         outputs: Optional[Dict[str, Any]] = None,
         **kwargs
@@ -8299,9 +7785,8 @@ class SlackDataSource:
         """workflows_stepCompleted
 
         Slack method: `workflows_stepCompleted`  (HTTP GET /workflows.stepCompleted)
-
+        Requires scope: `workflow.steps:execute`
         Args:
-            token (required): Authentication token. Requires scope: `workflow.steps:execute`
             workflow_step_execute_id (required): Context identifier that maps to the correct workflow step execution.
             outputs (optional): Key-value object of outputs from your step. Keys of this object reflect the configured `key` properties of your [`outputs`](/reference/workflows/workflow_step#output) array from your `workflow_step` object.
 
@@ -8313,8 +7798,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if workflow_step_execute_id is not None:
             kwargs_api['workflow_step_execute_id'] = workflow_step_execute_id
         if outputs is not None:
@@ -8330,13 +7813,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'workflows_stepCompleted')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def workflows_step_failed(self,
+    async def workflows_step_failed(self,
         *,
-        token: str,
         workflow_step_execute_id: str,
         error: Dict[str, Any],
         **kwargs
@@ -8344,9 +7826,8 @@ class SlackDataSource:
         """workflows_stepFailed
 
         Slack method: `workflows_stepFailed`  (HTTP GET /workflows.stepFailed)
-
+        Requires scope: `workflow.steps:execute`
         Args:
-            token (required): Authentication token. Requires scope: `workflow.steps:execute`
             workflow_step_execute_id (required): Context identifier that maps to the correct workflow step execution.
             error (required): A JSON-based object with a `message` property that should contain a human readable error message.
 
@@ -8358,8 +7839,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if workflow_step_execute_id is not None:
             kwargs_api['workflow_step_execute_id'] = workflow_step_execute_id
         if error is not None:
@@ -8375,13 +7854,12 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'workflows_stepFailed')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 
-    def workflows_update_step(self,
+    async def workflows_update_step(self,
         *,
-        token: str,
         workflow_step_edit_id: str,
         inputs: Optional[Dict[str, Any]] = None,
         outputs: Optional[List[Dict[str, Any]]] = None,
@@ -8392,9 +7870,8 @@ class SlackDataSource:
         """workflows_updateStep
 
         Slack method: `workflows_updateStep`  (HTTP GET /workflows.updateStep)
-
+        Requires scope: `workflow.steps:execute`
         Args:
-            token (required): Authentication token. Requires scope: `workflow.steps:execute`
             workflow_step_edit_id (required): A context identifier provided with `view_submission` payloads used to call back to `workflows.updateStep`.
             inputs (optional): A JSON key-value map of inputs required from a user during configuration. This is the data your app expects to receive when the workflow step starts. **Please note**: the embedded variable format is set and replaced by the workflow system. You cannot create custom variables that will be replaced at runtime. [Read more about variables in workflow steps here](/workflows/steps#variables).
             outputs (optional): An JSON array of output objects used during step execution. This is the data your app agrees to provide when your workflow step was executed.
@@ -8409,8 +7886,6 @@ class SlackDataSource:
             No `api_call` fallback is used; if the alias is missing, a NotImplementedError is raised.
         """
         kwargs_api: Dict[str, Any] = {}
-        if token is not None:
-            kwargs_api['token'] = token
         if workflow_step_edit_id is not None:
             kwargs_api['workflow_step_edit_id'] = workflow_step_edit_id
         if inputs is not None:
@@ -8432,9 +7907,6 @@ class SlackDataSource:
 
         try:
             response = getattr(self.client, 'workflows_updateStep')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
-
-
-__all__ = ['SlackDataSource', 'SlackResponse']
+            return await self._handle_slack_error(e)

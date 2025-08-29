@@ -25,7 +25,7 @@ class SlackResponse:
         return json.dumps(self.to_dict())
 
 
-class SlackRESTClientViaUsernamePassword():
+class SlackRESTClientViaUsernamePassword:
     """Slack REST client via username and password
     Args:
         username: The username to use for authentication
@@ -33,34 +33,46 @@ class SlackRESTClientViaUsernamePassword():
         token_type: The type of token to use for authentication
     """
     def __init__(self, username: str, password: str, token_type: str = "Basic") -> None:
-        ...
+        # TODO: Implement
+        self.client = None
+        raise NotImplementedError
 
-class SlackRESTClientViaApiKey():
+    def get_web_client(self) -> WebClient:
+        raise NotImplementedError("Username/Password authentication is not yet implemented.")
+
+class SlackRESTClientViaApiKey:
     """Slack REST client via API key
     Args:
         email: The email to use for authentication
         api_key: The API key to use for authentication
     """
     def __init__(self, email: str, api_key: str) -> None:
+        # TODO: Implement
+        self.client = None
         raise NotImplementedError
 
-class SlackRESTClientViaToken():
-    def __init__(self, token: str) -> None:
-        self.token = token
+    def get_web_client(self) -> WebClient:
+        raise NotImplementedError("Username/Password authentication is not yet implemented.")
 
-    def create_client(self) -> WebClient:
-        return WebClient(token=self.token)
+class SlackRESTClientViaToken:
+    """Slack REST client via token
+    Args:
+        token: The token to use for authentication
+    """
+    def __init__(self, token: str) -> None:
+        self.client = WebClient(token=token)
+
+    def get_web_client(self) -> WebClient:
+        return self.client
 
 @dataclass
-class SlackUsernamePasswordConfig():
+class SlackUsernamePasswordConfig:
     """Configuration for Slack REST client via username and password
     Args:
-        base_url: The base URL of the Slack instance
         username: The username to use for authentication
         password: The password to use for authentication
         ssl: Whether to use SSL
     """
-    base_url: str
     username: str
     password: str
     ssl: bool = False
@@ -72,15 +84,16 @@ class SlackUsernamePasswordConfig():
         """Convert the configuration to a dictionary"""
         return asdict(self)
 
+    def get_web_client(self) -> WebClient:
+        return self.create_client().get_web_client()
+
 @dataclass
-class SlackTokenConfig():
+class SlackTokenConfig:
     """Configuration for Slack REST client via token
     Args:
-        base_url: The base URL of the Slack instance
         token: The token to use for authentication
         ssl: Whether to use SSL
     """
-    base_url: str
     token: str
     ssl: bool = False
 
@@ -92,15 +105,13 @@ class SlackTokenConfig():
         return asdict(self)
 
 @dataclass
-class SlackApiKeyConfig():
+class SlackApiKeyConfig:
     """Configuration for Slack REST client via API key
     Args:
-        base_url: The base URL of the Slack instance
         email: The email to use for authentication
         api_key: The API key to use for authentication
         ssl: Whether to use SSL
     """
-    base_url: str
     email: str
     api_key: str
     ssl: bool = False
@@ -122,6 +133,10 @@ class SlackClient(IClient):
     def get_client(self) -> SlackRESTClientViaUsernamePassword | SlackRESTClientViaApiKey | SlackRESTClientViaToken:
         """Return the Slack client object"""
         return self.client
+
+    def get_web_client(self) -> WebClient:
+        """Return the Slack client object"""
+        return self.client.get_web_client()
 
     @classmethod
     def build_with_config(cls, config: SlackUsernamePasswordConfig | SlackTokenConfig | SlackApiKeyConfig) -> 'SlackClient':

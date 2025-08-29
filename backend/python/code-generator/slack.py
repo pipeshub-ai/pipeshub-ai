@@ -266,7 +266,7 @@ def build_method_code(op: Operation) -> str:
 
     param_mapping_code = "\n".join(param_mapping) if param_mapping else "        # No parameters for this method"
 
-    method_code = f'''    def {op.wrapper_name}(self, {sig}) -> SlackResponse:
+    method_code = f'''    async def {op.wrapper_name}(self, {sig}) -> SlackResponse:
         """{summary}
 
         Slack method: `{op.op_id}`  (HTTP {op.http_method} {op.path})
@@ -294,9 +294,9 @@ def build_method_code(op: Operation) -> str:
         
         try:
             response = getattr(self.client, '{op.client_alias}')(**kwargs_api)
-            return self._handle_slack_response(response)
+            return await self._handle_slack_response(response)
         except Exception as e:
-            return self._handle_slack_error(e)
+            return await self._handle_slack_error(e)
 '''
 
     return method_code
@@ -320,11 +320,11 @@ class {class_name}:
     - All responses wrapped in standardized SlackResponse format
     """
     def __init__(self, client: SlackClient) -> None:
-        self.client = client
+        self.client = client.get_web_client()
 '''
 
     runtime_helpers = """
-    def _handle_slack_response(self, response: Any) -> SlackResponse:  # noqa: ANN401
+    async def _handle_slack_response(self, response: Any) -> SlackResponse:  # noqa: ANN401
         \"\"\"Handle Slack API response and convert to standardized format\"\"\"
         try:
             if not response:
@@ -362,7 +362,7 @@ class {class_name}:
             logger.error(f"Error handling Slack response: {e}")
             return SlackResponse(success=False, error=str(e))
 
-    def _handle_slack_error(self, error: Exception) -> SlackResponse:
+    async def _handle_slack_error(self, error: Exception) -> SlackResponse:
         \"\"\"Handle Slack API errors and convert to standardized format\"\"\"
         error_msg = str(error)
         logger.error(f"Slack API error: {error_msg}")
