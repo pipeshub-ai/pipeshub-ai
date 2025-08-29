@@ -108,7 +108,7 @@ class OneDriveConnector():
             metadata_changed = False
             content_changed = False
             permissions_changed = False
-            
+
             if existing_record:
                 # Check for metadata changes
                 if (existing_record.external_revision_id != item.e_tag or
