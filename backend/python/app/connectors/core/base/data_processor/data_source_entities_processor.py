@@ -426,7 +426,7 @@ class DataSourceEntitiesProcessor:
                     "_from": f"{CollectionNames.USERS.value}/{user_record['_key']}",
                     "_to": f"{CollectionNames.ORGS.value}/{self.org_id}",
                     "createdAtTimestamp": user_record["createdAtTimestamp"],
-                    "updatedAtTimestamp": user_record["createdAtTimestamp"],
+                    "updatedAtTimestamp": user_record["updatedAtTimestamp"],
                     "entityType": "ORGANIZATION",
                 }
 
