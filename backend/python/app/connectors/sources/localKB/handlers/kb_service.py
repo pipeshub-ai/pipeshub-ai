@@ -963,7 +963,7 @@ class KnowledgeBaseService :
         """Update permissions for users and teams on a knowledge base"""
         try:
             self.logger.info(f"🚀 Updating permission for {len(user_ids)} users and {len(team_ids)} teams on KB {kb_id} to {new_role}")
-            
+
             # Check if at least one of user_ids or team_ids is provided
             if not user_ids and not team_ids:
                 return {
@@ -971,7 +971,7 @@ class KnowledgeBaseService :
                     "reason": "No users or teams provided for permission update",
                     "code": "400"
                 }
-            
+
             self.logger.info(f"Looking up requester by requester: {requester_id}")
             requester = await self.arango_service.get_user_by_user_id(user_id=requester_id)
 
@@ -1008,7 +1008,7 @@ class KnowledgeBaseService :
                 user_ids=user_ids,
                 team_ids=team_ids
             )
-            
+
             # Filter out users/teams that don't have permissions (skip them instead of erroring)
             valid_user_ids = []
             skipped_users = []
@@ -1054,7 +1054,7 @@ class KnowledgeBaseService :
                 if skipped_users or skipped_teams:
                     success_msg += f" (skipped {len(skipped_users)} users and {len(skipped_teams)} teams without permissions)"
                 self.logger.info(success_msg)
-                
+
                 return {
                     "success": True,
                     "userIds": valid_user_ids,
@@ -1087,7 +1087,7 @@ class KnowledgeBaseService :
         """Remove permissions for users and teams from a knowledge base"""
         try:
             self.logger.info(f"🚀 Removing permission for {len(user_ids)} users and {len(team_ids)} teams from KB {kb_id}")
-            
+
             # Check if at least one of user_ids or team_ids is provided
             if not user_ids and not team_ids:
                 return {
@@ -1095,7 +1095,7 @@ class KnowledgeBaseService :
                     "reason": "No users or teams provided for permission removal",
                     "code": "400"
                 }
-            
+
             self.logger.info(f"Looking up requester by requester: {requester_id}")
             requester = await self.arango_service.get_user_by_user_id(user_id=requester_id)
 
@@ -1123,12 +1123,12 @@ class KnowledgeBaseService :
                 user_ids=user_ids,
                 team_ids=team_ids
             )
-            
+
             # Filter out users/teams that don't have permissions and check for owner removal
             valid_user_ids = []
             skipped_users = []
             owner_users_to_remove = []
-            
+
             if user_ids:
                 for user_id in user_ids:
                     if user_id in current_permissions["users"]:
@@ -1174,7 +1174,7 @@ class KnowledgeBaseService :
 
             # Remove permissions using batch remove method for valid entities only
             result = await self.arango_service.remove_kb_permission(
-                kb_id=kb_id, 
+                kb_id=kb_id,
                 user_ids=valid_user_ids,
                 team_ids=valid_team_ids
             )
@@ -1184,8 +1184,8 @@ class KnowledgeBaseService :
                 if skipped_users or skipped_teams:
                     success_msg += f" (skipped {len(skipped_users)} users and {len(skipped_teams)} teams without permissions)"
                 self.logger.info(success_msg)
-                
-                
+
+
                 return {
                     "success": True,
                     "userIds": valid_user_ids,

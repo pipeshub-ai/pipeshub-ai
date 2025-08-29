@@ -2582,8 +2582,8 @@ class KnowledgeBaseArangoService(BaseArangoService):
             main_query = """
             // Get requester info and validate ownership in one go
             LET requester_info = FIRST(
-                FOR user IN @@users_collection 
-                FILTER user.userId == @requester_id 
+                FOR user IN @@users_collection
+                FILTER user.userId == @requester_id
                 FOR perm IN @@permissions_collection
                     FILTER perm._from == CONCAT('users/', user._key)
                     FILTER perm._to == CONCAT('recordGroups/', @kb_id)
@@ -2591,27 +2591,27 @@ class KnowledgeBaseArangoService(BaseArangoService):
                     FILTER perm.role == "OWNER"
                 RETURN {user_key: user._key, is_owner: true}
             )
-            
+
             // Quick KB existence check
             LET kb_exists = LENGTH(FOR kb IN @@recordGroups_collection FILTER kb._key == @kb_id LIMIT 1 RETURN 1) > 0
-            
+
             // Process all users and their current permissions in one pass
             LET user_operations = (
                 FOR user_id IN @user_ids
                     LET user = FIRST(FOR u IN @@users_collection FILTER u._key == user_id RETURN u)
                     LET current_perm = user ? FIRST(
-                        FOR perm IN @@permissions_collection 
+                        FOR perm IN @@permissions_collection
                         FILTER perm._from == CONCAT('users/', user._key)
                         FILTER perm._to == CONCAT('recordGroups/', @kb_id)
                         FILTER perm.type == "USER"
                         RETURN perm
                     ) : null
-                    
+
                     FILTER user != null  // Skip non-existent users
-                    
-                    LET operation = current_perm == null ? "insert" : 
+
+                    LET operation = current_perm == null ? "insert" :
                                 (current_perm.role != @role ? "update" : "skip")
-                    
+
                     RETURN {
                         user_id: user_id,
                         user_key: user._key,
@@ -2622,24 +2622,24 @@ class KnowledgeBaseArangoService(BaseArangoService):
                         perm_key: current_perm ? current_perm._key : null
                     }
             )
-            
+
             // Process all teams and their current permissions in one pass
             LET team_operations = (
                 FOR team_id IN @team_ids
                     LET team = FIRST(FOR t IN @@teams_collection FILTER t._key == team_id RETURN t)
                     LET current_perm = team ? FIRST(
-                        FOR perm IN @@permissions_collection 
+                        FOR perm IN @@permissions_collection
                         FILTER perm._from == CONCAT('teams/', team._key)
                         FILTER perm._to == CONCAT('recordGroups/', @kb_id)
                         FILTER perm.type == "TEAM"
                         RETURN perm
                     ) : null
-                    
+
                     FILTER team != null  // Skip non-existent teams
-                    
-                    LET operation = current_perm == null ? "insert" : 
+
+                    LET operation = current_perm == null ? "insert" :
                                 (current_perm.role != @role ? "update" : "skip")
-                    
+
                     RETURN {
                         team_id: team_id,
                         team_key: team._key,
@@ -2649,7 +2649,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
                         perm_key: current_perm ? current_perm._key : null
                     }
             )
-            
+
             RETURN {
                 is_valid: requester_info != null AND kb_exists,
                 requester_found: requester_info != null,
@@ -2693,11 +2693,11 @@ class KnowledgeBaseArangoService(BaseArangoService):
 
             # Prepare batch operations
             operations = []
-            
+
             # Batch insert new permissions
             if users_to_insert or teams_to_insert:
                 insert_docs = []
-                
+
                 for user_data in users_to_insert:
                     insert_docs.append({
                         "_from": f"users/{user_data['user_key']}",
@@ -2721,7 +2721,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
                         "updatedAtTimestamp": timestamp,
                         "lastUpdatedTimestampAtSource": timestamp,
                     })
-                
+
                 if insert_docs:
                     operations.append((
                         "FOR doc IN @docs INSERT doc INTO @@permissions_collection",
@@ -2734,7 +2734,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
 
             # Build optimized response
             granted_count = len(users_to_insert) + len(teams_to_insert)
-            
+
             final_result = {
                 "success": True,
                 "grantedCount": granted_count,
@@ -2760,7 +2760,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
         except Exception as e:
             self.logger.error(f"Failed optimized batch operation: {str(e)}")
             return {"success": False, "reason": f"Database error: {str(e)}", "code": 500}
-    
+
     async def update_kb_permission(
         self,
         kb_id: str,
@@ -2772,7 +2772,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
         """Optimistically update permissions for users and teams on a knowledge base"""
         try:
             self.logger.info(f"🚀 Optimistic update: {len(user_ids or [])} users and {len(team_ids or [])} teams on KB {kb_id} to {new_role}")
-            
+
             # Quick validation of inputs
             if not user_ids and not team_ids:
                 return {"success": False, "reason": "No users or teams provided", "code": "400"}
@@ -2814,7 +2814,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
                     FILTER perm.type == 'USER'
                     RETURN perm.role
             )
-            
+
             LET current_perms = (
                 FOR perm IN @@permissions_collection
                     FILTER perm._to == CONCAT('recordGroups/', @kb_id)
@@ -2827,12 +2827,12 @@ class KnowledgeBaseArangoService(BaseArangoService):
                         _from: perm._from
                     }}
             )
-            
+
             LET validation_result = (
                 requester_perm != "OWNER" ? {{error: "Only KB owners can update permissions", code: "403"}} :
                 null
             )
-            
+
             LET updated_perms = (
                 validation_result == null ? (
                     FOR perm IN @@permissions_collection
@@ -2852,7 +2852,6 @@ class KnowledgeBaseArangoService(BaseArangoService):
                         }}
                 ) : []
             )
-            
             RETURN {{
                 validation_error: validation_result,
                 current_permissions: current_perms,
@@ -2891,7 +2890,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
                     }
                 elif perm["type"] == "TEAM":
                     updates_by_type["teams"][perm["id"]] = {
-                        "old_role": perm["old_role"], 
+                        "old_role": perm["old_role"],
                         "new_role": perm["new_role"]
                     }
 
@@ -3015,7 +3014,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
         """Get current roles for multiple users and teams on a knowledge base in a single query"""
         try:
             db = transaction if transaction else self.db
-            
+
             # Build conditions for batch query
             conditions = []
             bind_vars = {
@@ -3050,7 +3049,7 @@ class KnowledgeBaseArangoService(BaseArangoService):
 
             # Organize results by type
             result = {"users": {}, "teams": {}}
-            
+
             for perm in permissions:
                 if perm["type"] == "USER":
                     result["users"][perm["id"]] = perm["role"]
