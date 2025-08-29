@@ -3090,7 +3090,7 @@ class BaseArangoService:
         Get internal file key using the id
 
         Args:
-            external_file_id (str): External file ID to look up
+            id (str): The internal record ID (_key) to look up
             transaction (Optional[TransactionDatabase]): Optional database transaction
 
         Returns:
