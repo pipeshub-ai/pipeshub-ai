@@ -654,7 +654,8 @@ export const createFolderSchema = z.object({
 
 export const kbPermissionSchema = z.object({
   body: z.object({
-    users: z.array(z.string()).min(1, 'At least one user ID is required'),
+    userIds: z.array(z.string()).optional(),
+    teamIds: z.array(z.string()).optional(),
     role: z.enum(['OWNER', 'WRITER', 'READER', 'COMMENTER']),
   }),
   params: z.object({
@@ -684,16 +685,20 @@ export const getPermissionsSchema = z.object({
 export const updatePermissionsSchema = z.object({
   body: z.object({
     role: z.enum(['OWNER', 'WRITER', 'READER', 'COMMENTER']),
+    userIds: z.array(z.string()).optional(),
+    teamIds: z.array(z.string()).optional(),
   }),
   params: z.object({
     kbId: z.string().uuid(),
-    userId: z.string(),
   }),
 });
 
 export const deletePermissionsSchema = z.object({
+  body: z.object({
+    userIds: z.array(z.string()).optional(),
+    teamIds: z.array(z.string()).optional(),
+  }),
   params: z.object({
     kbId: z.string().uuid(),
-    userId: z.string(),
   }),
 });

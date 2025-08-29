@@ -57,7 +57,7 @@ EDGE_DEFINITIONS = [
     },
     {
         "edge_collection": CollectionNames.PERMISSIONS_TO_KB.value,
-        "from_vertex_collections": [CollectionNames.USERS.value],
+        "from_vertex_collections": [CollectionNames.USERS.value, CollectionNames.TEAMS.value],
         "to_vertex_collections": [CollectionNames.RECORD_GROUPS.value],
     },
     {

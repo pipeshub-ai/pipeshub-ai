@@ -165,8 +165,7 @@ async def get_teams(
         FILTER permission._to == team._id
         LET user = DOCUMENT(permission._from)
         RETURN {{
-            "_id": user._id,
-            "_key": user._key,
+            "id": user._key,
             "userId": user.userId,
             "userName": user.fullName,
             "userEmail": user.email,
@@ -179,8 +178,7 @@ async def get_teams(
     SORT team.createdAtTimestamp DESC
     LIMIT @offset, @limit
     RETURN {{
-        "_id": team._id,
-        "_key": team._key,
+        "id": team._key,
         "name": team.name,
         "description": team.description,
         "createdBy": team.createdBy,
@@ -282,8 +280,7 @@ async def get_team_with_users(arango_service, team_key: str, user_key: str) -> O
         FILTER permission._to == team._id
         LET user = DOCUMENT(permission._from)
         RETURN {{
-            "_id": user._id,
-            "_key": user._key,
+            "id": user._key,
             "userId": user.userId,
             "userName": user.fullName,
             "userEmail": user.email,
@@ -294,8 +291,7 @@ async def get_team_with_users(arango_service, team_key: str, user_key: str) -> O
     )
     LET user_count = LENGTH(team_members)
     RETURN {{
-        "_id": team._id,
-        "_key": team._key,
+        "id": team._key,
         "name": team.name,
         "description": team.description,
         "createdBy": team.createdBy,
@@ -756,8 +752,7 @@ async def get_user_teams(request: Request) -> JSONResponse:
         LET member_user = DOCUMENT(member_permission._from)
         FILTER member_user != null
         RETURN {
-            "_id": member_user._id,
-            "_key": member_user._key,
+            "id": member_user._key,
             "userId": member_user.userId,
             "userName": member_user.fullName,
             "userEmail": member_user.email,
@@ -768,8 +763,7 @@ async def get_user_teams(request: Request) -> JSONResponse:
     )
     LET member_count = LENGTH(team_members)
     RETURN {
-        "_id": team._id,
-        "_key": team._key,
+        "id": team._key,
         "name": team.name,
         "description": team.description,
         "createdBy": team.createdBy,
@@ -840,7 +834,7 @@ async def get_users(
     search_filter = ""
     if search:
         search_filter = """
-        FILTER user.name LIKE CONCAT('%', @search, '%')
+        FILTER user.fullName LIKE CONCAT('%', @search, '%')
         OR user.email LIKE CONCAT('%', @search, '%')
         """
 
@@ -853,9 +847,17 @@ async def get_users(
     FILTER user!=null
     FILTER user.isActive == true
     {search_filter}
-    SORT user.name ASC
+    SORT user.fullName ASC
     LIMIT @offset, @limit
-    RETURN user
+    RETURN {{
+        "id": user._key,
+        "userId": user.userId,
+        "name": user.fullName,
+        "email": user.email,
+        "isActive": user.isActive,
+        "createdAtTimestamp": user.createdAtTimestamp,
+        "updatedAtTimestamp": user.updatedAtTimestamp
+    }}
     """
 
     # Count total users for pagination
@@ -962,8 +964,7 @@ async def get_team_users(request: Request, team_id: str) -> JSONResponse:
             FILTER permission._to == team._id
             LET user = DOCUMENT(permission._from)
             RETURN {{
-                "_id": user._id,
-                "_key": user._key,
+                "id": user._key,
                 "userId": user.userId,
                 "userName": user.fullName,
                 "userEmail": user.email,
@@ -974,8 +975,7 @@ async def get_team_users(request: Request, team_id: str) -> JSONResponse:
         )
         LET user_count = LENGTH(team_members)
         RETURN {{
-            "_id": team._id,
-            "_key": team._key,
+            "id": team._key,
             "name": team.name,
             "description": team.description,
             "createdBy": team.createdBy,
@@ -1146,7 +1146,8 @@ async def search_teams(request: Request) -> JSONResponse:
             FILTER permission._to == team._id
             LET user = DOCUMENT(permission._from)
             RETURN {{
-                "userId": user._key,
+                "id": user._key,
+                "userId": user.userId,
                 "userName": user.fullName,
                 "userEmail": user.email,
                 "role": permission.role,
@@ -1158,8 +1159,7 @@ async def search_teams(request: Request) -> JSONResponse:
         LIMIT @offset, @limit
         RETURN {{
             "team": {{
-                "_id": team._id,
-                "_key": team._key,
+                "id": team._key,
                 "name": team.name,
                 "description": team.description,
                 "createdBy": team.createdBy,

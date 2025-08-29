@@ -9,6 +9,7 @@ import type {
   AgentFilterOptions,
   AgentStats,
 } from 'src/types/agent';
+import { KBPermission } from 'src/sections/knowledgebase/types/kb';
 
 export interface PaginationParams {
   page?: number;
@@ -463,6 +464,12 @@ class AgentApiService {
       return {};
     }
   }
+
+  static async listAgentPermissions(agentId: string): Promise<KBPermission[]> {
+    const response = await axios.get(`/api/v1/agents/${agentId}/permissions`);
+    return response.data.permissions;
+  }
+  
 }
 
 export default AgentApiService;

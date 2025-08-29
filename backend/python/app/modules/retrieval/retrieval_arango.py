@@ -1796,18 +1796,17 @@ class ArangoService:
                 LET entity = DOCUMENT(perm._from)
                 FILTER entity != null
                 RETURN {{
-                    _id: perm._id,
-                    _key: perm._key,
-                    entity_id: perm._from,
-                    entity_key: SPLIT(perm._from, '/')[1],
-                    entity_name: entity.fullName || entity.name || entity.userName,
-                    entity_email: entity.email,
-                    entity_type: perm.type,
+                    id: entity._key,
+                    name: entity.fullName || entity.name || entity.userName,
+                    userId: entity.userId,
+                    email: entity.email,
                     role: perm.role,
-                    created_at: perm.createdAtTimestamp,
-                    updated_at: perm.updatedAtTimestamp
+                    type: perm.type,
+                    createdAtTimestamp: perm.createdAtTimestamp,
+                    updatedAtTimestamp: perm.updatedAtTimestamp
                 }}
             """
+
             bind_vars = {
                 "agent_id": agent_id,
             }
