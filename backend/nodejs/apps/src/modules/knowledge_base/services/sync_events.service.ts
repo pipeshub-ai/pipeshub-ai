@@ -7,6 +7,7 @@ export enum EventType {
   ReindexAllRecordEvent = 'reindexFailed',
   SyncDriveEvent = 'drive.resync',
   SyncGmailEvent = 'gmail.resync',
+  SyncOneDriveEvent = 'onedrive.resync',
 }
 
 export interface Event {
@@ -34,6 +35,15 @@ export interface SyncDriveEvent {
 }
 
 export interface SyncGmailEvent {
+  orgId: string;
+  connector: string;
+  origin: string;
+  createdAtTimestamp: string;
+  updatedAtTimestamp: string;
+  sourceCreatedAtTimestamp: string;
+}
+
+export interface SyncOneDriveEvent {
   orgId: string;
   connector: string;
   origin: string;

@@ -96,8 +96,14 @@ class DataSourceEntitiesProcessor:
         producer_config = await self.config_service.get_config(
             config_node_constants.KAFKA.value
         )
+
+        # Ensure bootstrap_servers is a list
+        bootstrap_servers = producer_config.get("brokers")
+        if isinstance(bootstrap_servers, str):
+            bootstrap_servers = [server.strip() for server in bootstrap_servers.split(",")]
+
         kafka_producer_config = KafkaProducerConfig(
-            bootstrap_servers=producer_config.get("bootstrap_servers"),
+            bootstrap_servers=bootstrap_servers,
             client_id=producer_config.get("client_id", "connectors"),
         )
         self.messaging_producer: IMessagingProducer = MessagingFactory.create_producer(
@@ -399,7 +405,7 @@ class DataSourceEntitiesProcessor:
 
         # Get all users from the database(Active and Inactive)
         existing_users = await self.arango_service.get_users(self.org_id, active=False)
-        existing_user_emails = {existing_user.get("email") for existing_user in existing_users}
+        existing_user_emails = {existing_user.get("email") for existing_user in existing_users if existing_user is not None}
         for user in users:
             self.logger.info(f"Processing user: {user}")
 
@@ -408,6 +414,8 @@ class DataSourceEntitiesProcessor:
                 user_record["isActive"] = False
                 user_record["_key"] = str(uuid.uuid4())
                 user_record["orgId"] = self.org_id
+                user_record["createdAtTimestamp"] = get_epoch_timestamp_in_ms()
+                user_record["updatedAtTimestamp"] = user_record["createdAtTimestamp"]
                 await self.arango_service.batch_upsert_nodes(
                     [user_record],
                     collection=CollectionNames.USERS.value, transaction=transaction
@@ -417,8 +425,8 @@ class DataSourceEntitiesProcessor:
                 user_org_relation = {
                     "_from": f"{CollectionNames.USERS.value}/{user_record['_key']}",
                     "_to": f"{CollectionNames.ORGS.value}/{self.org_id}",
-                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    "createdAtTimestamp": user_record["createdAtTimestamp"],
+                    "updatedAtTimestamp": user_record["createdAtTimestamp"],
                     "entityType": "ORGANIZATION",
                 }
 
@@ -463,9 +471,9 @@ class DataSourceEntitiesProcessor:
     async def get_all_active_users(self) -> List[User]:
         users = await self.arango_service.get_users(self.org_id, active=True)
 
-        return [User.from_arango_user(user) for user in users]
+        return [User.from_arango_user(user) for user in users if user is not None]
 
     async def get_all_active_users_by_app(self, app: App) -> List[User]:
         users = await self.arango_service.get_users_by_app(self.org_id, app)
 
-        return [User.from_arango_user(user) for user in users]
+        return [User.from_arango_user(user) for user in users if user is not None]

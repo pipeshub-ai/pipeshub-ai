@@ -8,6 +8,7 @@ from app.connectors.sources.google.gmail.services.event_service.event_service im
 from app.connectors.sources.google.google_drive.services.event_service.event_service import (
     GoogleDriveEventService,
 )
+from app.connectors.sources.microsoft.onedrive.event_service import OneDriveEventService
 from app.containers.connector import ConnectorAppContainer
 from app.containers.indexing import IndexingAppContainer
 from app.containers.query import QueryAppContainer
@@ -269,13 +270,14 @@ class KafkaUtils:
 
                     # # Handle onedrive sync events
 
-                    # onedrive_event_service = OneDriveEventService(
-                    #     logger=logger,
-                    #     arango_service=arango_service,
-                    # )
+                    onedrive_event_service = OneDriveEventService(
+                        logger=logger,
+                        arango_service=arango_service,
+                        app_container=app_container,
+                    )
 
                     logger.info(f"Processing sync event: {event_type} for MICROSOFT ONEDRIVE")
-                    # return await onedrive_event_service.process_event(event_type, payload)
+                    return await onedrive_event_service.process_event(event_type, payload)
 
                 else:
                     logger.warning(f"Unknown connector in sync message: {connector}")

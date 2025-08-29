@@ -3,6 +3,7 @@ import type { Icon as IconifyIcon } from '@iconify/react';
 import { Icon } from '@iconify/react';
 import closeIcon from '@iconify-icons/mdi/close';
 import gmailIcon from '@iconify-icons/mdi/gmail';
+import onedriveIcon from '@iconify-icons/mdi/onedrive';
 import upIcon from '@iconify-icons/mdi/chevron-up';
 import leftIcon from '@iconify-icons/mdi/chevron-left';
 import downIcon from '@iconify-icons/mdi/chevron-down';
@@ -482,6 +483,7 @@ export default function KnowledgeBaseSideBar({
     () => ({
       GMAIL: gmailIcon,
       DRIVE: googleDriveIcon,
+      ONEDRIVE: onedriveIcon,
     }),
     []
   );
@@ -1025,7 +1027,7 @@ export default function KnowledgeBaseSideBar({
         </FilterHeader>
         <FilterContent in={expandedSections.connector || false}>
           <FormGroup>
-            {['GMAIL', 'DRIVE'].map((connector) => {
+            {['GMAIL', 'DRIVE', 'ONEDRIVE'].map((connector) => {
               const isChecked = (localFilters.connectors || []).includes(connector);
 
               return (

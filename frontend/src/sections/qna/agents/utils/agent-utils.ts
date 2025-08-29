@@ -273,7 +273,7 @@ export const COMMON_MODELS = [
   'mistral-large',
 ] as const;
 
-export const APPS = ['GMAIL', 'DRIVE', 'GOOGEL CALENDAR', 'JIRA', 'SLACK'] as const;
+export const APPS = ['GMAIL', 'DRIVE', 'GOOGEL CALENDAR', 'JIRA', 'SLACK', 'ONEDRIVE'] as const;
 
 // Export utilities for consistent tag management
 export const normalizeTags = (tags: string[]): string[] =>
