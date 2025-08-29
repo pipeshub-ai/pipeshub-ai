@@ -657,7 +657,12 @@ export const kbPermissionSchema = z.object({
     userIds: z.array(z.string()).optional(),
     teamIds: z.array(z.string()).optional(),
     role: z.enum(['OWNER', 'WRITER', 'READER', 'COMMENTER']),
-  }),
+  }).refine((data) => (data.userIds && data.userIds.length > 0) || (data.teamIds && data.teamIds.length > 0),
+    {
+      message: 'At least one user or team ID is required',
+      path: ['userIds'],
+    },
+  ),
   params: z.object({
     kbId: z.string().uuid(),
   }),

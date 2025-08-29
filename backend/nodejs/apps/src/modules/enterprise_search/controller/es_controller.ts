@@ -3547,7 +3547,7 @@ export const createAgentTemplate =
       if (!userId) {
         throw new BadRequestError('User ID is required');
       }
-      console.log('req.body', req.body);
+
       const aiCommandOptions: AICommandOptions = {
         uri: `${appConfig.aiBackend}/api/v1/agent/template/create`,
         method: HttpMethod.POST,

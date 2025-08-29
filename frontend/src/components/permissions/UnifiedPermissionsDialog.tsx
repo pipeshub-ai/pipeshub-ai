@@ -217,6 +217,10 @@ const UnifiedPermissionsDialog: React.FC<UnifiedPermissionsDialogProps> = ({
   const [teamUsers, setTeamUsers] = useState<User[]>([]);
   const [teamRole, setTeamRole] = useState<UnifiedRole>('READER');
   const [creatingTeam, setCreatingTeam] = useState(false);
+  
+  // Team validation state
+  const [showTeamNameError, setShowTeamNameError] = useState(false);
+  const [showTeamDescriptionError, setShowTeamDescriptionError] = useState(false);
 
   // Pagination
   const [permissionsPage, setPermissionsPage] = useState(0);
@@ -353,8 +357,36 @@ const UnifiedPermissionsDialog: React.FC<UnifiedPermissionsDialogProps> = ({
     }
   };
 
+  const handleOpenTeamDialog = () => {
+    setTeamDialogOpen(true);
+    // Reset validation states when opening dialog
+    setShowTeamNameError(false);
+    setShowTeamDescriptionError(false);
+  };
+
+  const handleCloseTeamDialog = () => {
+    setTeamDialogOpen(false);
+    // Reset form and validation states when closing dialog
+    setNewTeamName('');
+    setNewTeamDescription('');
+    setTeamUsers([]);
+    setTeamRole('READER');
+    setShowTeamNameError(false);
+    setShowTeamDescriptionError(false);
+  };
+
   const handleCreateTeam = async () => {
-    if (!newTeamName.trim()) return;
+    // Validate fields before submission
+    const hasNameError = !newTeamName.trim();
+    const hasDescriptionError = !newTeamDescription.trim();
+    
+    setShowTeamNameError(hasNameError);
+    setShowTeamDescriptionError(hasDescriptionError);
+    
+    if (hasNameError || hasDescriptionError) {
+      return; // Don't proceed if validation fails
+    }
+    
     setCreatingTeam(true);
     setError(null);
     try {
@@ -370,7 +402,7 @@ const UnifiedPermissionsDialog: React.FC<UnifiedPermissionsDialogProps> = ({
       setNewTeamDescription('');
       setTeamUsers([]);
       setTeamRole('READER');
-      setTeamDialogOpen(false);
+      handleCloseTeamDialog();
     } catch (e: any) {
       setError(e?.message || 'Failed to create team');
     } finally {
@@ -569,7 +601,7 @@ const UnifiedPermissionsDialog: React.FC<UnifiedPermissionsDialogProps> = ({
                             <Button
                               variant="outlined"
                               size="small"
-                              onClick={() => setTeamDialogOpen(true)}
+                              onClick={handleOpenTeamDialog}
                               startIcon={<Icon icon={teamIcon} width={16} height={16} />}
                               sx={{ textTransform: 'none' }}
                             >
@@ -1361,7 +1393,7 @@ const UnifiedPermissionsDialog: React.FC<UnifiedPermissionsDialogProps> = ({
       {/* Create Team dialog */}
       <Dialog
         open={teamDialogOpen}
-        onClose={() => setTeamDialogOpen(false)}
+        onClose={handleCloseTeamDialog}
         maxWidth="sm"
         fullWidth
         TransitionComponent={Fade}
@@ -1405,7 +1437,7 @@ const UnifiedPermissionsDialog: React.FC<UnifiedPermissionsDialogProps> = ({
             </Typography>
           </Stack>
           <IconButton
-            onClick={() => setTeamDialogOpen(false)}
+            onClick={handleCloseTeamDialog}
             size="small"
             sx={{
               color: theme.palette.text.secondary,
@@ -1418,17 +1450,27 @@ const UnifiedPermissionsDialog: React.FC<UnifiedPermissionsDialogProps> = ({
             <Icon icon={closeIcon} width={18} height={18} />
           </IconButton>
         </DialogTitle>
-        <DialogContent sx={{ p: 3, minHeight: 450 }}>
-          <Stack spacing={3}>
+        <DialogContent sx={{ p: 3, minHeight: 450, mt: 2 }}>
+          <Stack spacing={3} mt={2}>
             <TextField
               label="Team Name"
               value={newTeamName}
-              onChange={(e) => setNewTeamName(e.target.value)}
+              onChange={(e) => {
+                setNewTeamName(e.target.value);
+                // Clear validation error when user starts typing
+                if (showTeamNameError) setShowTeamNameError(false);
+              }}
+              onBlur={() => {
+                // Show error on blur if field is empty and user has interacted
+                if (newTeamName.trim() === '' && showTeamNameError) {
+                  setShowTeamNameError(true);
+                }
+              }}
               fullWidth
               autoFocus
               required
-              error={!newTeamName.trim()}
-              helperText={!newTeamName.trim() ? 'Team name is required' : ''}
+              error={showTeamNameError && !newTeamName.trim()}
+              helperText={showTeamNameError && !newTeamName.trim() ? 'Team name is required' : ''}
               sx={{
                 '& .MuiOutlinedInput-root': {
                   borderRadius: 1,
@@ -1450,13 +1492,23 @@ const UnifiedPermissionsDialog: React.FC<UnifiedPermissionsDialogProps> = ({
             <TextField
               label="Description"
               value={newTeamDescription}
-              onChange={(e) => setNewTeamDescription(e.target.value)}
+              onChange={(e) => {
+                setNewTeamDescription(e.target.value);
+                // Clear validation error when user starts typing
+                if (showTeamDescriptionError) setShowTeamDescriptionError(false);
+              }}
+              onBlur={() => {
+                // Show error on blur if field is empty and user has interacted
+                if (newTeamDescription.trim() === '' && showTeamDescriptionError) {
+                  setShowTeamDescriptionError(true);
+                }
+              }}
               fullWidth
               multiline
               rows={3}
               required
-              error={!newTeamDescription.trim()}
-              helperText={!newTeamDescription.trim() ? 'Team description is required' : ''}
+              error={showTeamDescriptionError && !newTeamDescription.trim()}
+              helperText={showTeamDescriptionError && !newTeamDescription.trim() ? 'Team description is required' : ''}
               placeholder="Describe the team's purpose..."
               sx={{
                 '& .MuiOutlinedInput-root': {
@@ -1611,14 +1663,14 @@ const UnifiedPermissionsDialog: React.FC<UnifiedPermissionsDialogProps> = ({
           }}
         >
           <Button
-            onClick={() => setTeamDialogOpen(false)}
+            onClick={handleCloseTeamDialog}
             disabled={creatingTeam}
             sx={{ color: theme.palette.text.secondary, fontWeight: 500 }}
           >
             Cancel
           </Button>
           <Button
-            variant="contained"
+            variant="outlined"
             disabled={creatingTeam || !newTeamName.trim() || !newTeamDescription.trim()}
             onClick={handleCreateTeam}
             startIcon={
@@ -1631,12 +1683,12 @@ const UnifiedPermissionsDialog: React.FC<UnifiedPermissionsDialogProps> = ({
             sx={{
               fontWeight: 500,
               px: 3,
-              bgcolor: theme.palette.success.main,
+              color: theme.palette.success.main,
               '&:hover': {
-                bgcolor: theme.palette.success.dark,
+                color: theme.palette.success.dark,
               },
               '&:disabled': {
-                bgcolor: alpha(theme.palette.success.main, 0.3),
+                color: alpha(theme.palette.success.main, 0.3),
               },
             }}
           >

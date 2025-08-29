@@ -1139,17 +1139,14 @@ export class UserController {
       if (!userId) {
         throw new BadRequestError('User ID is required');
       }
+      
       const { page, limit, search } = req.query;
-      let queryString = '';
-      if (page) {
-        queryString += `&page=${page}`;
-      }
-      if (limit) {
-        queryString += `&limit=${limit}`;
-      }
-      if (search) {
-        queryString += `&search=${search}`;
-      }
+      const queryParams = new URLSearchParams();
+      if (page) queryParams.append('page', String(page));
+      if (limit) queryParams.append('limit', String(limit));
+      if (search) queryParams.append('search', String(search));
+      const queryString = queryParams.toString();
+
       const aiCommandOptions: AICommandOptions = {
         uri: `${this.config.connectorBackend}/api/v1/entity/user/list?${queryString}`,
         headers: {

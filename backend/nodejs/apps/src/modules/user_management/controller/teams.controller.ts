@@ -49,7 +49,7 @@ export class TeamsController {
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== 200) {
+      if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK) {
         throw new BadRequestError('Failed to create team');
       }
       const team = aiResponse.data;
@@ -90,7 +90,7 @@ export class TeamsController {
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== 200) {
+      if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK) {
         throw new BadRequestError('Failed to get team');
       }
       const team = aiResponse.data;
@@ -120,17 +120,14 @@ export class TeamsController {
       if (!userId) {
         throw new BadRequestError('User ID is required');
       }
+
       const { page, limit, search } = req.query;
-      let queryString = '';
-      if (page) {
-        queryString += `&page=${page}`;
-      }
-      if (limit) {
-        queryString += `&limit=${limit}`;
-      }
-      if (search) {
-        queryString += `&search=${search}`;
-      }
+      const queryParams = new URLSearchParams();
+      if (page) queryParams.append('page', String(page));
+      if (limit) queryParams.append('limit', String(limit));
+      if (search) queryParams.append('search', String(search));
+      const queryString = queryParams.toString();
+
       const aiCommandOptions: AICommandOptions = {
         uri: `${this.config.connectorBackend}/api/v1/entity/team/list?${queryString}`,
         headers: {
@@ -141,7 +138,7 @@ export class TeamsController {
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== 200) {
+      if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK) {
         throw new BadRequestError('Failed to get teams');
       }
       const teams = aiResponse.data;
@@ -183,7 +180,7 @@ export class TeamsController {
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== 200) {
+      if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK) {
         throw new BadRequestError('Failed to add users to team');
       }
       const team = aiResponse.data;
@@ -225,7 +222,7 @@ export class TeamsController {
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== 200) {
+      if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK) {
         throw new BadRequestError('Failed to update team');
       }
       const team = aiResponse.data;
@@ -266,7 +263,7 @@ export class TeamsController {
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== 200) {
+      if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK) {
         throw new BadRequestError('Failed to delete team');
       }
       const team = aiResponse.data;
@@ -309,7 +306,7 @@ export class TeamsController {
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== 200) {
+      if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK) {
         throw new BadRequestError('Failed to remove user from team');
       }
       const team = aiResponse.data;
@@ -350,7 +347,7 @@ export class TeamsController {
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== 200) {
+      if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK) {
         throw new BadRequestError('Failed to get team users');
       }
       const team = aiResponse.data;
@@ -390,7 +387,7 @@ export class TeamsController {
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== 200) {
+      if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK) {
         res.status(HTTP_STATUS.OK).json([]);
         return;
       }
@@ -433,7 +430,7 @@ export class TeamsController {
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== 200) {
+      if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK) {
         throw new BadRequestError('Failed to update team users permissions');
       }
       const team = aiResponse.data;
