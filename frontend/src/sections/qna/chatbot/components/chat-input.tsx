@@ -96,47 +96,29 @@ const normalizeDisplayName = (name: string): string =>
     })
     .join(' ');
 
-export const formattedProvider = (provider: string): string => {
-  switch (provider) {
-    case 'azureOpenAI':
-      return 'Azure OpenAI';
-    case 'openAI':
-      return 'OpenAI';
-    case 'anthropic':
-      return 'Anthropic';
-    case 'gemini':
-      return 'Gemini';
-    case 'claude':
-      return 'Claude';
-    case 'ollama':
-      return 'Ollama';
-    case 'bedrock':
-      return 'AWS Bedrock';
-    case 'xai':
-      return 'xAI';
-    case 'together':
-      return 'Together';
-    case 'groq':
-      return 'Groq';
-    case 'fireworks':
-      return 'Fireworks';
-    case 'cohere':
-      return 'Cohere';
-    case 'openAICompatible':
-      return 'OpenAI API Compatible';
-    case 'mistral':
-      return 'Mistral';
-    case 'voyage':
-      return 'Voyage';
-    case 'jinaAI':
-      return 'Jina AI';
-    case 'sentenceTransformers':
-    case 'default':
-      return 'Default';
-    default:
-      return normalizeDisplayName(provider);
-  }
+const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
+  azureOpenAI: 'Azure OpenAI',
+  openAI: 'OpenAI',
+  anthropic: 'Anthropic',
+  gemini: 'Gemini',
+  claude: 'Claude',
+  ollama: 'Ollama',
+  bedrock: 'AWS Bedrock',
+  xai: 'xAI',
+  together: 'Together',
+  groq: 'Groq',
+  fireworks: 'Fireworks',
+  cohere: 'Cohere',
+  openAICompatible: 'OpenAI API Compatible',
+  mistral: 'Mistral',
+  voyage: 'Voyage',
+  jinaAI: 'Jina AI',
+  sentenceTransformers: 'Default',
+  default: 'Default',
 };
+
+export const formattedProvider = (provider: string): string =>
+  PROVIDER_DISPLAY_NAMES[provider] || normalizeDisplayName(provider);
 
 const ChatInput: React.FC<ChatInputProps> = ({
   onSubmit,
