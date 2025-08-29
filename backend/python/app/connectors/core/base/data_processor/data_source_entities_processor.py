@@ -98,7 +98,7 @@ class DataSourceEntitiesProcessor:
         )
 
         # Ensure bootstrap_servers is a list
-        bootstrap_servers = producer_config.get("brokers")
+        bootstrap_servers = producer_config.get("brokers") or producer_config.get("bootstrap_servers")
         if isinstance(bootstrap_servers, str):
             bootstrap_servers = [server.strip() for server in bootstrap_servers.split(",")]
 
