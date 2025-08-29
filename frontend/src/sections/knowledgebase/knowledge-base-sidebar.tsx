@@ -1027,7 +1027,7 @@ export default function KnowledgeBaseSideBar({
         </FilterHeader>
         <FilterContent in={expandedSections.connector || false}>
           <FormGroup>
-            {['GMAIL', 'DRIVE', 'ONEDRIVE'].map((connector) => {
+            {Object.keys(connectorIcons).map((connector) => {
               const isChecked = (localFilters.connectors || []).includes(connector);
 
               return (
