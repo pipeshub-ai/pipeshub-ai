@@ -84,6 +84,8 @@ class Record(BaseModel):
             "recordType": self.record_type.value,
             "externalRecordId": self.external_record_id,
             "externalRevisionId": self.external_revision_id,
+            "externalGroupId": self.external_record_group_id,
+            "externalParentId": self.parent_external_record_id,
             "version": self.version,
             "origin": self.origin,
             "connectorName": self.connector_name,
@@ -109,6 +111,8 @@ class Record(BaseModel):
             record_type=arango_base_record["recordType"],
             record_group_type=None,
             external_record_id=arango_base_record["externalRecordId"],
+            external_record_group_id=arango_base_record.get("externalGroupId", None),
+            parent_external_record_id=arango_base_record.get("externalParentId", None),
             version=arango_base_record["version"],
             origin=arango_base_record["origin"],
             connector_name=arango_base_record["connectorName"],
@@ -168,6 +172,8 @@ class FileRecord(Record):
             connector_name=arango_base_record["connectorName"],
             mime_type=arango_base_record["mimeType"],
             weburl=arango_base_record["webUrl"],
+            external_record_group_id=arango_base_file_record["externalGroupId"],
+            parent_external_record_id=arango_base_file_record["externalParentId"],
             created_at=arango_base_record["createdAtTimestamp"],
             updated_at=arango_base_record["updatedAtTimestamp"],
             source_created_at=arango_base_record["sourceCreatedAtTimestamp"],
@@ -204,14 +210,13 @@ class FileRecord(Record):
             "signedUrl": self.signed_url,
             "signedUrlRoute": self.fetch_signed_url,
             "externalRevisionId": self.external_revision_id,
-            "externalRecordGroupId": self.external_record_group_id,
+            "externalGroupId": self.external_record_group_id,
             "parentExternalRecordId": self.parent_external_record_id,
             "isFile": self.is_file,
         }
 
 class MessageRecord(Record):
     content: Optional[str] = None
-
 
     def to_kafka_record(self) -> Dict:
         return {

@@ -26,7 +26,7 @@ from app.connectors.sources.microsoft.common.msgraph_client import (
     RecordUpdate,
     map_msgraph_role_to_permission_type,
 )
-from app.models.entities import FileRecord, RecordStatus, RecordType
+from app.models.entities import FileRecord, Record, RecordStatus, RecordType
 from app.models.permission import EntityType, Permission, PermissionType
 from app.models.users import User
 
@@ -108,7 +108,7 @@ class OneDriveConnector():
             metadata_changed = False
             content_changed = False
             permissions_changed = False
-
+            print(item, "item is")
             if existing_record:
                 # Check for metadata changes
                 if (existing_record.external_revision_id != item.e_tag or
@@ -671,6 +671,22 @@ class OneDriveConnector():
         except Exception as e:
             self.logger.error(f"Error during cleanup: {e}")
 
+    async def create_signed_url(self, record_id: str) -> Optional[Tuple[Record, str]]:
+        """
+        Create a signed URL for a specific record.
+        """
+        try:
+            # Get the record from database
+            record = await self.arango_service.get_record_by_id(record_id)
+
+            if not record:
+                raise ValueError(f"Record {record_id} not found")
+
+            # Get the signed URL
+            return record, await self.msgraph_client.get_download_url(record.external_record_group_id, record.external_record_id)
+        except Exception as e:
+            self.logger.error(f"Error creating signed URL for record {record_id}: {e}")
+            return None
 
 # Additional helper class for managing OneDrive subscriptions
 class OneDriveSubscriptionManager:

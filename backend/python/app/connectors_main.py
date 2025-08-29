@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator, List
 
 import uvicorn
+from dependency_injector import providers
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -10,7 +11,15 @@ from fastapi.responses import JSONResponse
 from app.api.middlewares.auth import authMiddleware
 from app.config.constants.arangodb import AccountType, Connectors
 from app.connectors.api.router import router
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    DataSourceEntitiesProcessor,
+)
 from app.connectors.sources.localKB.api.kb_router import kb_router
+from app.connectors.sources.microsoft.common.apps import OneDriveApp
+from app.connectors.sources.microsoft.onedrive.onedrive import (
+    OneDriveConnector,
+    OneDriveCredentials,
+)
 from app.containers.connector import (
     ConnectorAppContainer,
     initialize_container,
@@ -90,21 +99,49 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
 
             drive_sync_service = None
             gmail_sync_service = None
-
+            onedrive_connector = None
             for app in enabled_apps:
-                if app["name"] == Connectors.GOOGLE_CALENDAR.value:
+                if app["name"].lower() == Connectors.GOOGLE_CALENDAR.value.lower():
                     logger.info("Skipping calendar sync for org %s", org_id)
                     continue
 
-                if app["name"] == Connectors.GOOGLE_DRIVE.value:
+                if app["name"].lower() == Connectors.GOOGLE_DRIVE.value.lower():
                     drive_sync_service = app_container.drive_sync_service()  # type: ignore
                     await drive_sync_service.initialize(org_id)  # type: ignore
                     logger.info("Drive Service initialized for org %s", org_id)
 
-                if app["name"] == Connectors.GOOGLE_MAIL.value:
+                if app["name"].lower() == Connectors.GOOGLE_MAIL.value.lower():
                     gmail_sync_service = app_container.gmail_sync_service()  # type: ignore
                     await gmail_sync_service.initialize(org_id)  # type: ignore
                     logger.info("Gmail Service initialized for org %s", org_id)
+
+                if app["name"].lower() == Connectors.ONEDRIVE.value.lower():
+                    config_service = app_container.config_service()
+                    arango_service = await app_container.arango_service()
+                    data_entities_processor = DataSourceEntitiesProcessor(logger, OneDriveApp(), arango_service, config_service)
+                    await data_entities_processor.initialize()
+                    credentials_config = await config_service.get_config(f"/services/connectors/onedrive/config/{org_id}")
+                    if not credentials_config:
+                            logger.error("OneDrive credentials not found")
+                            return False
+
+                    tenant_id = credentials_config.get("tenantId")
+                    client_id = credentials_config.get("clientId")
+                    client_secret = credentials_config.get("clientSecret")
+                    if not all((tenant_id, client_id, client_secret)):
+                        logger.error(f"Incomplete OneDrive credentials for org_id: {org_id}. Ensure tenantId, clientId, and clientSecret are configured.")
+                        return False
+                    has_admin_consent = credentials_config.get("hasAdminConsent", False)
+                    credentials = OneDriveCredentials(
+                        tenant_id=tenant_id,
+                        client_id=client_id,
+                        client_secret=client_secret,
+                        has_admin_consent=has_admin_consent,
+                    )
+                    onedrive_connector = OneDriveConnector(logger, data_entities_processor, arango_service, credentials)
+                    app_container.onedrive_connector.override(providers.Object(onedrive_connector))
+                    asyncio.create_task(onedrive_connector.run())  # type: ignore
+                    logger.info("OneDrive connector initialized for org %s", org_id)
 
             if drive_sync_service is not None:
                 try:

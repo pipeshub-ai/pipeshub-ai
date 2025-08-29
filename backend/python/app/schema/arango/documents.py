@@ -128,6 +128,8 @@ record_schema = {
             "recordName": {"type": "string", "minLength": 1},
             # should be a uuid
             "externalRecordId": {"type": "string", "minLength": 1},
+            "externalGroupId": {"type": ["string", "null"]},
+            "externalParentId": {"type": ["string", "null"]},
             "externalRevisionId": {"type": ["string", "null"], "default": None},
             "recordType": {
                 "type": "string",

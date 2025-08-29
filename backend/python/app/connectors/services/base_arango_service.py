@@ -1553,6 +1553,10 @@ class BaseArangoService:
                     user_role = await self._check_drive_permissions(record_id, user_key)
                 elif connector_name == Connectors.GOOGLE_MAIL.value:
                     user_role = await self._check_gmail_permissions(record_id, user_key)
+                elif connector_name == Connectors.ONEDRIVE.value:
+                    user_role = await self._check_drive_permissions(record_id, user_key)
+                else:
+                    user_role = None
 
                 if not user_role or user_role not in ["OWNER", "WRITER","READER"]:
                     return {
@@ -3076,6 +3080,53 @@ class BaseArangoService:
         except Exception as e:
             self.logger.error(
                 "❌ Failed to retrieve internal key for external file ID %s %s: %s", connector_name, external_id, str(e)
+            )
+            return None
+
+    async def get_record_by_id(
+        self, id: str, transaction: Optional[TransactionDatabase] = None
+    ) -> Optional[Record]:
+        """
+        Get internal file key using the id
+
+        Args:
+            external_file_id (str): External file ID to look up
+            transaction (Optional[TransactionDatabase]): Optional database transaction
+
+        Returns:
+            Optional[str]: Internal file key if found, None otherwise
+        """
+        try:
+            self.logger.info(
+                "🚀 Retrieving internal key for id %s", id
+            )
+
+            query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record._key == @id
+                RETURN record
+            """
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(
+                query, bind_vars={"id": id}
+            )
+            result = next(cursor, None)
+
+            if result:
+                self.logger.info(
+                    "✅ Successfully retrieved internal key for id %s", id
+                )
+                return Record.from_arango_base_record(result)
+            else:
+                self.logger.warning(
+                    "⚠️ No internal key found for id %s", id
+                )
+                return None
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to retrieve internal key for id %s: %s", id, str(e)
             )
             return None
 

@@ -378,7 +378,7 @@ class DataSourceEntitiesProcessor:
 
             self.logger.info(f"Processing record group: {record_group}")
             existing_record_group = await self.arango_service.get_record_group_by_external_id(connector_name=record_group.connector_name,
-                                                                                            external_id=record_group.external_group_id, transaction=transaction)
+                                                                                              external_id=record_group.external_group_id, transaction=transaction)
             if existing_record_group is None:
                 record_group.id = str(uuid.uuid4())
                 # Create a permission edge between the record group and the org if it doesn't exist
