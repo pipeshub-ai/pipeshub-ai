@@ -431,7 +431,7 @@ class EntityEventService(BaseEventService):
             if enabled_apps:
                 self.logger.info(f"Enabled apps are: {enabled_apps}")
                 # Initialize services based on account type
-                if self.app_container and "google" in app_group:
+                if self.app_container and "google" in app_group.lower():
                     accountType = org["accountType"]
                     # Use the existing app container to initialize services
                     await self.__handle_google_app_account_services(org_id, accountType)
