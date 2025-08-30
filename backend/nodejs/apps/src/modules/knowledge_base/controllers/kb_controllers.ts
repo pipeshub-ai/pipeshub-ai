@@ -644,6 +644,7 @@ export const uploadRecordsToKB =
           indexingStatus: INDEXING_STATUS.NOT_STARTED,
           version: 1,
           webUrl: webUrl,
+          mimeType: mimetype,
         };
 
         const fileRecord: IFileRecordDocument = {
@@ -826,7 +827,7 @@ export const uploadRecordsToFolder =
             : currentTime;
 
         // Create record structure
-        const record = {
+        const record: IRecordDocument = {
           _key: key,
           orgId: orgId,
           recordName: fileName,
@@ -842,9 +843,10 @@ export const uploadRecordsToFolder =
           indexingStatus: INDEXING_STATUS.NOT_STARTED,
           version: 1,
           webUrl: webUrl,
+          mimeType: mimetype,
         };
 
-        const fileRecord = {
+        const fileRecord: IFileRecordDocument = {
           _key: key,
           orgId: orgId,
           name: fileName,
@@ -884,7 +886,7 @@ export const uploadRecordsToFolder =
       }
 
       console.log(
-        '✅ Files processed, calling Python service for folder upload',
+        '✅ Files processed, calling Python service for folder upload', 
       );
 
       // Single API call to Python service with all data

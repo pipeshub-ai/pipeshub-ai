@@ -1,15 +1,19 @@
 import asyncio
+import json
 import time
 from typing import Any, Dict, List, Optional
-
+from qdrant_client import  models
 from langchain.chat_models.base import BaseChatModel
 from langchain.embeddings.base import Embeddings
 from langchain_qdrant import FastEmbedSparse, QdrantVectorStore, RetrievalMode
-
+from qdrant_client import QdrantClient
+from qdrant_client.http.models import FieldCondition, Filter, MatchValue
+from langchain.schema import Document
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import (
     DEFAULT_EMBEDDING_MODEL,
 )
+# from langchain_cohere import CohereEmbeddings
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
@@ -35,6 +39,7 @@ class RetrievalService:
         config_service: ConfigurationService,
         collection_name: str,
         vector_db_service: IVectorDBService,
+        arango_service: ArangoService,
     ) -> None:
         """
         Initialize the retrieval service with necessary configurations.
@@ -48,6 +53,7 @@ class RetrievalService:
         self.logger = logger
         self.config_service = config_service
         self.llm = None
+        self.arango_service = arango_service
 
         # Initialize sparse embeddings
         try:
@@ -59,6 +65,7 @@ class RetrievalService:
                 "Failed to initialize sparse embeddings: " + str(e),
             )
         self.vector_db_service = vector_db_service
+        self.vector_db_client = vector_db_service.get_service_client()
         self.collection_name = collection_name
         self.logger.info(f"Retrieval service initialized with collection name: {self.collection_name}")
         self.vector_store = None
@@ -207,10 +214,10 @@ class RetrievalService:
         formatted_results = []
         for doc, score in results:
             formatted_result = {
-                "content": doc.page_content,
                 "score": float(score),
                 "citationType": "vectordb|document",
                 "metadata": doc.metadata,
+                "content": doc.page_content
             }
             formatted_results.append(formatted_result)
         return formatted_results
@@ -228,7 +235,7 @@ class RetrievalService:
 
         try:
             # Get accessible records
-            if not arango_service:
+            if not self.arango_service:
                 raise ValueError("ArangoService is required for permission checking")
 
             filter_groups = filter_groups or {}
@@ -245,9 +252,9 @@ class RetrievalService:
                     arango_filters[metadata_key] = values
 
             init_tasks = [
-                self._get_accessible_records_task(user_id, org_id, filter_groups, arango_service),
+                self._get_accessible_records_task(user_id, org_id, filter_groups, self.arango_service),
                 self._get_vector_store_task(),
-                arango_service.get_user_by_user_id(user_id)  # Get user info in parallel
+                self.arango_service.get_user_by_user_id(user_id)  # Get user info in parallel
             ]
 
             accessible_records, vector_store, user = await asyncio.gather(*init_tasks)
@@ -339,7 +346,7 @@ class RetrievalService:
                         # Fetch additional file URL if needed
                         if not weburl and record.get("recordType", "") == RecordTypes.FILE.value:
                             try:
-                                files = await arango_service.get_document(
+                                files = await self.arango_service.get_document(
                                     record_id, CollectionNames.FILES.value
                                 )
                                 if files:  # Check if files is not None
@@ -355,7 +362,7 @@ class RetrievalService:
                         # Fetch additional mail URL if needed
                         if not weburl and record.get("recordType", "") == RecordTypes.MAIL.value:
                             try:
-                                mail = await arango_service.get_document(
+                                mail = await self.arango_service.get_document(
                                     record_id, CollectionNames.MAILS.value
                                 )
                                 if mail:  # Check if mail is not None
@@ -441,6 +448,8 @@ class RetrievalService:
             if not dense_embeddings:
                 raise ValueError("No dense embeddings found")
 
+            
+
             self.vector_store = QdrantVectorStore(
                 client=self.vector_db_service.get_service_client(),
                 collection_name=self.collection_name,
@@ -457,32 +466,71 @@ class RetrievalService:
     async def _execute_parallel_searches(self, queries, filter, limit, vector_store) -> List[Dict[str, Any]]:
         """Execute all searches in parallel"""
         all_results = []
-        seen_chunks = set()
+        print(json.dumps(queries, indent=4))
+        
+        dense_embeddings = await self.get_embedding_model_instance()
+        if not dense_embeddings:
+                raise ValueError("No dense embeddings found")
 
+        query_embeddings = [await dense_embeddings.aembed_query(query) for query in queries]
+        query_requests = [models.QueryRequest(
+            query=query_embedding,
+            with_payload=True,
+            limit=limit,
+            using="dense"
+        ) for query_embedding in query_embeddings]
+        search_results = self.vector_db_client.query_batch_points(
+            collection_name=self.collection_name,
+            requests=query_requests,
+        )
+        # search_tasks = [self.qdrant_client.search(
+        #     vector_name="dense",
+        #     sparse_vector_name="sparse",
+        #     collection_name=self.collection_name,
+        #     query_vector=query_embedding,
+        #     # query_filter=query_filter,
+        #     limit=limit,
+        #     with_payload=True
+        # ) for query_embedding in query_embeddings]
+        
+        # start_time = time.monotonic()
+        # search_results = await asyncio.gather(*search_tasks)
+        # elapsed = time.monotonic() - start_time
+        # self.logger.debug(f"VectorDB lookup for {len(queries)} queries took {elapsed:.3f} seconds.")
+        # Convert to LangChain documents
+        
+        for r in search_results:
+                points = r.points
+                for point in points:
+                    doc = Document(
+                        page_content=point.payload.get("page_content", ""),
+                        metadata=point.payload.get("metadata", {})
+                    )
+                    score = point.score
+                    all_results.append((doc, score))
+            
+        return self._format_results(all_results)
         # Process all queries in parallel
-        search_tasks = [
-            vector_store.asimilarity_search_with_score(
-                query=await self._preprocess_query(query),
-                k=limit,
-                filter=filter
-            )
-            for query in queries
-        ]
-
-        start_time = time.monotonic()
-        search_results = await asyncio.gather(*search_tasks)
-        elapsed = time.monotonic() - start_time
-        self.logger.debug(f"VectorDB lookup for {len(queries)} queries took {elapsed:.3f} seconds.")
+        # search_tasks = [
+        #     vector_store.asimilarity_search_with_score(
+        #         query=await self._preprocess_query(query),
+        #         k=limit,
+        #         # filter=qdrant_filter
+        #     )
+        #     for query in queries
+        # ]
+        
+        # start_time = time.monotonic()
+        # search_results = await asyncio.gather(*search_tasks)
+        # elapsed = time.monotonic() - start_time
+        # self.logger.debug(f"VectorDB lookup for {len(queries)} queries took {elapsed:.3f} seconds.")
 
         # Deduplicate results
-        for results in search_results:
-            for doc, score in results:
-                if doc.page_content not in seen_chunks:
-                    all_results.append((doc, score))
-                    seen_chunks.add(doc.page_content)
-
-        return self._format_results(all_results)
-
+        # for resultList in search_results:
+        #     for doc, score in resultList:
+        #         # if doc.page_content not in seen_chunks:
+        #             all_results.append((doc, score))
+        #             # seen_chunks.add(doc.page_content)
 
     def _create_empty_response(self, message: str, status: Status) -> Dict[str, Any]:
         """Helper to create empty response"""

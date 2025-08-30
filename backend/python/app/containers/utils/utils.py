@@ -32,6 +32,11 @@ from app.services.vector_db.const.const import (
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.vector_db_factory import VectorDBFactory
 from app.utils.logger import create_logger
+from app.modules.transformers.arango import Arango
+from app.modules.transformers.blob_storage import BlobStorage
+from app.modules.transformers.document_extraction import DocumentExtraction
+from app.modules.transformers.sink_orchestrator import SinkOrchestrator
+from app.modules.transformers.vectorstore import VectorStore
 
 
 # Note - Cannot make this a singleton as it is used in the container and DI does not work with static methods
@@ -88,7 +93,32 @@ class ContainerUtils:
         extractor = DomainExtractor(logger, arango_service, config_service)
         # Add any necessary async initialization
         return extractor
+    
+    async def create_vector_store(self, logger, arango_service, config_service, vector_db_service, collection_name) -> VectorStore:
+        """Async factory for VectorStore"""
+        vector_store = VectorStore(logger, config_service, arango_service, collection_name, vector_db_service)
+        return vector_store
 
+    async def create_arango(self, arango_service, logger) -> Arango:
+        """Async factory for Arango"""
+        arango = Arango(arango_service, logger)
+        return arango
+        
+    async def create_sink_orchestrator(self, logger, arango, blob_storage, vector_store) -> SinkOrchestrator:
+        """Async factory for SinkOrchestrator"""
+        orchestrator = SinkOrchestrator(arango=arango, blob_storage=blob_storage, vector_store=vector_store)
+        return orchestrator
+            
+    async def create_document_extractor(self, logger, arango_service, config_service) -> DocumentExtraction:
+        """Async factory for DocumentExtraction"""
+        extractor = DocumentExtraction(logger, arango_service, config_service)
+        return extractor
+
+    async def create_blob_storage(self, logger, config_service, arango_service) -> BlobStorage:
+        """Async factory for BlobStorage"""
+        blob_storage = BlobStorage(logger, config_service, arango_service)
+        return blob_storage
+        
     async def create_parsers(self, logger: Logger) -> dict:
         """Async factory for Parsers"""
         parsers = {
@@ -109,19 +139,23 @@ class ContainerUtils:
         self,
         logger: Logger,
         config_service: ConfigurationService,
-        domain_extractor: DomainExtractor,
         indexing_pipeline: IndexingPipeline,
         arango_service: ArangoService,
         parsers: dict,
+        document_extractor: DocumentExtraction,
+        sink_orchestrator: SinkOrchestrator,
+        domain_extractor: DomainExtractor,
     ) -> Processor:
         """Async factory for Processor"""
         processor = Processor(
             logger=logger,
             config_service=config_service,
-            domain_extractor=domain_extractor,
             indexing_pipeline=indexing_pipeline,
             arango_service=arango_service,
             parsers=parsers,
+            document_extractor=document_extractor,
+            sink_orchestrator=sink_orchestrator,
+            domain_extractor=domain_extractor,
         )
         # Add any necessary async initialization
         return processor
@@ -176,6 +210,7 @@ class ContainerUtils:
         config_service: ConfigurationService,
         logger: Logger,
         vector_db_service: IVectorDBService,
+        arango_service: ArangoService,
     ) -> RetrievalService:
         """Async factory for RetrievalService"""
         service = RetrievalService(
@@ -183,5 +218,6 @@ class ContainerUtils:
             config_service=config_service,
             collection_name=VECTOR_DB_COLLECTION_NAME,
             vector_db_service=vector_db_service,
+            arango_service=arango_service,
         )
         return service

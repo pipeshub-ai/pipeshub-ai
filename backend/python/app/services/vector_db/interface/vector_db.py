@@ -34,7 +34,7 @@ class IVectorDBService(ABC):
     async def create_collection(
         self,
         collection_name: str,
-        embedding_size: int = 1024,
+        embedding_size: int,
         sparse_idf: bool = False,
         vectors_config: Optional[dict] = None,
         sparse_vectors_config: Optional[dict] = None,
