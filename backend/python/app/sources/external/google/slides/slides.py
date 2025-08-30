@@ -19,7 +19,7 @@ class GoogleSlidesDataSource:
         """
         self.client = client
 
-    def presentations_get(
+    async def presentations_get(
         self,
         presentationId: str
     ) -> Dict[str, Any]:
@@ -40,7 +40,7 @@ class GoogleSlidesDataSource:
         request = self.client.presentations().get(**kwargs) # type: ignore
         return request.execute()
 
-    def presentations_create(self) -> Dict[str, Any]:
+    async def presentations_create(self) -> Dict[str, Any]:
         """Google Slides API: Creates a blank presentation using the title given in the request. If a `presentationId` is provided, it is used as the ID of the new presentation. Otherwise, a new ID is generated. Other fields in the request, including any provided content, are ignored. Returns the created presentation.
 
         HTTP POST v1/presentations
@@ -59,7 +59,7 @@ class GoogleSlidesDataSource:
             request = self.client.presentations().create(**kwargs) # type: ignore
         return request.execute()
 
-    def presentations_batch_update(
+    async def presentations_batch_update(
         self,
         presentationId: str
     ) -> Dict[str, Any]:
@@ -85,7 +85,7 @@ class GoogleSlidesDataSource:
             request = self.client.presentations().batchUpdate(**kwargs) # type: ignore
         return request.execute()
 
-    def presentations_pages_get(
+    async def presentations_pages_get(
         self,
         presentationId: str,
         pageObjectId: str
@@ -110,7 +110,7 @@ class GoogleSlidesDataSource:
         request = self.client.presentations_pages().get(**kwargs) # type: ignore
         return request.execute()
 
-    def presentations_pages_get_thumbnail(
+    async def presentations_pages_get_thumbnail(
         self,
         presentationId: str,
         pageObjectId: str,
@@ -143,6 +143,6 @@ class GoogleSlidesDataSource:
         request = self.client.presentations_pages().getThumbnail(**kwargs) # type: ignore
         return request.execute()
 
-    def get_client(self) -> object:
+    async def get_client(self) -> object:
         """Get the underlying Google API client."""
         return self.client

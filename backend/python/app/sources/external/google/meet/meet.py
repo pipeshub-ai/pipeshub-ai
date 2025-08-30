@@ -19,7 +19,7 @@ class GoogleMeetDataSource:
         """
         self.client = client
 
-    def spaces_create(self) -> Dict[str, Any]:
+    async def spaces_create(self) -> Dict[str, Any]:
         """Google Meet API: Creates a space.
 
         HTTP POST v2/spaces
@@ -38,7 +38,7 @@ class GoogleMeetDataSource:
             request = self.client.spaces().create(**kwargs) # type: ignore
         return request.execute()
 
-    def spaces_get(
+    async def spaces_get(
         self,
         name: str
     ) -> Dict[str, Any]:
@@ -59,7 +59,7 @@ class GoogleMeetDataSource:
         request = self.client.spaces().get(**kwargs) # type: ignore
         return request.execute()
 
-    def spaces_patch(
+    async def spaces_patch(
         self,
         name: str,
         updateMask: Optional[str] = None
@@ -89,7 +89,7 @@ class GoogleMeetDataSource:
             request = self.client.spaces().patch(**kwargs) # type: ignore
         return request.execute()
 
-    def spaces_end_active_conference(
+    async def spaces_end_active_conference(
         self,
         name: str
     ) -> Dict[str, Any]:
@@ -115,7 +115,7 @@ class GoogleMeetDataSource:
             request = self.client.spaces().endActiveConference(**kwargs) # type: ignore
         return request.execute()
 
-    def conference_records_get(
+    async def conference_records_get(
         self,
         name: str
     ) -> Dict[str, Any]:
@@ -136,7 +136,7 @@ class GoogleMeetDataSource:
         request = self.client.conferenceRecords().get(**kwargs) # type: ignore
         return request.execute()
 
-    def conference_records_list(
+    async def conference_records_list(
         self,
         pageSize: Optional[int] = None,
         pageToken: Optional[str] = None,
@@ -165,7 +165,7 @@ class GoogleMeetDataSource:
         request = self.client.conferenceRecords().list(**kwargs) # type: ignore
         return request.execute()
 
-    def conference_records_participants_get(
+    async def conference_records_participants_get(
         self,
         name: str
     ) -> Dict[str, Any]:
@@ -186,7 +186,7 @@ class GoogleMeetDataSource:
         request = self.client.conferenceRecords_participants().get(**kwargs) # type: ignore
         return request.execute()
 
-    def conference_records_participants_list(
+    async def conference_records_participants_list(
         self,
         parent: str,
         pageSize: Optional[int] = None,
@@ -219,7 +219,7 @@ class GoogleMeetDataSource:
         request = self.client.conferenceRecords_participants().list(**kwargs) # type: ignore
         return request.execute()
 
-    def conference_records_participants_participant_sessions_get(
+    async def conference_records_participants_participant_sessions_get(
         self,
         name: str
     ) -> Dict[str, Any]:
@@ -240,7 +240,7 @@ class GoogleMeetDataSource:
         request = self.client.conferenceRecords_participants_participantSessions().get(**kwargs) # type: ignore
         return request.execute()
 
-    def conference_records_participants_participant_sessions_list(
+    async def conference_records_participants_participant_sessions_list(
         self,
         parent: str,
         pageSize: Optional[int] = None,
@@ -273,7 +273,7 @@ class GoogleMeetDataSource:
         request = self.client.conferenceRecords_participants_participantSessions().list(**kwargs) # type: ignore
         return request.execute()
 
-    def conference_records_recordings_get(
+    async def conference_records_recordings_get(
         self,
         name: str
     ) -> Dict[str, Any]:
@@ -294,7 +294,7 @@ class GoogleMeetDataSource:
         request = self.client.conferenceRecords_recordings().get(**kwargs) # type: ignore
         return request.execute()
 
-    def conference_records_recordings_list(
+    async def conference_records_recordings_list(
         self,
         parent: str,
         pageSize: Optional[int] = None,
@@ -323,7 +323,7 @@ class GoogleMeetDataSource:
         request = self.client.conferenceRecords_recordings().list(**kwargs) # type: ignore
         return request.execute()
 
-    def conference_records_transcripts_get(
+    async def conference_records_transcripts_get(
         self,
         name: str
     ) -> Dict[str, Any]:
@@ -344,7 +344,7 @@ class GoogleMeetDataSource:
         request = self.client.conferenceRecords_transcripts().get(**kwargs) # type: ignore
         return request.execute()
 
-    def conference_records_transcripts_list(
+    async def conference_records_transcripts_list(
         self,
         parent: str,
         pageSize: Optional[int] = None,
@@ -373,7 +373,7 @@ class GoogleMeetDataSource:
         request = self.client.conferenceRecords_transcripts().list(**kwargs) # type: ignore
         return request.execute()
 
-    def conference_records_transcripts_entries_get(
+    async def conference_records_transcripts_entries_get(
         self,
         name: str
     ) -> Dict[str, Any]:
@@ -394,7 +394,7 @@ class GoogleMeetDataSource:
         request = self.client.conferenceRecords_transcripts_entries().get(**kwargs) # type: ignore
         return request.execute()
 
-    def conference_records_transcripts_entries_list(
+    async def conference_records_transcripts_entries_list(
         self,
         parent: str,
         pageSize: Optional[int] = None,
@@ -423,6 +423,6 @@ class GoogleMeetDataSource:
         request = self.client.conferenceRecords_transcripts_entries().list(**kwargs) # type: ignore
         return request.execute()
 
-    def get_client(self) -> object:
+    async def get_client(self) -> object:
         """Get the underlying Google API client."""
         return self.client

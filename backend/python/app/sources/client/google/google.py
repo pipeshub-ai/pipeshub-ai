@@ -1,7 +1,16 @@
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
+
+import jwt  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
+from app.config.constants.arangodb import CollectionNames
+from app.config.constants.service import (
+    DefaultEndpoints,
+    Routes,
+    TokenScopes,
+    config_node_constants,
+)
 from app.connectors.sources.google.common.connector_google_exceptions import (
     AdminAuthError,
     AdminDelegationError,
@@ -10,13 +19,15 @@ from app.connectors.sources.google.common.connector_google_exceptions import (
 )
 from app.connectors.sources.google.common.google_token_handler import (
     CredentialKeys,
-    GoogleTokenHandler,
 )
 from app.connectors.sources.google.common.scopes import (
     GOOGLE_CONNECTOR_ENTERPRISE_SCOPES,
     GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES,
     GOOGLE_PARSER_SCOPES,
 )
+from app.services.graph_db.interface.graph_db import IGraphService
+from app.sources.client.http.http_client import HTTPClient
+from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.iclient import IClient
 
 try:
@@ -83,9 +94,7 @@ class GoogleClient(IClient):
         service_name: str, # Name of the service to build the client for [drive, admin, calendar, gmail]
         logger,
         config_service: ConfigurationService,
-        arango_service,
-        org_id: str,
-        user_id: str,
+        graph_db_service: IGraphService,
         is_individual: Optional[bool] = False,
         version: Optional[str] = "v3", # Version of the service to build the client for [v3, v1]
         scopes: Optional[List[str]] = None, # Scopes of the service to build the client
@@ -97,7 +106,7 @@ class GoogleClient(IClient):
             service_name: Name of the service to build the client for
             logger: Logger instance
             config_service: Configuration service instance
-            arango_service: ArangoDB service instance
+            graph_db_service: GraphDB service instance
             org_id: Organization ID
             user_id: User ID
             is_individual: Flag to indicate if the client is for an individual user or an enterprise account
@@ -105,17 +114,40 @@ class GoogleClient(IClient):
         Returns:
             GoogleClient instance
         """
-        # Create GoogleTokenHandler instance
-        google_token_handler = GoogleTokenHandler(
-            logger=logger,
-            config_service=config_service,
-            arango_service=arango_service
-        )
+        # TODO Cleanup this code
+        # get org id
+        query = f"""
+            FOR org IN {CollectionNames.ORGS.value}
+            FILTER @active == false || org.isActive == true
+            RETURN org
+            """
+
+        bind_vars = {"active": True}
+        orgs = await graph_db_service.execute_query(query, bind_vars=bind_vars)
+        if not orgs:
+            raise Exception("Org ID not found")
+        org_id = orgs[0]["_key"]
 
         if is_individual:
             try:
+                # get user id
+                query = """
+                        FOR edge IN belongsTo
+                            FILTER edge._to == CONCAT('organizations/', @org_id)
+                            AND edge.entityType == 'ORGANIZATION'
+                            LET user = DOCUMENT(edge._from)
+                            FILTER @active == false OR user.isActive == true
+                            RETURN user
+                        """
+
+                users = await graph_db_service.execute_query(query, bind_vars={"org_id": org_id, "active": True})
+                if not users:
+                    raise Exception("User ID not found")
+                user_id = users[0]["_key"]
+                if not user_id:
+                    raise Exception("User ID not found")
                 #fetch saved credentials
-                saved_credentials = await google_token_handler.get_individual_token(org_id, user_id)
+                saved_credentials = await GoogleClient.get_individual_token(org_id, user_id, config_service)
 
                 google_credentials = Credentials(
                     token=saved_credentials.get(CredentialKeys.ACCESS_TOKEN.value),
@@ -132,7 +164,7 @@ class GoogleClient(IClient):
                 raise GoogleAuthError("Failed to get individual token: " + str(e)) from e
         else:
             try:
-                saved_credentials = await google_token_handler.get_enterprise_token(org_id)
+                saved_credentials = await GoogleClient.get_enterprise_token(org_id, config_service)
                 if not saved_credentials:
                     raise AdminAuthError(
                         "Failed to get enterprise credentials",
@@ -181,3 +213,80 @@ class GoogleClient(IClient):
 
         return cls(client)
 
+    @staticmethod
+    async def _fetch_credentials(
+        *,
+        org_id: str,
+        config_service: ConfigurationService,
+        route: Routes,
+        user_id: Optional[str] = None,
+        scopes: Optional[list[str]] = None,
+    ) -> dict[str, Any]:
+        """Build JWT, resolve endpoint, call credentials API, return JSON."""
+        # 1) Compose payload
+        payload: Dict[str, Any] = {
+            "orgId": org_id,
+            "scopes": scopes or [TokenScopes.FETCH_CONFIG.value],
+        }
+        if user_id is not None:
+            payload["userId"] = user_id
+
+        # 2) Get secrets
+        secret_keys = await config_service.get_config(config_node_constants.SECRET_KEYS.value)
+        if not secret_keys:
+            raise Exception("Secret keys not found")
+        if not isinstance(secret_keys, dict):
+            raise Exception("Secret keys must be a dictionary")
+        scoped_jwt_secret = secret_keys.get("scopedJwtSecret")
+        if not scoped_jwt_secret:
+            raise Exception("Scoped JWT secret not found")
+
+        # 3) Create JWT
+        jwt_token = jwt.encode(payload, scoped_jwt_secret, algorithm="HS256")
+
+        # 4) Resolve endpoint
+        endpoints = await config_service.get_config(config_node_constants.ENDPOINTS.value)
+        if not endpoints:
+            raise Exception("Endpoints config not found")
+        if not isinstance(endpoints, dict):
+            raise Exception("Endpoints must be a dictionary")
+        cm = endpoints.get("cm") or {}
+        nodejs_endpoint = cm.get("endpoint", DefaultEndpoints.NODEJS_ENDPOINT.value)
+        if not nodejs_endpoint:
+            raise Exception("NodeJS endpoint not found")
+
+        # 5) Call API
+        url = f"{nodejs_endpoint}{route.value}"
+
+        http_client = HTTPClient(token=jwt_token)
+        request = HTTPRequest(url=url, method="GET", body=payload)  # Note: GET with body is unusual
+        response = await http_client.execute(request)
+        return response.json()
+
+    @staticmethod
+    async def get_individual_token(
+        org_id: str,
+        user_id: str,
+        config_service: ConfigurationService,
+    ) -> dict[str, Any]:
+        """Handle individual token."""
+        return await GoogleClient._fetch_credentials(
+            org_id=org_id,
+            user_id=user_id,
+            config_service=config_service,
+            route=Routes.INDIVIDUAL_CREDENTIALS,
+            scopes=[TokenScopes.FETCH_CONFIG.value],
+        )
+
+    @staticmethod
+    async def get_enterprise_token(
+        org_id: str,
+        config_service: ConfigurationService,
+    ) -> dict[str, Any]:
+        """Handle enterprise token."""
+        return await GoogleClient._fetch_credentials(
+            org_id=org_id,
+            config_service=config_service,
+            route=Routes.BUSINESS_CREDENTIALS,
+            scopes=[TokenScopes.FETCH_CONFIG.value],
+        )

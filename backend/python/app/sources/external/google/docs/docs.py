@@ -19,7 +19,7 @@ class GoogleDocsDataSource:
         """
         self.client = client
 
-    def documents_get(
+    async def documents_get(
         self,
         documentId: str,
         suggestionsViewMode: Optional[str] = None,
@@ -48,7 +48,7 @@ class GoogleDocsDataSource:
         request = self.client.documents().get(**kwargs) # type: ignore
         return request.execute()
 
-    def documents_create(self) -> Dict[str, Any]:
+    async def documents_create(self) -> Dict[str, Any]:
         """Google Docs API: Creates a blank document using the title given in the request. Other fields in the request, including any provided content, are ignored. Returns the created document.
 
         HTTP POST v1/documents
@@ -67,7 +67,7 @@ class GoogleDocsDataSource:
             request = self.client.documents().create(**kwargs) # type: ignore
         return request.execute()
 
-    def documents_batch_update(
+    async def documents_batch_update(
         self,
         documentId: str
     ) -> Dict[str, Any]:
@@ -93,6 +93,6 @@ class GoogleDocsDataSource:
             request = self.client.documents().batchUpdate(**kwargs) # type: ignore
         return request.execute()
 
-    def get_client(self) -> object:
+    async def get_client(self) -> object:
         """Get the underlying Google API client."""
         return self.client

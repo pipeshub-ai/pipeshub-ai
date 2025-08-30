@@ -19,7 +19,7 @@ class GoogleFormsDataSource:
         """
         self.client = client
 
-    def forms_create(
+    async def forms_create(
         self,
         unpublished: Optional[bool] = None
     ) -> Dict[str, Any]:
@@ -45,7 +45,7 @@ class GoogleFormsDataSource:
             request = self.client.forms().create(**kwargs) # type: ignore
         return request.execute()
 
-    def forms_get(
+    async def forms_get(
         self,
         formId: str
     ) -> Dict[str, Any]:
@@ -66,7 +66,7 @@ class GoogleFormsDataSource:
         request = self.client.forms().get(**kwargs) # type: ignore
         return request.execute()
 
-    def forms_batch_update(
+    async def forms_batch_update(
         self,
         formId: str
     ) -> Dict[str, Any]:
@@ -92,7 +92,7 @@ class GoogleFormsDataSource:
             request = self.client.forms().batchUpdate(**kwargs) # type: ignore
         return request.execute()
 
-    def forms_set_publish_settings(
+    async def forms_set_publish_settings(
         self,
         formId: str
     ) -> Dict[str, Any]:
@@ -118,7 +118,7 @@ class GoogleFormsDataSource:
             request = self.client.forms().setPublishSettings(**kwargs) # type: ignore
         return request.execute()
 
-    def forms_responses_get(
+    async def forms_responses_get(
         self,
         formId: str,
         responseId: str
@@ -143,7 +143,7 @@ class GoogleFormsDataSource:
         request = self.client.forms_responses().get(**kwargs) # type: ignore
         return request.execute()
 
-    def forms_responses_list(
+    async def forms_responses_list(
         self,
         formId: str,
         filter: Optional[str] = None,
@@ -176,7 +176,7 @@ class GoogleFormsDataSource:
         request = self.client.forms_responses().list(**kwargs) # type: ignore
         return request.execute()
 
-    def forms_watches_create(
+    async def forms_watches_create(
         self,
         formId: str
     ) -> Dict[str, Any]:
@@ -202,7 +202,7 @@ class GoogleFormsDataSource:
             request = self.client.forms_watches().create(**kwargs) # type: ignore
         return request.execute()
 
-    def forms_watches_list(
+    async def forms_watches_list(
         self,
         formId: str
     ) -> Dict[str, Any]:
@@ -223,7 +223,7 @@ class GoogleFormsDataSource:
         request = self.client.forms_watches().list(**kwargs) # type: ignore
         return request.execute()
 
-    def forms_watches_renew(
+    async def forms_watches_renew(
         self,
         formId: str,
         watchId: str
@@ -253,7 +253,7 @@ class GoogleFormsDataSource:
             request = self.client.forms_watches().renew(**kwargs) # type: ignore
         return request.execute()
 
-    def forms_watches_delete(
+    async def forms_watches_delete(
         self,
         formId: str,
         watchId: str
@@ -278,6 +278,6 @@ class GoogleFormsDataSource:
         request = self.client.forms_watches().delete(**kwargs) # type: ignore
         return request.execute()
 
-    def get_client(self) -> object:
+    async def get_client(self) -> object:
         """Get the underlying Google API client."""
         return self.client

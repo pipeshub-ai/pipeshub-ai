@@ -19,7 +19,7 @@ class GoogleCalendarDataSource:
         """
         self.client = client
 
-    def acl_delete(
+    async def acl_delete(
         self,
         calendarId: str,
         ruleId: str
@@ -44,7 +44,7 @@ class GoogleCalendarDataSource:
         request = self.client.acl().delete(**kwargs) # type: ignore
         return request.execute()
 
-    def acl_get(
+    async def acl_get(
         self,
         calendarId: str,
         ruleId: str
@@ -69,7 +69,7 @@ class GoogleCalendarDataSource:
         request = self.client.acl().get(**kwargs) # type: ignore
         return request.execute()
 
-    def acl_insert(
+    async def acl_insert(
         self,
         calendarId: str,
         sendNotifications: Optional[bool] = None
@@ -99,7 +99,7 @@ class GoogleCalendarDataSource:
             request = self.client.acl().insert(**kwargs) # type: ignore
         return request.execute()
 
-    def acl_list(
+    async def acl_list(
         self,
         calendarId: str,
         maxResults: Optional[int] = None,
@@ -136,7 +136,7 @@ class GoogleCalendarDataSource:
         request = self.client.acl().list(**kwargs) # type: ignore
         return request.execute()
 
-    def acl_patch(
+    async def acl_patch(
         self,
         calendarId: str,
         ruleId: str,
@@ -170,7 +170,7 @@ class GoogleCalendarDataSource:
             request = self.client.acl().patch(**kwargs) # type: ignore
         return request.execute()
 
-    def acl_update(
+    async def acl_update(
         self,
         calendarId: str,
         ruleId: str,
@@ -204,7 +204,7 @@ class GoogleCalendarDataSource:
             request = self.client.acl().update(**kwargs) # type: ignore
         return request.execute()
 
-    def acl_watch(
+    async def acl_watch(
         self,
         calendarId: str,
         maxResults: Optional[int] = None,
@@ -246,7 +246,7 @@ class GoogleCalendarDataSource:
             request = self.client.acl().watch(**kwargs) # type: ignore
         return request.execute()
 
-    def calendar_list_delete(
+    async def calendar_list_delete(
         self,
         calendarId: str
     ) -> Dict[str, Any]:
@@ -267,7 +267,7 @@ class GoogleCalendarDataSource:
         request = self.client.calendarList().delete(**kwargs) # type: ignore
         return request.execute()
 
-    def calendar_list_get(
+    async def calendar_list_get(
         self,
         calendarId: str
     ) -> Dict[str, Any]:
@@ -288,7 +288,7 @@ class GoogleCalendarDataSource:
         request = self.client.calendarList().get(**kwargs) # type: ignore
         return request.execute()
 
-    def calendar_list_insert(
+    async def calendar_list_insert(
         self,
         colorRgbFormat: Optional[bool] = None
     ) -> Dict[str, Any]:
@@ -314,7 +314,7 @@ class GoogleCalendarDataSource:
             request = self.client.calendarList().insert(**kwargs) # type: ignore
         return request.execute()
 
-    def calendar_list_list(
+    async def calendar_list_list(
         self,
         maxResults: Optional[int] = None,
         minAccessRole: Optional[str] = None,
@@ -355,7 +355,7 @@ class GoogleCalendarDataSource:
         request = self.client.calendarList().list(**kwargs) # type: ignore
         return request.execute()
 
-    def calendar_list_patch(
+    async def calendar_list_patch(
         self,
         calendarId: str,
         colorRgbFormat: Optional[bool] = None
@@ -385,7 +385,7 @@ class GoogleCalendarDataSource:
             request = self.client.calendarList().patch(**kwargs) # type: ignore
         return request.execute()
 
-    def calendar_list_update(
+    async def calendar_list_update(
         self,
         calendarId: str,
         colorRgbFormat: Optional[bool] = None
@@ -415,7 +415,7 @@ class GoogleCalendarDataSource:
             request = self.client.calendarList().update(**kwargs) # type: ignore
         return request.execute()
 
-    def calendar_list_watch(
+    async def calendar_list_watch(
         self,
         maxResults: Optional[int] = None,
         minAccessRole: Optional[str] = None,
@@ -461,7 +461,7 @@ class GoogleCalendarDataSource:
             request = self.client.calendarList().watch(**kwargs) # type: ignore
         return request.execute()
 
-    def calendars_clear(
+    async def calendars_clear(
         self,
         calendarId: str
     ) -> Dict[str, Any]:
@@ -487,7 +487,7 @@ class GoogleCalendarDataSource:
             request = self.client.calendars().clear(**kwargs) # type: ignore
         return request.execute()
 
-    def calendars_delete(
+    async def calendars_delete(
         self,
         calendarId: str
     ) -> Dict[str, Any]:
@@ -508,7 +508,7 @@ class GoogleCalendarDataSource:
         request = self.client.calendars().delete(**kwargs) # type: ignore
         return request.execute()
 
-    def calendars_get(
+    async def calendars_get(
         self,
         calendarId: str
     ) -> Dict[str, Any]:
@@ -529,7 +529,7 @@ class GoogleCalendarDataSource:
         request = self.client.calendars().get(**kwargs) # type: ignore
         return request.execute()
 
-    def calendars_insert(self) -> Dict[str, Any]:
+    async def calendars_insert(self) -> Dict[str, Any]:
         """Google Calendar API: Creates a secondary calendar.
 
         HTTP POST calendars
@@ -548,7 +548,7 @@ class GoogleCalendarDataSource:
             request = self.client.calendars().insert(**kwargs) # type: ignore
         return request.execute()
 
-    def calendars_patch(
+    async def calendars_patch(
         self,
         calendarId: str
     ) -> Dict[str, Any]:
@@ -574,7 +574,7 @@ class GoogleCalendarDataSource:
             request = self.client.calendars().patch(**kwargs) # type: ignore
         return request.execute()
 
-    def calendars_update(
+    async def calendars_update(
         self,
         calendarId: str
     ) -> Dict[str, Any]:
@@ -600,7 +600,7 @@ class GoogleCalendarDataSource:
             request = self.client.calendars().update(**kwargs) # type: ignore
         return request.execute()
 
-    def channels_stop(self) -> Dict[str, Any]:
+    async def channels_stop(self) -> Dict[str, Any]:
         """Google Calendar API: Stop watching resources through this channel
 
         HTTP POST channels/stop
@@ -619,7 +619,7 @@ class GoogleCalendarDataSource:
             request = self.client.channels().stop(**kwargs) # type: ignore
         return request.execute()
 
-    def colors_get(self) -> Dict[str, Any]:
+    async def colors_get(self) -> Dict[str, Any]:
         """Google Calendar API: Returns the color definitions for calendars and events.
 
         HTTP GET colors
@@ -633,7 +633,7 @@ class GoogleCalendarDataSource:
         request = self.client.colors().get(**kwargs) # type: ignore
         return request.execute()
 
-    def events_delete(
+    async def events_delete(
         self,
         calendarId: str,
         eventId: str,
@@ -666,7 +666,7 @@ class GoogleCalendarDataSource:
         request = self.client.events().delete(**kwargs) # type: ignore
         return request.execute()
 
-    def events_get(
+    async def events_get(
         self,
         calendarId: str,
         eventId: str,
@@ -703,7 +703,7 @@ class GoogleCalendarDataSource:
         request = self.client.events().get(**kwargs) # type: ignore
         return request.execute()
 
-    def events_import(
+    async def events_import(
         self,
         calendarId: str,
         conferenceDataVersion: Optional[int] = None,
@@ -738,7 +738,7 @@ Deprecated behavior: If a non-default event is imported, its type will be change
             request = getattr(self.client.events(), 'import')(**kwargs) # type: ignore
         return request.execute()
 
-    def events_insert(
+    async def events_insert(
         self,
         calendarId: str,
         conferenceDataVersion: Optional[int] = None,
@@ -784,7 +784,7 @@ Deprecated behavior: If a non-default event is imported, its type will be change
             request = self.client.events().insert(**kwargs) # type: ignore
         return request.execute()
 
-    def events_instances(
+    async def events_instances(
         self,
         calendarId: str,
         eventId: str,
@@ -845,7 +845,7 @@ Deprecated behavior: If a non-default event is imported, its type will be change
         request = self.client.events().instances(**kwargs) # type: ignore
         return request.execute()
 
-    def events_list(
+    async def events_list(
         self,
         calendarId: str,
         alwaysIncludeEmail: Optional[bool] = None,
@@ -938,7 +938,7 @@ Deprecated behavior: If a non-default event is imported, its type will be change
         request = self.client.events().list(**kwargs) # type: ignore
         return request.execute()
 
-    def events_move(
+    async def events_move(
         self,
         calendarId: str,
         destination: str,
@@ -980,7 +980,7 @@ Deprecated behavior: If a non-default event is imported, its type will be change
             request = self.client.events().move(**kwargs) # type: ignore
         return request.execute()
 
-    def events_patch(
+    async def events_patch(
         self,
         calendarId: str,
         eventId: str,
@@ -1034,7 +1034,7 @@ Deprecated behavior: If a non-default event is imported, its type will be change
             request = self.client.events().patch(**kwargs) # type: ignore
         return request.execute()
 
-    def events_quick_add(
+    async def events_quick_add(
         self,
         calendarId: str,
         text: str,
@@ -1072,7 +1072,7 @@ Deprecated behavior: If a non-default event is imported, its type will be change
             request = self.client.events().quickAdd(**kwargs) # type: ignore
         return request.execute()
 
-    def events_update(
+    async def events_update(
         self,
         calendarId: str,
         eventId: str,
@@ -1126,7 +1126,7 @@ Deprecated behavior: If a non-default event is imported, its type will be change
             request = self.client.events().update(**kwargs) # type: ignore
         return request.execute()
 
-    def events_watch(
+    async def events_watch(
         self,
         calendarId: str,
         alwaysIncludeEmail: Optional[bool] = None,
@@ -1224,7 +1224,7 @@ Deprecated behavior: If a non-default event is imported, its type will be change
             request = self.client.events().watch(**kwargs) # type: ignore
         return request.execute()
 
-    def freebusy_query(self) -> Dict[str, Any]:
+    async def freebusy_query(self) -> Dict[str, Any]:
         """Google Calendar API: Returns free/busy information for a set of calendars.
 
         HTTP POST freeBusy
@@ -1243,7 +1243,7 @@ Deprecated behavior: If a non-default event is imported, its type will be change
             request = self.client.freebusy().query(**kwargs) # type: ignore
         return request.execute()
 
-    def settings_get(
+    async def settings_get(
         self,
         setting: str
     ) -> Dict[str, Any]:
@@ -1264,7 +1264,7 @@ Deprecated behavior: If a non-default event is imported, its type will be change
         request = self.client.settings().get(**kwargs) # type: ignore
         return request.execute()
 
-    def settings_list(
+    async def settings_list(
         self,
         maxResults: Optional[int] = None,
         pageToken: Optional[str] = None,
@@ -1293,7 +1293,7 @@ Deprecated behavior: If a non-default event is imported, its type will be change
         request = self.client.settings().list(**kwargs) # type: ignore
         return request.execute()
 
-    def settings_watch(
+    async def settings_watch(
         self,
         maxResults: Optional[int] = None,
         pageToken: Optional[str] = None,
@@ -1327,6 +1327,6 @@ Deprecated behavior: If a non-default event is imported, its type will be change
             request = self.client.settings().watch(**kwargs) # type: ignore
         return request.execute()
 
-    def get_client(self) -> object:
+    async def get_client(self) -> object:
         """Get the underlying Google API client."""
         return self.client

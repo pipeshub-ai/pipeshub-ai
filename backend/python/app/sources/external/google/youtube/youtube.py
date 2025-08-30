@@ -20,7 +20,7 @@ class YouTubeDataSource:
         """
         self.client = client
 
-    def abuse_reports_insert(
+    async def abuse_reports_insert(
         self,
         part: str
     ) -> Dict[str, Any]:
@@ -46,7 +46,7 @@ class YouTubeDataSource:
             request = self.client.abuseReports().insert(**kwargs) # type: ignore
         return request.execute()
 
-    def activities_list(
+    async def activities_list(
         self,
         part: str,
         channelId: Optional[str] = None,
@@ -97,7 +97,7 @@ class YouTubeDataSource:
         request = self.client.activities().list(**kwargs) # type: ignore
         return request.execute()
 
-    def captions_list(
+    async def captions_list(
         self,
         videoId: str,
         part: str,
@@ -134,7 +134,7 @@ class YouTubeDataSource:
         request = self.client.captions().list(**kwargs) # type: ignore
         return request.execute()
 
-    def captions_insert(
+    async def captions_insert(
         self,
         part: str,
         sync: Optional[bool] = None,
@@ -172,7 +172,7 @@ class YouTubeDataSource:
             request = self.client.captions().insert(**kwargs) # type: ignore
         return request.execute()
 
-    def captions_update(
+    async def captions_update(
         self,
         part: str,
         sync: Optional[bool] = None,
@@ -210,7 +210,7 @@ class YouTubeDataSource:
             request = self.client.captions().update(**kwargs) # type: ignore
         return request.execute()
 
-    def captions_delete(
+    async def captions_delete(
         self,
         id: str,
         onBehalfOf: Optional[str] = None,
@@ -239,7 +239,7 @@ class YouTubeDataSource:
         request = self.client.captions().delete(**kwargs) # type: ignore
         return request.execute()
 
-    def captions_download(
+    async def captions_download(
         self,
         id: str,
         tlang: Optional[str] = None,
@@ -276,7 +276,7 @@ class YouTubeDataSource:
         request = self.client.captions().download(**kwargs) # type: ignore
         return request.execute()
 
-    def channels_list(
+    async def channels_list(
         self,
         part: str,
         mine: Optional[bool] = None,
@@ -341,7 +341,7 @@ class YouTubeDataSource:
         request = self.client.channels().list(**kwargs) # type: ignore
         return request.execute()
 
-    def channels_update(
+    async def channels_update(
         self,
         part: str,
         onBehalfOfContentOwner: Optional[str] = None
@@ -371,7 +371,7 @@ class YouTubeDataSource:
             request = self.client.channels().update(**kwargs) # type: ignore
         return request.execute()
 
-    def channel_banners_insert(
+    async def channel_banners_insert(
         self,
         channelId: Optional[str] = None,
         onBehalfOfContentOwner: Optional[str] = None,
@@ -405,7 +405,7 @@ class YouTubeDataSource:
             request = self.client.channelBanners().insert(**kwargs) # type: ignore
         return request.execute()
 
-    def channel_sections_list(
+    async def channel_sections_list(
         self,
         part: str,
         id: Optional[str] = None,
@@ -446,7 +446,7 @@ class YouTubeDataSource:
         request = self.client.channelSections().list(**kwargs) # type: ignore
         return request.execute()
 
-    def channel_sections_insert(
+    async def channel_sections_insert(
         self,
         part: str,
         onBehalfOfContentOwner: Optional[str] = None,
@@ -480,7 +480,7 @@ class YouTubeDataSource:
             request = self.client.channelSections().insert(**kwargs) # type: ignore
         return request.execute()
 
-    def channel_sections_update(
+    async def channel_sections_update(
         self,
         part: str,
         onBehalfOfContentOwner: Optional[str] = None
@@ -510,7 +510,7 @@ class YouTubeDataSource:
             request = self.client.channelSections().update(**kwargs) # type: ignore
         return request.execute()
 
-    def channel_sections_delete(
+    async def channel_sections_delete(
         self,
         id: str,
         onBehalfOfContentOwner: Optional[str] = None
@@ -535,7 +535,7 @@ class YouTubeDataSource:
         request = self.client.channelSections().delete(**kwargs) # type: ignore
         return request.execute()
 
-    def comments_list(
+    async def comments_list(
         self,
         part: str,
         id: Optional[str] = None,
@@ -576,7 +576,7 @@ class YouTubeDataSource:
         request = self.client.comments().list(**kwargs) # type: ignore
         return request.execute()
 
-    def comments_insert(
+    async def comments_insert(
         self,
         part: str
     ) -> Dict[str, Any]:
@@ -602,7 +602,7 @@ class YouTubeDataSource:
             request = self.client.comments().insert(**kwargs) # type: ignore
         return request.execute()
 
-    def comments_update(
+    async def comments_update(
         self,
         part: str
     ) -> Dict[str, Any]:
@@ -628,7 +628,7 @@ class YouTubeDataSource:
             request = self.client.comments().update(**kwargs) # type: ignore
         return request.execute()
 
-    def comments_delete(
+    async def comments_delete(
         self,
         id: str
     ) -> Dict[str, Any]:
@@ -648,7 +648,7 @@ class YouTubeDataSource:
         request = self.client.comments().delete(**kwargs) # type: ignore
         return request.execute()
 
-    def comments_set_moderation_status(
+    async def comments_set_moderation_status(
         self,
         id: str,
         moderationStatus: str,
@@ -682,7 +682,7 @@ class YouTubeDataSource:
             request = self.client.comments().setModerationStatus(**kwargs) # type: ignore
         return request.execute()
 
-    def comments_mark_as_spam(
+    async def comments_mark_as_spam(
         self,
         id: str
     ) -> Dict[str, Any]:
@@ -708,7 +708,7 @@ class YouTubeDataSource:
             request = self.client.comments().markAsSpam(**kwargs) # type: ignore
         return request.execute()
 
-    def comment_threads_list(
+    async def comment_threads_list(
         self,
         part: str,
         id: Optional[str] = None,
@@ -773,7 +773,7 @@ class YouTubeDataSource:
         request = self.client.commentThreads().list(**kwargs) # type: ignore
         return request.execute()
 
-    def comment_threads_insert(
+    async def comment_threads_insert(
         self,
         part: str
     ) -> Dict[str, Any]:
@@ -799,7 +799,7 @@ class YouTubeDataSource:
             request = self.client.commentThreads().insert(**kwargs) # type: ignore
         return request.execute()
 
-    def youtube_v3_update_comment_threads(
+    async def youtube_v3_update_comment_threads(
         self,
         part: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -825,7 +825,7 @@ class YouTubeDataSource:
             request = self.client.youtube_v3().updateCommentThreads(**kwargs) # type: ignore
         return request.execute()
 
-    def youtube_v3_live_chat_messages_stream(
+    async def youtube_v3_live_chat_messages_stream(
         self,
         liveChatId: Optional[str] = None,
         hl: Optional[str] = None,
@@ -866,7 +866,7 @@ class YouTubeDataSource:
         request = self.client.youtube_v3_liveChat_messages().stream(**kwargs) # type: ignore
         return request.execute()
 
-    def i18n_languages_list(
+    async def i18n_languages_list(
         self,
         part: str,
         hl: Optional[str] = None
@@ -890,7 +890,7 @@ class YouTubeDataSource:
         request = self.client.i18nLanguages().list(**kwargs) # type: ignore
         return request.execute()
 
-    def i18n_regions_list(
+    async def i18n_regions_list(
         self,
         part: str,
         hl: Optional[str] = None
@@ -915,7 +915,7 @@ class YouTubeDataSource:
         request = self.client.i18nRegions().list(**kwargs) # type: ignore
         return request.execute()
 
-    def live_broadcasts_list(
+    async def live_broadcasts_list(
         self,
         part: str,
         broadcastStatus: Optional[str] = None,
@@ -968,7 +968,7 @@ class YouTubeDataSource:
         request = self.client.liveBroadcasts().list(**kwargs) # type: ignore
         return request.execute()
 
-    def live_broadcasts_insert(
+    async def live_broadcasts_insert(
         self,
         part: str,
         onBehalfOfContentOwner: Optional[str] = None,
@@ -1002,7 +1002,7 @@ class YouTubeDataSource:
             request = self.client.liveBroadcasts().insert(**kwargs) # type: ignore
         return request.execute()
 
-    def live_broadcasts_update(
+    async def live_broadcasts_update(
         self,
         part: str,
         onBehalfOfContentOwner: Optional[str] = None,
@@ -1036,7 +1036,7 @@ class YouTubeDataSource:
             request = self.client.liveBroadcasts().update(**kwargs) # type: ignore
         return request.execute()
 
-    def live_broadcasts_delete(
+    async def live_broadcasts_delete(
         self,
         id: str,
         onBehalfOfContentOwner: Optional[str] = None,
@@ -1065,7 +1065,7 @@ class YouTubeDataSource:
         request = self.client.liveBroadcasts().delete(**kwargs) # type: ignore
         return request.execute()
 
-    def live_broadcasts_bind(
+    async def live_broadcasts_bind(
         self,
         id: str,
         part: str,
@@ -1107,7 +1107,7 @@ class YouTubeDataSource:
             request = self.client.liveBroadcasts().bind(**kwargs) # type: ignore
         return request.execute()
 
-    def live_broadcasts_transition(
+    async def live_broadcasts_transition(
         self,
         id: str,
         broadcastStatus: str,
@@ -1149,7 +1149,7 @@ class YouTubeDataSource:
             request = self.client.liveBroadcasts().transition(**kwargs) # type: ignore
         return request.execute()
 
-    def live_broadcasts_insert_cuepoint(
+    async def live_broadcasts_insert_cuepoint(
         self,
         id: Optional[str] = None,
         part: Optional[str] = None,
@@ -1187,7 +1187,7 @@ class YouTubeDataSource:
             request = self.client.liveBroadcasts().insertCuepoint(**kwargs) # type: ignore
         return request.execute()
 
-    def live_chat_bans_insert(
+    async def live_chat_bans_insert(
         self,
         part: str
     ) -> Dict[str, Any]:
@@ -1213,7 +1213,7 @@ class YouTubeDataSource:
             request = self.client.liveChatBans().insert(**kwargs) # type: ignore
         return request.execute()
 
-    def live_chat_bans_delete(
+    async def live_chat_bans_delete(
         self,
         id: str
     ) -> Dict[str, Any]:
@@ -1233,7 +1233,7 @@ class YouTubeDataSource:
         request = self.client.liveChatBans().delete(**kwargs) # type: ignore
         return request.execute()
 
-    def live_chat_messages_list(
+    async def live_chat_messages_list(
         self,
         liveChatId: str,
         part: str,
@@ -1274,7 +1274,7 @@ class YouTubeDataSource:
         request = self.client.liveChatMessages().list(**kwargs) # type: ignore
         return request.execute()
 
-    def live_chat_messages_insert(
+    async def live_chat_messages_insert(
         self,
         part: str
     ) -> Dict[str, Any]:
@@ -1300,7 +1300,7 @@ class YouTubeDataSource:
             request = self.client.liveChatMessages().insert(**kwargs) # type: ignore
         return request.execute()
 
-    def live_chat_messages_delete(
+    async def live_chat_messages_delete(
         self,
         id: str
     ) -> Dict[str, Any]:
@@ -1320,7 +1320,7 @@ class YouTubeDataSource:
         request = self.client.liveChatMessages().delete(**kwargs) # type: ignore
         return request.execute()
 
-    def live_chat_messages_transition(
+    async def live_chat_messages_transition(
         self,
         id: Optional[str] = None,
         status: Optional[str] = None
@@ -1350,7 +1350,7 @@ class YouTubeDataSource:
             request = self.client.liveChatMessages().transition(**kwargs) # type: ignore
         return request.execute()
 
-    def live_chat_moderators_list(
+    async def live_chat_moderators_list(
         self,
         liveChatId: str,
         part: str,
@@ -1383,7 +1383,7 @@ class YouTubeDataSource:
         request = self.client.liveChatModerators().list(**kwargs) # type: ignore
         return request.execute()
 
-    def live_chat_moderators_insert(
+    async def live_chat_moderators_insert(
         self,
         part: str
     ) -> Dict[str, Any]:
@@ -1409,7 +1409,7 @@ class YouTubeDataSource:
             request = self.client.liveChatModerators().insert(**kwargs) # type: ignore
         return request.execute()
 
-    def live_chat_moderators_delete(
+    async def live_chat_moderators_delete(
         self,
         id: str
     ) -> Dict[str, Any]:
@@ -1429,7 +1429,7 @@ class YouTubeDataSource:
         request = self.client.liveChatModerators().delete(**kwargs) # type: ignore
         return request.execute()
 
-    def live_streams_list(
+    async def live_streams_list(
         self,
         part: str,
         id: Optional[str] = None,
@@ -1474,7 +1474,7 @@ class YouTubeDataSource:
         request = self.client.liveStreams().list(**kwargs) # type: ignore
         return request.execute()
 
-    def live_streams_insert(
+    async def live_streams_insert(
         self,
         part: str,
         onBehalfOfContentOwner: Optional[str] = None,
@@ -1508,7 +1508,7 @@ class YouTubeDataSource:
             request = self.client.liveStreams().insert(**kwargs) # type: ignore
         return request.execute()
 
-    def live_streams_update(
+    async def live_streams_update(
         self,
         part: str,
         onBehalfOfContentOwner: Optional[str] = None,
@@ -1542,7 +1542,7 @@ class YouTubeDataSource:
             request = self.client.liveStreams().update(**kwargs) # type: ignore
         return request.execute()
 
-    def live_streams_delete(
+    async def live_streams_delete(
         self,
         id: str,
         onBehalfOfContentOwner: Optional[str] = None,
@@ -1571,7 +1571,7 @@ class YouTubeDataSource:
         request = self.client.liveStreams().delete(**kwargs) # type: ignore
         return request.execute()
 
-    def members_list(
+    async def members_list(
         self,
         part: str,
         mode: Optional[str] = None,
@@ -1612,7 +1612,7 @@ class YouTubeDataSource:
         request = self.client.members().list(**kwargs) # type: ignore
         return request.execute()
 
-    def memberships_levels_list(
+    async def memberships_levels_list(
         self,
         part: str
     ) -> Dict[str, Any]:
@@ -1633,7 +1633,7 @@ class YouTubeDataSource:
         request = self.client.membershipsLevels().list(**kwargs) # type: ignore
         return request.execute()
 
-    def playlists_list(
+    async def playlists_list(
         self,
         part: str,
         id: Optional[str] = None,
@@ -1686,7 +1686,7 @@ class YouTubeDataSource:
         request = self.client.playlists().list(**kwargs) # type: ignore
         return request.execute()
 
-    def playlists_insert(
+    async def playlists_insert(
         self,
         part: str,
         onBehalfOfContentOwner: Optional[str] = None,
@@ -1720,7 +1720,7 @@ class YouTubeDataSource:
             request = self.client.playlists().insert(**kwargs) # type: ignore
         return request.execute()
 
-    def playlists_update(
+    async def playlists_update(
         self,
         part: str,
         onBehalfOfContentOwner: Optional[str] = None
@@ -1750,7 +1750,7 @@ class YouTubeDataSource:
             request = self.client.playlists().update(**kwargs) # type: ignore
         return request.execute()
 
-    def playlists_delete(
+    async def playlists_delete(
         self,
         id: str,
         onBehalfOfContentOwner: Optional[str] = None
@@ -1775,7 +1775,7 @@ class YouTubeDataSource:
         request = self.client.playlists().delete(**kwargs) # type: ignore
         return request.execute()
 
-    def playlist_items_list(
+    async def playlist_items_list(
         self,
         part: str,
         id: Optional[str] = None,
@@ -1820,7 +1820,7 @@ class YouTubeDataSource:
         request = self.client.playlistItems().list(**kwargs) # type: ignore
         return request.execute()
 
-    def playlist_items_delete(
+    async def playlist_items_delete(
         self,
         id: str,
         onBehalfOfContentOwner: Optional[str] = None
@@ -1844,7 +1844,7 @@ class YouTubeDataSource:
         request = self.client.playlistItems().delete(**kwargs) # type: ignore
         return request.execute()
 
-    def playlist_items_insert(
+    async def playlist_items_insert(
         self,
         part: str,
         onBehalfOfContentOwner: Optional[str] = None
@@ -1874,7 +1874,7 @@ class YouTubeDataSource:
             request = self.client.playlistItems().insert(**kwargs) # type: ignore
         return request.execute()
 
-    def playlist_items_update(
+    async def playlist_items_update(
         self,
         part: str,
         onBehalfOfContentOwner: Optional[str] = None
@@ -1904,7 +1904,7 @@ class YouTubeDataSource:
             request = self.client.playlistItems().update(**kwargs) # type: ignore
         return request.execute()
 
-    def playlist_images_list(
+    async def playlist_images_list(
         self,
         parent: Optional[str] = None,
         maxResults: Optional[int] = None,
@@ -1945,7 +1945,7 @@ class YouTubeDataSource:
         request = self.client.playlistImages().list(**kwargs) # type: ignore
         return request.execute()
 
-    def playlist_images_insert(
+    async def playlist_images_insert(
         self,
         part: Optional[str] = None,
         onBehalfOfContentOwner: Optional[str] = None,
@@ -1979,7 +1979,7 @@ class YouTubeDataSource:
             request = self.client.playlistImages().insert(**kwargs) # type: ignore
         return request.execute()
 
-    def playlist_images_update(
+    async def playlist_images_update(
         self,
         part: Optional[str] = None,
         onBehalfOfContentOwner: Optional[str] = None
@@ -2009,7 +2009,7 @@ class YouTubeDataSource:
             request = self.client.playlistImages().update(**kwargs) # type: ignore
         return request.execute()
 
-    def playlist_images_delete(
+    async def playlist_images_delete(
         self,
         id: Optional[str] = None,
         onBehalfOfContentOwner: Optional[str] = None
@@ -2034,7 +2034,7 @@ class YouTubeDataSource:
         request = self.client.playlistImages().delete(**kwargs) # type: ignore
         return request.execute()
 
-    def search_list(
+    async def search_list(
         self,
         part: str,
         q: Optional[str] = None,
@@ -2175,7 +2175,7 @@ class YouTubeDataSource:
         request = self.client.search().list(**kwargs) # type: ignore
         return request.execute()
 
-    def subscriptions_list(
+    async def subscriptions_list(
         self,
         part: str,
         id: Optional[str] = None,
@@ -2240,7 +2240,7 @@ class YouTubeDataSource:
         request = self.client.subscriptions().list(**kwargs) # type: ignore
         return request.execute()
 
-    def subscriptions_delete(
+    async def subscriptions_delete(
         self,
         id: str
     ) -> Dict[str, Any]:
@@ -2260,7 +2260,7 @@ class YouTubeDataSource:
         request = self.client.subscriptions().delete(**kwargs) # type: ignore
         return request.execute()
 
-    def subscriptions_insert(
+    async def subscriptions_insert(
         self,
         part: str
     ) -> Dict[str, Any]:
@@ -2286,7 +2286,7 @@ class YouTubeDataSource:
             request = self.client.subscriptions().insert(**kwargs) # type: ignore
         return request.execute()
 
-    def super_chat_events_list(
+    async def super_chat_events_list(
         self,
         part: str,
         hl: Optional[str] = None,
@@ -2319,7 +2319,7 @@ class YouTubeDataSource:
         request = self.client.superChatEvents().list(**kwargs) # type: ignore
         return request.execute()
 
-    def tests_insert(
+    async def tests_insert(
         self,
         part: str,
         externalChannelId: Optional[str] = None
@@ -2348,7 +2348,7 @@ class YouTubeDataSource:
             request = self.client.tests().insert(**kwargs) # type: ignore
         return request.execute()
 
-    def third_party_links_list(
+    async def third_party_links_list(
         self,
         part: str,
         linkingToken: Optional[str] = None,
@@ -2381,7 +2381,7 @@ class YouTubeDataSource:
         request = self.client.thirdPartyLinks().list(**kwargs) # type: ignore
         return request.execute()
 
-    def third_party_links_insert(
+    async def third_party_links_insert(
         self,
         part: str,
         externalChannelId: Optional[str] = None
@@ -2411,7 +2411,7 @@ class YouTubeDataSource:
             request = self.client.thirdPartyLinks().insert(**kwargs) # type: ignore
         return request.execute()
 
-    def third_party_links_update(
+    async def third_party_links_update(
         self,
         part: str,
         externalChannelId: Optional[str] = None
@@ -2441,7 +2441,7 @@ class YouTubeDataSource:
             request = self.client.thirdPartyLinks().update(**kwargs) # type: ignore
         return request.execute()
 
-    def third_party_links_delete(
+    async def third_party_links_delete(
         self,
         linkingToken: str,
         type: str,
@@ -2474,7 +2474,7 @@ class YouTubeDataSource:
         request = self.client.thirdPartyLinks().delete(**kwargs) # type: ignore
         return request.execute()
 
-    def thumbnails_set(
+    async def thumbnails_set(
         self,
         videoId: str,
         onBehalfOfContentOwner: Optional[str] = None
@@ -2504,7 +2504,7 @@ class YouTubeDataSource:
             request = self.client.thumbnails().set(**kwargs) # type: ignore
         return request.execute()
 
-    def videos_list(
+    async def videos_list(
         self,
         part: str,
         id: Optional[str] = None,
@@ -2573,7 +2573,7 @@ class YouTubeDataSource:
         request = self.client.videos().list(**kwargs) # type: ignore
         return request.execute()
 
-    def videos_insert(
+    async def videos_insert(
         self,
         part: str,
         autoLevels: Optional[bool] = None,
@@ -2619,7 +2619,7 @@ class YouTubeDataSource:
             request = self.client.videos().insert(**kwargs) # type: ignore
         return request.execute()
 
-    def videos_update(
+    async def videos_update(
         self,
         part: str,
         onBehalfOfContentOwner: Optional[str] = None
@@ -2649,7 +2649,7 @@ class YouTubeDataSource:
             request = self.client.videos().update(**kwargs) # type: ignore
         return request.execute()
 
-    def videos_delete(
+    async def videos_delete(
         self,
         id: str,
         onBehalfOfContentOwner: Optional[str] = None
@@ -2674,7 +2674,7 @@ class YouTubeDataSource:
         request = self.client.videos().delete(**kwargs) # type: ignore
         return request.execute()
 
-    def videos_report_abuse(
+    async def videos_report_abuse(
         self,
         onBehalfOfContentOwner: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -2700,7 +2700,7 @@ class YouTubeDataSource:
             request = self.client.videos().reportAbuse(**kwargs) # type: ignore
         return request.execute()
 
-    def videos_rate(
+    async def videos_rate(
         self,
         id: str,
         rating: str
@@ -2729,7 +2729,7 @@ class YouTubeDataSource:
             request = self.client.videos().rate(**kwargs) # type: ignore
         return request.execute()
 
-    def videos_get_rating(
+    async def videos_get_rating(
         self,
         id: str,
         onBehalfOfContentOwner: Optional[str] = None
@@ -2754,7 +2754,7 @@ class YouTubeDataSource:
         request = self.client.videos().getRating(**kwargs) # type: ignore
         return request.execute()
 
-    def video_abuse_report_reasons_list(
+    async def video_abuse_report_reasons_list(
         self,
         part: str,
         hl: Optional[str] = None
@@ -2779,7 +2779,7 @@ class YouTubeDataSource:
         request = self.client.videoAbuseReportReasons().list(**kwargs) # type: ignore
         return request.execute()
 
-    def video_categories_list(
+    async def video_categories_list(
         self,
         part: str,
         id: Optional[str] = None,
@@ -2812,7 +2812,7 @@ class YouTubeDataSource:
         request = self.client.videoCategories().list(**kwargs) # type: ignore
         return request.execute()
 
-    def video_trainability_get(
+    async def video_trainability_get(
         self,
         id: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -2833,7 +2833,7 @@ class YouTubeDataSource:
         request = self.client.videoTrainability().get(**kwargs) # type: ignore
         return request.execute()
 
-    def watermarks_set(
+    async def watermarks_set(
         self,
         channelId: str,
         onBehalfOfContentOwner: Optional[str] = None
@@ -2863,7 +2863,7 @@ class YouTubeDataSource:
             request = self.client.watermarks().set(**kwargs) # type: ignore
         return request.execute()
 
-    def watermarks_unset(
+    async def watermarks_unset(
         self,
         channelId: str,
         onBehalfOfContentOwner: Optional[str] = None
@@ -2893,6 +2893,6 @@ class YouTubeDataSource:
             request = self.client.watermarks().unset(**kwargs) # type: ignore
         return request.execute()
 
-    def get_client(self) -> object:
+    async def get_client(self) -> object:
         """Get the underlying Google API client."""
         return self.client
