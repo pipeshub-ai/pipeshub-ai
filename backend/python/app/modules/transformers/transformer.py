@@ -1,7 +1,10 @@
-from pydantic import BaseModel
-from typing import Dict, Any
-from app.models.entities import Record
 from abc import ABC, abstractmethod
+from typing import Any, Dict
+
+from pydantic import BaseModel
+
+from app.models.entities import Record
+
 
 class TransformContext(BaseModel):
     record: Record

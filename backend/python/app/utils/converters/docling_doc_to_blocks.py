@@ -1,11 +1,8 @@
 import json
-from typing import List
 import uuid
-import io
-import base64
-from app.utils.llm import get_llm
-from docling.datamodel.document import DoclingDocument
+from typing import List, Union
 
+from docling.datamodel.document import DoclingDocument
 
 from app.models.blocks import (
     Block,
@@ -13,17 +10,21 @@ from app.models.blocks import (
     BlocksContainer,
     BlockType,
     CitationMetadata,
+    DataFormat,
     GroupType,
     ImageMetadata,
     Point,
     TableMetadata,
-    DataFormat,
 )
+from app.modules.parsers.excel.prompt_template import (
+    row_text_prompt,
+    table_summary_prompt,
+)
+from app.utils.llm import get_llm
 from app.utils.transformation.bbox import (
     normalize_corner_coordinates,
     transform_bbox_to_corners,
 )
-from app.modules.parsers.excel.prompt_template import row_text_prompt, table_summary_prompt
 
 DOCLING_TEXT_BLOCK_TYPE = "texts"
 DOCLING_IMAGE_BLOCK_TYPE = "pictures"
@@ -101,7 +102,7 @@ class DoclingDocToBlocksConverter():
         block_groups = []
         blocks = []
         processed_refs = set() # check by block_source_id
-        
+
         def _enrich_metadata(block: Block|BlockGroup, item: dict, doc_dict: dict) -> None:
             page_metadata = doc_dict.get("pages", {})
             # print(f"Page metadata: {json.dumps(page_metadata, indent=4)}")
@@ -139,9 +140,9 @@ class DoclingDocToBlocksConverter():
                         page_no = pages[page_index].get("page_no")
                         if page_no:
                                 block.citation_metadata = CitationMetadata(page_number=page_no)
-        
 
-        def _handle_text_block(item: dict, doc_dict: dict, parent_index: int, ref_path: str) -> Block:
+
+        async def _handle_text_block(item: dict, doc_dict: dict, parent_index: int, ref_path: str,level: int,doc: DoclingDocument) -> Block:
             block = Block(
                     id=str(uuid.uuid4()),
                     index=len(blocks),
@@ -158,24 +159,27 @@ class DoclingDocToBlocksConverter():
                 )
             _enrich_metadata(block, item, doc_dict)
             blocks.append(block)
+            children = item.get("children", [])
+            for child in children:
+                await _process_item(child, doc, level + 1)
 
-        def _handle_group_block(item: dict, doc_dict: dict, parent_index: int, level: int) -> BlockGroup:
+        async def _handle_group_block(item: dict, doc_dict: dict, parent_index: int, level: int,doc: DoclingDocument) -> BlockGroup:
             # For groups, process children and return their blocks
             children = item.get("children", [])
-            block_group = BlockGroup(
-                    id=str(uuid.uuid4()),
-                    index=len(block_groups),
-                    name=item.get("name", ""),
-                    type=GroupType.LIST,
-                    parent_index=parent_index,
-                    description=None,
-                    source_group_id=item.get("self_ref", ""),
-                    format=DataFormat.MARKDOWN,
-                )
-            block_groups.append(block_group)
-            _enrich_metadata(block_group, item, doc_dict)
+            # block_group = BlockGroup(
+            #         id=str(uuid.uuid4()),
+            #         index=len(block_groups),
+            #         name=item.get("name", ""),
+            #         type=GroupType.LIST,
+            #         parent_index=parent_index,
+            #         description=None,
+            #         source_group_id=item.get("self_ref", ""),
+            #         format=DataFormat.MARKDOWN,
+            #     )
+            # block_groups.append(block_group)
+            # _enrich_metadata(block_group, item, doc_dict)
             for child in children:
-                _process_item(child, level + 1, block_group.index)
+                await _process_item(child, doc, level + 1)
 
         def _get_ref_text(ref_path: str, doc_dict: dict) -> str:
             """Get text content from a reference path."""
@@ -190,13 +194,13 @@ class DoclingDocToBlocksConverter():
                 return item.get("text", "")
             return ""
 
-        def _handle_image_block(item: dict, doc_dict: dict, parent_index: int, ref_path: str) -> Block:
-            pictureItem = doc.pictures[int(item.get("self_ref", "").split("/")[-1])]
+        async def _handle_image_block(item: dict, doc_dict: dict, parent_index: int, ref_path: str,level: int,doc: DoclingDocument) -> Block:
+            doc.pictures[int(item.get("self_ref", "").split("/")[-1])]
             _captions = item.get("captions", [])
             _captions = [_get_ref_text(ref_path,doc_dict) for caption in _captions]
-            _footnotes = item.get("footnotes", []) 
+            _footnotes = item.get("footnotes", [])
             _footnotes = [_get_ref_text(ref_path,doc_dict) for footnote in _footnotes]
-            prov = item.get("prov", {})
+            item.get("prov", {})
             block = Block(
                     id=str(uuid.uuid4()),
                     index=len(blocks),
@@ -218,12 +222,15 @@ class DoclingDocToBlocksConverter():
                 )
             _enrich_metadata(block, item, doc_dict)
             blocks.append(block)
+            children = item.get("children", [])
+            for child in children:
+                await _process_item(child, doc, level + 1)
 
-        async def _handle_table_block(item: dict, doc_dict: dict,parent_index: int, ref_path: str,table_markdown: str) -> BlockGroup:
+        async def _handle_table_block(item: dict, doc_dict: dict,parent_index: int, ref_path: str,table_markdown: str,level: int,doc: DoclingDocument) -> BlockGroup:
             table_data = item.get("data", {})
             table_summary, column_headers = await self.get_table_summary(table_data)
             table_rows_text,table_rows = await self.get_rows_text(table_data, table_summary, column_headers)
-            
+
             block_group = BlockGroup(
                 id=str(uuid.uuid4()),
                 index=len(block_groups),
@@ -247,7 +254,7 @@ class DoclingDocToBlocksConverter():
             )
             _enrich_metadata(block_group, item, doc_dict)
 
-            children = []
+            childBlocks = []
             for i,row in enumerate(table_rows):
                 print(f"Processing table row: {json.dumps(row, indent=4)}")
                 index = len(blocks)
@@ -272,10 +279,13 @@ class DoclingDocToBlocksConverter():
                 )
                 # _enrich_metadata(block, row, doc_dict)
                 blocks.append(block)
-                children.append(index)
+                childBlocks.append(index)
 
-            block_group.children = children
+            block_group.children = childBlocks
             block_groups.append(block_group)
+            children = item.get("children", [])
+            for child in children:
+                await _process_item(child, doc, level + 1, block_group.index)
 
         async def _process_item(ref, doc: DoclingDocument, level=0, parent_index=None) -> None:
             """Recursively process items following references and return a BlockContainer"""
@@ -304,9 +314,9 @@ class DoclingDocToBlocksConverter():
             items = doc_dict.get(item_type, [])
             if item_index >= len(items):
                 return None
-            
+
             item = items[item_index]
-            
+
 
             if not item or not isinstance(item, dict) or item_type not in [DOCLING_TEXT_BLOCK_TYPE, DOCLING_GROUP_BLOCK_TYPE, DOCLING_IMAGE_BLOCK_TYPE, DOCLING_TABLE_BLOCK_TYPE]:
                 self.logger.error(f"Invalid item type: {item_type} {item}")
@@ -316,21 +326,20 @@ class DoclingDocToBlocksConverter():
 
             # Create block
             if item_type == DOCLING_TEXT_BLOCK_TYPE:
-                _handle_text_block(item, doc_dict, parent_index, ref_path)
+                await _handle_text_block(item, doc_dict, parent_index, ref_path,level,doc)
 
             elif item_type == DOCLING_GROUP_BLOCK_TYPE:
-                return
-                _handle_group_block(item, doc_dict, parent_index, level)
+                await _handle_group_block(item, doc_dict, parent_index, level,doc)
 
 
             elif item_type == DOCLING_IMAGE_BLOCK_TYPE:
-                _handle_image_block(item, doc_dict, parent_index, ref_path)
+                await _handle_image_block(item, doc_dict, parent_index, ref_path,level,doc)
 
             elif item_type == DOCLING_TABLE_BLOCK_TYPE:
                 tables = doc.tables
                 table = tables[item_index]
                 table_markdown = table.export_to_markdown()
-                await _handle_table_block(item, doc_dict, parent_index, ref_path,table_markdown)
+                await _handle_table_block(item, doc_dict, parent_index, ref_path,table_markdown,level,doc)
             else:
                 self.logger.error(f"❌ Unknown item type: {item_type} {item}")
                 return None
@@ -349,8 +358,8 @@ class DoclingDocToBlocksConverter():
         block_containers = await self._process_content_in_order(doc)
         return block_containers
 
- 
-    async def _call_llm(self, messages):
+
+    async def _call_llm(self, messages) -> Union[str, dict, list]:
         return await self.llm.ainvoke(messages)
 
     async def get_rows_text(
@@ -411,7 +420,7 @@ class DoclingDocToBlocksConverter():
         mirroring the approach in Excel's get_table_summary.
         """
         try:
-            def _cell_to_value(cell):
+            def _cell_to_value(cell) -> str:
                 if isinstance(cell, dict):
                     if "text" in cell and cell["text"] is not None:
                         return cell["text"]
@@ -429,8 +438,8 @@ class DoclingDocToBlocksConverter():
                 # first_column = list(map(lambda row: row[0], grid))
                 # if isinstance(first_column, list):
                 #     row_headers = [str(_cell_to_value(c)) if c is not None and c.get("row_header") else f"Row_{i+1}" for i, c in enumerate(first_column)]
-                
-                sample_rows = [row for row in grid if all(cell.get("column_header") == False for cell in row)][:3]
+
+                sample_rows = [row for row in grid if all(not cell.get("column_header") for cell in row)][:3]
 
             sample_data = []
             for row in sample_rows:
@@ -447,8 +456,8 @@ class DoclingDocToBlocksConverter():
         except Exception as e:
             self.logger.error(f"Error getting table summary from Docling: {e}")
             raise
-        
-    async def _call_llm(self, messages):
+
+    async def _call_llm(self, messages) -> Union[str, dict, list]:
         if self.llm is None:
             self.llm,_ = await get_llm(self.config)
         return await self.llm.ainvoke(messages)

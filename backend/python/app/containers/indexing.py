@@ -1,13 +1,13 @@
-from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
 from dependency_injector import containers, providers  # type: ignore
 from dotenv import load_dotenv  # type: ignore
+
 from app.config.configuration_service import ConfigurationService
 from app.config.providers.etcd.etcd3_encrypted_store import Etcd3EncryptedKeyValueStore
 from app.containers.container import BaseAppContainer
 from app.containers.utils.utils import ContainerUtils
 from app.health.health import Health
+from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
 from app.utils.logger import create_logger
-from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 
 load_dotenv(override=True)
 
@@ -67,7 +67,7 @@ class IndexingAppContainer(BaseAppContainer):
         config_service=config_service,
         arango_service=arango_service,
     )
-    
+
     arango = providers.Resource(
         container_utils.create_arango,
         arango_service=arango_service,

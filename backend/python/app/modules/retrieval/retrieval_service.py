@@ -1,18 +1,18 @@
 import asyncio
 import json
-import time
 from typing import Any, Dict, List, Optional
-from qdrant_client import  models
+
 from langchain.chat_models.base import BaseChatModel
 from langchain.embeddings.base import Embeddings
-from langchain_qdrant import FastEmbedSparse, QdrantVectorStore, RetrievalMode
-from qdrant_client import QdrantClient
-from qdrant_client.http.models import FieldCondition, Filter, MatchValue
 from langchain.schema import Document
+from langchain_qdrant import FastEmbedSparse, QdrantVectorStore, RetrievalMode
+from qdrant_client import models
+
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import (
     DEFAULT_EMBEDDING_MODEL,
 )
+
 # from langchain_cohere import CohereEmbeddings
 from app.config.constants.arangodb import (
     CollectionNames,
@@ -65,7 +65,6 @@ class RetrievalService:
                 "Failed to initialize sparse embeddings: " + str(e),
             )
         self.vector_db_service = vector_db_service
-        self.vector_db_client = vector_db_service.get_service_client()
         self.collection_name = collection_name
         self.logger.info(f"Retrieval service initialized with collection name: {self.collection_name}")
         self.vector_store = None
@@ -448,7 +447,7 @@ class RetrievalService:
             if not dense_embeddings:
                 raise ValueError("No dense embeddings found")
 
-            
+
 
             self.vector_store = QdrantVectorStore(
                 client=self.vector_db_service.get_service_client(),
@@ -467,7 +466,7 @@ class RetrievalService:
         """Execute all searches in parallel"""
         all_results = []
         print(json.dumps(queries, indent=4))
-        
+
         dense_embeddings = await self.get_embedding_model_instance()
         if not dense_embeddings:
                 raise ValueError("No dense embeddings found")
@@ -479,7 +478,7 @@ class RetrievalService:
             limit=limit,
             using="dense"
         ) for query_embedding in query_embeddings]
-        search_results = self.vector_db_client.query_batch_points(
+        search_results = self.vector_db_service.query_batch_points(
             collection_name=self.collection_name,
             requests=query_requests,
         )
@@ -492,13 +491,13 @@ class RetrievalService:
         #     limit=limit,
         #     with_payload=True
         # ) for query_embedding in query_embeddings]
-        
+
         # start_time = time.monotonic()
         # search_results = await asyncio.gather(*search_tasks)
         # elapsed = time.monotonic() - start_time
         # self.logger.debug(f"VectorDB lookup for {len(queries)} queries took {elapsed:.3f} seconds.")
         # Convert to LangChain documents
-        
+
         for r in search_results:
                 points = r.points
                 for point in points:
@@ -508,7 +507,7 @@ class RetrievalService:
                     )
                     score = point.score
                     all_results.append((doc, score))
-            
+
         return self._format_results(all_results)
         # Process all queries in parallel
         # search_tasks = [
@@ -519,7 +518,7 @@ class RetrievalService:
         #     )
         #     for query in queries
         # ]
-        
+
         # start_time = time.monotonic()
         # search_results = await asyncio.gather(*search_tasks)
         # elapsed = time.monotonic() - start_time

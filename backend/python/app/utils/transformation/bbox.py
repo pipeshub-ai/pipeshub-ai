@@ -15,13 +15,13 @@ def transform_bbox_to_corners(bbox: dict) -> list[list[float]]:
               Order: top-left, top-right, bottom-right, bottom-left
     """
     # Validate input
-    
-    
+
+
     required_keys = ['l', 't', 'r', 'b']
     for key in required_keys:
         if key not in bbox:
             raise ValueError(f"bbox missing required key: {key}")
-    
+
     left, top, right, bottom = bbox['l'], bbox['t'], bbox['r'], bbox['b']
 
 
@@ -48,14 +48,14 @@ def normalize_corner_coordinates(corners: list[list[float]], page_width: float, 
         list: Normalized corner coordinates where each coordinate is in [0, 1] range
     """
     # Validate input
-    
+
     if page_width <= 0 or page_height <= 0:
         raise ValueError(f"page_width and page_height must be positive, got {page_width}, {page_height}")
-    
-    normalized_corners = []
 
+    normalized_corners = []
+    CORNERS_COUNT = 2
     for i, corner in enumerate(corners):
-        if not isinstance(corner, list) or len(corner) < 2:
+        if not isinstance(corner, list) or len(corner) < CORNERS_COUNT:
             raise ValueError(f"corner {i} must be a list with at least 2 elements, got {corner}")
         x, y = corner
         normalized_x = x / page_width

@@ -26,7 +26,7 @@ async def llm_health_check(request: Request, llm_configs: list[dict] = Body(...)
     try:
         app = request.app
         llm, _ = await get_llm(app.container.config_service(), llm_configs)
-        
+
         # Make a simple test call to the LLM with the provided configurations
         await llm.ainvoke("Test message to verify LLM health.")
 

@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, HttpUrl, field_validator
 
+
 class Point(BaseModel):
     x: float
     y: float
@@ -166,7 +167,7 @@ class ImageMetadata(BaseModel):
     captions: Optional[List[str]] = Field(default_factory=list)
     footnotes: Optional[List[str]] = Field(default_factory=list)
     annotations: Optional[List[str]] = Field(default_factory=list)
-    
+
 class Confidence(str, Enum):
     VERY_HIGH = "very_high"
     HIGH = "high"
@@ -191,9 +192,9 @@ class SemanticMetadata(BaseModel):
     categories: Optional[List[str]] = Field(default_factory=list)
     sub_category_level_1: Optional[str] = None
     sub_category_level_2: Optional[str] = None
-    sub_category_level_3: Optional [str] = None
+    sub_category_level_3: Optional[str] = None
     confidence: Optional[Confidence] = None
-    
+
 class Block(BaseModel):
     # Core block properties
     id: str = Field(default_factory=lambda: str(uuid4()))

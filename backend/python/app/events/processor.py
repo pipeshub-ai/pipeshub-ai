@@ -12,18 +12,17 @@ from app.config.constants.arangodb import (
     MimeTypes,
 )
 from app.config.constants.service import config_node_constants
-from app.models.entities import RecordType
-from app.modules.parsers.pdf.ocr_handler import OCRHandler
-from app.utils.llm import get_llm
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.models.entities import Record, RecordStatus, RecordType
 from app.modules.parsers.pdf.docling import DoclingPDFProcessor
-from app.models.entities import Record, RecordType, RecordStatus
+from app.modules.parsers.pdf.ocr_handler import OCRHandler
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import TransformContext
+from app.utils.llm import get_llm
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 def convert_record_dict_to_record(record_dict: dict) -> Record:
-   
+
     # Map the database fields to Record model fields
     record = Record(
         id=record_dict.get("_key"),
@@ -43,9 +42,9 @@ def convert_record_dict_to_record(record_dict: dict) -> Record:
         mime_type=record_dict.get("mimeType"),
         external_revision_id=record_dict.get("externalRevisionId"),
         connector_name = record_dict.get("connectorName"),
-       
+
     )
-    
+
     return record
 
 
@@ -549,7 +548,7 @@ class Processor:
         self, recordName, recordId, version, source, orgId, html_content, virtual_record_id
     ) -> None:
 
-    
+
         self.logger.info("🚀 Processing Gmail Message")
 
         try:
@@ -720,7 +719,7 @@ class Processor:
         except Exception as e:
             self.logger.error(f"❌ Error processing HTML document: {str(e)}")
             raise
-    
+
     async def process_pdf_with_docling(self, recordName, recordId, pdf_binary, virtual_record_id) -> None:
         self.logger.info(f"🚀 Starting PDF document processing for record: {recordName}")
         try:

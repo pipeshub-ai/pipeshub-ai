@@ -1,34 +1,31 @@
-from app.modules.transformers.transformer import Transformer, TransformContext
 import asyncio
-from typing import Any, Dict, List
 import uuid
-from app.models.entities import Record
-from langchain.chat_models.base import BaseChatModel
-from app.models.blocks import BlocksContainer
-from app.modules.extraction.prompt_template import prompt_for_image_description
-from langchain.schema import Document
-from langchain_qdrant import FastEmbedSparse, QdrantVectorStore, RetrievalMode
-from qdrant_client.http.models import FieldCondition, Filter, MatchValue
-from app.utils.llm import get_llm
-from langchain.schema import HumanMessage
+from typing import List
+
 import spacy
+from langchain.chat_models.base import BaseChatModel
+from langchain.schema import Document, HumanMessage
+from langchain_qdrant import FastEmbedSparse, QdrantVectorStore, RetrievalMode
+from qdrant_client.http.models import PointStruct
 from spacy.language import Language
-from app.config.constants.service import config_node_constants
+from spacy.tokens import Doc
+
 from app.config.constants.arangodb import CollectionNames
+from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import (
     DocumentProcessingError,
-    EmbeddingDeletionError,
     EmbeddingError,
     IndexingError,
     MetadataProcessingError,
     VectorStoreError,
 )
-from app.utils.aimodels import get_default_embedding_model, get_embedding_model
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
-import asyncio
-from spacy.tokens import Doc
-from qdrant_client.http.models import PointStruct
+from app.models.blocks import BlocksContainer
+from app.modules.extraction.prompt_template import prompt_for_image_description
+from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.vector_db.interface.vector_db import IVectorDBService
+from app.utils.aimodels import get_default_embedding_model, get_embedding_model
+from app.utils.llm import get_llm
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 LENGTH_THRESHOLD = 2
 
@@ -47,7 +44,10 @@ class VectorStore(Transformer):
         self.config_service = config_service
         self.arango_service = arango_service
         self.nlp = self._create_custom_tokenizer(spacy.load("en_core_web_sm"))
-       
+        self.vector_db_service = vector_db_service
+        self.collection_name = collection_name
+        self.vector_store = None
+        self.dense_embeddings = None
         try:
             # Initialize sparse embeddings
             try:
@@ -58,11 +58,7 @@ class VectorStore(Transformer):
                     details={"error": str(e)},
                 )
 
-            self.vector_db_service = vector_db_service
-            self.vector_db_client = vector_db_service.get_service_client()
-            self.collection_name = collection_name
-            self.vector_store = None
-            self.dense_embeddings = None
+
 
         except (IndexingError, VectorStoreError):
             raise
@@ -71,19 +67,16 @@ class VectorStore(Transformer):
                 "Failed to initialize indexing pipeline: " + str(e),
                 details={"error": str(e)},
             )
-            
+
     async def apply(self, ctx: TransformContext) -> TransformContext:
         record = ctx.record
         record_id = record.id
         virtual_record_id = record.virtual_record_id
         block_containers = record.block_containers
         org_id = record.org_id
-        record_name = record.record_name
-        mime_type = record.mime_type
-        record_type = record.record_type
         await self.index_documents(block_containers, org_id,record_id,virtual_record_id)
         return ctx
-    
+
     @Language.component("custom_sentence_boundary")
     def custom_sentence_boundary(doc) -> Doc:
         for token in doc[:-1]:  # Avoid out-of-bounds errors
@@ -200,7 +193,7 @@ class VectorStore(Transformer):
                     f"Collection {self.collection_name} has size {current_vector_size}, but {embedding_size} is required."
                     " Recreating collection."
                 )
-                self.vector_db_client.delete_collection(self.collection_name)
+                await self.vector_db_service.delete_collection(self.collection_name)
                 raise Exception(
                     "Recreating collection due to vector dimension mismatch."
                 )
@@ -240,7 +233,7 @@ class VectorStore(Transformer):
                     details={"collection": self.collection_name, "error": str(e)},
                 )
 
-    
+
 
     async def get_embedding_model_instance(self) -> bool:
         try:
@@ -288,7 +281,7 @@ class VectorStore(Transformer):
             await self._initialize_collection(embedding_size=embedding_size)
 
             # Initialize vector store with same configuration
-            
+
             self.vector_store: QdrantVectorStore = QdrantVectorStore(
                 client=self.vector_db_service.get_service_client(),
                 collection_name=self.collection_name,
@@ -359,14 +352,13 @@ class VectorStore(Transformer):
 
                 for chunk in text_chunks:
                     texts.append(chunk.page_content)
-                 
                 if texts:
                     embeddings = await self.dense_embeddings.aembed(texts=texts,input_type="search_document")
                     for i, chunk in enumerate(text_chunks):
                         embedding = embeddings[i]
                         # Create point with embedding and metadata
                         point = PointStruct(
-                            id=str(uuid.uuid4()), 
+                            id=str(uuid.uuid4()),
                             vector={"dense": embedding},
                             payload={
                                 "metadata": chunk.metadata,
@@ -374,10 +366,9 @@ class VectorStore(Transformer):
                             },
                         )
                         points.append(point)
-                    
-                
+
                 image_base64s = [chunk.get("image_uri") for chunk in image_chunks]
-                
+
                 embeddings = await self.dense_embeddings.aembed(texts=image_base64s,input_type="image")
                 for i, chunk in enumerate(image_chunks):
                         embedding = embeddings[i]
@@ -390,11 +381,10 @@ class VectorStore(Transformer):
                             },
                         )
                         points.append(point)
-                self.vector_db_client.upsert(
+                self.vector_db_service.upsert(
                         collection_name=self.collection_name, points=points
                     )
             else:
-                print("text embeddings............................................")
                 if text_chunks:
                     try:
                             await self.vector_store.aadd_documents(text_chunks)
@@ -472,7 +462,7 @@ class VectorStore(Transformer):
         return response.content
 
     async def describe_images(self, base64_images: List[str],vlm:BaseChatModel) -> List[dict]:
-        
+
         async def describe(i: int, base64_string: str) -> dict:
             try:
                 description = await self.describe_image_async(base64_string, vlm)
@@ -521,7 +511,7 @@ class VectorStore(Transformer):
                 "Failed to get LLM: " + str(e),
                 details={"error": str(e)},
             )
-        
+
         blocks = block_containers.blocks
         block_groups = block_containers.block_groups
         try:
@@ -552,7 +542,7 @@ class VectorStore(Transformer):
             for block_group in block_groups:
                 if block_group.type.lower() in ["table"]:
                     table_blocks.append(block_group)
-               
+
 
             documents_to_embed = []
 
@@ -566,7 +556,6 @@ class VectorStore(Transformer):
                             "blockIndex": block.index,
                             "orgId": org_id,
                             "isBlockGroup": False,
-
                         }
                         doc = self.nlp(block_text)
                         sentences = [sent.text for sent in doc.sents]
@@ -587,13 +576,13 @@ class VectorStore(Transformer):
                                     },)
                         )
 
-                    self.logger.info(f"✅ Added text documents for embedding")
+                    self.logger.info("✅ Added text documents for embedding")
                 except Exception as e:
                     raise DocumentProcessingError(
                         "Failed to create text document objects: " + str(e),
                         details={"error": str(e)},
                     )
-        
+
             # Process image blocks - create image embeddings
             if image_blocks:
                 try:
@@ -619,7 +608,7 @@ class VectorStore(Transformer):
                                 documents_to_embed.append(
                                     {"image_uri": image_uri, "metadata": metadata}
                                 )
-                                
+
                         elif is_multimodal_llm:
                             description_results = await self.describe_images(
                                 images_uris,llm
@@ -697,4 +686,3 @@ class VectorStore(Transformer):
                 details={"error_type": type(e).__name__},
             )
 
-    

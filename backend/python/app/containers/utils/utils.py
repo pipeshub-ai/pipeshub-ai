@@ -24,6 +24,11 @@ from app.modules.retrieval.retrieval_arango import (
     ArangoService as RetrievalArangoService,
 )
 from app.modules.retrieval.retrieval_service import RetrievalService
+from app.modules.transformers.arango import Arango
+from app.modules.transformers.blob_storage import BlobStorage
+from app.modules.transformers.document_extraction import DocumentExtraction
+from app.modules.transformers.sink_orchestrator import SinkOrchestrator
+from app.modules.transformers.vectorstore import VectorStore
 from app.services.scheduler.redis_scheduler.redis_scheduler import RedisScheduler
 from app.services.vector_db.const.const import (
     VECTOR_DB_COLLECTION_NAME,
@@ -32,11 +37,6 @@ from app.services.vector_db.const.const import (
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.vector_db_factory import VectorDBFactory
 from app.utils.logger import create_logger
-from app.modules.transformers.arango import Arango
-from app.modules.transformers.blob_storage import BlobStorage
-from app.modules.transformers.document_extraction import DocumentExtraction
-from app.modules.transformers.sink_orchestrator import SinkOrchestrator
-from app.modules.transformers.vectorstore import VectorStore
 
 
 # Note - Cannot make this a singleton as it is used in the container and DI does not work with static methods
@@ -93,7 +93,7 @@ class ContainerUtils:
         extractor = DomainExtractor(logger, arango_service, config_service)
         # Add any necessary async initialization
         return extractor
-    
+
     async def create_vector_store(self, logger, arango_service, config_service, vector_db_service, collection_name) -> VectorStore:
         """Async factory for VectorStore"""
         vector_store = VectorStore(logger, config_service, arango_service, collection_name, vector_db_service)
@@ -103,12 +103,12 @@ class ContainerUtils:
         """Async factory for Arango"""
         arango = Arango(arango_service, logger)
         return arango
-        
+
     async def create_sink_orchestrator(self, logger, arango, blob_storage, vector_store) -> SinkOrchestrator:
         """Async factory for SinkOrchestrator"""
         orchestrator = SinkOrchestrator(arango=arango, blob_storage=blob_storage, vector_store=vector_store)
         return orchestrator
-            
+
     async def create_document_extractor(self, logger, arango_service, config_service) -> DocumentExtraction:
         """Async factory for DocumentExtraction"""
         extractor = DocumentExtraction(logger, arango_service, config_service)
@@ -118,7 +118,7 @@ class ContainerUtils:
         """Async factory for BlobStorage"""
         blob_storage = BlobStorage(logger, config_service, arango_service)
         return blob_storage
-        
+
     async def create_parsers(self, logger: Logger) -> dict:
         """Async factory for Parsers"""
         parsers = {

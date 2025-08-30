@@ -1,24 +1,27 @@
 import json
-from app.modules.transformers.transformer import Transformer, TransformContext
+
+import aiohttp
+import jwt
+
+from app.config.constants.arangodb import CollectionNames
+from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import (
     DefaultEndpoints,
     Routes,
     TokenScopes,
     config_node_constants,
 )
-import aiohttp
-from app.config.constants.http_status_code import HttpStatusCode
-import jwt
-from app.config.constants.arangodb import CollectionNames
 from app.core.ai_arango_service import ArangoService
+from app.modules.transformers.transformer import TransformContext, Transformer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
+
 class BlobStorage(Transformer):
-    def __init__(self,logger,config_service, arango_service: ArangoService = None):
+    def __init__(self,logger,config_service, arango_service: ArangoService = None) -> None:
         self.logger = logger
         self.config_service = config_service
         self.arango_service = arango_service
-    
+
     async def apply(self, ctx: TransformContext) -> TransformContext:
         record = ctx.record
         org_id = record.org_id
@@ -26,14 +29,14 @@ class BlobStorage(Transformer):
         virtual_record_id = record.virtual_record_id
         record_dict = record.model_dump()
         document_id = await self.save_record_to_storage(org_id, record_id, virtual_record_id, record_dict)
-        
+
         # Store the mapping if we have both IDs and arango_service is available
         if document_id and self.arango_service:
             await self.store_virtual_record_mapping(virtual_record_id, document_id)
-        
+
         ctx.record = record
         return ctx
-    
+
     async def _get_signed_url(self, session, url, data, headers) -> dict | None:
         """Helper method to get signed URL with retry logic"""
         try:
@@ -86,7 +89,7 @@ class BlobStorage(Transformer):
         except Exception as e:
             self.logger.error("❌ Unexpected error uploading to signed URL: %s", str(e))
             raise aiohttp.ClientError(f"Unexpected error: {str(e)}")
-    
+
     async def _create_placeholder(self, session, url, data, headers) -> dict | None:
         """Helper method to create placeholder with retry logic"""
         try:
@@ -203,7 +206,7 @@ class BlobStorage(Transformer):
 
                             response_data = await response.json()
                             document_id = response_data.get('_id')
-                            
+
                             if not document_id:
                                 self.logger.error("❌ No document ID in upload response")
                                 return None
@@ -273,7 +276,7 @@ class BlobStorage(Transformer):
             self.logger.error("❌ Critical error in saving record to storage: %s", str(e))
             self.logger.exception("Detailed error trace:")
             return None
-    
+
     async def get_document_id_by_virtual_record_id(self, virtual_record_id: str) -> str:
         """
         Get the document ID by virtual record ID from ArangoDB.
@@ -281,23 +284,25 @@ class BlobStorage(Transformer):
             str: The document ID if found, else None.
         """
         if not self.arango_service:
-            self.logger.warning("ArangoService not initialized, cannot get document ID by virtual record ID.")
+            self.logger.error("❌ ArangoService not initialized, cannot get document ID by virtual record ID.")
             return None
 
         try:
             collection_name = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
-            query = f'FOR doc IN {collection_name} FILTER doc.virtualRecordId == "{virtual_record_id}" RETURN doc.documentId' 
-            cursor =  self.arango_service.db.aql.execute(query)
-            document_id = cursor.next()
-            if document_id:
-                return document_id
+            query = f'FOR doc IN {collection_name} FILTER doc.virtualRecordId == "{virtual_record_id}" RETURN doc.documentId'
+            cursor = self.arango_service.db.aql.execute(query)
+
+            # Check if cursor has any results before calling next()
+            results = list(cursor)
+            if results:
+                return results[0]  # Return first document ID
             else:
+                self.logger.info("No document ID found for virtual record ID: %s", virtual_record_id)
                 return None
         except Exception as e:
-            # self.logger.error("❌ Error getting document ID by virtual record ID: %s", str(e))
-            # self.logger.exception("Detailed error trace:")
-            return None
-    
+            self.logger.error("❌ Error getting document ID by virtual record ID: %s", str(e))
+            raise e
+
     async def get_record_from_storage(self, virtual_record_id: str, org_id: str) -> str:
             """
             Retrieve a record's content from blob storage using the virtual_record_id.
@@ -317,9 +322,8 @@ class BlobStorage(Transformer):
                 scoped_jwt_secret = secret_keys.get("scopedJwtSecret")
                 if not scoped_jwt_secret:
                     raise ValueError("Missing scoped JWT secret")
-                
+
                 jwt_token = jwt.encode(payload, scoped_jwt_secret, algorithm="HS256")
-                print(jwt_token, "jwt_token for storage.........................")
                 headers = {
                     "Authorization": f"Bearer {jwt_token}"
                 }
@@ -331,12 +335,12 @@ class BlobStorage(Transformer):
                 nodejs_endpoint = endpoints.get("cm", {}).get("endpoint", DefaultEndpoints.NODEJS_ENDPOINT.value)
                 if not nodejs_endpoint:
                     raise ValueError("Missing CM endpoint configuration")
-                
+
                 document_id = await self.get_document_id_by_virtual_record_id(virtual_record_id)
                 if not document_id:
-                    # self.logger.error("❌ No document ID found for virtual record ID: %s", virtual_record_id)
+                    self.logger.info("No document ID found for virtual record ID: %s", virtual_record_id)
                     return None
-                
+
                 # Build the download URL
                 download_url = f"{nodejs_endpoint}{Routes.STORAGE_DOWNLOAD.value.format(documentId=document_id)}"
                 async with aiohttp.ClientSession() as session:
@@ -357,7 +361,7 @@ class BlobStorage(Transformer):
             except Exception as e:
                 self.logger.error("❌ Error retrieving record from storage: %s", str(e))
                 self.logger.exception("Detailed error trace:")
-                return None
+                raise e
 
     async def store_virtual_record_mapping(self, virtual_record_id: str, document_id: str) -> bool:
         """
@@ -365,56 +369,53 @@ class BlobStorage(Transformer):
         Returns:
             bool: True if successful, False otherwise.
         """
-        if not self.arango_service:
-            self.logger.warning("ArangoService not initialized, cannot store virtual record mapping.")
-            return False
 
         try:
             collection_name = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
-            
+
             # Create a unique key for the mapping using both IDs
             mapping_key = f"{virtual_record_id}_{document_id}"
-            
+
             mapping_document = {
                 "_key": mapping_key,
                 "virtualRecordId": virtual_record_id,
                 "documentId": document_id,
                 "createdAt": get_epoch_timestamp_in_ms()
             }
-            
+
             success = await self.arango_service.batch_upsert_nodes(
-                [mapping_document], 
+                [mapping_document],
                 collection_name
             )
-            
+
             if success:
                 self.logger.info("✅ Successfully stored virtual record mapping: virtual_record_id=%s, document_id=%s", virtual_record_id, document_id)
                 return True
             else:
                 self.logger.error("❌ Failed to store virtual record mapping")
                 return False
-                
+
         except Exception as e:
             self.logger.error("❌ Failed to store virtual record mapping: %s", str(e))
             self.logger.exception("Detailed error trace:")
-            return False
+            raise e
 
 
 # async def store_virtual_record_mapping_standalone(
 #     arango_service: ArangoService,
-#     virtual_record_id: str, 
+#     virtual_record_id: str,
 #     document_id: str,
 #     logger=None
 # ) -> bool:
 #     """
 #     Standalone function to store the mapping between virtual_record_id and document_id in ArangoDB.
-    
+
 #     Args:
 #         arango_service (ArangoService): The ArangoDB service instance
 #         virtual_record_id (str): The virtual record ID
 #         document_id (str): The document ID from blob storage
 #         logger: Optional logger instance for logging
-        
+
 #     Returns:
 #         bool: True if successful, False otherwise.
 #     """
@@ -425,22 +426,22 @@ class BlobStorage(Transformer):
 
 #     try:
 #         collection_name = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
-        
+
 #         # Create a unique key for the mapping using both IDs
 #         mapping_key = f"{virtual_record_id}_{document_id}"
-        
+
 #         mapping_document = {
 #             "_key": mapping_key,
 #             "virtualRecordId": virtual_record_id,
 #             "documentId": document_id,
 #             "createdAt": get_epoch_timestamp_in_ms()
 #         }
-        
+
 #         success = await arango_service.batch_upsert_nodes(
-#             [mapping_document], 
+#             [mapping_document],
 #             collection_name
 #         )
-        
+
 #         if success:
 #             if logger:
 #                 logger.info("✅ Successfully stored virtual record mapping: virtual_record_id=%s, document_id=%s", virtual_record_id, document_id)
@@ -449,7 +450,7 @@ class BlobStorage(Transformer):
 #             if logger:
 #                 logger.error("❌ Failed to store virtual record mapping")
 #             return False
-            
+
 #     except Exception as e:
 #         if logger:
 #             logger.error("❌ Failed to store virtual record mapping: %s", str(e))

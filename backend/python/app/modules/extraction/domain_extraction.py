@@ -3,7 +3,6 @@ import uuid
 from typing import List, Literal
 
 import aiohttp
-from app.modules.transformers.document_extraction import DocumentClassification
 import jwt
 import numpy as np
 from langchain.output_parsers import PydanticOutputParser
@@ -31,6 +30,7 @@ from app.config.constants.service import (
     config_node_constants,
 )
 from app.modules.extraction.prompt_template import prompt
+from app.modules.transformers.document_extraction import DocumentClassification
 from app.utils.llm import get_llm
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -76,11 +76,11 @@ class DomainExtractor:
             f"Retrying LLM call after error. Attempt {retry_state.attempt_number}"
         ),
     )
-    
+
     async def _call_llm(self, messages) -> dict | None:
         """Wrapper for LLM calls with retry logic"""
         return await self.llm.ainvoke(messages)
-    
+
     async def find_similar_topics(self, new_topic: str) -> str:
         """
         Find if a similar topic already exists in the topics store using TF-IDF similarity.
@@ -168,9 +168,8 @@ class DomainExtractor:
         Includes reflection logic to attempt recovery from parsing failures.
         """
         self.logger.info("🎯 Extracting domain metadata")
-        self.llm, config = await get_llm(self.config_service)
-        is_multimodal_llm = config.get("isMultimodal")
-        
+        self.llm, _ = await get_llm(self.config_service)
+
         try:
             self.logger.info(f"🎯 Extracting departments for org_id: {org_id}")
             departments = await self.arango_service.get_departments(org_id)
@@ -596,7 +595,7 @@ class DomainExtractor:
                     "summary": metadata.summary,
                 }
             )
-         
+
             return doc
 
         except Exception as e:
@@ -610,7 +609,7 @@ class DomainExtractor:
             f"Retrying API call after error. Attempt {retry_state.attempt_number}"
         ),
     )
-    
+
     async def _create_placeholder(self, session, url, data, headers) -> dict | None:
         """Helper method to create placeholder with retry logic"""
         try:

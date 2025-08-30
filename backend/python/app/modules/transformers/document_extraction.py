@@ -1,14 +1,16 @@
-from typing import List
-from app.modules.transformers.transformer import Transformer, TransformContext
-from app.models.blocks import Block, SemanticMetadata
 from typing import List, Literal
+
 from langchain.output_parsers import PydanticOutputParser
 from langchain.prompts import PromptTemplate
 from langchain.schema import AIMessage, HumanMessage
-from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
+
 from app.config.constants.arangodb import DepartmentNames
-from app.modules.extraction.prompt_template import prompt_for_docling_document_extraction
+from app.models.blocks import Block, SemanticMetadata
+from app.modules.extraction.prompt_template import (
+    prompt_for_docling_document_extraction,
+)
+from app.modules.transformers.transformer import TransformContext, Transformer
 from app.utils.llm import get_llm
 
 SentimentType = Literal["Positive", "Neutral", "Negative"]
@@ -45,7 +47,7 @@ class DocumentExtraction(Transformer):
         self.arango_service = base_arango_service
         self.config_service = config_service
         self.parser = PydanticOutputParser(pydantic_object=DocumentClassification)
-   
+
     async def apply(self, ctx: TransformContext) -> None:
         record = ctx.record
         blocks = record.block_containers.blocks
@@ -60,14 +62,14 @@ class DocumentExtraction(Transformer):
             sub_category_level_2=document_classification.subcategories.level2,
             sub_category_level_3=document_classification.subcategories.level3,
         )
-            
+
     def _prepare_multimodal_content(self, blocks: List[Block]) -> List[dict]:
         """
         Prepare blocks for VLM processing by converting them to the appropriate format.
         Returns a list of content items that can be sent to a VLM.
         """
         multimodal_content = []
-        
+
         for block in blocks:
             if block.type.value == "text":
                 # Add text content
@@ -84,7 +86,7 @@ class DocumentExtraction(Transformer):
                     # print(json.dumps(image_data, indent=4))
                     # Extract base64 data from data URL
                     image_data = image_data.get("uri")
-                    
+
                     multimodal_content.append({
                         "type": "image_url",
                         "image_url": {
@@ -97,7 +99,7 @@ class DocumentExtraction(Transformer):
                         "type": "text",
                         "text": block.data if block.data else ""
                     })
-        
+
         return multimodal_content
 
     async def extract_metadata_with_vlm(
@@ -128,7 +130,7 @@ class DocumentExtraction(Transformer):
 
             # Prepare multimodal content
             multimodal_content = self._prepare_multimodal_content(blocks)
-            
+
             # Create the multimodal message
             message_content = [
                 {
@@ -142,10 +144,10 @@ class DocumentExtraction(Transformer):
             ]
             # Add the multimodal content
             message_content.extend(multimodal_content)
-            
+
             # Create the message for VLM
             messages = [HumanMessage(content=message_content)]
-            
+
             # Use retry wrapper for LLM call
             response = await self._call_llm(messages)
 
@@ -232,9 +234,7 @@ class DocumentExtraction(Transformer):
         Includes reflection logic to attempt recovery from parsing failures.
         """
         self.logger.info("🎯 Extracting domain metadata")
-        self.llm, config = await get_llm(self.config_service)
-        is_multimodal_llm = config.get("isMultimodal")
-        is_multimodal_llm = True
+        self.llm, _ = await get_llm(self.config_service)
         try:
             self.logger.info(f"🎯 Extracting departments for org_id: {org_id}")
             departments = await self.arango_service.get_departments(org_id)
@@ -342,16 +342,16 @@ class DocumentExtraction(Transformer):
                     )
                     raise ValueError(
                         f"Failed to parse LLM response and reflection attempt failed: {str(parse_error)}"
-                    ) 
+                    )
         except Exception as e:
             self.logger.error(f"❌ Error during metadata extraction: {str(e)}")
             raise
 
     async def process_document(self, blocks: List[Block], org_id: str) -> DocumentClassification:
-      
+
         # Check if we have any image blocks
         has_images = any(block.type.value == "image" for block in blocks)
-        
+
         if has_images:
             # Use VLM for multimodal processing
             self.logger.info("🖼️ Processing document with VLM (text + images)")
@@ -360,5 +360,5 @@ class DocumentExtraction(Transformer):
             # Use regular LLM for text-only processing
             self.logger.info("📝 Processing document with regular LLM (text only)")
             return await self.extract_metadata(blocks, org_id)
-   
+
 

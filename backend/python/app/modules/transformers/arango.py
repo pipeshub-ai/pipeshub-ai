@@ -1,19 +1,20 @@
 import uuid
 
-from app.core.ai_arango_service import ArangoService
-from app.modules.transformers.transformer import Transformer, TransformContext
-from app.models.blocks import SemanticMetadata
 from app.config.constants.arangodb import (
     CollectionNames,
 )
+from app.core.ai_arango_service import ArangoService
+from app.models.blocks import SemanticMetadata
+from app.modules.transformers.transformer import TransformContext, Transformer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
+
 class Arango(Transformer):
-    def __init__(self, arango_service: ArangoService, logger):
+    def __init__(self, arango_service: ArangoService, logger) -> None:
         super().__init__()
         self.arango_service = arango_service
         self.logger = logger
-    
+
     async def apply(self, ctx: TransformContext) -> None:
         record = ctx.record
         metadata = record.semantic_metadata
@@ -195,7 +196,7 @@ class Arango(Transformer):
                     metadata.sub_category_level_2, "2", sub1_key, "subcategories1"
                 )
             if metadata.sub_category_level_3 and sub2_key:
-                sub3_key = handle_subcategory(
+                handle_subcategory(
                     metadata.sub_category_level_3, "3", sub2_key, "subcategories2"
                 )
 
@@ -292,7 +293,7 @@ class Arango(Transformer):
                     )
 
             self.logger.info(
-                f"🚀 Metadata saved successfully for document"
+                "🚀 Metadata saved successfully for document"
             )
 
             doc.update(
@@ -304,7 +305,7 @@ class Arango(Transformer):
             docs = [doc]
 
             self.logger.info(
-                f"🎯 Upserting domain metadata for document"
+                "🎯 Upserting domain metadata for document"
             )
             await self.arango_service.batch_upsert_nodes(
                 docs, CollectionNames.RECORDS.value
@@ -314,4 +315,3 @@ class Arango(Transformer):
             self.logger.error(f"❌ Error saving metadata to ArangoDB: {str(e)}")
             raise
 
-    

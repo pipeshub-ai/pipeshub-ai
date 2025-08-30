@@ -1,4 +1,4 @@
-from typing import Dict, Optional, Union
+from typing import Dict, List, Optional, Union
 
 from qdrant_client import AsyncQdrantClient, QdrantClient  # type: ignore
 from qdrant_client.http.models import (  # type: ignore
@@ -8,6 +8,8 @@ from qdrant_client.http.models import (  # type: ignore
     KeywordIndexType,
     Modifier,
     OptimizersConfigDiff,
+    PointStruct,
+    QueryRequest,
     ScalarQuantization,
     ScalarQuantizationConfig,
     ScalarType,
@@ -351,3 +353,34 @@ class QdrantService(IVectorDBService):
         if self.client is None:
             raise RuntimeError("Client not connected. Call connect() first.")
         return self.client.scroll(collection_name, scroll_filter, limit)
+
+    def overwrite_payload(
+        self,
+        collection_name: str,
+        payload: dict,
+        points: Filter,
+    ) -> None:
+        """Overwrite a payload"""
+        if self.client is None:
+            raise RuntimeError("Client not connected. Call connect() first.")
+        self.client.overwrite_payload(collection_name, payload, points)
+
+    def query_batch_points(
+        self,
+        collection_name: str,
+        requests: List[QueryRequest],
+    ) -> List[List[PointStruct]]:
+        """Query batch points"""
+        if self.client is None:
+            raise RuntimeError("Client not connected. Call connect() first.")
+        return self.client.query_batch_points(collection_name, requests)
+
+    def upsert(
+        self,
+        collection_name: str,
+        points: List[PointStruct],
+    ) -> None:
+        """Upsert points"""
+        if self.client is None:
+            raise RuntimeError("Client not connected. Call connect() first.")
+        self.client.upsert(collection_name, points)

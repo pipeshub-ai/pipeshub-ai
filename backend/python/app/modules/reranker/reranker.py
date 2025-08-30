@@ -1,9 +1,10 @@
-from tkinter import Image
 from typing import Any, Dict, List, Optional
 
-from app.models.blocks import BlockType
 import torch
 from sentence_transformers import CrossEncoder
+
+from app.models.blocks import BlockType
+
 
 class RerankerService:
     """Service for reranking retrieval results"""
