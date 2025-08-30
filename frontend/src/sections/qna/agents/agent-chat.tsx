@@ -45,7 +45,7 @@ import MarkdownViewer from 'src/sections/qna/chatbot/components/markdown-highlig
 import DocxHighlighterComp from 'src/sections/qna/chatbot/components/docx-highlighter';
 import { StreamingContext } from 'src/sections/qna/chatbot/components/chat-message';
 import { processStreamingContentLegacy } from 'src/sections/qna/chatbot/utils/styles/content-processing';
-import AgentApiService, { KnowledgeBase } from './services/agent-api-service';
+import AgentApiService, { KnowledgeBase } from './services/api';
 import AgentChatInput from './components/agent-chat-input';
 import AgentChatSidebar from './components/agent-chat-sidebar';
 

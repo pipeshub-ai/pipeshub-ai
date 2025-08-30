@@ -83,7 +83,7 @@ permissions_schema = {
             "_from": {"type": "string", "minLength": 1},
             "_to": {"type": "string", "minLength": 1},
             "externalPermissionId": {"type": ["string", "null"]},
-            "type": {"type": "string", "enum": ["USER", "GROUP", "DOMAIN"]},
+            "type": {"type": "string", "enum": ["USER", "GROUP", "DOMAIN","TEAM"]},
             "role": {
                 "type": "string",
                 "enum": [

@@ -21,6 +21,7 @@ from app.connectors.sources.localKB.api.models import (
     ListKnowledgeBaseResponse,
     ListPermissionsResponse,
     ListRecordsResponse,
+    RemovePermissionRequest,
     RemovePermissionResponse,
     SuccessResponse,
     UpdateFolderRequest,
@@ -164,7 +165,7 @@ async def get_knowledge_base(
             detail=f"Unexpected error: {str(e)}"
         )
 
-@kb_router.patch(
+@kb_router.put(
     "/{kb_id}/user/{user_id}",
     response_model=SuccessResponse,
     responses={
@@ -518,7 +519,7 @@ async def get_folder_contents(
         )
 
 
-@kb_router.patch(
+@kb_router.put(
     "/{kb_id}/folder/{folder_id}/user/{user_id}",
     response_model=SuccessResponse,
     responses={403: {"model": ErrorResponse}}
@@ -752,7 +753,8 @@ async def create_kb_permissions(
         result = await kb_service.create_kb_permissions(
             kb_id=kb_id,
             requester_id=req.requesterId,
-            users=req.users,
+            user_ids=req.userIds,
+            team_ids=req.teamIds,
             role=req.role,
         )
         if not result or result.get("success") is False:
@@ -774,7 +776,7 @@ async def create_kb_permissions(
         )
 
 
-@kb_router.patch(
+@kb_router.put(
     "/{kb_id}/permissions",
     response_model=UpdatePermissionResponse,
     responses={403: {"model": ErrorResponse}}
@@ -790,7 +792,8 @@ async def update_kb_permission(
         result = await kb_service.update_kb_permission(
             kb_id=kb_id,
             requester_id=req.requesterId,
-            user_id=req.userId,
+            user_ids=req.userIds,
+            team_ids=req.teamIds,
             new_role=req.role,
         )
         if not result or result.get("success") is False:
@@ -813,22 +816,25 @@ async def update_kb_permission(
 
 
 @kb_router.delete(
-    "/{kb_id}/requester/{requester_id}/user/{user_id}/permissions",
+    "/{kb_id}/permissions",
     response_model=RemovePermissionResponse,
     responses={403: {"model": ErrorResponse}}
 )
 @inject
 async def remove_kb_permission(
     kb_id: str,
-    requester_id: str,
-    user_id: str,
+    req: RemovePermissionRequest,
     kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
 ) -> Union[RemovePermissionResponse, Dict[str, Any]]:
+    """
+    Remove permissions for users and teams from a knowledge base
+    """
     try:
         result = await kb_service.remove_kb_permission(
             kb_id=kb_id,
-            requester_id=requester_id,
-            user_id=user_id,
+            requester_id=req.requesterId,
+            user_ids=req.userIds,
+            team_ids=req.teamIds,
         )
         if not result or result.get("success") is False:
             error_code = int(result.get("code", HTTP_INTERNAL_SERVER_ERROR))

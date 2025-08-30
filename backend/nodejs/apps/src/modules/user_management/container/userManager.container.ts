@@ -12,6 +12,7 @@ import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { AuthService } from '../services/auth.service';
 import { ConfigurationManagerService } from '../services/cm.service';
+import { TeamsController } from '../controller/teams.controller';
 
 const loggerConfig = {
   service: 'User Manager Container',
@@ -84,6 +85,10 @@ export class UserManagerContainer {
           container.get('Logger'),
           container.get<EntitiesEventProducer>('EntitiesEventProducer'),
         );
+      });
+      
+      container.bind<TeamsController>('TeamsController').toDynamicValue(() => {
+        return new TeamsController(appConfig, container.get('Logger'));
       });
 
       container.bind<UserController>('UserController').toDynamicValue(() => {

@@ -70,10 +70,18 @@ export interface KBPermission {
 }
 
 export interface CreatePermissionRequest {
-  users: string[];
-  role: 'OWNER' | 'ORGANIZER' | 'FILEORGANIZER' | 'WRITER' | 'COMMENTER' | 'READER';
+  userIds: string[];
+  teamIds: string[];
+  role: string;
 }
 
 export interface UpdatePermissionRequest {
-  role: 'OWNER' | 'ORGANIZER' | 'FILEORGANIZER' | 'WRITER' | 'COMMENTER' | 'READER';
+  userIds: string[];
+  teamIds: string[];
+  role: string;
+}
+
+export interface RemovePermissionRequest {
+  userIds: string[];
+  teamIds: string[];
 }

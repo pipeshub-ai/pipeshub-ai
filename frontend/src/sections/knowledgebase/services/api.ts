@@ -2,6 +2,7 @@
 import axios from 'src/utils/axios';
 
 import { CONFIG } from 'src/config-global';
+import { UnifiedPermission } from 'src/components/permissions/UnifiedPermissionsDialog';
 
 import type {
   Item,
@@ -10,6 +11,7 @@ import type {
   FolderContents,
   CreatePermissionRequest,
   UpdatePermissionRequest,
+  RemovePermissionRequest,
 } from '../types/kb';
 
 const API_BASE = '/api/v1/knowledgeBase';
@@ -55,7 +57,7 @@ export class KnowledgeBaseAPI {
   }
 
   static async updateKnowledgeBase(kbId: string, name: string): Promise<KnowledgeBase> {
-    const response = await axios.patch(`${API_BASE}/${kbId}`, { kbName: name });
+    const response = await axios.put(`${API_BASE}/${kbId}`, { kbName: name });
     if (!response.data) throw new Error('Failed to update knowledge base');
     return response.data;
   }
@@ -77,7 +79,7 @@ export class KnowledgeBaseAPI {
   }
 
   static async updateFolder(kbId: string, folderId: string, name: string): Promise<void> {
-    const response = await axios.patch(`${API_BASE}/${kbId}/folder/${folderId}`, {
+    const response = await axios.put(`${API_BASE}/${kbId}/folder/${folderId}`, {
       folderName: name,
     });
     if (response.status !== 200) throw new Error('Failed to update folder');
@@ -161,7 +163,7 @@ export class KnowledgeBaseAPI {
   /**
    * List all permissions for a knowledge base
    */
-  static async listKBPermissions(kbId: string): Promise<KBPermission[]> {
+  static async listKBPermissions(kbId: string): Promise<UnifiedPermission[]> {
     const response = await axios.get(`${API_BASE}/${kbId}/permissions`);
     if (!response.data.permissions) throw new Error('Failed to fetch permissions');
     return response.data.permissions;
@@ -172,10 +174,9 @@ export class KnowledgeBaseAPI {
    */
   static async updateKBPermission(
     kbId: string,
-    userId: string,
     data: UpdatePermissionRequest
   ): Promise<any> {
-    const response = await axios.put(`${API_BASE}/${kbId}/permissions/${userId}`, data);
+    const response = await axios.put(`${API_BASE}/${kbId}/permissions`, data);
     if (!response.data) throw new Error('Failed to update permission');
     return response.data;
   }
@@ -183,8 +184,8 @@ export class KnowledgeBaseAPI {
   /**
    * Remove a user's permission from a knowledge base
    */
-  static async removeKBPermission(kbId: string, userId: string): Promise<any> {
-    const response = await axios.delete(`${API_BASE}/${kbId}/permissions/${userId}`);
+  static async removeKBPermission(kbId: string, data: RemovePermissionRequest): Promise<any> {
+    const response = await axios.delete(`${API_BASE}/${kbId}/permissions`, { data });
     if (!response.data) throw new Error('Failed to remove permission');
     return response.data;
   }

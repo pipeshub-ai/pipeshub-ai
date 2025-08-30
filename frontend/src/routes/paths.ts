@@ -58,7 +58,11 @@ export const paths = {
     },
     agent: {
       root: `${ROOTS.DASHBOARD}agents`,
+      new: `${ROOTS.DASHBOARD}agents/new`,
+      flow: `${ROOTS.DASHBOARD}agents/flow`,
       chat: (agentKey: string) => `${ROOTS.DASHBOARD}agents/${agentKey}`,
+      edit: (agentKey: string) => `${ROOTS.DASHBOARD}agents/${agentKey}/edit`,
+      flowEdit: (agentKey: string) => `${ROOTS.DASHBOARD}agents/${agentKey}/flow`,
       conversation: (agentKey: string, conversationKey: string) => `${ROOTS.DASHBOARD}agent/${agentKey}/conv/${conversationKey}`,
     },
   },

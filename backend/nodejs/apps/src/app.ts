@@ -50,6 +50,7 @@ import { registerStorageSwagger } from './modules/storage/docs/swagger';
 import { CrawlingManagerContainer } from './modules/crawling_manager/container/cm_container';
 import createCrawlingManagerRouter from './modules/crawling_manager/routes/cm_routes';
 import { MigrationService } from './modules/configuration_manager/services/migration.service';
+import { createTeamsRouter } from './modules/user_management/routes/teams.routes';
 
 const loggerConfig = {
   service: 'Application',
@@ -280,6 +281,10 @@ export class Application {
     this.app.use(
       '/api/v1/users',
       createUserRouter(this.entityManagerContainer),
+    );
+    this.app.use(
+      '/api/v1/teams',
+      createTeamsRouter(this.entityManagerContainer),
     );
     this.app.use(
       '/api/v1/userGroups',

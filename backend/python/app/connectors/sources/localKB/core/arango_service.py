@@ -2569,74 +2569,137 @@ class KnowledgeBaseArangoService(BaseArangoService):
     async def create_kb_permissions(
         self,
         kb_id: str,
-        requester_external_id: str,
-        user_external_ids: List[str],
+        requester_id: str,
+        user_ids: List[str],
+        team_ids: List[str],
         role: str
     ) -> Dict:
-        """Create kb permissions"""
+        """Create kb permissions for users and teams - Optimized version"""
         try:
             timestamp = get_epoch_timestamp_in_ms()
 
-            # Step 1: Validation query
-            validation_query = """
-            LET requester = FIRST(FOR user IN @@users_collection FILTER user.userId == @requester_external_id RETURN user)
-            LET requester_permission = requester ? FIRST(FOR perm IN @@permissions_collection FILTER perm._from == CONCAT('users/', requester._key) FILTER perm._to == CONCAT('recordGroups/', @kb_id) FILTER perm.type == "USER" RETURN perm.role) : null
-            LET kb_exists = FIRST(FOR kb IN @@recordGroups_collection FILTER kb._key == @kb_id RETURN true)
-            LET target_users = (
-                FOR external_id IN @user_external_ids
-                    LET user = FIRST(FOR u IN @@users_collection FILTER u.userId == external_id RETURN u)
-                    LET current_permission = user ? FIRST(FOR perm IN @@permissions_collection FILTER perm._from == CONCAT('users/', user._key) FILTER perm._to == CONCAT('recordGroups/', @kb_id) FILTER perm.type == "USER" RETURN perm.role) : null
+            # Single comprehensive query to validate, check existing permissions, and prepare data
+            main_query = """
+            // Get requester info and validate ownership in one go
+            LET requester_info = FIRST(
+                FOR user IN @@users_collection
+                FILTER user.userId == @requester_id
+                FOR perm IN @@permissions_collection
+                    FILTER perm._from == CONCAT('users/', user._key)
+                    FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                    FILTER perm.type == "USER"
+                    FILTER perm.role == "OWNER"
+                RETURN {user_key: user._key, is_owner: true}
+            )
+
+            // Quick KB existence check
+            LET kb_exists = LENGTH(FOR kb IN @@recordGroups_collection FILTER kb._key == @kb_id LIMIT 1 RETURN 1) > 0
+
+            // Process all users and their current permissions in one pass
+            LET user_operations = (
+                FOR user_id IN @user_ids
+                    LET user = FIRST(FOR u IN @@users_collection FILTER u._key == user_id RETURN u)
+                    LET current_perm = user ? FIRST(
+                        FOR perm IN @@permissions_collection
+                        FILTER perm._from == CONCAT('users/', user._key)
+                        FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                        FILTER perm.type == "USER"
+                        RETURN perm
+                    ) : null
+
+                    FILTER user != null  // Skip non-existent users
+
+                    LET operation = current_perm == null ? "insert" :
+                                (current_perm.role != @role ? "update" : "skip")
+
                     RETURN {
-                        external_id: external_id,
-                        user_key: user ? user._key : null,
-                        user_name: user ? (user.fullName || CONCAT_SEPARATOR(' ', user.firstName, user.lastName)) : null,
-                        current_role: current_permission,
-                        needs_grant: user != null AND current_permission == null,
-                        needs_update: user != null AND current_permission != null AND current_permission != @role,
-                        already_has_role: current_permission == @role,
-                        user_exists: user != null
+                        user_id: user_id,
+                        user_key: user._key,
+                        userId: user.userId,
+                        name: user.fullName,
+                        operation: operation,
+                        current_role: current_perm ? current_perm.role : null,
+                        perm_key: current_perm ? current_perm._key : null
                     }
             )
-            LET validation = {
-                valid: requester != null AND requester_permission == "OWNER" AND kb_exists != null AND LENGTH(target_users[* FILTER !CURRENT.user_exists]) == 0,
-                requester_exists: requester != null,
-                requester_is_owner: requester_permission == "OWNER",
-                kb_exists: kb_exists != null,
-                missing_users: target_users[* FILTER !CURRENT.user_exists].external_id
+
+            // Process all teams and their current permissions in one pass
+            LET team_operations = (
+                FOR team_id IN @team_ids
+                    LET team = FIRST(FOR t IN @@teams_collection FILTER t._key == team_id RETURN t)
+                    LET current_perm = team ? FIRST(
+                        FOR perm IN @@permissions_collection
+                        FILTER perm._from == CONCAT('teams/', team._key)
+                        FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                        FILTER perm.type == "TEAM"
+                        RETURN perm
+                    ) : null
+
+                    FILTER team != null  // Skip non-existent teams
+
+                    LET operation = current_perm == null ? "insert" :
+                                (current_perm.role != @role ? "update" : "skip")
+
+                    RETURN {
+                        team_id: team_id,
+                        team_key: team._key,
+                        name: team.name,
+                        operation: operation,
+                        current_role: current_perm ? current_perm.role : null,
+                        perm_key: current_perm ? current_perm._key : null
+                    }
+            )
+
+            RETURN {
+                is_valid: requester_info != null AND kb_exists,
+                requester_found: requester_info != null,
+                kb_exists: kb_exists,
+                user_operations: user_operations,
+                team_operations: team_operations,
+                users_to_insert: user_operations[* FILTER CURRENT.operation == "insert"],
+                users_to_update: user_operations[* FILTER CURRENT.operation == "update"],
+                users_skipped: user_operations[* FILTER CURRENT.operation == "skip"],
+                teams_to_insert: team_operations[* FILTER CURRENT.operation == "insert"],
+                teams_to_update: team_operations[* FILTER CURRENT.operation == "update"],
+                teams_skipped: team_operations[* FILTER CURRENT.operation == "skip"]
             }
-            RETURN {validation: validation, target_users: target_users}
             """
 
-            cursor = self.db.aql.execute(validation_query, bind_vars={
+            cursor = self.db.aql.execute(main_query, bind_vars={
                 "kb_id": kb_id,
-                "requester_external_id": requester_external_id,
-                "user_external_ids": user_external_ids,
+                "requester_id": requester_id,
+                "user_ids": user_ids,
+                "team_ids": team_ids,
                 "role": role,
                 "@users_collection": CollectionNames.USERS.value,
+                "@teams_collection": CollectionNames.TEAMS.value,
                 "@permissions_collection": CollectionNames.PERMISSIONS_TO_KB.value,
                 "@recordGroups_collection": CollectionNames.RECORD_GROUPS.value,
             })
 
-            validation_result = next(cursor, {})
-            validation = validation_result.get("validation", {})
+            result = next(cursor, {})
 
-            if not validation.get("valid"):
-                error_reason = (
-                    "Requester not found" if not validation.get("requester_exists") else
-                    "Only KB owners can grant permissions" if not validation.get("requester_is_owner") else
-                    "Knowledge base not found" if not validation.get("kb_exists") else
-                    f"Users not found: {', '.join(validation.get('missing_users', []))}"
-                )
-                return {"success": False, "reason": error_reason, "code": 404 if "not found" in error_reason else 403}
+            # Fast validation
+            if not result.get("is_valid"):
+                if not result.get("requester_found"):
+                    return {"success": False, "reason": "Requester not found or not owner", "code": 403}
+                if not result.get("kb_exists"):
+                    return {"success": False, "reason": "Knowledge base not found", "code": 404}
 
-            target_users = validation_result.get("target_users", [])
+            users_to_insert = result.get("users_to_insert", [])
+            users_skipped = result.get("users_skipped", [])
+            teams_to_insert = result.get("teams_to_insert", [])
+            teams_skipped = result.get("teams_skipped", [])
 
-            # Step 2: Batch insert new permissions
-            users_to_grant = [u for u in target_users if u["needs_grant"]]
-            if users_to_grant:
-                permission_edges = []
-                for user_data in users_to_grant:
-                    permission_edges.append({
+            # Prepare batch operations
+            operations = []
+
+            # Batch insert new permissions
+            if users_to_insert or teams_to_insert:
+                insert_docs = []
+
+                for user_data in users_to_insert:
+                    insert_docs.append({
                         "_from": f"users/{user_data['user_key']}",
                         "_to": f"recordGroups/{kb_id}",
                         "externalPermissionId": "",
@@ -2647,181 +2710,358 @@ class KnowledgeBaseArangoService(BaseArangoService):
                         "lastUpdatedTimestampAtSource": timestamp,
                     })
 
-                # Batch insert
-                insert_query = """
-                FOR edge_data IN @permission_edges
-                    INSERT edge_data INTO @@permissions_collection
-                """
+                for team_data in teams_to_insert:
+                    insert_docs.append({
+                        "_from": f"teams/{team_data['team_key']}",
+                        "_to": f"recordGroups/{kb_id}",
+                        "externalPermissionId": "",
+                        "type": "TEAM",
+                        "role": role,
+                        "createdAtTimestamp": timestamp,
+                        "updatedAtTimestamp": timestamp,
+                        "lastUpdatedTimestampAtSource": timestamp,
+                    })
 
-                self.db.aql.execute(insert_query, bind_vars={
-                    "permission_edges": permission_edges,
-                    "@permissions_collection": CollectionNames.PERMISSIONS_TO_KB.value,
-                })
+                if insert_docs:
+                    operations.append((
+                        "FOR doc IN @docs INSERT doc INTO @@permissions_collection",
+                        {"docs": insert_docs, "@permissions_collection": CollectionNames.PERMISSIONS_TO_KB.value}
+                    ))
 
-                self.logger.info(f"✅ Batch inserted {len(permission_edges)} new permissions")
+            # Execute all operations in sequence (could be made parallel if needed)
+            for query, bind_vars in operations:
+                self.db.aql.execute(query, bind_vars=bind_vars)
 
-            # Step 3: Batch update existing permissions
-            users_to_update = [u for u in target_users if u["needs_update"]]
-            if users_to_update:
-                user_keys_to_update = [u["user_key"] for u in users_to_update]
+            # Build optimized response
+            granted_count = len(users_to_insert) + len(teams_to_insert)
 
-                batch_update_query = """
-                FOR user_key IN @user_keys
-                    FOR perm IN @@permissions_collection
-                        FILTER perm._from == CONCAT('users/', user_key)
-                        FILTER perm._to == CONCAT('recordGroups/', @kb_id)
-                        FILTER perm.type == "USER"
-                        UPDATE perm WITH {
-                            role: @new_role,
-                            updatedAtTimestamp: @timestamp,
-                            lastUpdatedTimestampAtSource: @timestamp
-                        } IN @@permissions_collection
-                """
-
-                self.db.aql.execute(batch_update_query, bind_vars={
-                    "user_keys": user_keys_to_update,
-                    "kb_id": kb_id,
-                    "new_role": role,
-                    "timestamp": timestamp,
-                    "@permissions_collection": CollectionNames.PERMISSIONS_TO_KB.value,
-                })
-
-                self.logger.info(f"✅ Batch updated {len(user_keys_to_update)} existing permissions")
-
-            users_to_skip = [u for u in target_users if u["already_has_role"]]
-
-            result = {
+            final_result = {
                 "success": True,
-                "grantedCount": len(users_to_grant),
-                "updatedCount": len(users_to_update),
-                "grantedUsers": [u["external_id"] for u in users_to_grant],
-                "updatedUsers": [u["external_id"] for u in users_to_update],
+                "grantedCount": granted_count,
+                "grantedUsers": [u["user_id"] for u in users_to_insert],
+                "grantedTeams": [t["team_id"] for t in teams_to_insert],
                 "role": role,
                 "kbId": kb_id,
                 "details": {
-                    "granted": [{"external_id": u["external_id"], "name": u["user_name"]} for u in users_to_grant],
-                    "updated": [{"external_id": u["external_id"], "name": u["user_name"], "previous_role": u["current_role"]} for u in users_to_update],
-                    "skipped": [{"external_id": u["external_id"], "name": u["user_name"], "role": u["current_role"]} for u in users_to_skip]
+                    "granted": {
+                        "users": [{"user_key": u["user_id"], "userId": u["userId"], "name": u["name"]} for u in users_to_insert],
+                        "teams": [{"team_key": t["team_id"], "name": t["name"]} for t in teams_to_insert]
+                    },
+                    "skipped": {
+                        "users": [{"user_key": u["user_id"], "userId": u["userId"], "name": u["name"], "role": u["current_role"]} for u in users_skipped],
+                        "teams": [{"team_key": t["team_id"], "name": t["name"], "role": t["current_role"]} for t in teams_skipped]
+                    }
                 }
             }
 
-            self.logger.info(f"✅ Batch operation completed: {len(users_to_grant)} granted, {len(users_to_update)} updated, {len(users_to_skip)} skipped")
-            return result
+            self.logger.info(f"Optimized batch operation: {granted_count} granted, {len(users_skipped + teams_skipped)} skipped")
+            return final_result
 
         except Exception as e:
-            self.logger.error(f"❌ Failed batch operation: {str(e)}")
+            self.logger.error(f"Failed optimized batch operation: {str(e)}")
             return {"success": False, "reason": f"Database error: {str(e)}", "code": 500}
 
     async def update_kb_permission(
         self,
         kb_id: str,
-        user_id: str,
-        new_role: str,
-        transaction: Optional[TransactionDatabase] = None
-    ) -> bool:
-        """Update a user's permission role on a KB"""
+        requester_id: str,
+        user_ids: List[str],
+        team_ids: List[str],
+        new_role: str
+    ) -> Optional[Dict]:
+        """Optimistically update permissions for users and teams on a knowledge base"""
         try:
-            db = transaction if transaction else self.db
-            timestamp = get_epoch_timestamp_in_ms()
+            self.logger.info(f"🚀 Optimistic update: {len(user_ids or [])} users and {len(team_ids or [])} teams on KB {kb_id} to {new_role}")
 
-            query = """
-            FOR perm IN @@permissions_collection
-                FILTER perm._from == @user_from
-                FILTER perm._to == @kb_to
-                UPDATE perm WITH {
-                    role: @new_role,
-                    updatedAtTimestamp: @timestamp,
-                    lastUpdatedTimestampAtSource: @timestamp
-                } IN @@permissions_collection
-                RETURN NEW
+            # Quick validation of inputs
+            if not user_ids and not team_ids:
+                return {"success": False, "reason": "No users or teams provided", "code": "400"}
+
+            # Validate new role
+            valid_roles = ["OWNER", "ORGANIZER", "FILEORGANIZER", "WRITER", "COMMENTER", "READER"]
+            if new_role not in valid_roles:
+                return {
+                    "success": False,
+                    "reason": f"Invalid role. Must be one of: {', '.join(valid_roles)}",
+                    "code": "400"
+                }
+
+            # Single atomic operation: check requester permission + get current permissions + update
+            bind_vars = {
+                "kb_id": kb_id,
+                "requester_id": requester_id,
+                "new_role": new_role,
+                "timestamp": get_epoch_timestamp_in_ms(),
+                "@permissions_collection": CollectionNames.PERMISSIONS_TO_KB.value,
+            }
+
+            # Build conditions for targets
+            target_conditions = []
+            if user_ids:
+                target_conditions.append("(perm._from IN @user_froms AND perm.type == 'USER' AND perm.role != 'OWNER')")
+                bind_vars["user_froms"] = [f"users/{user_id}" for user_id in user_ids]
+
+            if team_ids:
+                target_conditions.append("(perm._from IN @team_froms AND perm.type == 'TEAM')")
+                bind_vars["team_froms"] = [f"teams/{team_id}" for team_id in team_ids]
+
+            # Atomic query that does everything in one go
+            atomic_query = f"""
+            LET requester_perm = FIRST(
+                FOR perm IN @@permissions_collection
+                    FILTER perm._from == CONCAT('users/', @requester_id)
+                    FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                    FILTER perm.type == 'USER'
+                    RETURN perm.role
+            )
+
+            LET current_perms = (
+                FOR perm IN @@permissions_collection
+                    FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                    FILTER ({' OR '.join(target_conditions)})
+                    RETURN {{
+                        _key: perm._key,
+                        id: SPLIT(perm._from, '/')[1],
+                        type: perm.type,
+                        current_role: perm.role,
+                        _from: perm._from
+                    }}
+            )
+
+            LET validation_result = (
+                requester_perm != "OWNER" ? {{error: "Only KB owners can update permissions", code: "403"}} :
+                null
+            )
+
+            LET updated_perms = (
+                validation_result == null ? (
+                    FOR perm IN @@permissions_collection
+                        FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                        FILTER ({' OR '.join(target_conditions)})
+                        UPDATE perm WITH {{
+                            role: @new_role,
+                            updatedAtTimestamp: @timestamp,
+                            lastUpdatedTimestampAtSource: @timestamp
+                        }} IN @@permissions_collection
+                        RETURN {{
+                            _key: NEW._key,
+                            id: SPLIT(NEW._from, '/')[1],
+                            type: NEW.type,
+                            old_role: OLD.role,
+                            new_role: NEW.role
+                        }}
+                ) : []
+            )
+            RETURN {{
+                validation_error: validation_result,
+                current_permissions: current_perms,
+                updated_permissions: updated_perms,
+                requester_role: requester_perm
+            }}
             """
 
-            cursor = db.aql.execute(query, bind_vars={
-                "user_from": f"users/{user_id}",
-                "kb_to": f"recordGroups/{kb_id}",
-                "new_role": new_role,
-                "timestamp": timestamp,
-                "@permissions_collection": CollectionNames.PERMISSIONS_TO_KB.value,
-            })
-
+            cursor = self.db.aql.execute(atomic_query, bind_vars=bind_vars)
             result = next(cursor, None)
 
-            if result:
-                self.logger.info(f"✅ Updated permission for user {user_id} on KB {kb_id}")
-                return True
-            else:
-                self.logger.warning(f"⚠️ Permission not found for user {user_id} on KB {kb_id}")
-                return False
+            if not result:
+                return {"success": False, "reason": "Query execution failed", "code": "500"}
+
+            # Log the raw result for debugging
+            self.logger.info(f"🔍 Update query result: {result}")
+
+            # Check for validation errors
+            if result["validation_error"]:
+                error = result["validation_error"]
+                return {"success": False, "reason": error["error"], "code": error["code"]}
+
+            updated_permissions = result["updated_permissions"]
+
+            # Count updates by type
+            updated_users = sum(1 for perm in updated_permissions if perm["type"] == "USER")
+            updated_teams = sum(1 for perm in updated_permissions if perm["type"] == "TEAM")
+
+            # Build detailed response
+            updates_by_type = {"users": {}, "teams": {}}
+            for perm in updated_permissions:
+                if perm["type"] == "USER":
+                    updates_by_type["users"][perm["id"]] = {
+                        "old_role": perm["old_role"],
+                        "new_role": perm["new_role"]
+                    }
+                elif perm["type"] == "TEAM":
+                    updates_by_type["teams"][perm["id"]] = {
+                        "old_role": perm["old_role"],
+                        "new_role": perm["new_role"]
+                    }
+
+            self.logger.info(f"✅ Optimistically updated {len(updated_permissions)} permissions for KB {kb_id}")
+
+            return {
+                "success": True,
+                "kb_id": kb_id,
+                "new_role": new_role,
+                "updated_permissions": len(updated_permissions),
+                "updated_users": updated_users,
+                "updated_teams": updated_teams,
+                "updates_detail": updates_by_type,
+                "requester_role": result["requester_role"]
+            }
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to update KB permission: {str(e)}")
-            return False
+            self.logger.error(f"❌ Failed to update KB permission optimistically: {str(e)}")
+            return {
+                "success": False,
+                "reason": str(e),
+                "code": "500"
+            }
 
     async def remove_kb_permission(
         self,
         kb_id: str,
-        user_id: str,
+        user_ids: List[str],
+        team_ids: List[str],
         transaction: Optional[TransactionDatabase] = None
     ) -> bool:
-        """Remove a user's permission from a KB"""
+        """Remove permissions for multiple users and teams from a KB (internal method)"""
         try:
             db = transaction if transaction else self.db
 
-            query = """
+            # Build conditions for batch removal
+            conditions = []
+            bind_vars = {
+                "kb_id": kb_id,
+                "@permissions_collection": CollectionNames.PERMISSIONS_TO_KB.value,
+            }
+
+            if user_ids:
+                conditions.append("(perm._from IN @user_froms AND perm.type == 'USER')")
+                bind_vars["user_froms"] = [f"users/{user_id}" for user_id in user_ids]
+
+            if team_ids:
+                conditions.append("(perm._from IN @team_froms AND perm.type == 'TEAM')")
+                bind_vars["team_froms"] = [f"teams/{team_id}" for team_id in team_ids]
+
+            if not conditions:
+                return False
+
+            query = f"""
             FOR perm IN @@permissions_collection
-                FILTER perm._from == @user_from
-                FILTER perm._to == @kb_to
+                FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                FILTER ({' OR '.join(conditions)})
                 REMOVE perm IN @@permissions_collection
-                RETURN OLD
+                RETURN {{
+                    _key: OLD._key,
+                    _from: OLD._from,
+                    type: OLD.type,
+                    role: OLD.role
+                }}
             """
 
-            cursor = db.aql.execute(query, bind_vars={
-                "user_from": f"users/{user_id}",
-                "kb_to": f"recordGroups/{kb_id}",
-                "@permissions_collection": CollectionNames.PERMISSIONS_TO_KB.value,
-            })
+            cursor = db.aql.execute(query, bind_vars=bind_vars)
+            results = list(cursor)
 
-            result = next(cursor, None)
-
-            if result:
-                self.logger.info(f"✅ Removed permission for user {user_id} from KB {kb_id}")
+            if results:
+                removed_users = sum(1 for perm in results if perm["type"] == "USER")
+                removed_teams = sum(1 for perm in results if perm["type"] == "TEAM")
+                self.logger.info(f"✅ Removed {len(results)} permissions from KB {kb_id} ({removed_users} users, {removed_teams} teams)")
                 return True
             else:
-                self.logger.warning(f"⚠️ Permission not found for user {user_id} on KB {kb_id}")
+                self.logger.warning(f"⚠️ No permissions found to remove from KB {kb_id}")
                 return False
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to remove KB permission: {str(e)}")
+            self.logger.error(f"❌ Failed to remove KB permissions: {str(e)}")
             return False
+
 
     async def count_kb_owners(
         self,
         kb_id: str,
         transaction: Optional[TransactionDatabase] = None
     ) -> int:
-        """Count the number of owners for a KB"""
+        """Count the number of owners for a knowledge base"""
         try:
             db = transaction if transaction else self.db
 
             query = """
             FOR perm IN @@permissions_collection
-                FILTER perm._to == @kb_to
-                FILTER perm.role == "OWNER"
+                FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                FILTER perm.role == 'OWNER'
                 COLLECT WITH COUNT INTO owner_count
                 RETURN owner_count
             """
 
             cursor = db.aql.execute(query, bind_vars={
-                "kb_to": f"recordGroups/{kb_id}",
+                "kb_id": kb_id,
                 "@permissions_collection": CollectionNames.PERMISSIONS_TO_KB.value,
             })
 
-            result = next(cursor, 0)
-            return result
+            count = next(cursor, 0)
+            self.logger.info(f"📊 KB {kb_id} has {count} owners")
+            return count
 
         except Exception as e:
             self.logger.error(f"❌ Failed to count KB owners: {str(e)}")
             return 0
+
+    async def get_kb_permissions(
+        self,
+        kb_id: str,
+        user_ids: Optional[List[str]] = None,
+        team_ids: Optional[List[str]] = None,
+        transaction: Optional[TransactionDatabase] = None
+    ) -> Dict[str, Dict[str, str]]:
+        """Get current roles for multiple users and teams on a knowledge base in a single query"""
+        try:
+            db = transaction if transaction else self.db
+
+            # Build conditions for batch query
+            conditions = []
+            bind_vars = {
+                "kb_id": kb_id,
+                "@permissions_collection": CollectionNames.PERMISSIONS_TO_KB.value,
+            }
+
+            if user_ids:
+                conditions.append("(perm._from IN @user_froms AND perm.type == 'USER')")
+                bind_vars["user_froms"] = [f"users/{user_id}" for user_id in user_ids]
+
+            if team_ids:
+                conditions.append("(perm._from IN @team_froms AND perm.type == 'TEAM')")
+                bind_vars["team_froms"] = [f"teams/{team_id}" for team_id in team_ids]
+
+            if not conditions:
+                return {"users": {}, "teams": {}}
+
+            query = f"""
+            FOR perm IN @@permissions_collection
+                FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                FILTER ({' OR '.join(conditions)})
+                RETURN {{
+                    id: SPLIT(perm._from, '/')[1],
+                    type: perm.type,
+                    role: perm.role
+                }}
+            """
+
+            cursor = db.aql.execute(query, bind_vars=bind_vars)
+            permissions = list(cursor)
+
+            # Organize results by type
+            result = {"users": {}, "teams": {}}
+
+            for perm in permissions:
+                if perm["type"] == "USER":
+                    result["users"][perm["id"]] = perm["role"]
+                elif perm["type"] == "TEAM":
+                    result["teams"][perm["id"]] = perm["role"]
+
+            self.logger.info(f"✅ Retrieved {len(permissions)} permissions for KB {kb_id}")
+            return result
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get KB permissions batch: {str(e)}")
+            raise
 
     async def list_kb_permissions(
         self,
@@ -2835,14 +3075,15 @@ class KnowledgeBaseArangoService(BaseArangoService):
             query = """
             FOR perm IN @@permissions_collection
                 FILTER perm._to == @kb_to
-                LET user = DOCUMENT(perm._from)
+                LET entity = DOCUMENT(perm._from)
+                FILTER entity != null
                 RETURN {
-                    id:user._key,
-                    userId: user.userId,
-                    userEmail: user.email,
-                    userName: user.fullName || CONCAT_SEPARATOR(' ', user.firstName, user.lastName),
+                    id: entity._key,
+                    name: entity.fullName || entity.name || entity.userName,
+                    userId: entity.userId,
+                    email: entity.email,
                     role: perm.role,
-                    permissionType: perm.type,
+                    type: perm.type,
                     createdAtTimestamp: perm.createdAtTimestamp,
                     updatedAtTimestamp: perm.updatedAtTimestamp
                 }

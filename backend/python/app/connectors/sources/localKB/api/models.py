@@ -80,16 +80,23 @@ class UpdateFolderRequest(BaseModel):
 class CreatePermissionRequest(BaseModel):
     """Request model for creating permissions"""
     requesterId : str = Field(..., description ="User id granting others access", min_length=1)
-    users: List[str] = Field(..., description="List of user IDs to grant permissions to", min_items=1)
+    userIds: Optional[List[str]] = Field(None, description="List of user IDs to grant permissions to", min_items=0)
+    teamIds: Optional[List[str]] = Field(None, description="List of team IDs to grant permissions to", min_items=0)
     role: PermissionRole = Field(..., description="Role to grant")
 
 
 class UpdatePermissionRequest(BaseModel):
     """Request model for updating a permission"""
     requesterId : str = Field(..., description ="User id granting others access", min_length=1)
-    userId : str = Field(..., description ="User id", min_length=1)
+    userIds : Optional[List[str]] = Field(None, description ="User id", min_items=0)
+    teamIds : Optional[List[str]] = Field(None, description ="Team id", min_items=0)
     role: PermissionRole = Field(..., description="New role")
 
+class RemovePermissionRequest(BaseModel):
+    """Request model for removing a permission"""
+    requesterId : str = Field(..., description ="User id granting others access", min_length=1)
+    userIds : Optional[List[str]] = Field(None, description ="User id", min_items=0)
+    teamIds : Optional[List[str]] = Field(None, description ="Team id", min_items=0)
 
 class CreateRecordsRequest(BaseModel):
     """Request model for creating records in a folder"""
@@ -194,11 +201,11 @@ class ListKnowledgeBaseResponse(BaseModel):
 class PermissionResponse(BaseModel):
     """Response model for permission information"""
     id: str = Field(..., description="UUID")
-    userId: str = Field(..., description="User ID")
-    userEmail: str = Field(..., description="User email")
-    userName: Optional[str] = Field(None, description="User name")
+    userId: Optional[str] = Field(None, description="User ID")
+    email: Optional[str] = Field(None, description="User email")
+    name: Optional[str] = Field(None, description="User name")
     role: PermissionRole = Field(..., description="Permission role")
-    permissionType: str = Field(..., description="Permission type")
+    type: str = Field(..., description="Permission type")
     createdAtTimestamp: int = Field(..., description="Creation timestamp")
     updatedAtTimestamp: int = Field(..., description="Update timestamp")
 
@@ -306,18 +313,18 @@ class CreatePermissionsResponse(BaseModel):
     """Response model for creating permissions"""
     success: bool = Field(..., description="Success status")
     grantedCount: int = Field(..., description="Number of users granted permissions")
-    updatedCount: int = Field(..., description="Number of users with updated permissions")
     grantedUsers: List[str] = Field(..., description="List of users granted permissions")
-    updatedUsers: List[str] = Field(..., description="List of users with updated permissions")
+    grantedTeams: List[str] = Field(..., description="List of teams granted permissions")
     role: str = Field(..., description="Granted role")
     kbId: str = Field(..., description="Knowledge base ID")
+    details: Dict[str, Any] = Field(..., description="Details of the permissions created")
 
 
 class UpdatePermissionResponse(BaseModel):
     """Response model for updating a permission"""
     success: bool = Field(..., description="Success status")
-    userId: str = Field(..., description="User ID")
-    previousRole: str = Field(..., description="Previous role")
+    userIds: List[str] = Field(..., description="User ID")
+    teamIds: List[str] = Field(..., description="Team ID")
     newRole: str = Field(..., description="New role")
     kbId: str = Field(..., description="Knowledge base ID")
 
@@ -325,8 +332,8 @@ class UpdatePermissionResponse(BaseModel):
 class RemovePermissionResponse(BaseModel):
     """Response model for removing a permission"""
     success: bool = Field(..., description="Success status")
-    userId: str = Field(..., description="User ID")
-    removedRole: str = Field(..., description="Removed role")
+    userIds: List[str] = Field(..., description="User ID")
+    teamIds: List[str] = Field(..., description="Team ID")
     kbId: str = Field(..., description="Knowledge base ID")
 
 

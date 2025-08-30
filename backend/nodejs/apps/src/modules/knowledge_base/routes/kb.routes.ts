@@ -204,7 +204,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
   );
 
   // update specific knowledge base
-  router.patch(
+  router.put(
     '/:kbId',
     authMiddleware.authenticate,
     metricsMiddleware(container),
@@ -308,7 +308,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
   );
 
   // update folder
-  router.patch(
+  router.put(
     '/:kbId/folder/:folderId',
     authMiddleware.authenticate,
     metricsMiddleware(container),
@@ -345,7 +345,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
 
   // Update permission
   router.put(
-    '/:kbId/permissions/:userId',
+    '/:kbId/permissions',
     authMiddleware.authenticate,
     metricsMiddleware(container),
     ValidationMiddleware.validate(updatePermissionsSchema),
@@ -353,7 +353,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
   );
 
   router.delete(
-    '/:kbId/permissions/:userId',
+    '/:kbId/permissions',
     authMiddleware.authenticate,
     metricsMiddleware(container),
     ValidationMiddleware.validate(deletePermissionsSchema),
