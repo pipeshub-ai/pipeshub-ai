@@ -189,17 +189,19 @@ class DoclingDocToBlocksConverter():
             item_type = "texts"
             items = doc_dict.get(item_type, [])
             item_index = int(path_parts[1])
-            item = items[item_index] if item_index < len(items) else None
+            if item_index < len(items):
+                item = items[item_index]
+            else:
+                item = None
             if item and isinstance(item, dict):
                 return item.get("text", "")
             return ""
 
         async def _handle_image_block(item: dict, doc_dict: dict, parent_index: int, ref_path: str,level: int,doc: DoclingDocument) -> Block:
-            doc.pictures[int(item.get("self_ref", "").split("/")[-1])]
             _captions = item.get("captions", [])
-            _captions = [_get_ref_text(ref_path,doc_dict) for caption in _captions]
+            _captions = [_get_ref_text(ref.get(DOCLING_REF_NODE, ""),doc_dict) for ref in _captions]
             _footnotes = item.get("footnotes", [])
-            _footnotes = [_get_ref_text(ref_path,doc_dict) for footnote in _footnotes]
+            _footnotes = [_get_ref_text(ref.get(DOCLING_REF_NODE, ""),doc_dict) for ref in _footnotes]
             item.get("prov", {})
             block = Block(
                     id=str(uuid.uuid4()),

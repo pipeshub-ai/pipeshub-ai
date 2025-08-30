@@ -42,7 +42,6 @@ def convert_record_dict_to_record(record_dict: dict) -> Record:
         mime_type=record_dict.get("mimeType"),
         external_revision_id=record_dict.get("externalRevisionId"),
         connector_name = record_dict.get("connectorName"),
-
     )
 
     return record
@@ -726,14 +725,14 @@ class Processor:
             self.logger.debug("📄 Processing PDF binary content")
             processor = DoclingPDFProcessor(logger=self.logger,config=self.config_service)
             block_containers = await processor.load_document(recordName, pdf_binary)
+            return
             record = await self.arango_service.get_document(
                 recordId, CollectionNames.RECORDS.value
             )
             if record is None:
                 self.logger.error(f"❌ Record {recordId} not found in database")
                 return
-            doc = dict(record)
-            record = convert_record_dict_to_record(doc)
+            record = convert_record_dict_to_record(record)
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
             ctx = TransformContext(record=record)
