@@ -1782,11 +1782,11 @@ async def get_records(
         ] else "createdAtTimestamp"
 
         # Parse comma-separated strings into lists
-        parsed_record_types = record_types.split(',') if record_types else None
-        parsed_origins = origins.split(',') if origins else None
-        parsed_connectors = connectors.split(',') if connectors else None
-        parsed_indexing_status = indexing_status.split(',') if indexing_status else None
-        parsed_permissions = permissions.split(',') if permissions else None
+        parsed_record_types = [item.strip() for item in record_types.split(',') if item.strip()] if record_types else None
+        parsed_origins = [item.strip() for item in origins.split(',') if item.strip()] if origins else None
+        parsed_connectors = [item.strip() for item in connectors.split(',') if item.strip()] if connectors else None
+        parsed_indexing_status = [item.strip() for item in indexing_status.split(',') if item.strip()] if indexing_status else None
+        parsed_permissions = [item.strip() for item in permissions.split(',') if item.strip()] if permissions else None
 
         records, total_count, available_filters = await arango_service.get_records(
             user_id=user_key,
