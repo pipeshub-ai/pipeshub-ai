@@ -23,7 +23,7 @@ qna_prompt_instructions_1 = """
 
 qna_prompt_context = """
 <context>
-qna_prompt_context_data }}
+  User Information: {{ user_data }}
   Query from user: {{ query }}
   Rephrased queries: {{ rephrased_queries }}
 
