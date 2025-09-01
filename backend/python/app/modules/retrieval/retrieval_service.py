@@ -501,9 +501,11 @@ class RetrievalService:
         for r in search_results:
                 points = r.points
                 for point in points:
+                    metadata=point.payload.get("metadata", {})
+                    metadata.update({"point_id": point.id})
                     doc = Document(
                         page_content=point.payload.get("page_content", ""),
-                        metadata=point.payload.get("metadata", {})
+                        metadata=metadata
                     )
                     score = point.score
                     all_results.append((doc, score))

@@ -79,7 +79,7 @@ NODE_COLLECTIONS = [
     (CollectionNames.AGENT_TEMPLATES.value, agent_template_schema),
     (CollectionNames.TICKETS.value, ticket_record_schema),
     (CollectionNames.SYNC_POINTS.value, None),
-
+    (CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value, None),
 ]
 
 EDGE_COLLECTIONS = [

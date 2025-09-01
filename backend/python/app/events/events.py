@@ -373,15 +373,16 @@ class EventProcessor:
                     pdf_binary=file_content,
                     virtual_record_id = virtual_record_id
                 )
-                # result = await self.processor.process_pdf_document(
-                #     recordName=record_name,
-                #     recordId=record_id,
-                #     version=record_version,
-                #     source=connector,
-                #     orgId=org_id,
-                #     pdf_binary=file_content,
-                #     virtual_record_id = virtual_record_id
-                # )
+                if result is False:
+                    result = await self.processor.process_pdf_document(
+                        recordName=record_name,
+                        recordId=record_id,
+                        version=record_version,
+                        source=connector,
+                        orgId=org_id,
+                        pdf_binary=file_content,
+                        virtual_record_id = virtual_record_id
+                    )
 
             elif extension == ExtensionTypes.DOCX.value:
                 result = await self.processor.process_docx_document(

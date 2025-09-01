@@ -719,13 +719,14 @@ class Processor:
             self.logger.error(f"❌ Error processing HTML document: {str(e)}")
             raise
 
-    async def process_pdf_with_docling(self, recordName, recordId, pdf_binary, virtual_record_id) -> None:
+    async def process_pdf_with_docling(self, recordName, recordId, pdf_binary, virtual_record_id) -> None|bool:
         self.logger.info(f"🚀 Starting PDF document processing for record: {recordName}")
         try:
             self.logger.debug("📄 Processing PDF binary content")
             processor = DoclingPDFProcessor(logger=self.logger,config=self.config_service)
             block_containers = await processor.load_document(recordName, pdf_binary)
-            return
+            if block_containers is False:
+                return False
             record = await self.arango_service.get_document(
                 recordId, CollectionNames.RECORDS.value
             )

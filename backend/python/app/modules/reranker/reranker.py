@@ -46,8 +46,8 @@ class RerankerService:
         if not documents:
             return []
 
-        # Create document-query pairs for scoring
-        doc_query_pairs = [(query, doc.get("content", "")) for doc in documents if doc.get("block_type") != BlockType.IMAGE.value]
+                # Create document-query pairs for scoring
+        doc_query_pairs = [(query, doc.get("content", "")) for doc in documents if doc.get("content") and doc.get("block_type") != BlockType.IMAGE.value ]
 
         # Get relevance scores
         scores = self.model.predict(doc_query_pairs)
@@ -55,7 +55,7 @@ class RerankerService:
         # Add scores to documents, but only for non-IMAGE blocks
         score_index = 0
         for doc in documents:
-            if doc.get("block_type") != BlockType.IMAGE.value:
+            if doc.get("block_type") != BlockType.IMAGE.value and doc.get("content"):
                 doc["reranker_score"] = float(scores[score_index])
                 # If there was a previous score, we can combine them
                 if "score" in doc:

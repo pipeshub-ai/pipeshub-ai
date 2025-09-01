@@ -393,7 +393,7 @@ class BlobStorage(Transformer):
                 return True
             else:
                 self.logger.error("❌ Failed to store virtual record mapping")
-                return False
+                raise Exception("Failed to store virtual record mapping")
 
         except Exception as e:
             self.logger.error("❌ Failed to store virtual record mapping: %s", str(e))

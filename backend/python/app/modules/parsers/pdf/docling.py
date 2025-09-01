@@ -17,13 +17,14 @@ class DoclingPDFProcessor():
         self.config = config
         pipeline_options = PdfPipelineOptions()
         pipeline_options.generate_picture_images = True
+        pipeline_options.do_ocr = False
 
         self.converter = DocumentConverter(format_options={
             InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
         })
         self.doc_to_blocks_converter = DoclingDocToBlocksConverter(logger=logger,config=config)
 
-    async def load_document(self, doc_name: str, content: bytes) -> BlocksContainer:
+    async def load_document(self, doc_name: str, content: bytes) -> BlocksContainer|bool:
         stream = BytesIO(content)
         source = DocumentStream(name=doc_name, stream=stream)
         conv_res: ConversionResult = await asyncio.to_thread(self.converter.convert, source)
@@ -32,6 +33,8 @@ class DoclingPDFProcessor():
 
         doc = conv_res.document
         block_containers = await self.doc_to_blocks_converter.convert(doc)
+        if block_containers is False:
+            return False
         return block_containers
 
     def process_document(self) -> None:

@@ -668,7 +668,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         record,blockNum_to_blockIndex = virtual_record_id_to_result[virtual_record_id]
 
         if blockNum_to_blockIndex:
-            index = blockNum_to_blockIndex[f"{meta.get('blockType')}-{meta.get('blockNum')[0]}"]
+            index = blockNum_to_blockIndex[f"{meta.get('point_id')}"]
 
         chunk_id = f"{virtual_record_id}-{index}"
         if chunk_id in seen_chunks:
@@ -745,14 +745,13 @@ def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[s
                 elif block_type == BlockType.IMAGE.value:
                     block_text = "image"
                 else:
-                    block_text = "Not available"
+                    block_text = meta.get("blockText","")
             else:
                 block_text = ""
 
             extension = meta.get("extension")
-            if extension is None:
+            if extension is None and record.get("mime_type")=="application/pdf":
                 extension = "pdf"
-
 
             enhanced_metadata = {
                         "orgId": record.get("orgId", ""),
@@ -799,9 +798,6 @@ def extract_bounding_boxes(citation_metadata) -> List[Dict[str, float]]:
             return result
         except Exception as e:
             raise e
-
-
-
 
 async def get_blocks(meta: Dict[str, Any],virtual_record_id: str,virtual_record_id_to_result: Dict[str, Dict[str, Any]],blob_store: BlobStorage,org_id: str) -> None:
     try:
@@ -884,7 +880,7 @@ async def create_record_from_vector_metadata(metadata: Dict[str, Any], org_id: s
                 meta = payload.get("metadata")
                 page_content = payload.get("page_content")
                 block = create_block_from_metadata(meta,page_content)
-                blockNum_to_blockIndex[f"{meta.get('blockType')}-{meta.get('blockNum')[0]}"] = i
+                blockNum_to_blockIndex[point.id] = i
                 blocks.append(block)
                 new_payloads.append({"metadata":{
                     "virtualRecordId": virtual_record_id,
@@ -943,8 +939,8 @@ def create_block_from_metadata(metadata: Dict[str, Any],page_content: str) -> Di
         # Create the Block structure
         block = {
             "id": str(uuid4()),  # Generate unique ID
-            "index": metadata.get("blockNum")[0], # TODO: blockNum indexing might be different for different file types
-            "type": "text",
+            "index": metadata.get("blockNum")[0] if metadata.get("blockNum") else 0, # TODO: blockNum indexing might be different for different file types
+            "type": "type_placeholder",
             "format": "txt",
             "comments": [],
             "source_creation_date": metadata.get("sourceCreatedAtTimestamp"),
@@ -956,3 +952,16 @@ def create_block_from_metadata(metadata: Dict[str, Any],page_content: str) -> Di
         return block
     except Exception as e:
         raise e
+
+# Helper function to get extension for a MIME type
+# def get_extension(mime_type):
+#     """
+#     Get file extension for a given MIME type.
+    
+#     Args:
+#         mime_type (str): The MIME type to look up
+        
+#     Returns:
+#         str or None: File extension (without the dot), or None if not found
+#     """
+#     return MIME_TYPES.get(mime_type)

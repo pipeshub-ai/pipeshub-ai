@@ -11,7 +11,6 @@ class IndexingPipeline:
     async def apply(self, ctx: TransformContext) -> TransformContext:
         try:
             await self.document_extraction.apply(ctx)
-            print("document extracted")
             await self.sink_orchestrator.apply(ctx)
             return ctx
         except Exception as e:

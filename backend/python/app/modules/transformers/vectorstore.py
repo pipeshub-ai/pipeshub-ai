@@ -1,17 +1,17 @@
+from app.modules.transformers.transformer import Transformer, TransformContext
 import asyncio
-import uuid
 from typing import List
-
-import spacy
+import uuid
 from langchain.chat_models.base import BaseChatModel
+from app.models.blocks import BlocksContainer
+from app.modules.extraction.prompt_template import prompt_for_image_description
 from langchain.schema import Document, HumanMessage
 from langchain_qdrant import FastEmbedSparse, QdrantVectorStore, RetrievalMode
-from qdrant_client.http.models import PointStruct
+from app.utils.llm import get_llm
+import spacy
 from spacy.language import Language
-from spacy.tokens import Doc
-
-from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import config_node_constants
+from app.config.constants.arangodb import CollectionNames
 from app.exceptions.indexing_exceptions import (
     DocumentProcessingError,
     EmbeddingError,
@@ -19,13 +19,12 @@ from app.exceptions.indexing_exceptions import (
     MetadataProcessingError,
     VectorStoreError,
 )
-from app.models.blocks import BlocksContainer
-from app.modules.extraction.prompt_template import prompt_for_image_description
-from app.modules.transformers.transformer import TransformContext, Transformer
-from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.utils.aimodels import get_default_embedding_model, get_embedding_model
-from app.utils.llm import get_llm
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+import asyncio
+from spacy.tokens import Doc
+from qdrant_client.http.models import PointStruct
+from app.services.vector_db.interface.vector_db import IVectorDBService
 
 LENGTH_THRESHOLD = 2
 
@@ -58,7 +57,7 @@ class VectorStore(Transformer):
                     details={"error": str(e)},
                 )
 
-
+            
 
         except (IndexingError, VectorStoreError):
             raise
@@ -67,16 +66,17 @@ class VectorStore(Transformer):
                 "Failed to initialize indexing pipeline: " + str(e),
                 details={"error": str(e)},
             )
-
+            
     async def apply(self, ctx: TransformContext) -> TransformContext:
         record = ctx.record
         record_id = record.id
         virtual_record_id = record.virtual_record_id
         block_containers = record.block_containers
         org_id = record.org_id
+        
         await self.index_documents(block_containers, org_id,record_id,virtual_record_id)
         return ctx
-
+    
     @Language.component("custom_sentence_boundary")
     def custom_sentence_boundary(doc) -> Doc:
         for token in doc[:-1]:  # Avoid out-of-bounds errors
@@ -400,7 +400,7 @@ class VectorStore(Transformer):
             # Update record with indexing status (use the last processed chunk's metadata)
             try:
                 if chunks:
-                    meta = chunks[0].metadata
+                    meta = chunks[0].metadata if isinstance(chunks[0], Document) else chunks[0].get("metadata", {})
                     record = await self.arango_service.get_document(
                         record_id, CollectionNames.RECORDS.value
                     )
@@ -426,7 +426,7 @@ class VectorStore(Transformer):
                     )
                     if not success:
                         raise DocumentProcessingError(
-                            "Failed to update indexing status", doc_id=meta["recordId"]
+                            "Failed to update indexing status", doc_id=record_id
                         )
                     return
 
