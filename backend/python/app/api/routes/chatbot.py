@@ -518,7 +518,7 @@ async def askAI(
                     "records": []
                 }
             )
-        
+
         blob_store = BlobStorage(logger=logger, config_service=config_service, arango_service=arango_service)
         virtual_record_id_to_result = {}
         flattened_results = []
@@ -583,7 +583,7 @@ async def askAI(
                 messages.append(
                     {"role": "assistant", "content": conversation.get("content")}
                 )
-        
+
         task_instructions = qna_prompt_instructions_1
         content = []
         content.append({
@@ -957,10 +957,10 @@ def create_block_from_metadata(metadata: Dict[str, Any],page_content: str) -> Di
 # def get_extension(mime_type):
 #     """
 #     Get file extension for a given MIME type.
-    
+
 #     Args:
 #         mime_type (str): The MIME type to look up
-        
+
 #     Returns:
 #         str or None: File extension (without the dot), or None if not found
 #     """

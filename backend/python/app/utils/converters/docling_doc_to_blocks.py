@@ -3,7 +3,10 @@ import uuid
 from typing import List, Union
 
 from docling.datamodel.document import DoclingDocument
+from jinja2 import Template
+from langchain.output_parsers import PydanticOutputParser
 from langchain.schema import AIMessage, HumanMessage
+from pydantic import BaseModel, Field
 
 from app.models.blocks import (
     Block,
@@ -17,18 +20,12 @@ from app.models.blocks import (
     Point,
     TableMetadata,
 )
-from jinja2 import Template
-from app.modules.parsers.excel.prompt_template import (
-    row_text_prompt
-)
+from app.modules.parsers.excel.prompt_template import row_text_prompt
 from app.utils.llm import get_llm
 from app.utils.transformation.bbox import (
     normalize_corner_coordinates,
     transform_bbox_to_corners,
 )
-from langchain.output_parsers import PydanticOutputParser
-from pydantic import BaseModel, Field
-
 
 DOCLING_TEXT_BLOCK_TYPE = "texts"
 DOCLING_IMAGE_BLOCK_TYPE = "pictures"
@@ -243,7 +240,7 @@ class DoclingDocToBlocksConverter():
             table_summary = response.summary
             column_headers = response.headers
             table_rows_text,table_rows = await self.get_rows_text(table_data, table_summary, column_headers)
-           
+
             block_group = BlockGroup(
                 id=str(uuid.uuid4()),
                 index=len(block_groups),
@@ -507,7 +504,7 @@ class DoclingDocToBlocksConverter():
                     # Try parsing again with the reflection response
                     parsed_reflection = self.parser.parse(reflection_text)
 
-                    
+
 
                     self.logger.info(
                         "✅ Reflection successful - validation passed on second attempt"
