@@ -600,9 +600,11 @@ async def askAI(
                     seen_virtual_record_ids.add(virtual_record_id)
                     record, _ = virtual_record_id_to_result[virtual_record_id]  # Unpack the tuple
                     semantic_metadata = record.get("semantic_metadata")
+                    template = Template(qna_prompt_context)
+                    rendered_form = template.render(semantic_metadata=semantic_metadata,user_data=user_data,query=query_info.query,rephrased_queries=[])
                     content.append({
                         "type": "text",
-                        "text": qna_prompt_context.format(semantic_metadata=semantic_metadata,user_data=user_data,query=query_info.query,rephrased_queries=[])
+                        "text": rendered_form
                     })
 
                 result_id = f"{virtual_record_id}_{result.get('block_index')}"
