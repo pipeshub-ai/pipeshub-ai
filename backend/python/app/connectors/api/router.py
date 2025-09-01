@@ -7,7 +7,7 @@ import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, Optional
 
 import aiohttp
 import google.oauth2.credentials
@@ -1745,11 +1745,11 @@ async def get_records(
     page: int = 1,
     limit: int = 20,
     search: Optional[str] = None,
-    record_types: Optional[List[str]] = Query(None, description="Comma-separated list of record types"),
-    origins: Optional[List[str]] = Query(None, description="Comma-separated list of origins"),
-    connectors: Optional[List[str]] = Query(None, description="Comma-separated list of connectors"),
-    indexing_status: Optional[List[str]] = Query(None, description="Comma-separated list of indexing statuses"),
-    permissions: Optional[List[str]] = Query(None, description="Comma-separated list of permissions"),
+    record_types: Optional[str] = Query(None, description="Comma-separated list of record types"),
+    origins: Optional[str] = Query(None, description="Comma-separated list of origins"),
+    connectors: Optional[str] = Query(None, description="Comma-separated list of connectors"),
+    indexing_status: Optional[str] = Query(None, description="Comma-separated list of indexing statuses"),
+    permissions: Optional[str] = Query(None, description="Comma-separated list of permissions"),
     date_from: Optional[int] = None,
     date_to: Optional[int] = None,
     sort_by: str = "createdAtTimestamp",
@@ -1781,17 +1781,24 @@ async def get_records(
             "recordName", "createdAtTimestamp", "updatedAtTimestamp", "recordType", "origin", "indexingStatus"
         ] else "createdAtTimestamp"
 
+        # Parse comma-separated strings into lists
+        parsed_record_types = record_types.split(',') if record_types else None
+        parsed_origins = origins.split(',') if origins else None
+        parsed_connectors = connectors.split(',') if connectors else None
+        parsed_indexing_status = indexing_status.split(',') if indexing_status else None
+        parsed_permissions = permissions.split(',') if permissions else None
+
         records, total_count, available_filters = await arango_service.get_records(
             user_id=user_key,
             org_id=org_id,
             skip=skip,
             limit=limit,
             search=search,
-            record_types=record_types,
-            origins=origins,
-            connectors=connectors,
-            indexing_status=indexing_status,
-            permissions=permissions,
+            record_types=parsed_record_types,
+            origins=parsed_origins,
+            connectors=parsed_connectors,
+            indexing_status=parsed_indexing_status,
+            permissions=parsed_permissions,
             date_from=date_from,
             date_to=date_to,
             sort_by=sort_by,
@@ -1804,10 +1811,10 @@ async def get_records(
         applied_filters = {
             k: v for k, v in {
                 "search": search,
-                "recordTypes": record_types,
-                "origins": origins,
-                "connectors": connectors,
-                "indexingStatus": indexing_status,
+                "recordTypes": parsed_record_types,
+                "origins": parsed_origins,
+                "connectors": parsed_connectors,
+                "indexingStatus": parsed_indexing_status,
                 "source": source if source != "all" else None,
                 "dateRange": {"from": date_from, "to": date_to} if date_from or date_to else None,
             }.items() if v

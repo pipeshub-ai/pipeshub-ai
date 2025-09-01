@@ -97,19 +97,22 @@ async def list_user_knowledge_bases(
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(20, ge=1, le=100, description="Items per page"),
     search: Optional[str] = Query(None, description="Search by KB name"),
-    permissions: Optional[List[str]] = Query(None, description="Filter by permission roles"),
+    permissions: Optional[str] = Query(None, description="Filter by permission roles"),
     sort_by: str = Query("name", description="Sort field"),
     sort_order: str = Query("asc", description="Sort order (asc/desc)"),
     kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
 ) -> Union[ListKnowledgeBaseResponse, Dict[str, Any]]:
     try:
+        # Parse comma-separated string into list
+        parsed_permissions = permissions.split(',') if permissions else None
+
         result = await kb_service.list_user_knowledge_bases(
             user_id=user_id,
             org_id=org_id,
             page=page,
             limit=limit,
             search=search,
-            permissions=permissions,
+            permissions=parsed_permissions,
             sort_by=sort_by,
             sort_order=sort_order
         )
@@ -1054,11 +1057,11 @@ async def list_all_records(
     page: int = 1,
     limit: int = 20,
     search: Optional[str] = None,
-    record_types: Optional[List[str]] = Query(None, description="Comma-separated list of record types"),
-    origins: Optional[List[str]] = Query(None, description="Comma-separated list of origins"),
-    connectors: Optional[List[str]] = Query(None, description="Comma-separated list of connectors"),
-    indexing_status: Optional[List[str]] = Query(None, description="Comma-separated list of indexing statuses"),
-    permissions: Optional[List[str]] = Query(None, description="Comma-separated list of permissions"),
+    record_types: Optional[str] = Query(None, description="Comma-separated list of record types"),
+    origins: Optional[str] = Query(None, description="Comma-separated list of origins"),
+    connectors: Optional[str] = Query(None, description="Comma-separated list of connectors"),
+    indexing_status: Optional[str] = Query(None, description="Comma-separated list of indexing statuses"),
+    permissions: Optional[str] = Query(None, description="Comma-separated list of permissions"),
     date_from: Optional[int] = None,
     date_to: Optional[int] = None,
     sort_by: str = "createdAtTimestamp",
@@ -1066,17 +1069,24 @@ async def list_all_records(
     source: str = "all",
     kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
 ) -> Dict[str, Any]:
+    # Parse comma-separated strings into lists
+    parsed_record_types = record_types.split(',') if record_types else None
+    parsed_origins = origins.split(',') if origins else None
+    parsed_connectors = connectors.split(',') if connectors else None
+    parsed_indexing_status = indexing_status.split(',') if indexing_status else None
+    parsed_permissions = permissions.split(',') if permissions else None
+
     return await kb_service.list_all_records(
         user_id=user_id,
         org_id=org_id,
         page=page,
         limit=limit,
         search=search,
-        record_types=record_types,
-        origins=origins,
-        connectors=connectors,
-        indexing_status=indexing_status,
-        permissions=permissions,
+        record_types=parsed_record_types,
+        origins=parsed_origins,
+        connectors=parsed_connectors,
+        indexing_status=parsed_indexing_status,
+        permissions=parsed_permissions,
         date_from=date_from,
         date_to=date_to,
         sort_by=sort_by,
