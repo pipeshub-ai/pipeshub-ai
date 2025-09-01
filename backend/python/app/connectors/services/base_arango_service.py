@@ -3317,3 +3317,45 @@ class BaseArangoService:
         except Exception as e:
             self.logger.error("❌ Failed to remove node by key: %s: %s", key, str(e))
             return False
+
+    async def get_all_documents(self, collection: str, transaction: Optional[TransactionDatabase] = None) -> List[Dict]:
+        """
+        Get all documents from a collection
+        """
+        try:
+            self.logger.info("🚀 Getting all documents from collection: %s", collection)
+            query = """
+            FOR doc IN @@collection
+                RETURN doc
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"@collection": collection})
+            result = list(cursor)
+            return result
+        except Exception as e:
+            self.logger.error("❌ Failed to get all documents from collection: %s: %s", collection, str(e))
+            return []
+    
+    async def get_app_by_name(self, name: str, transaction: Optional[TransactionDatabase] = None) -> Optional[Dict]:
+        """
+        Get an app by its name
+        """
+        try:
+            self.logger.info("🚀 Getting app by name: %s", name)
+            query = """
+            FOR app IN @@collection
+                FILTER app.name == @name
+                RETURN app
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"name": name, "@collection": CollectionNames.APPS.value})
+            result = next(cursor, None)
+            if result:
+                self.logger.info("✅ Successfully retrieved app by name: %s", name)
+                return result
+            else:
+                self.logger.warning("⚠️ No app found by name: %s", name)
+                return None
+        except Exception as e:
+            self.logger.error("❌ Failed to get app by name: %s: %s", name, str(e))
+            return None
