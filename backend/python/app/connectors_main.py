@@ -11,9 +11,17 @@ from fastapi.responses import JSONResponse
 from app.api.middlewares.auth import authMiddleware
 from app.config.constants.arangodb import AccountType, Connectors
 from app.connectors.api.router import router
-from app.connectors.core.registry.connector import ConnectorRegistry
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
+)
+from app.connectors.core.registry.connector import (
+    ConnectorRegistry,
+    GmailConnector,
+    GoogleDriveConnector,
+    SlackConnector,
+)
+from app.connectors.core.registry.connector import (
+    OneDriveConnector as OneDriveConnectorDecorator,
 )
 from app.connectors.sources.localKB.api.kb_router import kb_router
 from app.connectors.sources.microsoft.common.apps import OneDriveApp
@@ -30,13 +38,6 @@ from app.containers.connector import (
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.connectors.core.registry.connector import (
-    SlackConnector,
-    GoogleDriveConnector, 
-    GmailConnector, 
-    OneDriveConnector as OneDriveConnectorDecorator
-)
-
 
 container = ConnectorAppContainer.init("connector_service")
 
@@ -191,24 +192,24 @@ async def initialize_connector_registry(app_container: ConnectorAppContainer) ->
     """Initialize and sync connector registry with database"""
     logger = app_container.logger()
     logger.info("🔧 Initializing Connector Registry...")
-    
+
     try:
         registry = ConnectorRegistry(app_container)
-        
+
         # Register connectors (in production, use discovery from modules)
         registry.register_connector(SlackConnector)
         registry.register_connector(GoogleDriveConnector)
         registry.register_connector(GmailConnector)
         registry.register_connector(OneDriveConnectorDecorator)
-        
+
         logger.info(f"Registered {len(registry._connectors)} connectors")
-        
+
         # Sync with database
         await registry.sync_with_database()
         logger.info("✅ Connector registry synchronized with database")
-        
+
         return registry
-        
+
     except Exception as e:
         logger.error(f"❌ Error initializing connector registry: {str(e)}")
         raise

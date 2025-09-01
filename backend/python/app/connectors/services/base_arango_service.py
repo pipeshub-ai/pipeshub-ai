@@ -3335,7 +3335,7 @@ class BaseArangoService:
         except Exception as e:
             self.logger.error("❌ Failed to get all documents from collection: %s: %s", collection, str(e))
             return []
-    
+
     async def get_app_by_name(self, name: str, transaction: Optional[TransactionDatabase] = None) -> Optional[Dict]:
         """
         Get an app by its name
