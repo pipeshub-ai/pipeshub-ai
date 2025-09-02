@@ -1,15 +1,49 @@
 """
-Simple connector registry service.
+connector registry service.
 """
 
 import uuid
 from inspect import isclass
-from typing import Any, Dict, List, Type
+from typing import Any, Callable, Dict, List, Optional, Type
 
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.sources.google.common.arango_service import ArangoService
 from app.containers.connector import ConnectorAppContainer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+
+def Connector(
+    name: str,
+    app_group: str,
+    auth_type: str,
+    supports_realtime: bool = False,
+    config: Optional[Dict[str, Any]] = None
+) -> Callable[[Type], Type]:
+    """
+    Decorator to register a connector with metadata and full config schema.
+
+    Args:
+        name: Name of the application (e.g., "Google Drive", "Gmail")
+        app_group: Group the app belongs to (e.g., "Google Workspace")
+        auth_type: Authentication type (e.g., "oauth", "api_token")
+        supports_realtime: Whether connector supports real-time updates
+        config: Complete configuration schema for the connector
+    """
+    def decorator(cls) -> Type:
+        # Store metadata in the class
+        cls._connector_metadata = {
+            "name": name,
+            "appGroup": app_group,
+            "authType": auth_type,
+            "supportsRealtime": supports_realtime,
+            "config": config or {}
+        }
+
+        # Mark class as a connector
+        cls._is_connector = True
+
+        return cls
+    return decorator
 
 
 class ConnectorRegistry:
@@ -109,7 +143,9 @@ class ConnectorRegistry:
                 return {
                     'isActive': doc.get('isActive', False),
                     'isConfigured': doc.get('isConfigured', False),
-                    'createdAtTimestamp': doc.get('createdAtTimestamp')
+                    'createdAtTimestamp': doc.get('createdAtTimestamp'),
+                    'updatedAtTimestamp': doc.get('updatedAtTimestamp'),
+                    'config': doc.get('config', {})
                 }
 
         except Exception as e:
@@ -119,7 +155,9 @@ class ConnectorRegistry:
         return {
             'isActive': False,
             'isConfigured': False,
-            'createdAtTimestamp': None
+            'createdAtTimestamp': None,
+            'updatedAtTimestamp': None,
+            'config': {}
         }
 
     async def _create_app_in_db(self, app_name: str, metadata: Dict[str, Any]) -> bool:
@@ -136,13 +174,15 @@ class ConnectorRegistry:
         try:
             arango_service = await self._get_arango_service()
             app_group_id = str(uuid.uuid4())
+
             doc = {
-                '_key': app_group_id + '_' + app_name,
+                '_key': f"{app_group_id}_{app_name.replace(' ', '_').lower()}",
                 'name': app_name,
-                'type': app_name.upper(),
+                'type': metadata.get('type', app_name.upper().replace(' ', '_')),
                 'appGroup': metadata['appGroup'],
                 'appGroupId': app_group_id,
                 'authType': metadata['authType'],
+                'config': metadata.get('config', {}),
                 'supportsRealtime': metadata['supportsRealtime'],
                 'isActive': False,  # Always start as inactive
                 'isConfigured': False,
@@ -179,17 +219,24 @@ class ConnectorRegistry:
                     'updatedAtTimestamp': get_epoch_timestamp_in_ms()
                 }
 
-            query = """
-            FOR node IN @@collection
-                FILTER node.name == @name
-                UPDATE node WITH @node_updates IN @@collection
-                RETURN NEW
-            """
-            db = arango_service.db
-            db.aql.execute(query, bind_vars={"name": app_name, "node_updates": updated_doc, "@collection": self.collection_name})
+                query = """
+                FOR node IN @@collection
+                    FILTER node.name == @name
+                    UPDATE node WITH @node_updates IN @@collection
+                    RETURN NEW
+                """
+                db = arango_service.db
+                db.aql.execute(query, bind_vars={
+                    "name": app_name,
+                    "node_updates": updated_doc,
+                    "@collection": self.collection_name
+                })
 
-            self.logger.info(f"Deactivated app {app_name} (not in registry)")
-            return True
+                self.logger.info(f"Deactivated app {app_name} (not in registry)")
+                return True
+            else:
+                self.logger.warning(f"Cannot deactivate app {app_name} - not found in DB")
+                return False
 
         except Exception as e:
             self.logger.error(f"Error deactivating app {app_name}: {e}")
@@ -333,3 +380,52 @@ class ConnectorRegistry:
             'origin': ['UPLOAD', 'CONNECTOR'],
             'permissions': ['READER', 'WRITER', 'OWNER', 'COMMENTER']
         }
+
+    async def update_connector_config(self, app_name: str, config_update: Dict[str, Any]) -> bool:
+        """
+        Update connector configuration in database.
+
+        Args:
+            app_name: Name of the application
+            config_update: Configuration updates to apply
+
+        Returns:
+            True if successful
+        """
+        try:
+            arango_service = await self._get_arango_service()
+
+            existing_doc = await arango_service.get_app_by_name(app_name)
+            if not existing_doc:
+                self.logger.error(f"App {app_name} not found in database")
+                return False
+
+            # Merge config updates
+            current_config = existing_doc.get('config', {})
+            updated_config = {**current_config, **config_update}
+
+            updated_doc = {
+                **existing_doc,
+                'config': updated_config,
+                'updatedAtTimestamp': get_epoch_timestamp_in_ms()
+            }
+
+            query = """
+            FOR node IN @@collection
+                FILTER node.name == @name
+                UPDATE node WITH @node_updates IN @@collection
+                RETURN NEW
+            """
+            db = arango_service.db
+            db.aql.execute(query, bind_vars={
+                "name": app_name,
+                "node_updates": updated_doc,
+                "@collection": self.collection_name
+            })
+
+            self.logger.info(f"Updated config for app {app_name}")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Error updating config for app {app_name}: {e}")
+            return False

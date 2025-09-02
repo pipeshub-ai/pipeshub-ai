@@ -101,6 +101,267 @@ app_schema = {
             "appGroup": {"type": "string"},
             "appGroupId": {"type": "string"},
             "authType": {"type": "string"},
+            "config": {
+                "type": "object",
+                "properties": {
+                    "auth": {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "enum": ["OAUTH", "OAUTH_ADMIN_CONSENT", "API_TOKEN", "USERNAME_PASSWORD", "BEARER_TOKEN", "CUSTOM"]
+                            },
+                            "displayRedirectUri": {"type": "boolean", "default": True},
+                            "redirectUri": {"type": "string"},
+                            "documentationLinks": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "title": {"type": "string"},
+                                        "url": {"type": "string"},
+                                        "type": {"type": "string", "enum": ["setup", "api", "connector"]}
+                                    },
+                                    "required": ["title", "url", "type"]
+                                }
+                            },
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "fields": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "name": {"type": "string"},
+                                                "displayName": {"type": "string"},
+                                                "placeholder": {"type": "string"},
+                                                "description": {"type": "string"},
+                                                "fieldType": {
+                                                    "type": "string",
+                                                    "enum": ["TEXT", "PASSWORD", "EMAIL", "URL", "TEXTAREA", "SELECT", "MULTISELECT", "CHECKBOX", "NUMBER", "FILE"]
+                                                },
+                                                "required": {"type": "boolean", "default": False},
+                                                "defaultValue": {"type": "string"},
+                                                "options": {
+                                                    "type": "array",
+                                                    "items": {"type": "string"}
+                                                },
+                                                "validation": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "minLength": {"type": "number"},
+                                                        "maxLength": {"type": "number"},
+                                                        "pattern": {"type": "string"},
+                                                        "format": {"type": "string"}
+                                                    }
+                                                }
+                                            },
+                                            "required": ["name", "displayName", "fieldType"]
+                                        }
+                                    }
+                                },
+                                "required": ["fields"]
+                            },
+                            "values": {
+                                "type": "object",
+                                "additionalProperties": True
+                            },
+                            "customFields": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": {"type": "string"},
+                                        "displayName": {"type": "string"},
+                                        "description": {"type": "string"},
+                                        "fieldType": {
+                                            "type": "string",
+                                            "enum": ["TEXT", "PASSWORD", "EMAIL", "URL", "TEXTAREA", "SELECT", "MULTISELECT", "CHECKBOX", "NUMBER", "FILE", "JSON"]
+                                        },
+                                        "required": {"type": "boolean", "default": False},
+                                        "defaultValue": {},
+                                        "options": {
+                                            "type": "array",
+                                            "items": {"type": "string"}
+                                        },
+                                        "validation": {
+                                            "type": "object",
+                                            "properties": {
+                                                "minLength": {"type": "number"},
+                                                "maxLength": {"type": "number"},
+                                                "pattern": {"type": "string"},
+                                                "format": {"type": "string"}
+                                            }
+                                        }
+                                    },
+                                    "required": ["name", "displayName", "fieldType"]
+                                }
+                            },
+                            "customValues": {
+                                "type": "object",
+                                "additionalProperties": True
+                            }
+                        },
+                        "required": ["type", "schema"]
+                    },
+                    "sync": {
+                        "type": "object",
+                        "properties": {
+                            "supportedStrategies": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string",
+                                    "enum": ["WEBHOOK", "SCHEDULED", "MANUAL", "REALTIME"]
+                                }
+                            },
+                            "selectedStrategy": {
+                                "type": "string",
+                                "enum": ["WEBHOOK", "SCHEDULED", "MANUAL", "REALTIME"]
+                            },
+                            "webhookConfig": {
+                                "type": "object",
+                                "properties": {
+                                    "supported": {"type": "boolean", "default": False},
+                                    "webhookUrl": {"type": "string"},
+                                    "events": {
+                                        "type": "array",
+                                        "items": {"type": "string"}
+                                    },
+                                    "verificationToken": {"type": "string"},
+                                    "secretKey": {"type": "string"}
+                                }
+                            },
+                            "scheduledConfig": {
+                                "type": "object",
+                                "properties": {
+                                    "enabled": {"type": "boolean", "default": False},
+                                    "intervalMinutes": {"type": "number", "default": 60},
+                                    "cronExpression": {"type": "string"},
+                                    "timezone": {"type": "string", "default": "UTC"}
+                                }
+                            },
+                            "realtimeConfig": {
+                                "type": "object",
+                                "properties": {
+                                    "supported": {"type": "boolean", "default": False},
+                                    "connectionType": {
+                                        "type": "string",
+                                        "enum": ["WEBSOCKET", "SSE", "POLLING"]
+                                    }
+                                }
+                            },
+                            "customFields": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": {"type": "string"},
+                                        "displayName": {"type": "string"},
+                                        "description": {"type": "string"},
+                                        "fieldType": {
+                                            "type": "string",
+                                            "enum": ["TEXT", "PASSWORD", "EMAIL", "URL", "TEXTAREA", "SELECT", "MULTISELECT", "CHECKBOX", "NUMBER", "FILE", "JSON"]
+                                        },
+                                        "required": {"type": "boolean", "default": False},
+                                        "defaultValue": {},
+                                        "options": {
+                                            "type": "array",
+                                            "items": {"type": "string"}
+                                        },
+                                        "validation": {
+                                            "type": "object",
+                                            "properties": {
+                                                "minLength": {"type": "number"},
+                                                "maxLength": {"type": "number"},
+                                                "pattern": {"type": "string"},
+                                                "format": {"type": "string"}
+                                            }
+                                        }
+                                    },
+                                    "required": ["name", "displayName", "fieldType"]
+                                }
+                            },
+                            "customValues": {
+                                "type": "object",
+                                "additionalProperties": True
+                            }
+                        },
+                        "required": ["supportedStrategies"]
+                    },
+                    "filters": {
+                        "type": "object",
+                        "properties": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "fields": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "name": {"type": "string"},
+                                                "displayName": {"type": "string"},
+                                                "description": {"type": "string"},
+                                                "fieldType": {
+                                                    "type": "string",
+                                                    "enum": ["TEXT", "SELECT", "MULTISELECT", "DATE", "DATERANGE", "NUMBER", "BOOLEAN", "TAGS"]
+                                                },
+                                                "required": {"type": "boolean", "default": False},
+                                                "defaultValue": {},
+                                                "options": {
+                                                    "type": "array",
+                                                    "items": {"type": "string"}
+                                                },
+                                                "operators": {
+                                                    "type": "array",
+                                                    "items": {
+                                                        "type": "string",
+                                                        "enum": ["EQUALS", "NOT_EQUALS", "CONTAINS", "NOT_CONTAINS", "STARTS_WITH", "ENDS_WITH", "GREATER_THAN", "LESS_THAN", "IN", "NOT_IN"]
+                                                    }
+                                                }
+                                            },
+                                            "required": ["name", "displayName", "fieldType"]
+                                        }
+                                    }
+                                }
+                            },
+                            "values": {
+                                "type": "object",
+                                "additionalProperties": True
+                            },
+                            "customFields": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": {"type": "string"},
+                                        "displayName": {"type": "string"},
+                                        "description": {"type": "string"},
+                                        "fieldType": {
+                                            "type": "string",
+                                            "enum": ["TEXT", "SELECT", "MULTISELECT", "DATE", "DATERANGE", "NUMBER", "BOOLEAN", "TAGS", "TEXTAREA", "JSON"]
+                                        },
+                                        "required": {"type": "boolean", "default": False},
+                                        "defaultValue": {},
+                                        "options": {
+                                            "type": "array",
+                                            "items": {"type": "string"}
+                                        }
+                                    },
+                                    "required": ["name", "displayName", "fieldType"]
+                                }
+                            },
+                            "customValues": {
+                                "type": "object",
+                                "additionalProperties": True
+                            }
+                        }
+                    }
+                },
+                "required": ["auth", "sync"],
+                "additionalProperties": False
+            },
             "isActive": {"type": "boolean", "default": True},
             "isConfigured": {"type": "boolean", "default": False},
             "supportsRealtime": {"type": "boolean", "default": False},

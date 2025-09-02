@@ -1,45 +1,85 @@
-from typing import Callable, Type
-
-
-def Connector(
-    name: str,
-    app_group: str,
-    auth_type: str,
-    supports_realtime: bool = False
-) -> Callable[[Type], Type]:
-    """
-    Decorator to register a connector with metadata.
-
-    Args:
-        name: Name of the application (e.g., "Drive", "Gmail")
-        app_group: Group the app belongs to (e.g., "Google Workspace")
-        auth_type: Authentication type (e.g., "OAuth", "API Key")
-        supports_realtime: Whether connector supports real-time updates
-    """
-    def decorator(cls) -> Type:
-        # Store metadata in the class
-        cls._connector_metadata = {
-            "name": name,
-            "appGroup": app_group,
-            "authType": auth_type,
-            "supportsRealtime": supports_realtime
-        }
-
-        # Mark class as a connector
-        cls._is_connector = True
-
-        return cls
-    return decorator
+from app.connectors.core.registry.connector_registry import Connector
 
 
 @Connector(
     name="DRIVE",
     app_group="Google Workspace",
-    auth_type="OAuth",
-    supports_realtime=True
+    auth_type="OAUTH",
+    supports_realtime=True,
+    config={
+        "auth": {
+            "type": "OAUTH",
+            "displayRedirectUri": True,
+            "redirectUri": "https://your-app.com/auth/callback/google",
+            "documentationLinks": [
+                {
+                    "title": "Google Drive API Setup",
+                    "url": "https://developers.google.com/drive/api/quickstart",
+                    "type": "setup"
+                }
+            ],
+            "schema": {
+                "fields": [
+                    {
+                        "name": "clientId",
+                        "displayName": "Client ID",
+                        "placeholder": "Enter your Google Client ID",
+                        "fieldType": "text",
+                        "required": True
+                    },
+                    {
+                        "name": "clientSecret",
+                        "displayName": "Client Secret",
+                        "placeholder": "Enter your Google Client Secret",
+                        "fieldType": "password",
+                        "required": True
+                    }
+                ]
+            },
+            "values": {},
+            "customFields": [],
+            "customValues": {}
+        },
+        "sync": {
+            "supportedStrategies": ["webhook", "scheduled", "manual"],
+            "webhookConfig": {
+                "supported": True,
+                "events": ["file.created", "file.modified", "file.deleted"]
+            },
+            "scheduledConfig": {
+                "enabled": False,
+                "intervalMinutes": 30
+            },
+            "customFields": [
+                {
+                    "name": "batchSize",
+                    "displayName": "Batch Size",
+                    "fieldType": "select",
+                    "options": ["25", "50", "100"],
+                    "defaultValue": "50"
+                }
+            ],
+            "customValues": {}
+        },
+        "filters": {
+            "schema": {
+                "fields": [
+                    {
+                        "name": "fileTypes",
+                        "displayName": "File Types",
+                        "fieldType": "multiselect",
+                        "options": ["document", "spreadsheet", "presentation", "pdf"]
+                    }
+                ]
+            },
+            "values": {},
+            "customFields": [],
+            "customValues": {}
+        }
+    }
 )
 class GoogleDriveConnector:
-    """Example Google Drive connector class"""
+    """Google Drive connector with full config schema"""
 
     def __init__(self) -> None:
         self.name = "Google Drive"
@@ -49,15 +89,58 @@ class GoogleDriveConnector:
         print(f"Connecting to {self.name}")
         return True
 
-
 @Connector(
     name="GMAIL",
     app_group="Google Workspace",
-    auth_type="OAuth",
-    supports_realtime=True
+    auth_type="OAUTH",
+    supports_realtime=True,
+    config={
+        "auth": {
+            "type": "OAUTH",
+            "displayRedirectUri": True,
+            "schema": {
+                "fields": [
+                    {
+                        "name": "clientId",
+                        "displayName": "Client ID",
+                        "fieldType": "text",
+                        "required": True
+                    },
+                    {
+                        "name": "clientSecret",
+                        "displayName": "Client Secret",
+                        "fieldType": "password",
+                        "required": True
+                    }
+                ]
+            },
+            "values": {},
+            "customFields": [],
+            "customValues": {}
+        },
+        "sync": {
+            "supportedStrategies": ["webhook", "scheduled"],
+            "customFields": [],
+            "customValues": {}
+        },
+        "filters": {
+            "schema": {
+                "fields": [
+                    {
+                        "name": "labels",
+                        "displayName": "Gmail Labels",
+                        "fieldType": "multiselect"
+                    }
+                ]
+            },
+            "values": {},
+            "customFields": [],
+            "customValues": {}
+        }
+    }
 )
 class GmailConnector:
-    """Example Gmail connector class"""
+    """Gmail connector with full config schema"""
 
     def __init__(self) -> None:
         self.name = "Gmail"
@@ -71,11 +154,61 @@ class GmailConnector:
 @Connector(
     name="ONEDRIVE",
     app_group="Microsoft 365",
-    auth_type="OAuth",
-    supports_realtime=False
+    auth_type="OAUTH_ADMIN_CONSENT",
+    supports_realtime=False,
+    config={
+        "auth": {
+            "type": "OAUTH_ADMIN_CONSENT",
+            "displayRedirectUri": False,
+            "schema": {
+                "fields": [
+                    {
+                        "name": "clientId",
+                        "displayName": "Application ID",
+                        "fieldType": "text",
+                        "required": True
+                    },
+                    {
+                        "name": "clientSecret",
+                        "displayName": "Client Secret",
+                        "fieldType": "password",
+                        "required": True
+                    },
+                    {
+                        "name": "tenantId",
+                        "displayName": "Tenant ID",
+                        "fieldType": "text",
+                        "required": True
+                    }
+                ]
+            },
+            "values": {},
+            "customFields": [],
+            "customValues": {}
+        },
+        "sync": {
+            "supportedStrategies": ["scheduled"],
+            "customFields": [],
+            "customValues": {}
+        },
+        "filters": {
+            "schema": {
+                "fields": [
+                    {
+                        "name": "fileTypes",
+                        "displayName": "File Types",
+                        "fieldType": "multiselect"
+                    }
+                ]
+            },
+            "values": {},
+            "customFields": [],
+            "customValues": {}
+        }
+    }
 )
 class OneDriveConnector:
-    """Example OneDrive connector class"""
+    """OneDrive connector with full config schema"""
 
     def __init__(self) -> None:
         self.name = "OneDrive"
@@ -85,14 +218,54 @@ class OneDriveConnector:
         print(f"Connecting to {self.name}")
         return True
 
+
 @Connector(
     name="SLACK",
     app_group="Slack",
-    auth_type="OAuth",
-    supports_realtime=False
+    auth_type="API_TOKEN",
+    supports_realtime=False,
+    config={
+        "auth": {
+            "type": "API_TOKEN",
+            "displayRedirectUri": False,
+            "schema": {
+                "fields": [
+                    {
+                        "name": "botToken",
+                        "displayName": "Bot Token",
+                        "placeholder": "xoxb-...",
+                        "fieldType": "password",
+                        "required": True
+                    }
+                ]
+            },
+            "values": {},
+            "customFields": [],
+            "customValues": {}
+        },
+        "sync": {
+            "supportedStrategies": ["scheduled", "manual"],
+            "customFields": [],
+            "customValues": {}
+        },
+        "filters": {
+            "schema": {
+                "fields": [
+                    {
+                        "name": "channels",
+                        "displayName": "Channels",
+                        "fieldType": "multiselect"
+                    }
+                ]
+            },
+            "values": {},
+            "customFields": [],
+            "customValues": {}
+        }
+    }
 )
 class SlackConnector:
-    """Example Slack connector class"""
+    """Slack connector with full config schema"""
 
     def __init__(self) -> None:
         self.name = "Slack"
