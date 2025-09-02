@@ -1,6 +1,6 @@
 # ruff: noqa
 """
-Example script to demonstrate how to use the Google Admin API
+Example script to demonstrate how to use the Google Calendar API
 """
 import asyncio
 import logging
@@ -9,7 +9,7 @@ from app.sources.client.google.google import GoogleClient
 from app.services.graph_db.graph_db_factory import GraphDBFactory
 from app.config.providers.etcd.etcd3_encrypted_store import Etcd3EncryptedKeyValueStore
 from app.config.configuration_service import ConfigurationService
-from app.sources.external.google.admin.admin import GoogleAdminDataSource
+from app.sources.external.google.calendar.gcalendar import GoogleCalendarDataSource
 
 
 async def main() -> None:
@@ -24,20 +24,35 @@ async def main() -> None:
         raise Exception("Graph DB service not found")
     await graph_db_service.connect()
 
+    # individual google account
+    individual_google_client = await GoogleClient.build_from_services(
+        service_name="calendar",
+        logger=logging.getLogger(__name__),
+        config_service=config_service,
+        graph_db_service=graph_db_service,
+        is_individual=True,
+    )
+
+    google_calendar_data_source = GoogleCalendarDataSource(individual_google_client.get_client())
+    print("Listing events")
+    # List events
+    events = await google_calendar_data_source.events_list(calendarId="primary")
+    print("events", events)
+    
+
+    # enterprise google account
     enterprise_google_client = await GoogleClient.build_from_services(
-        service_name="admin",
+        service_name="calendar",
         logger=logging.getLogger(__name__),
         config_service=config_service,
         graph_db_service=graph_db_service,
     )
 
-    google_admin_client = GoogleAdminDataSource(enterprise_google_client.get_client())
-    results = await google_admin_client.users_list(customer="my_customer", orderBy="email", projection="full")
-
-    print(results)
-    
-    users_get = await google_admin_client.users_get(userKey="xxx")
-    print(users_get)
+    google_calendar_data_source = GoogleCalendarDataSource(enterprise_google_client.get_client())
+    print("Listing events")
+    # List events
+    events = await google_calendar_data_source.events_list(calendarId="primary")
+    print("events", events)
 
 
 if __name__ == "__main__":

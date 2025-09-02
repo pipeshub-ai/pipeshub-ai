@@ -114,7 +114,7 @@ class GoogleClient(IClient):
         Returns:
             GoogleClient instance
         """
-        # TODO Cleanup this code
+        # TODO Cleanup this code for orgId and userId fetch
         # get org id
         query = f"""
             FOR org IN {CollectionNames.ORGS.value}
@@ -127,7 +127,6 @@ class GoogleClient(IClient):
         if not orgs:
             raise Exception("Org ID not found")
         org_id = orgs[0]["_key"]
-
         if is_individual:
             try:
                 # get user id
@@ -143,12 +142,13 @@ class GoogleClient(IClient):
                 users = await graph_db_service.execute_query(query, bind_vars={"org_id": org_id, "active": True})
                 if not users:
                     raise Exception("User ID not found")
-                user_id = users[0]["_key"]
+                user_id = users[0]["userId"]
                 if not user_id:
                     raise Exception("User ID not found")
                 #fetch saved credentials
                 saved_credentials = await GoogleClient.get_individual_token(org_id, user_id, config_service)
-
+                if not saved_credentials:
+                    raise Exception("Failed to get individual token")
                 google_credentials = Credentials(
                     token=saved_credentials.get(CredentialKeys.ACCESS_TOKEN.value),
                     refresh_token=saved_credentials.get(CredentialKeys.REFRESH_TOKEN.value),
@@ -243,7 +243,6 @@ class GoogleClient(IClient):
 
         # 3) Create JWT
         jwt_token = jwt.encode(payload, scoped_jwt_secret, algorithm="HS256")
-
         # 4) Resolve endpoint
         endpoints = await config_service.get_config(config_node_constants.ENDPOINTS.value)
         if not endpoints:
@@ -257,7 +256,6 @@ class GoogleClient(IClient):
 
         # 5) Call API
         url = f"{nodejs_endpoint}{route.value}"
-
         http_client = HTTPClient(token=jwt_token)
         request = HTTPRequest(url=url, method="GET", body=payload)  # Note: GET with body is unusual
         response = await http_client.execute(request)
