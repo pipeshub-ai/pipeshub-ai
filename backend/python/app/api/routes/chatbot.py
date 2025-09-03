@@ -738,7 +738,7 @@ def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[s
                 page_num = None
             data = block.get("data")
             if data:
-                if block_type == BlockType.TABLE.value:
+                if block_type == GroupType.TABLE.value:
                     block_text = data.get("table_markdown","")
                 elif block_type == BlockType.TABLE_ROW.value:
                     block_text = data.get("row_natural_language_text","")
