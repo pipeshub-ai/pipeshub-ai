@@ -172,18 +172,6 @@ class DoclingDocToBlocksConverter():
         async def _handle_group_block(item: dict, doc_dict: dict, parent_index: int, level: int,doc: DoclingDocument) -> BlockGroup:
             # For groups, process children and return their blocks
             children = item.get("children", [])
-            # block_group = BlockGroup(
-            #         id=str(uuid.uuid4()),
-            #         index=len(block_groups),
-            #         name=item.get("name", ""),
-            #         type=GroupType.LIST,
-            #         parent_index=parent_index,
-            #         description=None,
-            #         source_group_id=item.get("self_ref", ""),
-            #         format=DataFormat.MARKDOWN,
-            #     )
-            # block_groups.append(block_group)
-            # _enrich_metadata(block_group, item, doc_dict)
             for child in children:
                 await _process_item(child, doc, level + 1)
 

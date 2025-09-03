@@ -1,7 +1,11 @@
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Union
 
-from qdrant_client.http.models import Filter  # type: ignore
+from qdrant_client.http.models import (  # type: ignore
+    Filter,
+    PointStruct,
+    QueryRequest,
+)
 
 from app.services.vector_db.qdrant.filter import QdrantFilterMode
 
@@ -34,7 +38,7 @@ class IVectorDBService(ABC):
     async def create_collection(
         self,
         collection_name: str,
-        embedding_size: int,
+        embedding_size: int=1024,
         sparse_idf: bool = False,
         vectors_config: Optional[dict] = None,
         sparse_vectors_config: Optional[dict] = None,
@@ -80,3 +84,21 @@ class IVectorDBService(ABC):
     @abstractmethod
     async def scroll(self, collection_name: str, scroll_filter: Filter, limit: int) -> object:
         raise NotImplementedError("scroll() is not implemented")
+
+    @abstractmethod
+    def query_batch_points(
+        self,
+        collection_name: str,
+        requests: List[QueryRequest],
+    ) -> List[List[PointStruct]]:
+        """Query batch points"""
+        raise NotImplementedError("query_batch_points() is not implemented")
+
+    @abstractmethod
+    def upsert_points(
+        self,
+        collection_name: str,
+        points: List[PointStruct],
+    ) -> None:
+        """Upsert points"""
+        raise NotImplementedError("upsert() is not implemented")

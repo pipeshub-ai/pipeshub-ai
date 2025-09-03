@@ -679,7 +679,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         block_groups = block_container.get("block_groups",[])
 
         seen_chunks.add(chunk_id)
-        is_block_group = result["metadata"].get("isBlockGroup")
+        is_block_group = meta.get("isBlockGroup")
         if is_block_group:
             block = block_groups[index]
         else:
@@ -687,7 +687,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
 
         block_type = block.get("type")
         result["block_type"] = block_type
-        if block_type == BlockType.TEXT.value:
+        if block_type == BlockType.TEXT.value and 'isBlockGroup' in meta:
             result["content"] = block.get("data","")
         elif block_type == BlockType.IMAGE.value and is_multimodal_llm:
             data = block.get("data")
@@ -696,7 +696,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                 result["content"] = image_uri
             else:
                 result["content"] = ""
-        elif block_type == BlockType.TABLE_ROW.value:
+        elif block_type == BlockType.TABLE_ROW.value and 'isBlockGroup' in meta:
             block_group_index = block.get("parent_index")
             block_group = block_groups[block_group_index]
             table_data = block_group.get("data",{})
@@ -705,7 +705,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
             children = block_group.get("children")
             first_block_index = children[0]
             result["block_index"] = first_block_index
-        elif block_type == GroupType.TABLE.value:
+        elif block_type == GroupType.TABLE.value and 'isBlockGroup' in meta:
             table_data = block.get("data",{})
             table_markdown = table_data.get("table_markdown","")
             result["content"] = table_markdown
@@ -897,23 +897,6 @@ async def create_record_from_vector_metadata(metadata: Dict[str, Any], org_id: s
                     "block_groups": []
                 }
 
-        # document_id =  await blob_store.save_record_to_storage(org_id,record["id"],virtual_record_id,record)
-        # if document_id is None:
-        #     raise Exception("Failed to save record to blob storage")
-
-        # await blob_store.store_virtual_record_mapping(virtual_record_id,document_id)
-
-        # for payload in new_payloads:
-        #     block_index = payload.get("metadata").get("blockIndex")
-        #     filters = await vector_db_service.filter_collection(must={
-        #         "virtualRecordId": virtual_record_id,
-        #         "blockNum": block_index
-        #     })
-        #     vector_db_service.overwrite_payload(
-        #         collection_name=VECTOR_DB_COLLECTION_NAME,
-        #         payload=payload,
-        #         points=filters
-        #         )
         return record,blockNum_to_blockIndex
     except Exception as e:
         raise e
@@ -936,11 +919,13 @@ def create_block_from_metadata(metadata: Dict[str, Any],page_content: str) -> Di
             data = page_content
         else:
             data = metadata.get("blockText")
+
+        block_type = metadata.get("blockType","text")
         # Create the Block structure
         block = {
             "id": str(uuid4()),  # Generate unique ID
             "index": metadata.get("blockNum")[0] if metadata.get("blockNum") else 0, # TODO: blockNum indexing might be different for different file types
-            "type": "type_placeholder",
+            "type": block_type,
             "format": "txt",
             "comments": [],
             "source_creation_date": metadata.get("sourceCreatedAtTimestamp"),
@@ -953,15 +938,4 @@ def create_block_from_metadata(metadata: Dict[str, Any],page_content: str) -> Di
     except Exception as e:
         raise e
 
-# Helper function to get extension for a MIME type
-# def get_extension(mime_type):
-#     """
-#     Get file extension for a given MIME type.
 
-#     Args:
-#         mime_type (str): The MIME type to look up
-
-#     Returns:
-#         str or None: File extension (without the dot), or None if not found
-#     """
-#     return MIME_TYPES.get(mime_type)

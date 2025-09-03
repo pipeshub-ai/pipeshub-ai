@@ -482,21 +482,6 @@ class RetrievalService:
             collection_name=self.collection_name,
             requests=query_requests,
         )
-        # search_tasks = [self.qdrant_client.search(
-        #     vector_name="dense",
-        #     sparse_vector_name="sparse",
-        #     collection_name=self.collection_name,
-        #     query_vector=query_embedding,
-        #     # query_filter=query_filter,
-        #     limit=limit,
-        #     with_payload=True
-        # ) for query_embedding in query_embeddings]
-
-        # start_time = time.monotonic()
-        # search_results = await asyncio.gather(*search_tasks)
-        # elapsed = time.monotonic() - start_time
-        # self.logger.debug(f"VectorDB lookup for {len(queries)} queries took {elapsed:.3f} seconds.")
-        # Convert to LangChain documents
 
         for r in search_results:
                 points = r.points
@@ -511,27 +496,6 @@ class RetrievalService:
                     all_results.append((doc, score))
 
         return self._format_results(all_results)
-        # Process all queries in parallel
-        # search_tasks = [
-        #     vector_store.asimilarity_search_with_score(
-        #         query=await self._preprocess_query(query),
-        #         k=limit,
-        #         # filter=qdrant_filter
-        #     )
-        #     for query in queries
-        # ]
-
-        # start_time = time.monotonic()
-        # search_results = await asyncio.gather(*search_tasks)
-        # elapsed = time.monotonic() - start_time
-        # self.logger.debug(f"VectorDB lookup for {len(queries)} queries took {elapsed:.3f} seconds.")
-
-        # Deduplicate results
-        # for resultList in search_results:
-        #     for doc, score in resultList:
-        #         # if doc.page_content not in seen_chunks:
-        #             all_results.append((doc, score))
-        #             # seen_chunks.add(doc.page_content)
 
     def _create_empty_response(self, message: str, status: Status) -> Dict[str, Any]:
         """Helper to create empty response"""
@@ -559,8 +523,6 @@ class RetrievalService:
             Dict[str, str]: Mapping of virtual_record_id -> first accessible record_id
         """
         # Create a mapping from virtualRecordId to list of record IDs
-        # self.logger.info(f"Accessible records: {accessible_records}")
-        # self.logger.info(f"Virtual record IDs: {virtual_record_ids}")
         virtual_to_records = {}
         for record in accessible_records:
             if record and isinstance(record, dict):
@@ -572,7 +534,6 @@ class RetrievalService:
                         virtual_to_records[virtual_id] = []
                     virtual_to_records[virtual_id].append(record_id)
 
-        # self.logger.info(f"Virtual to records: {virtual_to_records}")
 
         # Create the final mapping using only the virtual record IDs from search results
         # Use the first record ID for each virtual record ID

@@ -382,9 +382,12 @@ class VectorStore(Transformer):
                             },
                         )
                         points.append(point)
-                self.vector_db_service.upsert(
+                self.vector_db_service.upsert_points(
                         collection_name=self.collection_name, points=points
                     )
+                self.logger.info(
+                                "✅ Successfully added documents to vector store"
+                            )
             else:
                 if text_chunks:
                     try:

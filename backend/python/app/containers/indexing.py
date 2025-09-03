@@ -47,13 +47,6 @@ class IndexingAppContainer(BaseAppContainer):
         vector_db_service=vector_db_service,
     )
 
-    # domain_extractor = providers.Resource(
-    #     container_utils.create_domain_extractor,
-    #     logger=logger,
-    #     arango_service=arango_service,
-    #     config_service=config_service,
-    # )
-
     document_extractor = providers.Resource(
         container_utils.create_document_extractor,
         logger=logger,

@@ -171,7 +171,7 @@ class QdrantService(IVectorDBService):
 
     async def create_collection(
         self,
-        embedding_size: int,
+        embedding_size: int=1024,
         collection_name: str = VECTOR_DB_COLLECTION_NAME,
         sparse_idf: bool = False,
         vectors_config: Optional[dict] = None,
@@ -232,12 +232,6 @@ class QdrantService(IVectorDBService):
                 type=KeywordIndexType.KEYWORD,
             )
         self.client.create_payload_index(collection_name, field_name, field_schema)
-        # if self.is_async:
-        #     await self.client.create_payload_index(collection_name, field_name, field_schema, index_type) # type: ignore
-        # else:
-        #     # TODO: Create a thread pool manager to handle the index creation which can be used across the application
-        #     import asyncio
-        #     asyncio.to_thread(self.client.create_payload_index(collection_name, field_name, field_schema, index_type)) # type: ignore
         logger.info(f"✅ Created index {field_name} on collection {collection_name}")
 
     async def filter_collection(
@@ -375,7 +369,7 @@ class QdrantService(IVectorDBService):
             raise RuntimeError("Client not connected. Call connect() first.")
         return self.client.query_batch_points(collection_name, requests)
 
-    def upsert(
+    def upsert_points(
         self,
         collection_name: str,
         points: List[PointStruct],
