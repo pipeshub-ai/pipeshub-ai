@@ -324,7 +324,7 @@ class VectorStore(Transformer):
                 self.cohere_api_key = configuration["apiKey"]
                 self.cohere_embedding_model_name = model_name
 
-            
+
             return is_multimodal
         except IndexingError as e:
             self.logger.error(f"Error getting embedding model: {str(e)}")
@@ -367,7 +367,7 @@ class VectorStore(Transformer):
             )
 
             if len(image_chunks) > 0:
-               
+
 
                 if self.embedding_provider == EmbeddingProvider.COHERE.value:
                     points = []
