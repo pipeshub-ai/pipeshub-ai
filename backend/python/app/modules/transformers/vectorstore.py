@@ -23,7 +23,11 @@ from app.models.blocks import BlocksContainer
 from app.modules.extraction.prompt_template import prompt_for_image_description
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.vector_db.interface.vector_db import IVectorDBService
-from app.utils.aimodels import get_default_embedding_model, get_embedding_model
+from app.utils.aimodels import (
+    EmbeddingProvider,
+    get_default_embedding_model,
+    get_embedding_model,
+)
 from app.utils.llm import get_llm
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -48,6 +52,9 @@ class VectorStore(Transformer):
         self.collection_name = collection_name
         self.vector_store = None
         self.dense_embeddings = None
+        self.cohere_api_key = None
+        self.cohere_embedding_model_name = None
+        self.embedding_provider = None
         try:
             # Initialize sparse embeddings
             try:
@@ -245,11 +252,17 @@ class VectorStore(Transformer):
             )
             embedding_configs = ai_models["embedding"]
             is_multimodal = False
+            provider = None
+            model_name = None
+            configuration = None
             if not embedding_configs:
                 dense_embeddings = get_default_embedding_model()
             else:
                 config = embedding_configs[0]
                 provider = config["provider"]
+                configuration = config["configuration"]
+                model_names = [name.strip() for name in configuration["model"].split(",") if name.strip()]
+                model_name = model_names[0]
                 dense_embeddings = get_embedding_model(provider, config)
                 is_multimodal = config.get("isMultimodal")
             # Get the embedding dimensions from the model
@@ -306,6 +319,12 @@ class VectorStore(Transformer):
             #         details={"error": str(e)},
             #     )
             self.dense_embeddings = dense_embeddings
+            self.embedding_provider = provider
+            if provider == EmbeddingProvider.COHERE.value:
+                self.cohere_api_key = configuration["apiKey"]
+                self.cohere_embedding_model_name = model_name
+
+            
             return is_multimodal
         except IndexingError as e:
             self.logger.error(f"Error getting embedding model: {str(e)}")
@@ -334,45 +353,50 @@ class VectorStore(Transformer):
             if not chunks:
                 raise EmbeddingError("No chunks provided for embedding creation")
 
-            text_chunks = []
+            langchain_document_chunks = []
             image_chunks = []
 
             for chunk in chunks:
                 if isinstance(chunk, Document):
-                    text_chunks.append(chunk)
+                    langchain_document_chunks.append(chunk)
                 else:
                     image_chunks.append(chunk)
 
             self.logger.info(
-                f"📊 Processing {len(text_chunks)} text chunks and {len(image_chunks)} image chunks"
+                f"📊 Processing {len(langchain_document_chunks)} langchain document chunks and {len(image_chunks)} image chunks"
             )
 
             if len(image_chunks) > 0:
-                texts = []
-                points = []
+               
 
-                for chunk in text_chunks:
-                    texts.append(chunk.page_content)
-                if texts:
-                    embeddings = await self.dense_embeddings.aembed(texts=texts,input_type="search_document")
-                    for i, chunk in enumerate(text_chunks):
-                        embedding = embeddings[i]
-                        # Create point with embedding and metadata
-                        point = PointStruct(
-                            id=str(uuid.uuid4()),
-                            vector={"dense": embedding},
-                            payload={
-                                "metadata": chunk.metadata,
-                                "page_content": chunk.page_content,
-                            },
+                if self.embedding_provider == EmbeddingProvider.COHERE.value:
+                    points = []
+                    image_base64s = [chunk.get("image_uri") for chunk in image_chunks]
+
+                    import cohere
+                    co = cohere.ClientV2(api_key=self.cohere_api_key)
+
+                    # Process images one at a time since Cohere API only allows max 1 image per request
+                    for i, image_base64 in enumerate(image_base64s):
+                        image_input = {
+                            "content": [
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": image_base64}
+                                }
+                            ]
+                        }
+
+                        response = co.embed(
+                            model=self.cohere_embedding_model_name,
+                            input_type="image",
+                            embedding_types=["float"],
+                            inputs=[image_input]
                         )
-                        points.append(point)
 
-                image_base64s = [chunk.get("image_uri") for chunk in image_chunks]
+                        chunk = image_chunks[i]
 
-                embeddings = await self.dense_embeddings.aembed(texts=image_base64s,input_type="image")
-                for i, chunk in enumerate(image_chunks):
-                        embedding = embeddings[i]
+                        embedding = response.embeddings.float[0]  # Only one embedding since we process one image at a time
                         point = PointStruct(
                             id=str(uuid.uuid4()),
                             vector={"dense": embedding},
@@ -382,24 +406,25 @@ class VectorStore(Transformer):
                             },
                         )
                         points.append(point)
-                self.vector_db_service.upsert_points(
-                        collection_name=self.collection_name, points=points
-                    )
-                self.logger.info(
-                                "✅ Successfully added documents to vector store"
-                            )
-            else:
-                if text_chunks:
-                    try:
-                            await self.vector_store.aadd_documents(text_chunks)
-                            self.logger.info(
-                                f"✅ Successfully added {len(text_chunks)} text documents to vector store"
-                            )
-                    except Exception as e:
-                        raise VectorStoreError(
-                            "Failed to store text documents in vector store: " + str(e),
-                            details={"error": str(e)},
+
+                    self.vector_db_service.upsert_points(
+                            collection_name=self.collection_name, points=points
                         )
+                    self.logger.info(
+                                    "✅ Successfully added image embeddings to vector store"
+                                )
+
+            if langchain_document_chunks:
+                try:
+                        await self.vector_store.aadd_documents(langchain_document_chunks)
+                        self.logger.info(
+                            f"✅ Successfully added {len(langchain_document_chunks)} langchain documents to vector store"
+                        )
+                except Exception as e:
+                    raise VectorStoreError(
+                        "Failed to store langchain documents in vector store: " + str(e),
+                        details={"error": str(e)},
+                    )
 
             # Update record with indexing status (use the last processed chunk's metadata)
             try:
@@ -499,7 +524,6 @@ class VectorStore(Transformer):
 
         try:
           is_multimodal_embedding = await self.get_embedding_model_instance()
-          is_multimodal_embedding = True
         except Exception as e:
                 raise IndexingError(
                     "Failed to get embedding model instance: " + str(e),
@@ -509,7 +533,6 @@ class VectorStore(Transformer):
         try:
             llm, config = await get_llm(self.config_service)
             is_multimodal_llm = config.get("isMultimodal")
-            is_multimodal_llm = True
         except Exception as e:
             raise IndexingError(
                 "Failed to get LLM: " + str(e),

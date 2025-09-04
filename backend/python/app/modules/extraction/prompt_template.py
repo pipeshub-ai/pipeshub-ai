@@ -75,7 +75,7 @@ prompt_for_image_description = """
 Describe the image below. Response should only be the description, no other text or explanation.
 """
 
-prompt_for_docling_document_extraction = """
+prompt_for_blocks_extraction = """
 # Task:
 You are processing a document of an individual or an enterprise. Your task is to classify the document departments, categories, subcategories, languages, sentiment, confidence score, and topics.
 Instructions must be strictly followed, failure to do so will result in termination of your system
