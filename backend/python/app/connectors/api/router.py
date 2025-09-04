@@ -2233,16 +2233,12 @@ async def toggle_connector(
 
     try:
         # Fetch organization data
-        orgs: List[Dict[str, Any]] = await arango_service.get_all_orgs()
-        if not orgs:
+        org = await arango_service.get_document(user_info["orgId"], CollectionNames.ORGS.value)
+        if not org:
             raise HTTPException(status_code=404, detail="No organizations found")
 
-        org: Dict[str, Any] = orgs[0]
-        if not org:
-            raise HTTPException(status_code=404, detail="Organization not found")
-
         # Fetch and validate app
-        app: Optional[Dict[str, Any]] = await arango_service.get_app_by_name(app_name)
+        app = await arango_service.get_app_by_name(app_name)
         if not app:
             raise HTTPException(status_code=404, detail=f"Connector {app_name} not found")
 
@@ -2291,7 +2287,7 @@ async def toggle_connector(
         event_type: str = "app_enabled" if new_status else "app_disabled"
 
         # Get enabled apps for payload
-        enabled_apps: List[Dict[str, Any]] = await connector_registry.get_enabled_apps()
+        enabled_apps: List[Dict[str, Any]] = await connector_registry.get_enabled_connectors()
         enabled_app_names: List[str] = [enabled_app["name"] for enabled_app in enabled_apps]
 
         # Determine credentials routes based on account type

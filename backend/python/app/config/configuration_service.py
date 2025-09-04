@@ -141,33 +141,20 @@ class ConfigurationService:
         self.watch_thread = threading.Thread(target=watch_etcd, daemon=True)
         self.watch_thread.start()
 
-    async def set_config(self, key: str, value: Union[str, int, float, bool, dict, list], encrypt: bool = True) -> bool:
+    async def set_config(self, key: str, value: Union[str, int, float, bool, dict, list]) -> bool:
         """Set configuration value with optional encryption"""
         try:
-            # Convert value to JSON string if it's a complex type
-            if isinstance(value, (dict, list)):
-                import json
-                value_str = json.dumps(value)
-            else:
-                value_str = str(value)
-
-            # Encrypt the value if requested
-            if encrypt:
-                encrypted_value = self.encryption_service.encrypt(value_str)
-                self.logger.debug("🔐 Encrypted value for key: %s", key)
-            else:
-                encrypted_value = value_str
 
             # Store in etcd
             try:
-                await self.store.create_key(key, encrypted_value, overwrite=True)
+                await self.store.create_key(key, value, overwrite=True)
                 success = True
             except Exception as store_error:
                 self.logger.error("❌ Failed to create key in store: %s", str(store_error))
                 success = False
 
             if success:
-                # Update cache with decrypted value
+                # Update cache with value
                 self.cache[key] = value
                 self.logger.debug("✅ Successfully set config for key: %s", key)
             else:
@@ -179,39 +166,25 @@ class ConfigurationService:
             self.logger.error("❌ Failed to set config %s: %s", key, str(e))
             return False
 
-    async def update_config(self, key: str, value: Union[str, int, float, bool, dict, list], encrypt: bool = True) -> bool:
+    async def update_config(self, key: str, value: Union[str, int, float, bool, dict, list]) -> bool:
         """Update configuration value with optional encryption"""
         try:
             # Check if key exists
             existing_value = await self.store.get_key(key)
             if existing_value is None:
                 self.logger.warning("⚠️ Key %s does not exist, creating new key", key)
-                return await self.set_config(key, value, encrypt)
-
-            # Convert value to JSON string if it's a complex type
-            if isinstance(value, (dict, list)):
-                import json
-                value_str = json.dumps(value)
-            else:
-                value_str = str(value)
-
-            # Encrypt the value if requested
-            if encrypt:
-                encrypted_value = self.encryption_service.encrypt(value_str)
-                self.logger.debug("🔐 Encrypted value for key: %s", key)
-            else:
-                encrypted_value = value_str
+                return await self.set_config(key, value)
 
             # Update in etcd
             try:
-                await self.store.update_value(key, encrypted_value)
+                await self.store.update_value(key, value)
                 success = True
             except Exception as store_error:
                 self.logger.error("❌ Failed to update key in store: %s", str(store_error))
                 success = False
 
             if success:
-                # Update cache with decrypted value
+                # Update cache with value
                 self.cache[key] = value
                 self.logger.debug("✅ Successfully updated config for key: %s", key)
             else:

@@ -112,7 +112,7 @@ const ConnectorCard = ({ connector }: ConnectorCardProps) => {
   const handleConfigSuccess = () => {
     setIsConfigFormOpen(false);
     // Optionally refresh the connector data or show success message
-    window.location.reload(); // Simple refresh for now
+    navigate(`${connector.name.toLowerCase()}`);
   };
 
   return (
