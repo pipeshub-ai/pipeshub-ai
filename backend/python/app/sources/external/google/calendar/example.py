@@ -43,17 +43,25 @@ async def main() -> None:
     # enterprise google account
     enterprise_google_client = await GoogleClient.build_from_services(
         service_name="calendar",
+        version="v3",
         logger=logging.getLogger(__name__),
         config_service=config_service,
         graph_db_service=graph_db_service,
+        is_individual=False,
     )
 
     google_calendar_data_source = GoogleCalendarDataSource(enterprise_google_client.get_client())
     print("Listing events")
     # List events
-    events = await google_calendar_data_source.events_list(calendarId="primary")
+    events = await google_calendar_data_source.events_list(calendarId="primary", alwaysIncludeEmail=True)
     print("events", events)
 
+    calendar_list_get = await google_calendar_data_source.calendar_list_get(calendarId="primary")
+    print("calendar_list_get", calendar_list_get)
 
+    calendar_list_list = await google_calendar_data_source.calendar_list_list()
+    print("calendar_list_list", calendar_list_list)
+
+    
 if __name__ == "__main__":
     asyncio.run(main())

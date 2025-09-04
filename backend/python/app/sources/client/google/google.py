@@ -29,6 +29,7 @@ from app.services.graph_db.interface.graph_db import IGraphService
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.iclient import IClient
+from app.sources.client.utils.utils import merge_scopes
 
 try:
     from google.oauth2 import service_account  # type: ignore
@@ -125,7 +126,7 @@ class GoogleClient(IClient):
         bind_vars = {"active": True}
         orgs = await graph_db_service.execute_query(query, bind_vars=bind_vars)
         if not orgs:
-            raise Exception("Org ID not found")
+            raise ValueError("Org ID not found")
         org_id = orgs[0]["_key"]
         if is_individual:
             try:
@@ -141,21 +142,21 @@ class GoogleClient(IClient):
 
                 users = await graph_db_service.execute_query(query, bind_vars={"org_id": org_id, "active": True})
                 if not users:
-                    raise Exception("User ID not found")
+                    raise ValueError("User not found for the given organization.")
                 user_id = users[0]["userId"]
                 if not user_id:
-                    raise Exception("User ID not found")
+                    raise ValueError("User ID is missing in the user document.")
                 #fetch saved credentials
                 saved_credentials = await GoogleClient.get_individual_token(org_id, user_id, config_service)
                 if not saved_credentials:
-                    raise Exception("Failed to get individual token")
+                    raise ValueError("Failed to get individual token")
                 google_credentials = Credentials(
                     token=saved_credentials.get(CredentialKeys.ACCESS_TOKEN.value),
                     refresh_token=saved_credentials.get(CredentialKeys.REFRESH_TOKEN.value),
                     token_uri="https://oauth2.googleapis.com/token",
                     client_id=saved_credentials.get(CredentialKeys.CLIENT_ID.value),
                     client_secret=saved_credentials.get(CredentialKeys.CLIENT_SECRET.value),
-                    scopes=scopes or GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES,
+                    scopes=merge_scopes(GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES, scopes),
                 )
 
                 # Create Google Drive service using the credentials
@@ -184,7 +185,7 @@ class GoogleClient(IClient):
                 google_credentials = (
                         service_account.Credentials.from_service_account_info(
                             saved_credentials,
-                            scopes=scopes or GOOGLE_CONNECTOR_ENTERPRISE_SCOPES + GOOGLE_PARSER_SCOPES,
+                            scopes=merge_scopes(GOOGLE_CONNECTOR_ENTERPRISE_SCOPES + GOOGLE_PARSER_SCOPES, scopes),
                             subject=admin_email
                         )
                     )
@@ -200,8 +201,8 @@ class GoogleClient(IClient):
 
             try:
                 client = build(
-                    "admin",
-                    "directory_v1",
+                    service_name,
+                    version,
                     credentials=google_credentials,
                     cache_discovery=False,
                 )
