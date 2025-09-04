@@ -47,6 +47,11 @@ const AtlassianPage = lazy(() => import('src/pages/dashboard/account/connectors/
 const OneDrivePage = lazy(() => import('src/pages/dashboard/account/connectors/onedrive'));
 const SharepointPage = lazy(() => import('src/pages/dashboard/account/connectors/sharepoint'));
 
+// Generic connector management (parameterized by name)
+const GenericConnectorManagementPage = lazy(
+  () => import('src/pages/dashboard/account/connectors/[connectorName]')
+);
+
 const SamlSsoConfigPage = lazy(() => import('src/pages/dashboard/account/saml-sso-config'));
 
 // knowledge-base
@@ -190,7 +195,10 @@ export const dashboardRoutes = [
       { path: ':conversationId', element: <ChatBotPage key="conversation" /> },
       { path: 'agents', element: <AgentPage key="agent" /> },
       { path: 'agents/:agentKey', element: <AgentChatPage key="agent-chat" /> },
-      { path: 'agents/:agentKey/conversations/:conversationId', element: <AgentChatPage key="agent-conversation" /> },
+      {
+        path: 'agents/:agentKey/conversations/:conversationId',
+        element: <AgentChatPage key="agent-conversation" />,
+      },
       { path: 'record/:recordId', element: <RecordDetails /> },
       {
         path: 'account',
@@ -323,6 +331,10 @@ export const dashboardRoutes = [
                         index: true,
                       },
                       {
+                        path: ':connectorName',
+                        element: <BusinessAdminOnlyRoute component={GenericConnectorManagementPage} />,
+                      },
+                      {
                         path: 'googleWorkspace',
                         element: CONFIG.auth.skip ? (
                           <GoogleWorkspaceBusinessPage />
@@ -435,6 +447,11 @@ export const dashboardRoutes = [
                           <IndividualOnlyRoute component={ConnectorSettings} />
                         ),
                         index: true,
+                      },
+                      // Parameterized connector management page
+                      {
+                        path: ':connectorName',
+                        element: <IndividualOnlyRoute component={GenericConnectorManagementPage} />,
                       },
                       {
                         path: 'googleWorkspace',

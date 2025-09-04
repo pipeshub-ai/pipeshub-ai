@@ -1,0 +1,213 @@
+// Field validation interface
+interface FieldValidation {
+  minLength?: number;
+  maxLength?: number;
+  pattern?: string;
+  format?: string;
+}
+
+// Base field interface
+interface BaseField {
+  name: string;
+  displayName: string;
+  description?: string;
+  required?: boolean;
+  defaultValue?: any;
+  options?: string[];
+  validation?: FieldValidation;
+}
+
+// Auth schema field
+interface AuthSchemaField extends BaseField {
+  placeholder?: string;
+  fieldType:
+    | 'TEXT'
+    | 'PASSWORD'
+    | 'EMAIL'
+    | 'URL'
+    | 'TEXTAREA'
+    | 'SELECT'
+    | 'MULTISELECT'
+    | 'CHECKBOX'
+    | 'NUMBER'
+    | 'FILE';
+}
+
+// Auth custom field (includes JSON type)
+interface AuthCustomField extends BaseField {
+  fieldType:
+    | 'TEXT'
+    | 'PASSWORD'
+    | 'EMAIL'
+    | 'URL'
+    | 'TEXTAREA'
+    | 'SELECT'
+    | 'MULTISELECT'
+    | 'CHECKBOX'
+    | 'NUMBER'
+    | 'FILE'
+    | 'JSON';
+}
+
+// Sync custom field (includes JSON type)
+interface SyncCustomField extends BaseField {
+  fieldType:
+    | 'TEXT'
+    | 'PASSWORD'
+    | 'EMAIL'
+    | 'URL'
+    | 'TEXTAREA'
+    | 'SELECT'
+    | 'MULTISELECT'
+    | 'CHECKBOX'
+    | 'NUMBER'
+    | 'FILE'
+    | 'JSON';
+}
+
+// Filter schema field
+interface FilterSchemaField extends BaseField {
+  fieldType:
+    | 'TEXT'
+    | 'SELECT'
+    | 'MULTISELECT'
+    | 'DATE'
+    | 'DATERANGE'
+    | 'NUMBER'
+    | 'BOOLEAN'
+    | 'TAGS';
+  operators?: (
+    | 'EQUALS'
+    | 'NOT_EQUALS'
+    | 'CONTAINS'
+    | 'NOT_CONTAINS'
+    | 'STARTS_WITH'
+    | 'ENDS_WITH'
+    | 'GREATER_THAN'
+    | 'LESS_THAN'
+    | 'IN'
+    | 'NOT_IN'
+  )[];
+}
+
+// Filter custom field
+interface FilterCustomField extends BaseField {
+  fieldType:
+    | 'TEXT'
+    | 'SELECT'
+    | 'MULTISELECT'
+    | 'DATE'
+    | 'DATERANGE'
+    | 'NUMBER'
+    | 'BOOLEAN'
+    | 'TAGS'
+    | 'TEXTAREA'
+    | 'JSON';
+}
+
+// Documentation link interface
+interface DocumentationLink {
+  title: string;
+  url: string;
+  type: 'setup' | 'api' | 'connector';
+}
+
+// Webhook configuration interface
+interface WebhookConfig {
+  supported?: boolean;
+  webhookUrl?: string;
+  events?: string[];
+  verificationToken?: string;
+  secretKey?: string;
+}
+
+// Scheduled configuration interface
+interface ScheduledConfig {
+  enabled?: boolean;
+  intervalMinutes?: number;
+  cronExpression?: string;
+  timezone?: string;
+}
+
+// Realtime configuration interface
+interface RealtimeConfig {
+  supported?: boolean;
+  connectionType?: 'WEBSOCKET' | 'SSE' | 'POLLING';
+}
+
+// Auth configuration interface
+interface ConnectorAuthConfig {
+  type:
+    | 'OAUTH'
+    | 'OAUTH_ADMIN_CONSENT'
+    | 'API_TOKEN'
+    | 'USERNAME_PASSWORD'
+    | 'BEARER_TOKEN'
+    | 'CUSTOM';
+  displayRedirectUri?: boolean;
+  redirectUri?: string;
+  documentationLinks?: DocumentationLink[];
+  schema: {
+    fields: AuthSchemaField[];
+  };
+  values: Record<string, any>;
+  customFields: AuthCustomField[];
+  customValues: Record<string, any>;
+}
+
+// Sync configuration interface
+interface ConnectorSyncConfig {
+  supportedStrategies: ('WEBHOOK' | 'SCHEDULED' | 'MANUAL' | 'REALTIME')[];
+  selectedStrategy?: 'WEBHOOK' | 'SCHEDULED' | 'MANUAL' | 'REALTIME';
+  webhookConfig?: WebhookConfig;
+  scheduledConfig?: ScheduledConfig;
+  realtimeConfig?: RealtimeConfig;
+  customFields: SyncCustomField[];
+  customValues: Record<string, any>;
+  values?: Record<string, any>;
+}
+
+// Filters configuration interface
+interface ConnectorFiltersConfig {
+  schema?: {
+    fields: FilterSchemaField[];
+  };
+  values?: Record<string, any>;
+  customFields?: FilterCustomField[];
+  customValues?: Record<string, any>;
+}
+
+// Main connector configuration interface
+interface ConnectorConfig {
+  name: string;
+  type: string;
+  appGroup: string;
+  appGroupId: string;
+  authType: string;
+  isActive: boolean;
+  isConfigured: boolean;
+  supportsRealtime: boolean;
+  config: {
+    auth: ConnectorAuthConfig;
+    sync: ConnectorSyncConfig;
+    filters: ConnectorFiltersConfig;
+  };
+}
+
+// Main connector interface matching the app schema
+interface Connector {
+  _key?: string;
+  name: string;
+  type: string;
+  appGroup: string;
+  appGroupId: string;
+  authType: string;
+  isActive?: boolean;
+  isConfigured?: boolean;
+  supportsRealtime?: boolean;
+  createdAtTimestamp: number;
+  updatedAtTimestamp: number;
+}
+
+// Export all types
+export type { Connector, ConnectorConfig };

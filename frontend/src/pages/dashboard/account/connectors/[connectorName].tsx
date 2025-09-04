@@ -1,3 +1,9 @@
+import React from 'react';
+import GenericConnectorManager from 'src/sections/accountdetails/connectors/components/connector-manager';
+
+
+
+
 import { Helmet } from 'react-helmet-async';
 
 import { Box } from '@mui/material';
@@ -5,23 +11,23 @@ import { Box } from '@mui/material';
 import { CONFIG } from 'src/config-global';
 
 import Sidebar from 'src/sections/accountdetails/Sidebar';
-import ConnectorSettings from 'src/sections/accountdetails/account-settings/connector/connector-settings';
-import Connectors from 'src/sections/accountdetails/connectors/connectors';
+import { useParams } from 'react-router-dom';
 
 // ----------------------------------------------------------------------
 
-const metadata = { title: `Connector Settings  - ${CONFIG.appName}` };
+const metadata = { title: `Connector Management` };
 
+// Generic connector management page
 export default function Page() {
+  const { connectorName } = useParams<{ connectorName: string }>();
   return (
     <>
       <Helmet>
-        <title> {metadata.title}</title>
+        <title> {metadata.title} - {connectorName}</title>
       </Helmet>
       <Box sx={{ display: 'flex', flexGrow: 1, overflow: 'hidden', zIndex: 0 }}>
         <Sidebar />
-        <ConnectorSettings />
-        {/* <Connectors /> */}
+        <GenericConnectorManager showStats={Boolean(true)} />
       </Box>
     </>
   );

@@ -14,6 +14,17 @@ from app.connectors.api.router import router
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
+from app.connectors.core.registry.connector import (
+    GmailConnector,
+    GoogleDriveConnector,
+    SlackConnector,
+)
+from app.connectors.core.registry.connector import (
+    OneDriveConnector as OneDriveConnectorDecorator,
+)
+from app.connectors.core.registry.connector_registry import (
+    ConnectorRegistry,
+)
 from app.connectors.sources.localKB.api.kb_router import kb_router
 from app.connectors.sources.microsoft.common.apps import OneDriveApp
 from app.connectors.sources.microsoft.onedrive.onedrive import (
@@ -179,6 +190,32 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
         logger.error("❌ Error during sync service resumption: %s", str(e))
         return False
 
+async def initialize_connector_registry(app_container: ConnectorAppContainer) -> ConnectorRegistry:
+    """Initialize and sync connector registry with database"""
+    logger = app_container.logger()
+    logger.info("🔧 Initializing Connector Registry...")
+
+    try:
+        registry = ConnectorRegistry(app_container)
+
+        # Register connectors (in production, use discovery from modules)
+        registry.register_connector(SlackConnector)
+        registry.register_connector(GoogleDriveConnector)
+        registry.register_connector(GmailConnector)
+        registry.register_connector(OneDriveConnectorDecorator)
+
+        logger.info(f"Registered {len(registry._connectors)} connectors")
+
+        # Sync with database
+        await registry.sync_with_database()
+        logger.info("✅ Connector registry synchronized with database")
+
+        return registry
+
+    except Exception as e:
+        logger.error(f"❌ Error initializing connector registry: {str(e)}")
+        raise
+
 async def start_messaging_producer(app_container: ConnectorAppContainer) -> None:
     """Start messaging producer and attach it to container"""
     logger = app_container.logger()
@@ -308,7 +345,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.config_service = app_container.config_service()
     app.state.arango_service = await app_container.arango_service()  # type: ignore
 
+    # Initialize connector registry
     logger = app_container.logger()
+    # registry = await initialize_connector_registry(app_container)
+    # app.state.connector_registry = registry
+    # logger.info("✅ Connector registry initialized and synchronized with database")
+
+
     logger.debug("🚀 Starting application")
     # Start messaging producer first
     try:
@@ -349,7 +392,7 @@ app = FastAPI(
 )
 
 # List of paths to apply authentication to
-INCLUDE_PATHS = ["/api/v1/stream/record/", "/api/v1/delete/"]
+INCLUDE_PATHS = ["/api/v1/stream/record/", "/api/v1/delete/","/api/v1/connectors/"]
 
 
 @app.middleware("http")
