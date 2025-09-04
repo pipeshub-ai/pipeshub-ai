@@ -143,9 +143,9 @@ class ConnectorRegistry:
                 return {
                     'isActive': doc.get('isActive', False),
                     'isConfigured': doc.get('isConfigured', False),
+                    'appGroupId': doc.get('appGroupId'),
                     'createdAtTimestamp': doc.get('createdAtTimestamp'),
                     'updatedAtTimestamp': doc.get('updatedAtTimestamp'),
-                    'config': doc.get('config', {})
                 }
 
         except Exception as e:
@@ -302,7 +302,9 @@ class ConnectorRegistry:
             db_status = await self._get_db_status(app_name)
             connector_info = {
                 'name': app_name,
-                **metadata,
+                'appGroup': metadata['appGroup'],
+                'authType': metadata['authType'],
+                'supportsRealtime': metadata['supportsRealtime'],
                 **db_status
             }
             connectors.append(connector_info)
@@ -406,6 +408,7 @@ class ConnectorRegistry:
 
             updated_doc = {
                 **existing_doc,
+                'isConfigured': True,
                 'config': updated_config,
                 'updatedAtTimestamp': get_epoch_timestamp_in_ms()
             }

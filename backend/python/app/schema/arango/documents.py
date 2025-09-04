@@ -285,6 +285,10 @@ app_schema = {
                             "customValues": {
                                 "type": "object",
                                 "additionalProperties": True
+                            },
+                            "values": {
+                                "type": "object",
+                                "additionalProperties": True
                             }
                         },
                         "required": ["supportedStrategies"]

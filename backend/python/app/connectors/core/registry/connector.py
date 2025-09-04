@@ -24,14 +24,14 @@ from app.connectors.core.registry.connector_registry import Connector
                         "name": "clientId",
                         "displayName": "Client ID",
                         "placeholder": "Enter your Google Client ID",
-                        "fieldType": "text",
+                        "fieldType": "TEXT",
                         "required": True
                     },
                     {
                         "name": "clientSecret",
                         "displayName": "Client Secret",
                         "placeholder": "Enter your Google Client Secret",
-                        "fieldType": "password",
+                        "fieldType": "PASSWORD",
                         "required": True
                     }
                 ]
@@ -41,7 +41,7 @@ from app.connectors.core.registry.connector_registry import Connector
             "customValues": {}
         },
         "sync": {
-            "supportedStrategies": ["webhook", "scheduled", "manual"],
+            "supportedStrategies": ["WEBHOOK", "SCHEDULED", "MANUAL"],
             "webhookConfig": {
                 "supported": True,
                 "events": ["file.created", "file.modified", "file.deleted"]
@@ -54,7 +54,7 @@ from app.connectors.core.registry.connector_registry import Connector
                 {
                     "name": "batchSize",
                     "displayName": "Batch Size",
-                    "fieldType": "select",
+                    "fieldType": "SELECT",
                     "options": ["25", "50", "100"],
                     "defaultValue": "50"
                 }
@@ -67,7 +67,7 @@ from app.connectors.core.registry.connector_registry import Connector
                     {
                         "name": "fileTypes",
                         "displayName": "File Types",
-                        "fieldType": "multiselect",
+                        "fieldType": "MULTISELECT",
                         "options": ["document", "spreadsheet", "presentation", "pdf"]
                     }
                 ]
@@ -82,12 +82,13 @@ class GoogleDriveConnector:
     """Google Drive connector with full config schema"""
 
     def __init__(self) -> None:
-        self.name = "Google Drive"
+        self.name = "DRIVE"
 
     def connect(self) -> bool:
         """Connect to Google Drive"""
         print(f"Connecting to {self.name}")
         return True
+
 
 @Connector(
     name="GMAIL",
@@ -103,13 +104,13 @@ class GoogleDriveConnector:
                     {
                         "name": "clientId",
                         "displayName": "Client ID",
-                        "fieldType": "text",
+                        "fieldType": "TEXT",
                         "required": True
                     },
                     {
                         "name": "clientSecret",
                         "displayName": "Client Secret",
-                        "fieldType": "password",
+                        "fieldType": "PASSWORD",
                         "required": True
                     }
                 ]
@@ -119,7 +120,7 @@ class GoogleDriveConnector:
             "customValues": {}
         },
         "sync": {
-            "supportedStrategies": ["webhook", "scheduled"],
+            "supportedStrategies": ["WEBHOOK", "SCHEDULED"],
             "customFields": [],
             "customValues": {}
         },
@@ -129,7 +130,7 @@ class GoogleDriveConnector:
                     {
                         "name": "labels",
                         "displayName": "Gmail Labels",
-                        "fieldType": "multiselect"
+                        "fieldType": "MULTISELECT"
                     }
                 ]
             },
@@ -143,7 +144,7 @@ class GmailConnector:
     """Gmail connector with full config schema"""
 
     def __init__(self) -> None:
-        self.name = "Gmail"
+        self.name = "GMAIL"
 
     def connect(self) -> bool:
         """Connect to Gmail"""
@@ -165,19 +166,19 @@ class GmailConnector:
                     {
                         "name": "clientId",
                         "displayName": "Application ID",
-                        "fieldType": "text",
+                        "fieldType": "TEXT",
                         "required": True
                     },
                     {
                         "name": "clientSecret",
                         "displayName": "Client Secret",
-                        "fieldType": "password",
+                        "fieldType": "PASSWORD",
                         "required": True
                     },
                     {
                         "name": "tenantId",
                         "displayName": "Tenant ID",
-                        "fieldType": "text",
+                        "fieldType": "TEXT",
                         "required": True
                     }
                 ]
@@ -187,7 +188,7 @@ class GmailConnector:
             "customValues": {}
         },
         "sync": {
-            "supportedStrategies": ["scheduled"],
+            "supportedStrategies": ["SCHEDULED"],
             "customFields": [],
             "customValues": {}
         },
@@ -197,7 +198,7 @@ class GmailConnector:
                     {
                         "name": "fileTypes",
                         "displayName": "File Types",
-                        "fieldType": "multiselect"
+                        "fieldType": "MULTISELECT"
                     }
                 ]
             },
@@ -211,7 +212,7 @@ class OneDriveConnector:
     """OneDrive connector with full config schema"""
 
     def __init__(self) -> None:
-        self.name = "OneDrive"
+        self.name = "ONEDRIVE"
 
     def connect(self) -> bool:
         """Connect to OneDrive"""
@@ -234,7 +235,7 @@ class OneDriveConnector:
                         "name": "botToken",
                         "displayName": "Bot Token",
                         "placeholder": "xoxb-...",
-                        "fieldType": "password",
+                        "fieldType": "PASSWORD",
                         "required": True
                     }
                 ]
@@ -244,7 +245,7 @@ class OneDriveConnector:
             "customValues": {}
         },
         "sync": {
-            "supportedStrategies": ["scheduled", "manual"],
+            "supportedStrategies": ["SCHEDULED", "MANUAL"],
             "customFields": [],
             "customValues": {}
         },
@@ -254,7 +255,7 @@ class OneDriveConnector:
                     {
                         "name": "channels",
                         "displayName": "Channels",
-                        "fieldType": "multiselect"
+                        "fieldType": "MULTISELECT"
                     }
                 ]
             },
@@ -268,7 +269,7 @@ class SlackConnector:
     """Slack connector with full config schema"""
 
     def __init__(self) -> None:
-        self.name = "Slack"
+        self.name = "SLACK"
 
     def connect(self) -> bool:
         """Connect to Slack"""

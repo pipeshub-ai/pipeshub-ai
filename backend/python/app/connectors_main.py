@@ -15,13 +15,15 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.registry.connector import (
-    ConnectorRegistry,
     GmailConnector,
     GoogleDriveConnector,
     SlackConnector,
 )
 from app.connectors.core.registry.connector import (
     OneDriveConnector as OneDriveConnectorDecorator,
+)
+from app.connectors.core.registry.connector_registry import (
+    ConnectorRegistry,
 )
 from app.connectors.sources.localKB.api.kb_router import kb_router
 from app.connectors.sources.microsoft.common.apps import OneDriveApp
@@ -390,7 +392,7 @@ app = FastAPI(
 )
 
 # List of paths to apply authentication to
-INCLUDE_PATHS = ["/api/v1/stream/record/", "/api/v1/delete/"]
+INCLUDE_PATHS = ["/api/v1/stream/record/", "/api/v1/delete/","/api/v1/connectors/"]
 
 
 @app.middleware("http")
