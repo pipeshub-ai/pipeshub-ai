@@ -8,7 +8,7 @@ from langgraph.types import StreamWriter
 
 from app.config.constants.arangodb import AccountType, CollectionNames
 from app.modules.agents.qna.chat_state import ChatState
-from app.modules.qna.prompt_templates import qna_prompt
+from app.modules.qna.prompt_templates import qna_prompt_instructions_1
 from app.utils.citations import fix_json_string, process_citations
 from app.utils.streaming import stream_llm_response
 
@@ -164,7 +164,7 @@ def prepare_clean_prompt_node(
         # Add internal data context if retrieved
         if state.get("final_results"):
             from jinja2 import Template
-            template = Template(qna_prompt)
+            template = Template(qna_prompt_instructions_1)
 
             # Format user info
             user_data = ""

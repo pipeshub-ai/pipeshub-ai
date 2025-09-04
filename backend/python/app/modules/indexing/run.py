@@ -660,6 +660,7 @@ class IndexingPipeline:
                     self.logger.info(f"No embeddings found for record {record_id}")
                     return
 
+
                 ids = [point.id for point in result[0]] #type: ignore
                 self.logger.info(f"🎯 Filter: {filter_dict}")
                 self.logger.info(f"🎯 Ids: {ids}")

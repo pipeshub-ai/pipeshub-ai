@@ -315,7 +315,7 @@ class MSGraphClient:
             self.logger.error(f"Unexpected error fetching file permissions for File ID {item_id}: {ex}")
             return []
 
-    async def get_download_url(self, drive_id: str, item_id: str) -> Optional[str]:
+    async def get_signed_url(self, drive_id: str, item_id: str) -> Optional[str]:
         """
         Creates a signed URL (sharing link) for a file or folder, valid for the specified duration.
 

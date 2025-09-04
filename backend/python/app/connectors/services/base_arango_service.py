@@ -33,6 +33,7 @@ from app.schema.arango.documents import (
     orgs_schema,
     record_group_schema,
     record_schema,
+    team_schema,
     ticket_record_schema,
     user_schema,
     webpage_record_schema,
@@ -43,7 +44,6 @@ from app.schema.arango.edges import (
     is_of_type_schema,
     permissions_schema,
     record_relations_schema,
-    role_based_edge_schema,
     user_app_relation_schema,
     user_drive_relation_schema,
 )
@@ -79,7 +79,8 @@ NODE_COLLECTIONS = [
     (CollectionNames.AGENT_TEMPLATES.value, agent_template_schema),
     (CollectionNames.TICKETS.value, ticket_record_schema),
     (CollectionNames.SYNC_POINTS.value, None),
-
+    (CollectionNames.TEAMS.value, team_schema),
+    (CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value, None),
 ]
 
 EDGE_COLLECTIONS = [
@@ -98,7 +99,7 @@ EDGE_COLLECTIONS = [
     (CollectionNames.BELONGS_TO_RECORD_GROUP.value, basic_edge_schema),
     (CollectionNames.INTER_CATEGORY_RELATIONS.value, basic_edge_schema),
     (CollectionNames.PERMISSIONS_TO_KB.value, permissions_schema),
-    (CollectionNames.TEMPLATE_ACCESS.value, role_based_edge_schema),
+    (CollectionNames.PERMISSION.value, permissions_schema),
 ]
 
 class BaseArangoService:
@@ -3316,4 +3317,159 @@ class BaseArangoService:
                 return False
         except Exception as e:
             self.logger.error("❌ Failed to remove node by key: %s: %s", key, str(e))
+            return False
+
+    async def delete_nodes(self, keys: List[str], collection: str, transaction: Optional[TransactionDatabase] = None) -> bool:
+        """
+        Delete a list of nodes by key
+        """
+        try:
+            self.logger.info("🚀 Deleting nodes by keys: %s", keys)
+            query = """
+            FOR node IN @@collection
+                FILTER node._key IN @keys
+                REMOVE node IN @@collection
+                RETURN OLD
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"keys": keys, "@collection": collection})
+
+            # Collect all deleted nodes
+            deleted_nodes = list(cursor)
+
+            if deleted_nodes:
+                self.logger.info("✅ Successfully deleted %d nodes by keys: %s", len(deleted_nodes), keys)
+                return True
+            else:
+                self.logger.warning("⚠️ No nodes found by keys: %s", keys)
+                return False
+        except Exception as e:
+            self.logger.error("❌ Failed to delete nodes by keys: %s: %s", keys, str(e))
+            return False
+
+    async def delete_edge(self, from_key: str, to_key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> bool:
+        """
+        Delete an edge by from_key and to_key
+        """
+        try:
+            self.logger.info("🚀 Deleting edge by from_key: %s and to_key: %s", from_key, to_key)
+            query = """
+            FOR edge IN @@collection
+                FILTER edge._from == @from_key AND edge._to == @to_key
+                REMOVE edge IN @@collection
+                RETURN OLD
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"from_key": from_key, "to_key": to_key, "@collection": collection})
+            result = next(cursor, None)
+            if result:
+                self.logger.info("✅ Successfully deleted edge by from_key: %s and to_key: %s", from_key, to_key)
+                return True
+            else:
+                self.logger.warning("⚠️ No edge found by from_key: %s and to_key: %s", from_key, to_key)
+                return False
+        except Exception as e:
+            self.logger.error("❌ Failed to delete edge by from_key: %s and to_key: %s: %s", from_key, to_key, str(e))
+            return False
+
+    async def get_edge(self, from_key: str, to_key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> Optional[Dict]:
+        """
+        Get an edge by from_key and to_key
+        """
+        try:
+            self.logger.info("🚀 Getting permission by from_key: %s and to_key: %s", from_key, to_key)
+            query = """
+            FOR edge IN @@collection
+                FILTER edge._from == @from_key AND edge._to == @to_key
+                RETURN edge
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"from_key": from_key, "to_key": to_key, "@collection": collection})
+            result = next(cursor, None)
+            if result:
+                self.logger.info("✅ Successfully got edge by from_key: %s and to_key: %s", from_key, to_key)
+                return result
+            else:
+                self.logger.warning("⚠️ No edge found by from_key: %s and to_key: %s", from_key, to_key)
+                return None
+        except Exception as e:
+            self.logger.error("❌ Failed to get edge by from_key: %s and to_key: %s: %s", from_key, to_key, str(e))
+            return None
+
+    async def update_node(self, key: str, node_updates: Dict, collection: str, transaction: Optional[TransactionDatabase] = None) -> bool:
+        """
+        Update a node by key
+        """
+        try:
+            self.logger.info("🚀 Updating node by key: %s", key)
+            query = """
+            FOR node IN @@collection
+                FILTER node._key == @key
+                UPDATE node WITH @node_updates IN @@collection
+                RETURN NEW
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"key": key, "node_updates": node_updates, "@collection": collection})
+            result_list = list(cursor)
+            result = result_list[0] if result_list else None
+            if result:
+                self.logger.info("✅ Successfully updated node by key: %s", key)
+                return True
+            else:
+                self.logger.warning("⚠️ No node found by key: %s", key)
+                return False
+        except Exception as e:
+            self.logger.error("❌ Failed to update node by key: %s: %s", key, str(e))
+            return False
+
+    async def update_edge(self, from_key: str, to_key: str, edge_updates: Dict, collection: str, transaction: Optional[TransactionDatabase] = None) -> bool:
+        """
+        Update an edge by from_key and to_key
+        """
+        try:
+            self.logger.info("🚀 Updating edge by from_key: %s and to_key: %s", from_key, to_key)
+            query = """
+            FOR edge IN @@collection
+                FILTER edge._from == @from_key AND edge._to == @to_key
+                UPDATE edge WITH @edge_updates IN @@collection
+                RETURN NEW
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"from_key": from_key, "to_key": to_key, "edge_updates": edge_updates, "@collection": collection})
+            result_list = list(cursor)
+            result = result_list[0] if result_list else None
+            if result:
+                self.logger.info("✅ Successfully updated edge by from_key: %s and to_key: %s", from_key, to_key)
+                return True
+            else:
+                self.logger.warning("⚠️ No edge found by from_key: %s and to_key: %s", from_key, to_key)
+                return False
+        except Exception as e:
+            self.logger.error("❌ Failed to update edge by from_key: %s and to_key: %s: %s", from_key, to_key, str(e))
+            return False
+
+    async def update_edge_by_key(self, key: str, edge_updates: Dict, collection: str, transaction: Optional[TransactionDatabase] = None) -> bool:
+        """
+        Update an edge by key
+        """
+        try:
+            self.logger.info("🚀 Updating edge by key: %s", key)
+            query = """
+            FOR edge IN @@collection
+                FILTER edge._key == @key
+                UPDATE edge WITH @edge_updates IN @@collection
+                RETURN NEW
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"key": key, "edge_updates": edge_updates, "@collection": collection})
+            result_list = list(cursor)
+            result = result_list[0] if result_list else None
+            if result:
+                self.logger.info("✅ Successfully updated edge by key: %s", key)
+                return True
+            else:
+                self.logger.warning("⚠️ No edge found by key: %s", key)
+                return False
+        except Exception as e:
+            self.logger.error("❌ Failed to update edge by key: %s: %s", key, str(e))
             return False

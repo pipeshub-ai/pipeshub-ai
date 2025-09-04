@@ -23,7 +23,7 @@ import {
   CircularProgress,
   Divider,
 } from '@mui/material';
-
+import { UnifiedPermission } from 'src/components/permissions/UnifiedPermissionsDialog';
 import UploadManager from './upload-manager';
 import { useRouter } from './hooks/use-router';
 import { KnowledgeBaseAPI } from './services/api';
@@ -33,18 +33,18 @@ import { EditFolderDialog } from './components/dialogs/edit-dialogs';
 import {
   CreateFolderDialog,
   DeleteConfirmDialog,
-  ManagePermissionsDialog,
 } from './components/dialogs';
+import KbPermissionsDialog from './components/dialogs/kb-permissions-dialog';
 import { renderKBDetail } from './components/kb-details';
 
 // Import types and services
 import type {
   Item,
-  KBPermission,
   KnowledgeBase,
   UserPermission,
   CreatePermissionRequest,
   UpdatePermissionRequest,
+  RemovePermissionRequest,
 } from './types/kb';
 
 type ViewMode = 'grid' | 'list';
@@ -109,7 +109,7 @@ export default function KnowledgeBaseComponent() {
 
   const [editFolderDialog, setEditFolderDialog] = useState(false);
 
-  const [permissions, setPermissions] = useState<KBPermission[]>([]);
+  const [permissions, setPermissions] = useState<UnifiedPermission[]>([]);
   const [permissionsLoading, setPermissionsLoading] = useState(false);
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -592,14 +592,14 @@ export default function KnowledgeBaseComponent() {
     await KnowledgeBaseAPI.createKBPermissions(currentKB.id, data);
   };
 
-  const handleUpdatePermission = async (userId: string, data: UpdatePermissionRequest) => {
+  const handleUpdatePermission = async (data: UpdatePermissionRequest) => {
     if (!currentKB) return;
-    await KnowledgeBaseAPI.updateKBPermission(currentKB.id, userId, data);
+    await KnowledgeBaseAPI.updateKBPermission(currentKB.id, data);
   };
 
-  const handleRemovePermission = async (userId: string) => {
+  const handleRemovePermission = async (data: RemovePermissionRequest) => {
     if (!currentKB) return;
-    await KnowledgeBaseAPI.removeKBPermission(currentKB.id, userId);
+    await KnowledgeBaseAPI.removeKBPermission(currentKB.id, data);
   };
 
   const handleRefreshPermissions = async () => {
@@ -1047,17 +1047,11 @@ export default function KnowledgeBaseComponent() {
         loading={pageLoading}
       />
 
-      <ManagePermissionsDialog
+      <KbPermissionsDialog
         open={permissionsDialog}
         onClose={() => setPermissionsDialog(false)}
         kbId={currentKB?.id || ''}
         kbName={currentKB?.name || ''}
-        permissions={permissions}
-        onCreatePermissions={handleCreatePermissions}
-        onUpdatePermission={handleUpdatePermission}
-        onRemovePermission={handleRemovePermission}
-        onRefresh={handleRefreshPermissions}
-        loading={permissionsLoading}
       />
 
       {/* Context Menu */}

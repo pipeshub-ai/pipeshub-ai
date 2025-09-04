@@ -99,7 +99,7 @@ const CONNECTOR_DISPLAY_NAMES: Record<string, string> = {
   SLACK: ConnectorIdToNameMap[ConnectorId.SLACK],
   JIRA: ConnectorIdToNameMap[ConnectorId.JIRA],
   TEAMS: ConnectorIdToNameMap[ConnectorId.MICROSOFT_TEAMS],
-  SHAREPOINT: ConnectorIdToNameMap[ConnectorId.SHAREPOINT],
+  "SHAREPOINT ONLINE": ConnectorIdToNameMap[ConnectorId.SHAREPOINT_ONLINE],
   OUTLOOK: ConnectorIdToNameMap[ConnectorId.OUTLOOK],
   DROPBOX: ConnectorIdToNameMap[ConnectorId.DROPBOX],
   BOX: ConnectorIdToNameMap[ConnectorId.BOX],
@@ -114,7 +114,7 @@ const CONNECTOR_ICONS: Record<string, string> = {
   JIRA: '/assets/icons/connectors/jira.svg',
   CONFLUENCE: '/assets/icons/connectors/confluence.svg',
   ONEDRIVE: '/assets/icons/connectors/onedrive.svg',
-  SHAREPOINT: '/assets/icons/connectors/sharepoint.svg',
+  "SHAREPOINT ONLINE": '/assets/icons/connectors/sharepoint.svg',
 };
 
 // Ultra-minimalistic SaaS color palette - monochromatic with a single accent
@@ -159,7 +159,6 @@ const ConnectorCard = ({ connector }: { connector: ConnectorData }): JSX.Element
 
   // Extract connector data
   const { connector: connectorName, total, indexing_status } = connector;
-
   // Get display name and icon
   const displayName = CONNECTOR_DISPLAY_NAMES[connectorName] || connectorName;
   const iconName = CONNECTOR_ICONS[connectorName] || '/assets/icons/connectors/database.svg';
@@ -340,7 +339,7 @@ const ConnectorCard = ({ connector }: { connector: ConnectorData }): JSX.Element
         return '#0078D4'; // Google Drive green
       case 'ONEDRIVE':
         return '#0078D4'; // OneDrive blue
-      case 'SHAREPOINT':
+      case 'SHAREPOINT ONLINE':
         return '#036C70'; // SharePoint teal
       case 'DROPBOX':
         return '#0061FF'; // Dropbox blue

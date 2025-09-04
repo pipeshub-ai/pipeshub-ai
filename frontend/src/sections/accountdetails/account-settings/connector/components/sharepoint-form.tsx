@@ -16,7 +16,6 @@ import {
   Grid,
   Link,
   Alert,
-  Paper,
   Stack,
   Button,
   Tooltip,
@@ -50,6 +49,7 @@ const sharepointConfigSchema = z.object({
   clientId: z.string().min(1, { message: 'Client ID is required' }),
   clientSecret: z.string().min(1, { message: 'Client Secret is required' }),
   tenantId: z.string().min(1, { message: 'Tenant ID is required' }),
+  sharepointDomain: z.string().min(1, { message: 'SharePoint Domain is required' }),
   hasAdminConsent: z.boolean(),
 });
 
@@ -62,6 +62,7 @@ const SharePointConfigForm = forwardRef<SharePointConfigFormRef, SharePointConfi
       clientId: '',
       clientSecret: '',
       tenantId: '',
+      sharepointDomain: '',
       hasAdminConsent: true,
     });
 
@@ -83,6 +84,7 @@ const SharePointConfigForm = forwardRef<SharePointConfigFormRef, SharePointConfi
       clientId: '',
       clientSecret: '',
       tenantId: '',
+      sharepointDomain: '',
       hasAdminConsent: true,
       realTimeUpdatesEnabled: false,
     });
@@ -105,6 +107,7 @@ const SharePointConfigForm = forwardRef<SharePointConfigFormRef, SharePointConfi
         clientId: formData.clientId,
         clientSecret: formData.clientSecret,
         tenantId: formData.tenantId,
+        sharepointDomain: formData.sharepointDomain,
         hasAdminConsent: formData.hasAdminConsent,
         realTimeUpdatesEnabled,
       });
@@ -118,6 +121,7 @@ const SharePointConfigForm = forwardRef<SharePointConfigFormRef, SharePointConfi
         clientId: originalState.clientId,
         clientSecret: originalState.clientSecret,
         tenantId: originalState.tenantId,
+        sharepointDomain: originalState.sharepointDomain,
         hasAdminConsent: originalState.hasAdminConsent,
       });
       setRealTimeUpdatesEnabled(originalState.realTimeUpdatesEnabled);
@@ -136,7 +140,7 @@ const SharePointConfigForm = forwardRef<SharePointConfigFormRef, SharePointConfi
         try {
           const response = await axios.get('/api/v1/connectors/config', {
             params: {
-              service: 'sharepoint',
+              service: 'sharepointOnline',
             },
           });
 
@@ -145,6 +149,7 @@ const SharePointConfigForm = forwardRef<SharePointConfigFormRef, SharePointConfi
               clientId: response.data.clientId || '',
               clientSecret: response.data.clientSecret || '',
               tenantId: response.data.tenantId || '',
+              sharepointDomain: response.data.sharepointDomain || '',
               hasAdminConsent: response.data.hasAdminConsent !== undefined ? response.data.hasAdminConsent : true,
             };
 
@@ -159,6 +164,7 @@ const SharePointConfigForm = forwardRef<SharePointConfigFormRef, SharePointConfi
               clientId: formValues.clientId,
               clientSecret: formValues.clientSecret,
               tenantId: formValues.tenantId,
+              sharepointDomain: formValues.sharepointDomain,
               hasAdminConsent: formValues.hasAdminConsent,
               realTimeUpdatesEnabled: response.data.realTimeUpdatesEnabled || false,
             });
@@ -269,7 +275,7 @@ const SharePointConfigForm = forwardRef<SharePointConfigFormRef, SharePointConfi
         // Send the update request
         await axios.post('/api/v1/connectors/config', payload, {
           params: {
-            service: 'sharepoint',
+            service: 'sharepointOnline',
           },
         });
 
@@ -314,7 +320,7 @@ const SharePointConfigForm = forwardRef<SharePointConfigFormRef, SharePointConfi
         <Alert variant="outlined" severity="info" sx={{ my: 3 }}>
           Refer to{' '}
           <Link
-            href="https://docs.pipeshub.com/business/connectors/sharepoint"
+            href="https://docs.pipeshub.com/individual/connectors/sharepoint"
             target="_blank"
             rel="noopener"
           >
@@ -451,7 +457,7 @@ const SharePointConfigForm = forwardRef<SharePointConfigFormRef, SharePointConfi
                       wordBreak: 'break-all',
                     }}
                   >
-                    {tenantUrl}/sharepoint/oauth/callback
+                    {tenantUrl}/sharepointOnline/oauth/callback
                   </Typography>
                 </Box>
               </Box>
@@ -603,6 +609,39 @@ const SharePointConfigForm = forwardRef<SharePointConfigFormRef, SharePointConfi
                             height={18}
                           />
                         </IconButton>
+                      </InputAdornment>
+                    ),
+                  }}
+                  sx={{
+                    '& .MuiOutlinedInput-root': {
+                      '& fieldset': {
+                        borderColor: alpha(theme.palette.text.primary, 0.15),
+                      },
+                    },
+                  }}
+                />
+              </Grid>
+
+              <Grid item xs={12}>
+                <TextField
+                  fullWidth
+                  label="SharePoint Domain"
+                  name="sharepointDomain"
+                  type="text"
+                  value={formData.sharepointDomain}
+                  onChange={handleChange}
+                  placeholder="Enter your SharePoint domain (e.g., contoso.sharepoint.com)"
+                  error={Boolean(getFieldError('sharepointDomain'))}
+                  helperText={
+                    getFieldError('sharepointDomain') || 'Your SharePoint domain URL (e.g., contoso.sharepoint.com)'
+                  }
+                  required
+                  size="small"
+                  disabled={isConfigured && !formEditMode}
+                  InputProps={{
+                    startAdornment: (
+                      <InputAdornment position="start">
+                        <Iconify icon={linkIcon} width={18} height={18} />
                       </InputAdornment>
                     ),
                   }}

@@ -21,6 +21,9 @@ import {
   CircularProgress,
   useTheme,
   Autocomplete,
+  alpha,
+  useMediaQuery,
+  Fade,
 } from '@mui/material';
 import { Icon } from '@iconify/react';
 import closeIcon from '@iconify-icons/mdi/close';
@@ -30,14 +33,12 @@ import deleteIcon from '@iconify-icons/mdi/delete';
 import templateIcon from '@iconify-icons/mdi/file-document';
 
 import type { AgentTemplate, AgentTemplateFormData } from 'src/types/agent';
-import AgentApiService from '../services/agent-api-service';
+import AgentApiService from '../services/api';
 import {
   validateAgentTemplateForm,
   getInitialTemplateFormData,
   TEMPLATE_CATEGORIES,
-} from '../utils/agent-utils';
-import { createScrollableContainerStyle } from '../../chatbot/utils/styles/scrollbar';
-
+} from '../utils/agent';
 
 interface TemplateBuilderProps {
   open: boolean;
@@ -53,10 +54,10 @@ const TemplateBuilder: React.FC<TemplateBuilderProps> = ({
   editingTemplate,
 }) => {
   const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
   const [formData, setFormData] = useState<AgentTemplateFormData>(getInitialTemplateFormData());
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [isSaving, setIsSaving] = useState(false);
-  const scrollableContainerStyle = createScrollableContainerStyle(theme);
   const [newTag, setNewTag] = useState('');
 
   // Initialize form data with safe handling
@@ -74,7 +75,7 @@ const TemplateBuilder: React.FC<TemplateBuilderProps> = ({
     } else {
       setFormData(getInitialTemplateFormData());
     }
-  }, [editingTemplate]);
+  }, [editingTemplate, open]);
 
   // Reset form when dialog closes
   useEffect(() => {
@@ -96,12 +97,11 @@ const TemplateBuilder: React.FC<TemplateBuilderProps> = ({
     [errors]
   );
 
-  const handleSave = useCallback(async () => {
-    const validationErrors = validateAgentTemplateForm(formData);
-    setErrors(validationErrors);
-
-    if (Object.keys(validationErrors).length > 0) {
-      return;
+  const handleSave = useCallback(async (e?: React.MouseEvent) => {
+    // Prevent any event bubbling that might interfere
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
     }
 
     try {
@@ -120,7 +120,11 @@ const TemplateBuilder: React.FC<TemplateBuilderProps> = ({
     }
   }, [formData, editingTemplate, onSuccess, onClose]);
 
-  const handleClose = useCallback(() => {
+  const handleClose = useCallback((e?: React.MouseEvent) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
     if (!isSaving) {
       onClose();
     }
@@ -150,6 +154,15 @@ const TemplateBuilder: React.FC<TemplateBuilderProps> = ({
     [formData, handleFormChange]
   );
 
+  const handleAddTag = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (newTag.trim()) {
+      addArrayItem('tags', newTag);
+      setNewTag('');
+    }
+  }, [newTag, addArrayItem]);
+
   const renderArrayField = (
     field: keyof AgentTemplateFormData,
     label: string,
@@ -163,22 +176,35 @@ const TemplateBuilder: React.FC<TemplateBuilderProps> = ({
 
     return (
       <Grid item xs={12} key={field}>
-        <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600 }}>
+        <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 600, color: 'text.primary' }}>
           {label}
         </Typography>
 
-        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mb: 1 }}>
-          {fieldArray.map((item, index) => (
-            <Chip
-              key={index}
-              label={item}
-              onDelete={() => removeArrayItem(field, index)}
-              size="small"
-              variant="outlined"
-              deleteIcon={<Icon icon={deleteIcon} width={14} height={14} />}
-            />
-          ))}
-        </Box>
+        {fieldArray.length > 0 && (
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mb: 2 }}>
+            {fieldArray.map((item, index) => (
+              <Chip
+                key={index}
+                label={item}
+                onDelete={() => removeArrayItem(field, index)}
+                size="small"
+                variant="outlined"
+                deleteIcon={<Icon icon={deleteIcon} width={14} height={14} />}
+                sx={{
+                  bgcolor: alpha(theme.palette.primary.main, 0.08),
+                  borderColor: alpha(theme.palette.primary.main, 0.2),
+                  color: theme.palette.primary.main,
+                  '& .MuiChip-deleteIcon': {
+                    color: 'inherit',
+                    '&:hover': {
+                      color: theme.palette.primary.dark,
+                    },
+                  },
+                }}
+              />
+            ))}
+          </Box>
+        )}
 
         <Box sx={{ display: 'flex', gap: 1, mb: 1 }}>
           {suggestions.length > 0 ? (
@@ -201,6 +227,12 @@ const TemplateBuilder: React.FC<TemplateBuilderProps> = ({
                       setNewValue('');
                     }
                   }}
+                  sx={{
+                    '& .MuiOutlinedInput-root': {
+                      borderRadius: 1.5,
+                      bgcolor: alpha(theme.palette.background.default, 0.5),
+                    },
+                  }}
                 />
               )}
               sx={{ flexGrow: 1 }}
@@ -219,23 +251,42 @@ const TemplateBuilder: React.FC<TemplateBuilderProps> = ({
               }}
               size="small"
               fullWidth
+              sx={{
+                '& .MuiOutlinedInput-root': {
+                  borderRadius: 1.5,
+                  bgcolor: alpha(theme.palette.background.default, 0.5),
+                },
+              }}
             />
           )}
           <Button
-            onClick={() => {
+            onClick={field === 'tags' ? handleAddTag : () => {
               addArrayItem(field, newValue);
               setNewValue('');
             }}
             disabled={!newValue.trim()}
             variant="outlined"
             size="small"
-            sx={{ minWidth: 'auto', px: 2 }}
+            sx={{
+              minWidth: 'auto',
+              px: 1.5,
+              borderRadius: 1.5,
+              border: `1px solid ${alpha(theme.palette.primary.main, 0.3)}`,
+              color: theme.palette.primary.main,
+              '&:hover': {
+                bgcolor: alpha(theme.palette.primary.main, 0.08),
+                borderColor: theme.palette.primary.main,
+              },
+              '&:disabled': {
+                opacity: 0.5,
+              },
+            }}
           >
             <Icon icon={addIcon} width={16} height={16} />
           </Button>
         </Box>
 
-        <Typography variant="caption" color="text.secondary">
+        <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.75rem' }}>
           {helperText}
         </Typography>
       </Grid>
@@ -245,17 +296,33 @@ const TemplateBuilder: React.FC<TemplateBuilderProps> = ({
   return (
     <Dialog
       open={open}
-      onClose={handleClose}
+      onClose={(_, reason) => {
+        // Prevent closing on backdrop click while saving
+        if (reason === 'backdropClick' && isSaving) return;
+        handleClose();
+      }}
       maxWidth="md"
       fullWidth
+      TransitionComponent={Fade}
+      BackdropProps={{
+        sx: {
+          backdropFilter: 'blur(2px)',
+          backgroundColor: alpha(theme.palette.common.black, 0.4),
+        },
+      }}
       PaperProps={{
         sx: {
           borderRadius: 2,
-          maxHeight: '90vh',
+          maxHeight: '92vh',
+          height: isMobile ? '100vh' : 'auto',
+          m: isMobile ? 0 : 2,
           display: 'flex',
           flexDirection: 'column',
+          boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
+          overflow: 'hidden',
         },
       }}
+      scroll="paper"
     >
       {/* Header */}
       <DialogTitle
@@ -263,30 +330,72 @@ const TemplateBuilder: React.FC<TemplateBuilderProps> = ({
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
+          p: 3,
           pb: 2,
-          borderBottom: 1,
-          borderColor: 'divider',
+          borderBottom: `1px solid ${alpha(theme.palette.divider, 0.1)}`,
+          flexShrink: 0,
         }}
       >
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-          <Icon icon={templateIcon} width={24} height={24} color={theme.palette.primary.main} />
-          <Typography variant="h6" sx={{ fontWeight: 600 }}>
-            {editingTemplate ? 'Edit Template' : 'Create Agent Template'}
-          </Typography>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+          <Box
+            sx={{
+              width: 40,
+              height: 40,
+              borderRadius: 2,
+              bgcolor: alpha(theme.palette.primary.main, 0.1),
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <Icon icon={templateIcon} width={20} height={20} color={theme.palette.primary.main} />
+          </Box>
+          <Box>
+            <Typography variant="h6" sx={{ fontWeight: 600, lineHeight: 1.2 }}>
+              {editingTemplate ? 'Edit Template' : 'Create Agent Template'}
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+              {editingTemplate ? 'Modify template settings' : 'Build a reusable agent template'}
+            </Typography>
+          </Box>
         </Box>
-        <IconButton onClick={handleClose} size="small" disabled={isSaving}>
+        <IconButton 
+          onClick={handleClose} 
+          size="small" 
+          disabled={isSaving}
+          sx={{
+            color: theme.palette.text.secondary,
+            '&:hover': {
+              bgcolor: alpha(theme.palette.error.main, 0.1),
+              color: theme.palette.error.main,
+            },
+          }}
+        >
           <Icon icon={closeIcon} width={20} height={20} />
         </IconButton>
       </DialogTitle>
 
       {/* Content */}
-      <DialogContent sx={{ flexGrow: 1, overflow: 'auto', ...scrollableContainerStyle }}>
-        <Box sx={{ py: 1 }}>
-          {/* Basic Information */}
-          <Typography variant="h6" sx={{ mb: 2, fontWeight: 600, color: 'text.primary' }}>
+      <DialogContent 
+        sx={{ 
+          flexGrow: 1, 
+          overflow: 'auto', 
+          p: 3,
+          '&::-webkit-scrollbar': { width: 6 },
+          '&::-webkit-scrollbar-track': { bgcolor: 'transparent' },
+          '&::-webkit-scrollbar-thumb': {
+            bgcolor: alpha(theme.palette.divider, 0.2),
+            borderRadius: 3,
+            '&:hover': { bgcolor: alpha(theme.palette.divider, 0.3) },
+          },
+        }}
+      >
+        {/* Basic Information */}
+        <Box sx={{ mb: 4 }}>
+          <Typography variant="h6" sx={{ mb: 2.5, fontWeight: 600, color: 'text.primary', fontSize: '1.1rem' }}>
             Basic Information
           </Typography>
-          <Grid container spacing={2} sx={{ mb: 3 }}>
+          <Grid container spacing={2.5}>
             <Grid item xs={12} sm={8}>
               <TextField
                 fullWidth
@@ -301,6 +410,9 @@ const TemplateBuilder: React.FC<TemplateBuilderProps> = ({
                 sx={{
                   '& .MuiOutlinedInput-root': {
                     borderRadius: 1.5,
+                    bgcolor: alpha(theme.palette.background.default, 0.5),
+                    '&:hover': { bgcolor: alpha(theme.palette.background.default, 0.7) },
+                    '&.Mui-focused': { bgcolor: alpha(theme.palette.background.default, 0.8) },
                   },
                 }}
               />
@@ -314,7 +426,12 @@ const TemplateBuilder: React.FC<TemplateBuilderProps> = ({
                   onChange={(e) => handleFormChange('category', e.target.value)}
                   label="Category"
                   error={!!errors.category}
-                  sx={{ borderRadius: 1.5 }}
+                  sx={{ 
+                    borderRadius: 1.5,
+                    bgcolor: alpha(theme.palette.background.default, 0.5),
+                    '&:hover': { bgcolor: alpha(theme.palette.background.default, 0.7) },
+                    '&.Mui-focused': { bgcolor: alpha(theme.palette.background.default, 0.8) },
+                  }}
                 >
                   {TEMPLATE_CATEGORIES.map((category) => (
                     <MenuItem key={category} value={category}>
@@ -338,11 +455,14 @@ const TemplateBuilder: React.FC<TemplateBuilderProps> = ({
                 }
                 variant="outlined"
                 multiline
-                rows={2}
+                rows={3}
                 size="small"
                 sx={{
                   '& .MuiOutlinedInput-root': {
                     borderRadius: 1.5,
+                    bgcolor: alpha(theme.palette.background.default, 0.5),
+                    '&:hover': { bgcolor: alpha(theme.palette.background.default, 0.7) },
+                    '&.Mui-focused': { bgcolor: alpha(theme.palette.background.default, 0.8) },
                   },
                 }}
               />
@@ -362,11 +482,14 @@ const TemplateBuilder: React.FC<TemplateBuilderProps> = ({
                 }
                 variant="outlined"
                 multiline
-                rows={4}
+                rows={5}
                 size="small"
                 sx={{
                   '& .MuiOutlinedInput-root': {
                     borderRadius: 1.5,
+                    bgcolor: alpha(theme.palette.background.default, 0.5),
+                    '&:hover': { bgcolor: alpha(theme.palette.background.default, 0.7) },
+                    '&.Mui-focused': { bgcolor: alpha(theme.palette.background.default, 0.8) },
                   },
                 }}
               />
@@ -378,21 +501,38 @@ const TemplateBuilder: React.FC<TemplateBuilderProps> = ({
                   <Switch
                     checked={formData.isDeleted}
                     onChange={(e) => handleFormChange('isDeleted', e.target.checked)}
+                    sx={{
+                      '& .MuiSwitch-switchBase.Mui-checked': {
+                        color: theme.palette.primary.main,
+                      },
+                      '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': {
+                        bgcolor: theme.palette.primary.main,
+                      },
+                    }}
                   />
                 }
-                label="Deleted Template"
+                label={
+                  <Box>
+                    <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                      Public Template
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      Allow other users in your organization to discover and use this template
+                    </Typography>
+                  </Box>
+                }
+                sx={{ alignItems: 'flex-start', gap: 1 }}
               />
-              <Typography variant="caption" color="text.secondary" display="block">
-                Deleted templates can be discovered and used by other users in your organization
-              </Typography>
             </Grid>
           </Grid>
+        </Box>
 
-          {/* Default Configuration */}
-          <Typography variant="h6" sx={{ mb: 2, fontWeight: 600, color: 'text.primary' }}>
+        {/* Default Configuration */}
+        <Box sx={{ mb: 3 }}>
+          <Typography variant="h6" sx={{ mb: 2.5, fontWeight: 600, color: 'text.primary', fontSize: '1.1rem' }}>
             Default Configuration
           </Typography>
-          <Grid container spacing={2} sx={{ mb: 3 }}>
+          <Grid container spacing={2.5}>
             {renderArrayField(
               'tags',
               'Default Tags',
@@ -402,32 +542,48 @@ const TemplateBuilder: React.FC<TemplateBuilderProps> = ({
               'Tags that will be applied to agents created from this template'
             )}
           </Grid>
-
-          {/* Validation Errors */}
-          {errors.general && (
-            <Alert severity="error" sx={{ mb: 2, borderRadius: 1.5 }}>
-              {errors.general}
-            </Alert>
-          )}
         </Box>
+
+        {/* Validation Errors */}
+        {errors.general && (
+          <Alert 
+            severity="error" 
+            sx={{ 
+              mb: 2, 
+              borderRadius: 1.5,
+              border: `1px solid ${alpha(theme.palette.error.main, 0.2)}`,
+            }}
+          >
+            {errors.general}
+          </Alert>
+        )}
       </DialogContent>
 
       {/* Actions */}
       <Box
         sx={{
-          p: 2,
-          borderTop: 1,
-          borderColor: 'divider',
+          p: 3,
+          borderTop: `1px solid ${alpha(theme.palette.divider, 0.1)}`,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'flex-end',
           gap: 1.5,
+          flexShrink: 0,
+          bgcolor: alpha(theme.palette.background.default, 0.5),
         }}
       >
         <Button
           onClick={handleClose}
           disabled={isSaving}
-          sx={{ borderRadius: 1.5, px: 2.5, py: 0.75 }}
+          sx={{ 
+            borderRadius: 1.5, 
+            px: 3, 
+            py: 1,
+            color: theme.palette.text.secondary,
+            '&:hover': {
+              bgcolor: alpha(theme.palette.action.hover, 0.08),
+            },
+          }}
           size="small"
         >
           Cancel
@@ -443,7 +599,17 @@ const TemplateBuilder: React.FC<TemplateBuilderProps> = ({
               <Icon icon={checkIcon} width={16} height={16} />
             )
           }
-          sx={{ borderRadius: 1.5, px: 2.5, py: 0.75, minWidth: 120 }}
+          sx={{ 
+            borderRadius: 1.5, 
+            px: 3, 
+            py: 1, 
+            minWidth: 140,
+            fontWeight: 600,
+            boxShadow: 'none',
+            '&:hover': {
+              boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+            },
+          }}
           size="small"
         >
           {isSaving

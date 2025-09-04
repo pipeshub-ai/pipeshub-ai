@@ -6,14 +6,9 @@ from arango import ArangoClient
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
 from app.config.providers.in_memory_store import InMemoryKeyValueStore
-from app.connectors.core.base.data_processor.data_source_entities_processor import (
-    DataSourceEntitiesProcessor,
-)
 from app.connectors.services.base_arango_service import BaseArangoService
-from app.connectors.sources.microsoft.common.apps import OneDriveApp
-from app.connectors.sources.microsoft.onedrive.onedrive import (
+from app.connectors.sources.microsoft.onedrive.connector import (
     OneDriveConnector,
-    OneDriveCredentials,
 )
 from app.services.kafka_consumer import KafkaConsumerManager
 from app.utils.logger import create_logger
@@ -24,9 +19,8 @@ def is_valid_email(email: str) -> bool:
 
 async def test_run() -> None:
     user_email = os.getenv("TEST_USER_EMAIL")
-
+    org_id = "org_1"
     async def create_test_users(user_email: str, arango_service: BaseArangoService) -> None:
-        org_id = "org_1"
         org = {
                 "_key": org_id,
                 "accountType": "enterprise",
@@ -69,16 +63,18 @@ async def test_run() -> None:
     if user_email:
         await create_test_users(user_email, arango_service)
 
-    data_entities_processor = DataSourceEntitiesProcessor(logger, OneDriveApp(), arango_service, config_service)
-    await data_entities_processor.initialize()
-    credentials = OneDriveCredentials(
-        tenant_id=os.getenv("AZURE_TENANT_ID"),
-        client_id=os.getenv("AZURE_CLIENT_ID"),
-        client_secret=os.getenv("AZURE_CLIENT_SECRET"),
-        has_admin_consent=True,
-    )
-    onedrive_connector = OneDriveConnector(logger, data_entities_processor, arango_service, credentials)
-    await onedrive_connector.run()
+    config = {
+        "credentials": {
+            "tenantId": os.getenv("AZURE_TENANT_ID"),
+            "clientId": os.getenv("AZURE_CLIENT_ID"),
+            "clientSecret": os.getenv("AZURE_CLIENT_SECRET"),
+            "hasAdminConsent": True,
+        }
+    }
+    key_value_store.set_config(f"services/connectors/onedrive/config/{org_id}", config)
+    onedrive_connector = await OneDriveConnector.create_connector(logger, arango_service, config_service)
+    await onedrive_connector.init()
+    await onedrive_connector.run_sync()
 
 if __name__ == "__main__":
     asyncio.run(test_run())

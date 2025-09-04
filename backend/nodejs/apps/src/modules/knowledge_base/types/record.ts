@@ -6,7 +6,9 @@ export type ConnectorName =
   | 'GOOGLE_DRIVE'
   | 'CONFLUENCE'
   | 'JIRA'
-  | 'SLACK';
+  | 'SLACK'
+  | 'SHAREPOINT ONLINE'
+  | 'GMAIL';
 export type IndexingStatus =
   | 'NOT_STARTED'
   | 'IN_PROGRESS'
@@ -52,6 +54,7 @@ export interface IRecordDocument {
   virtualRecordId?: string;
   summaryDocumentId?:string;
   webUrl?: string;
+  mimeType?: string;
 }
 
 export interface IFileBuffer {

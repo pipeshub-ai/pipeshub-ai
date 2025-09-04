@@ -6,15 +6,10 @@ from typing import Any, Dict
 
 from dependency_injector import providers
 
-from app.connectors.core.base.data_processor.data_source_entities_processor import (
-    DataSourceEntitiesProcessor,
-)
 from app.connectors.core.base.event_service.event_service import BaseEventService
 from app.connectors.sources.google.common.arango_service import ArangoService
-from app.connectors.sources.microsoft.common.apps import OneDriveApp
-from app.connectors.sources.microsoft.onedrive.onedrive import (
+from app.connectors.sources.microsoft.onedrive.connector import (
     OneDriveConnector,
-    OneDriveCredentials,
 )
 from app.containers.connector import ConnectorAppContainer
 
@@ -61,27 +56,9 @@ class OneDriveEventService(BaseEventService):
 
             self.logger.info(f"Initializing OneDrive init sync service for org_id: {org_id}")
             config_service = self.app_container.config_service()
-            data_entities_processor = DataSourceEntitiesProcessor(self.logger, OneDriveApp(), self.arango_service, config_service)
-            await data_entities_processor.initialize()
-            credentials_config = await config_service.get_config(f"/services/connectors/onedrive/config/{org_id}")
-            if not credentials_config:
-                self.logger.error("OneDrive credentials not found")
-                return False
-
-            tenant_id = credentials_config.get("tenantId")
-            client_id = credentials_config.get("clientId")
-            client_secret = credentials_config.get("clientSecret")
-            if not all((tenant_id, client_id, client_secret)):
-                self.logger.error(f"Incomplete OneDrive credentials for org_id: {org_id}. Ensure tenantId, clientId, and clientSecret are configured.")
-                return False
-            has_admin_consent = credentials_config.get("hasAdminConsent", False)
-            credentials = OneDriveCredentials(
-                tenant_id=tenant_id,
-                client_id=client_id,
-                client_secret=client_secret,
-                has_admin_consent=has_admin_consent,
-            )
-            onedrive_connector = OneDriveConnector(self.logger, data_entities_processor, self.arango_service, credentials)
+            arango_service = await self.app_container.arango_service()
+            onedrive_connector = await OneDriveConnector.create_connector(self.logger, arango_service, config_service)
+            await onedrive_connector.init()
             # Override the container's onedrive_connector provider with the initialized instance
             self.app_container.onedrive_connector.override(providers.Object(onedrive_connector))
             # Initialize directly since we can't use BackgroundTasks in Kafka consumer
@@ -99,9 +76,9 @@ class OneDriveEventService(BaseEventService):
 
             self.logger.info(f"Starting OneDrive sync service for org_id: {org_id}")
             try:
-                onedrive_connector = self.app_container.onedrive_connector()
+                onedrive_connector: OneDriveConnector = self.app_container.onedrive_connector()
                 if onedrive_connector:
-                    asyncio.create_task(onedrive_connector.run())
+                    asyncio.create_task(onedrive_connector.run_sync())
                     return True
                 else:
                     self.logger.error("OneDrive connector not initialized")

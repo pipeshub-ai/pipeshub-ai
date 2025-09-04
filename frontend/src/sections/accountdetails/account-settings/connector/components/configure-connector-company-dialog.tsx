@@ -47,6 +47,11 @@ const CONNECTOR_CONFIG: ConnectorConfigType = {
     title: 'OneDrive',
     color: '#0078D4',
   },
+  sharepointOnline: {
+    src: '/assets/icons/connectors/sharepoint.svg',
+    title: 'SharePoint Online',
+    color: '#0078D4',
+  },
 };
 
 interface ConfigureConnectorDialogProps {
@@ -101,7 +106,7 @@ const ConfigureConnectorDialog = ({
       case ConnectorId.ONEDRIVE:
         currentRef = onedriveFormRef;
         break;
-      case ConnectorId.SHAREPOINT:
+      case ConnectorId.SHAREPOINT_ONLINE:
         currentRef = sharepointFormRef;
         break;
       default:
@@ -218,7 +223,7 @@ const ConfigureConnectorDialog = ({
                   isEnabled={isEnabled || false}
                 />
               )}
-              {connectorType === ConnectorId.SHAREPOINT && (
+              {connectorType === ConnectorId.SHAREPOINT_ONLINE && (
                 <SharePointConfigForm
                   onValidationChange={handleValidationChange}
                   onSaveSuccess={handleFormSaveSuccess}

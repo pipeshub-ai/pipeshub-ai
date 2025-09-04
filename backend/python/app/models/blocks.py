@@ -35,7 +35,6 @@ class BlockType(str, Enum):
     QUOTE = "quote"
     DIVIDER = "divider"
 
-
 class DataFormat(str, Enum):
     TXT = "txt"
     BIN = "bin"
@@ -47,7 +46,6 @@ class DataFormat(str, Enum):
     YAML = "yaml"
     BASE64 = "base64"
     UTF8 = "utf8"
-
 
 class BlockComment(BaseModel):
     text: str
@@ -182,7 +180,6 @@ class GroupType(str, Enum):
     CODE = "code"
     MEDIA = "media"
 
-
 class SemanticMetadata(BaseModel):
     entities: Optional[List[Dict[str, Any]]] = None
     section_numbers: Optional[List[str]] = None
@@ -192,10 +189,10 @@ class SemanticMetadata(BaseModel):
     languages: Optional[List[str]] = None
     topics: Optional[List[str]] = None
     record_id: Optional[str] = None
-    category: Optional[List[str]] = Field(default_factory=list)
-    sub_category_level_1: Optional[List[str]] = None
-    sub_category_level_2: Optional[List[str]] = None
-    sub_category_level_3: Optional[List[str]] = None
+    categories: Optional[List[str]] = Field(default_factory=list)
+    sub_category_level_1: Optional[str] = None
+    sub_category_level_2: Optional[str] = None
+    sub_category_level_3: Optional[str] = None
     confidence: Optional[Confidence] = None
 
 class Block(BaseModel):
@@ -212,14 +209,12 @@ class Block(BaseModel):
     source_id: Optional[str] = None
     source_name: Optional[str] = None
     source_type: Optional[str] = None
-
     # Content and links
     data: Optional[Any] = None
     links: Optional[List[str]] = None
     weburl: Optional[HttpUrl] = None
     public_data_link: Optional[HttpUrl] = None
     public_data_link_expiration_epoch_time_in_ms: Optional[int] = None
-
     citation_metadata: Optional[CitationMetadata] = None
     list_metadata: Optional[ListMetadata] = None
     table_row_metadata: Optional[TableRowMetadata] = None
@@ -241,11 +236,11 @@ class BlockContainerIndex(BaseModel):
 class BlockGroup(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
     index: int = None
-    name: str = Field(description="Name of the block group")
+    name: Optional[str] = Field(description="Name of the block group",default=None)
     type: GroupType = Field(description="Type of the block group")
-    parent_index: Optional[int] = Field(description="Index of the parent block group")
-    description: Optional[str] = Field(description="Description of the block group")
-    source_group_id: Optional[str] = Field(description="Source group identifier")
+    parent_index: Optional[int] = Field(description="Index of the parent block group",default=None)
+    description: Optional[str] = Field(description="Description of the block group",default=None)
+    source_group_id: Optional[str] = Field(description="Source group identifier",default=None)
     citation_metadata: Optional[CitationMetadata] = None
     list_metadata: Optional[ListMetadata] = None
     table_metadata: Optional[TableMetadata] = None
@@ -257,6 +252,8 @@ class BlockGroup(BaseModel):
     link_metadata: Optional[LinkMetadata] = None
     semantic_metadata: Optional[SemanticMetadata] = None
     children: Optional[List[BlockContainerIndex]] = None
+    data: Optional[Any] = None
+    format: DataFormat
 
 class BlockGroups(BaseModel):
     block_groups: List[BlockGroup] = Field(default_factory=list)

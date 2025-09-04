@@ -306,7 +306,7 @@ export const updateKnowledgeBase =
 
       logger.info(`Updating knowledge base ${kbId}`);
 
-      const response = await axios.patch(
+      const response = await axios.put(
         `${appConfig.connectorBackend}/api/v1/kb/${kbId}/user/${userId}`,
         {
           groupName: kbName,
@@ -474,7 +474,7 @@ export const updateFolder =
 
       logger.info(`Updating folder ${folderId} in KB ${kbId}`);
 
-      const response = await axios.patch(
+      const response = await axios.put(
         `${appConfig.connectorBackend}/api/v1/kb/${kbId}/folder/${folderId}/user/${userId}`,
         { name: folderName },
       );
@@ -644,6 +644,7 @@ export const uploadRecordsToKB =
           indexingStatus: INDEXING_STATUS.NOT_STARTED,
           version: 1,
           webUrl: webUrl,
+          mimeType: mimetype,
         };
 
         const fileRecord: IFileRecordDocument = {
@@ -826,7 +827,7 @@ export const uploadRecordsToFolder =
             : currentTime;
 
         // Create record structure
-        const record = {
+        const record: IRecordDocument = {
           _key: key,
           orgId: orgId,
           recordName: fileName,
@@ -842,9 +843,10 @@ export const uploadRecordsToFolder =
           indexingStatus: INDEXING_STATUS.NOT_STARTED,
           version: 1,
           webUrl: webUrl,
+          mimeType: mimetype,
         };
 
-        const fileRecord = {
+        const fileRecord: IFileRecordDocument = {
           _key: key,
           orgId: orgId,
           name: fileName,
@@ -884,7 +886,7 @@ export const uploadRecordsToFolder =
       }
 
       console.log(
-        '✅ Files processed, calling Python service for folder upload',
+        '✅ Files processed, calling Python service for folder upload', 
       );
 
       // Single API call to Python service with all data
@@ -1990,17 +1992,13 @@ export const createKBPermission =
     try {
       const { userId: requesterId } = req.user || {};
       const { kbId } = req.params;
-      const { users, role } = req.body;
+      const { userIds, teamIds, role } = req.body;
 
       if (!requesterId) {
         throw new UnauthorizedError('User authentication required');
       }
-
-      // Validate input
-      if (!users || !Array.isArray(users) || users.length === 0) {
-        throw new BadRequestError(
-          'Users array is required and must not be empty',
-        );
+      if (userIds.length === 0 && teamIds.length === 0) {
+        throw new BadRequestError('User IDs or team IDs are required');
       }
 
       if (!role) {
@@ -2022,12 +2020,16 @@ export const createKBPermission =
       }
 
       logger.info(
-        `Creating ${role} permissions for ${users.length} users on KB ${kbId}`,
+        `Creating ${role} permissions for ${userIds.length} users and ${teamIds.length} teams on KB ${kbId}`,
         {
-          users:
-            users.length > 5
-              ? `${users.slice(0, 5).join(', ')} and ${users.length - 5} more`
-              : users.join(', '),
+          userIds:
+            userIds.length > 5
+              ? `${userIds.slice(0, 5).join(', ')} and ${userIds.length - 5} more`
+              : userIds.join(', '),
+          teamIds:
+            teamIds.length > 5
+              ? `${teamIds.slice(0, 5).join(', ')} and ${teamIds.length - 5} more`
+              : teamIds.join(', '),
           role,
           requesterId,
         },
@@ -2038,7 +2040,8 @@ export const createKBPermission =
           `${appConfig.connectorBackend}/api/v1/kb/${kbId}/permissions`,
           {
             requesterId: requesterId,
-            users: users,
+            userIds: userIds,
+            teamIds: teamIds,
             role: role,
           },
         );
@@ -2122,11 +2125,15 @@ export const updateKBPermission =
   ): Promise<void> => {
     try {
       const { userId: requesterId } = req.user || {};
-      const { kbId, userId } = req.params;
-      const { role } = req.body;
+      const { kbId } = req.params;
+      const { userIds, teamIds, role } = req.body;
 
       if (!requesterId) {
         throw new UnauthorizedError('User authentication required');
+      }
+
+      if (userIds.length === 0 && teamIds.length === 0) {
+        throw new BadRequestError('User IDs or team IDs are required');
       }
 
       if (!role) {
@@ -2148,15 +2155,16 @@ export const updateKBPermission =
       }
 
       logger.info(
-        `Updating permission for user ${userId} on KB ${kbId} to ${role}`,
+        `Updating permission for ${userIds.length} users and ${teamIds.length} teams on KB ${kbId} to ${role}`,
       );
 
       try {
-        const response = await axios.patch(
+        const response = await axios.put(
           `${appConfig.connectorBackend}/api/v1/kb/${kbId}/permissions`,
           {
             requesterId: requesterId,
-            userId: userId,
+            userIds: userIds,
+            teamIds: teamIds,
             role: role,
           },
         );
@@ -2176,22 +2184,23 @@ export const updateKBPermission =
 
         logger.info('Permission updated successfully', {
           kbId,
-          userId,
-          previousRole: updateResult.previousRole,
+          userIds: updateResult.userIds,
+          teamIds: updateResult.teamIds,
           newRole: updateResult.newRole,
           requesterId,
         });
 
         res.status(200).json({
           kbId: kbId,
-          userId: userId,
-          previousRole: updateResult.previousRole,
+          userIds: updateResult.userIds,
+          teamIds: updateResult.teamIds,
           newRole: updateResult.newRole,
         });
       } catch (pythonServiceError: any) {
         logger.error('Error calling Python service for permission update', {
           kbId,
-          userId,
+          userIds: req.body.userIds,
+          teamIds: req.body.teamIds,
           error: pythonServiceError.message,
           response: pythonServiceError.response?.data,
         });
@@ -2218,7 +2227,8 @@ export const updateKBPermission =
     } catch (error: any) {
       logger.error('Error updating KB permission', {
         kbId: req.params.kbId,
-        userId: req.params.userId,
+        userIds: req.body.userIds,
+        teamIds: req.body.teamIds,
         error: error.message,
         requesterId: req.user?.userId,
         requestId: req.context?.requestId,
@@ -2240,17 +2250,29 @@ export const removeKBPermission =
   ): Promise<void> => {
     try {
       const { userId: requesterId } = req.user || {};
-      const { kbId, userId } = req.params;
+      const { kbId } = req.params;
+      const { userIds, teamIds } = req.body;
 
       if (!requesterId) {
         throw new UnauthorizedError('User authentication required');
       }
 
-      logger.info(`Removing permission for user ${userId} from KB ${kbId}`);
+      if (userIds.length === 0 && teamIds.length === 0) {
+        throw new BadRequestError('User IDs or team IDs are required');
+      }
+
+      logger.info(`Removing permission for ${userIds.length} users and ${teamIds.length} teams from KB ${kbId}`);
 
       try {
         const response = await axios.delete(
-          `${appConfig.connectorBackend}/api/v1/kb/${kbId}/requester/${requesterId}/user/${userId}/permissions`,
+          `${appConfig.connectorBackend}/api/v1/kb/${kbId}/permissions`,
+          {
+            data: {
+              requesterId: requesterId,
+              userIds: userIds,
+              teamIds: teamIds,
+            },
+          },
         );
 
         if (response.status !== 200) {
@@ -2268,20 +2290,21 @@ export const removeKBPermission =
 
         logger.info('Permission removed successfully', {
           kbId,
-          userId,
-          removedRole: removeResult.removedRole,
+          userIds: removeResult.userIds,
+          teamIds: removeResult.teamIds,
           requesterId,
         });
 
         res.status(200).json({
           kbId: kbId,
-          userId: userId,
-          removedRole: removeResult.removedRole,
+            userIds: removeResult.userIds,
+          teamIds: removeResult.teamIds,
         });
       } catch (pythonServiceError: any) {
         logger.error('Error calling Python service for permission removal', {
           kbId,
-          userId,
+          userIds: req.body.userIds,
+          teamIds: req.body.teamIds,
           error: pythonServiceError.message,
           response: pythonServiceError.response?.data,
         });
@@ -2308,7 +2331,8 @@ export const removeKBPermission =
     } catch (error: any) {
       logger.error('Error removing KB permission', {
         kbId: req.params.kbId,
-        userId: req.params.userId,
+        userIds: req.body.userIds,
+        teamIds: req.body.teamIds,
         error: error.message,
         requesterId: req.user?.userId,
         requestId: req.context?.requestId,
@@ -2548,7 +2572,7 @@ export const reindexAllRecords =
         throw new BadRequestError('User not authenticated');
       }
 
-      const allowedApps = ['ONEDRIVE', 'DRIVE', 'GMAIL', 'CONFLUENCE', 'SLACK'];
+      const allowedApps = ['ONEDRIVE', 'DRIVE', 'GMAIL', 'CONFLUENCE', 'SLACK', 'SHAREPOINT ONLINE', 'JIRA'];
       if (!allowedApps.includes(app)) {
         throw new BadRequestError('APP not allowed');
       }
@@ -2594,6 +2618,7 @@ export const resyncConnectorRecords =
         'CONFLUENCE',
         'JIRA',
         'SLACK',
+        'SHAREPOINT ONLINE',
       ];
       if (!allowedConnectors.includes(connectorName)) {
         throw new BadRequestError(`Connector ${connectorName} not allowed`);

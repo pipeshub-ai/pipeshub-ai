@@ -84,6 +84,7 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
     citation_mapping = {}
     new_citations = []
 
+
     for i, old_citation_num in enumerate(unique_citations):
         new_citation_num = i + 1
         citation_mapping[old_citation_num] = new_citation_num
@@ -100,7 +101,11 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
             })
 
     # Replace citation numbers in answer text
-    normalized_answer = re.sub(citation_pattern, lambda m: f"[{citation_mapping[int(m.group(1))]}]", answer_text)
+    normalized_answer = re.sub(
+    citation_pattern,
+    lambda m: f"[{citation_mapping[int(m.group(1))]}]" if int(m.group(1)) in citation_mapping else "",
+    answer_text
+    )
 
     return normalized_answer, new_citations
 

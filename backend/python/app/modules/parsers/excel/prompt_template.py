@@ -21,7 +21,7 @@ table_summary_prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "You are an expert data analyst. Provide a concise summary of this table's purpose and content.",
+            "You are an expert data analyst.",
         ),
         (
             "user",
@@ -38,7 +38,7 @@ row_text_prompt = ChatPromptTemplate.from_messages(
             "system",
             """You are a data analysis expert who converts structured data into natural language descriptions.
 Your task is to convert each row of data into a clear, concise and detailed natural language description.
-Use the provided sheet and table context to make the descriptions more meaningful.
+Use the provided table summary to make the descriptions more meaningful.
 
 IMPORTANT: Your response must be a valid JSON array of strings. For example:
 [
@@ -53,13 +53,13 @@ Do not include any other text or explanation in your response - only the JSON ar
             "user",
             """Please convert these rows of data into natural language descriptions.
 
-Table Context:
+Table Summary:
 {table_summary}
 
 Rows Data:
 {rows_data}
 
-Remember: Respond with ONLY a JSON array of strings containing one description per row.""",
+Remember: Respond with ONLY a JSON array of strings containing one description per row. Number of strings should be equal to the number of rows in the data.""",
         ),
     ]
 )
