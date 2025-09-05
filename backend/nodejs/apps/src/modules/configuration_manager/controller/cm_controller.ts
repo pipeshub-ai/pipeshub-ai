@@ -1582,7 +1582,6 @@ export const setSharePointCredentials =
       if (!orgId) {
         throw new BadRequestError('Organisation not found');
       }
-      console.log('credentials', credentials);
       // Todo: Do a health check for the credentials
       const encryptedSharePointCredentials = EncryptionService.getInstance(
         configManagerConfig.algorithm,

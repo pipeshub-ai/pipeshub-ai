@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from logging import Logger
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+from typing import AsyncGenerator, Dict, List, Optional, Tuple
 
 import httpx
 from aiolimiter import AsyncLimiter
@@ -21,6 +21,7 @@ from app.config.constants.arangodb import (
     Connectors,
     OriginTypes,
 )
+from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -184,27 +185,30 @@ class SharePointConnector:
             return False
 
         # Check for valid composite site ID format (hostname,guid,guid)
+        SITE_ID_PARTS = 3
+        GUID_LENGTH = 32
+        ROOT_SITE_ID_LENGTH = 10
         if ',' in site_id:
             parts = site_id.split(',')
-            if len(parts) == 3:
+            if len(parts) == SITE_ID_PARTS:
                 hostname, site_guid, web_guid = parts
                 # Basic validation - hostname should contain a dot, GUIDs should be reasonable length
                 if (hostname and '.' in hostname and
-                    len(site_guid) >= 32 and  # GUID-like length
-                    len(web_guid) >= 32):     # GUID-like length
+                    len(site_guid) >= GUID_LENGTH and  # GUID-like length
+                    len(web_guid) >= GUID_LENGTH):     # GUID-like length
                     return True
             else:
                 self.logger.warning(f"Composite site ID has {len(parts)} parts, expected 3: {site_id}")
                 return False
 
         # Single part site IDs are also valid (like "root")
-        if site_id == "root" or len(site_id) > 10:
+        if site_id == "root" or len(site_id) > ROOT_SITE_ID_LENGTH:
             return True
 
         self.logger.warning(f"Site ID format not recognized: {site_id}")
         return False
 
-    async def _safe_api_call(self, api_call, max_retries: int = 3, retry_delay: float = 1.0):
+    async def _safe_api_call(self, api_call, max_retries: int = 3, retry_delay: float = 1.0) -> None:
         """
         Enhanced safe API call execution with intelligent retry logic and error handling.
         """
@@ -218,22 +222,22 @@ class SharePointConnector:
                 error_str = str(e).lower()
 
                 # Don't retry on permission errors
-                if any(term in error_str for term in ["403", "accessdenied", "forbidden"]):
+                if any(term in error_str for term in [HttpStatusCode.FORBIDDEN.value, "accessdenied", "forbidden"]):
                     self.logger.debug(f"Permission denied on API call (attempt {attempt + 1}): {e}")
                     return None
 
                 # Don't retry on 404 errors
-                if any(term in error_str for term in ["404", "notfound"]):
+                if any(term in error_str for term in [HttpStatusCode.NOT_FOUND.value, "notfound"]):
                     self.logger.debug(f"Resource not found on API call (attempt {attempt + 1}): {e}")
                     return None
 
                 # Don't retry on 400 bad request errors (like invalid hostname)
-                if any(term in error_str for term in ["400", "badrequest", "invalid"]):
+                if any(term in error_str for term in [HttpStatusCode.BAD_REQUEST.value, "badrequest", "invalid"]):
                     self.logger.warning(f"Bad request on API call (attempt {attempt + 1}): {e}")
                     return None
 
                 # Retry on rate limiting and server errors
-                if any(term in error_str for term in ["429", "503", "502", "500", "throttle", "timeout"]):
+                if any(term in error_str for term in [HttpStatusCode.TOO_MANY_REQUESTS.value, HttpStatusCode.SERVICE_UNAVAILABLE.value, HttpStatusCode.BAD_GATEWAY.value, HttpStatusCode.INTERNAL_SERVER_ERROR.value, "throttle", "timeout"]):
                     if attempt < max_retries:
                         wait_time = retry_delay * (2 ** attempt)  # Exponential backoff
                         self.logger.warning(f"Retryable error (attempt {attempt + 1}/{max_retries + 1}): {e}. Retrying in {wait_time}s...")
@@ -863,7 +867,7 @@ class SharePointConnector:
         except Exception as e:
             self.logger.error(f"Error processing lists for site {site_id}: {e}")
 
-    def _should_skip_list(self, list_obj: Any, list_name: str) -> bool:
+    def _should_skip_list(self, list_obj: dict, list_name: str) -> bool:
         """
         Determine if a list should be skipped based on various criteria.
         """
@@ -893,7 +897,7 @@ class SharePointConnector:
 
         return False
 
-    async def _create_list_record(self, list_obj: Any, site_id: str) -> Optional[SharePointListRecord]:
+    async def _create_list_record(self, list_obj: dict, site_id: str) -> Optional[SharePointListRecord]:
         """
         Create a record for a SharePoint list.
         """
@@ -1115,7 +1119,7 @@ class SharePointConnector:
                         self.client.sites.by_site_id(encoded_site_id).pages.get()
                     )
                 except Exception as pages_error:
-                    if any(term in str(pages_error).lower() for term in ["403", "accessdenied", "404", "notfound"]):
+                    if any(term in str(pages_error).lower() for term in [HttpStatusCode.FORBIDDEN.value, "accessdenied", HttpStatusCode.NOT_FOUND.value, "notfound"]):
                         self.logger.debug(f"Pages not accessible for site {site_id}: {pages_error}")
                         return
                     else:
@@ -1205,7 +1209,7 @@ class SharePointConnector:
             self.logger.debug(f"Error creating page record: {e}")
             return None
 
-    async def _create_document_library_record(self, drive: Any, site_id: str) -> Optional[RecordGroup]:
+    async def _create_document_library_record(self, drive: dict, site_id: str) -> Optional[RecordGroup]:
         """
         Create a record for a document library.
         """
@@ -1444,9 +1448,9 @@ class SharePointConnector:
                     return groups
 
         except httpx.HTTPStatusError as e:
-            if e.response.status_code == 403:
+            if e.response.status_code == HttpStatusCode.FORBIDDEN.value:
                 self.logger.warning(f"Access denied when getting site groups from {site_url}: {e}")
-            elif e.response.status_code == 404:
+            elif e.response.status_code == HttpStatusCode.NOT_FOUND.value:
                 self.logger.warning(f"Site groups endpoint not found for {site_url}: {e}")
             else:
                 self.logger.error(f"HTTP error getting SharePoint site groups from {site_url}: {e}")
@@ -1574,9 +1578,9 @@ class SharePointConnector:
                     return members
 
         except httpx.HTTPStatusError as e:
-            if e.response.status_code == 403:
+            if e.response.status_code == HttpStatusCode.FORBIDDEN.value:
                 self.logger.warning(f"Access denied when getting group members for group {group_id}: {e}")
-            elif e.response.status_code == 404:
+            elif e.response.status_code == HttpStatusCode.NOT_FOUND.value:
                 self.logger.warning(f"Group members endpoint not found for group {group_id}: {e}")
             else:
                 self.logger.error(f"HTTP error getting SharePoint group members for group {group_id}: {e}")

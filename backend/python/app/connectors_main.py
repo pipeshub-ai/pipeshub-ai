@@ -111,7 +111,6 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
             onedrive_connector = None
             sharepoint_connector = None
             for app in enabled_apps:
-                print(app["name"], "app name")
                 if app["name"].lower() == Connectors.GOOGLE_CALENDAR.value.lower():
                     logger.info("Skipping calendar sync for org %s", org_id)
                     continue
@@ -155,14 +154,12 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
                     logger.info("OneDrive connector initialized for org %s", org_id)
 
                 if app["name"].lower() == Connectors.SHAREPOINT_ONLINE.value.replace(" ", "").lower():
-                    print("SharePoint Online connector initialized for org %s", org_id)
                     config_service = app_container.config_service()
                     arango_service = await app_container.arango_service()
                     data_entities_processor = DataSourceEntitiesProcessor(logger, SharePointOnlineApp(), arango_service, config_service)
                     await data_entities_processor.initialize()
 
                     credentials_config = await config_service.get_config(f"/services/connectors/sharepoint/config/{org_id}")
-                    print(credentials_config, "sharepointcredentials config")
                     if not credentials_config:
                         logger.error("SharePoint credentials not found")
                         return False
