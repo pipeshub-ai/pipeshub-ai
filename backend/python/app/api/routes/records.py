@@ -1,4 +1,4 @@
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -18,6 +18,13 @@ async def get_arango_service(request: Request) -> ArangoService:
     container: QueryAppContainer = request.app.container
     arango_service = await container.arango_service()
     return arango_service
+
+
+def _parse_comma_separated_str(value: Optional[str]) -> Optional[List[str]]:
+    """Parses a comma-separated string into a list of strings, filtering out empty items."""
+    if not value:
+        return None
+    return [item.strip() for item in value.split(',') if item.strip()]
 
 
 @router.get("/records")
@@ -68,11 +75,11 @@ async def get_records(
         ] else "createdAtTimestamp"
 
         # Parse comma-separated strings into lists
-        parsed_record_types = [item.strip() for item in record_types.split(',') if item.strip()] if record_types else None
-        parsed_origins = [item.strip() for item in origins.split(',') if item.strip()] if origins else None
-        parsed_connectors = [item.strip() for item in connectors.split(',') if item.strip()] if connectors else None
-        parsed_indexing_status = [item.strip() for item in indexing_status.split(',') if item.strip()] if indexing_status else None
-        parsed_permissions = [item.strip() for item in permissions.split(',') if item.strip()] if permissions else None
+        parsed_record_types = _parse_comma_separated_str(record_types)
+        parsed_origins = _parse_comma_separated_str(origins)
+        parsed_connectors = _parse_comma_separated_str(connectors)
+        parsed_indexing_status = _parse_comma_separated_str(indexing_status)
+        parsed_permissions = _parse_comma_separated_str(permissions)
 
         records, total_count, available_filters = await arango_service.get_records(
             user_id=user_key,
