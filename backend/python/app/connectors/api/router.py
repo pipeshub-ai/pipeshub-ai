@@ -7,7 +7,7 @@ import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, Optional, List
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
 import aiohttp
 import google.oauth2.credentials

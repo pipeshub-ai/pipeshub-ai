@@ -1,4 +1,4 @@
-from typing import Dict, Optional, List
+from typing import Dict, List, Optional
 
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
