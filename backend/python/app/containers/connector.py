@@ -680,6 +680,9 @@ class ConnectorAppContainer(BaseAppContainer):
     # OneDrive connector
     onedrive_connector = providers.Dependency()
 
+    # SharePoint connector
+    sharepoint_connector = providers.Dependency()
+
     # Connector-specific wiring configuration
     wiring_config = containers.WiringConfiguration(
         modules=[

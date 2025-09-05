@@ -44,6 +44,7 @@ from app.config.constants.http_status_code import (
 )
 from app.config.constants.service import config_node_constants
 from app.connectors.api.middleware import WebhookAuthVerifier
+from app.connectors.services.base_arango_service import BaseArangoService
 from app.connectors.sources.google.admin.admin_webhook_handler import (
     AdminWebhookHandler,
 )
@@ -61,9 +62,11 @@ from app.connectors.sources.google.gmail.gmail_webhook_handler import (
 from app.connectors.sources.google.google_drive.drive_webhook_handler import (
     AbstractDriveWebhookHandler,
 )
-from app.connectors.sources.microsoft.onedrive.onedrive import OneDriveConnector
+from app.connectors.sources.microsoft.onedrive.connector import OneDriveConnector
+from app.connectors.sources.microsoft.sharepoint_online.connector import (
+    SharePointConnector,
+)
 from app.containers.connector import ConnectorAppContainer
-from app.core.ai_arango_service import ArangoService
 from app.modules.parsers.google_files.google_docs_parser import GoogleDocsParser
 from app.modules.parsers.google_files.google_sheets_parser import GoogleSheetsParser
 from app.modules.parsers.google_files.google_slides_parser import GoogleSlidesParser
@@ -79,7 +82,7 @@ class ReindexFailedRequest(BaseModel):
     origin: str     # CONNECTOR, UPLOAD
 
 
-async def get_arango_service(request: Request) -> ArangoService:
+async def get_arango_service(request: Request) -> BaseArangoService:
     container: ConnectorAppContainer = request.app.container
     arango_service = await container.arango_service()
     return arango_service
@@ -289,6 +292,15 @@ async def get_onedrive_connector(request: Request) -> Optional[OneDriveConnector
         logger.warning(f"Failed to get OneDrive connector: {str(e)}")
         return None
 
+async def get_sharepoint_connector(request: Request) -> Optional[SharePointConnector]:
+    try:
+        container: ConnectorAppContainer = request.app.container
+        sharepoint_connector = container.sharepoint_connector()
+        return sharepoint_connector
+    except Exception as e:
+        logger.warning(f"Failed to get SharePoint connector: {str(e)}")
+        return None
+
 
 @router.delete("/api/v1/delete/record/{record_id}")
 @inject
@@ -360,6 +372,48 @@ async def stream_onedrive_file_content(request: Request, record_id: str) -> Stre
         logger.error(f"Error accessing OneDrive connector or streaming file: {str(e)}")
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="OneDrive connector not available or file streaming failed")
 
+async def stream_sharepoint_file_content(request: Request, record_id: str) -> StreamingResponse:
+    """
+    Helper function to stream content from SharePoint.
+    """
+    try:
+        sharepoint_connector: SharePointConnector = await get_sharepoint_connector(request)
+        if not sharepoint_connector:
+            raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="SharePoint connector not found")
+
+        record, signed_url = await sharepoint_connector.create_signed_url(record_id)
+        if not signed_url:
+            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
+
+        async def stream_content() -> AsyncGenerator[bytes, None]:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(signed_url) as response:
+                        if response.status != HttpStatusCode.SUCCESS.value:
+                            raise HTTPException(
+                                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                                detail=f"Failed to fetch file content: {response.status}"
+                            )
+                        async for chunk in response.content.iter_chunked(8192):
+                            yield chunk
+            except aiohttp.ClientError as e:
+                logger.error(f"Error fetching file from signed URL: {str(e)}")
+                raise HTTPException(
+                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                    detail="Failed to fetch file content"
+                )
+
+        return StreamingResponse(
+            stream_content(),
+            media_type=record.mime_type,
+            headers={
+                "Content-Disposition": f"attachment; filename={record.record_name}"
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error accessing SharePoint connector or streaming file: {str(e)}")
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="SharePoint connector not available or file streaming failed")
+
 @router.get("/api/v1/index/{org_id}/{connector}/record/{record_id}", response_model=None)
 @inject
 async def download_file(
@@ -369,7 +423,7 @@ async def download_file(
     connector: str,
     token: str,
     signed_url_handler=Depends(Provide[ConnectorAppContainer.signed_url_handler]),
-    arango_service: ArangoService = Depends(Provide[ConnectorAppContainer.arango_service]),
+    arango_service: BaseArangoService = Depends(Provide[ConnectorAppContainer.arango_service]),
     google_token_handler: GoogleTokenHandler = Depends(Provide[ConnectorAppContainer.google_token_handler]),
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
 ) -> Optional[dict | StreamingResponse]:
@@ -767,6 +821,8 @@ async def download_file(
 
             elif connector.lower() == Connectors.ONEDRIVE.value.lower():
                 return await stream_onedrive_file_content(request, record_id)
+            elif connector.lower() == Connectors.SHAREPOINT_ONLINE.value.lower():
+                return await stream_sharepoint_file_content(request, record_id)
             else:
                 raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Invalid connector type")
 
@@ -790,7 +846,7 @@ async def stream_record(
     request: Request,
     record_id: str,
     convertTo: Optional[str] = None,
-    arango_service: ArangoService = Depends(Provide[ConnectorAppContainer.arango_service]),
+    arango_service: BaseArangoService = Depends(Provide[ConnectorAppContainer.arango_service]),
     google_token_handler: GoogleTokenHandler = Depends(Provide[ConnectorAppContainer.google_token_handler]),
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
 ) -> Optional[dict | StreamingResponse]:
@@ -856,7 +912,6 @@ async def stream_record(
                 OAUTH_CREDENTIALS_PATH,
             )
             creds = await config_service.get_config(f"{OAUTH_CREDENTIALS_PATH}/{org_id}")
-
 
         # Download file based on connector type
         try:
@@ -1385,6 +1440,8 @@ async def stream_record(
             elif connector.lower() == Connectors.ONEDRIVE.value.lower():
                 return await stream_onedrive_file_content(request, record_id)
 
+            elif connector.lower() == Connectors.SHAREPOINT_ONLINE.value.lower():
+                return await stream_sharepoint_file_content(request, record_id)
             else:
                 raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Invalid connector type")
 
@@ -1747,7 +1804,7 @@ async def get_records(
     user_id: str,
     org_id: str,
     request:Request,
-    arango_service: ArangoService = Depends(get_arango_service),
+    arango_service: BaseArangoService = Depends(get_arango_service),
     page: int = 1,
     limit: int = 20,
     search: Optional[str] = None,
@@ -1855,7 +1912,7 @@ async def get_record_by_id(
     user_id: str,
     org_id: str,
     request: Request,
-    arango_service: ArangoService = Depends(get_arango_service),
+    arango_service: BaseArangoService = Depends(get_arango_service),
 ) -> Optional[Dict]:
     """
     Check if the current user has access to a specific record
@@ -1885,7 +1942,7 @@ async def delete_record(
     record_id: str,
     user_id: str,
     request: Request,
-    arango_service: ArangoService = Depends(get_arango_service),
+    arango_service: BaseArangoService = Depends(get_arango_service),
 ) -> Dict:
     """
     Delete a specific record with permission validation
@@ -1933,7 +1990,7 @@ async def reindex_single_record(
     user_id: str,
     org_id: str,
     request: Request,
-    arango_service: ArangoService = Depends(get_arango_service),
+    arango_service: BaseArangoService = Depends(get_arango_service),
 ) -> Dict:
     """
     Reindex a single record with permission validation
@@ -1985,7 +2042,7 @@ async def reindex_failed_records(
     request: Request,
     user_id: str = Query(...),
     org_id: str = Query(...),
-    arango_service: ArangoService = Depends(get_arango_service),
+    arango_service: BaseArangoService = Depends(get_arango_service),
 ) -> Dict:
     """
     Reindex all failed records for a specific connector with permission validation
@@ -2033,7 +2090,7 @@ async def reindex_failed_records(
 async def get_connector_stats_endpoint(
     user_id: str,
     org_id: str,
-    arango_service: ArangoService = Depends(get_arango_service)
+    arango_service: BaseArangoService = Depends(get_arango_service)
 )-> Dict[str, Any]:
     result = await arango_service.get_connector_stats(org_id, user_id)
 

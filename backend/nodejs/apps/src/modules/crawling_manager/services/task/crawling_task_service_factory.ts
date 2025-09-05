@@ -31,7 +31,7 @@ export class CrawlingTaskFactory {
       
       // Add other connector types as needed
       case ConnectorType.ONE_DRIVE:
-      case ConnectorType.SHAREPOINT:
+      case ConnectorType.SHAREPOINT_ONLINE:
       case ConnectorType.CONFLUENCE:
       case ConnectorType.AZURE_BLOB_STORAGE:
         throw new Error(`Connector type ${connectorType} not yet implemented`);

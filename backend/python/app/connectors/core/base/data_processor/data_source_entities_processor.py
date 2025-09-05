@@ -238,6 +238,7 @@ class DataSourceEntitiesProcessor:
             transaction=transaction
         )
 
+
         # Create IS_OF_TYPE edge
         await self.arango_service.batch_create_edges(
             [is_of_type_record],
@@ -325,6 +326,8 @@ class DataSourceEntitiesProcessor:
         return None
 
     async def on_new_records(self, records_with_permissions: List[Tuple[Record, List[Permission]]]) -> None:
+        transaction = None
+
         try:
             records_to_publish = []
 
@@ -339,6 +342,7 @@ class DataSourceEntitiesProcessor:
                     records_to_publish.append(processed_record)
 
             transaction.commit_transaction()
+            transaction = None  # Mark as committed to avoid abort
 
             if records_to_publish:
                 for record in records_to_publish:
@@ -349,7 +353,11 @@ class DataSourceEntitiesProcessor:
                         )
         except Exception as e:
             self.logger.error(f"Error in on_new_records: {str(e)}")
-            transaction.abort_transaction()
+            if transaction:
+                try:
+                    transaction.abort_transaction()
+                except Exception as abort_error:
+                    self.logger.warning(f"Failed to abort transaction: {abort_error}")
             raise e
 
     async def _handle_updated_record(self, record: Record, existing_record: Record, transaction: TransactionDatabase) -> None:
@@ -369,97 +377,130 @@ class DataSourceEntitiesProcessor:
 
     async def on_new_record_groups(self, record_groups: List[Tuple[RecordGroup, List[Permission]]]) -> None:
         # Create a transaction
-        transaction = self.arango_service.db.begin_transaction(
-                    read=read_collections,
-                    write=write_collections,
-            )
-        for record_group, _permissions in record_groups:
-            record_group.org_id = self.org_id
+        transaction = None
+        try:
+            transaction = self.arango_service.db.begin_transaction(
+                        read=read_collections,
+                        write=write_collections,
+                )
+            for record_group, _permissions in record_groups:
+                record_group.org_id = self.org_id
 
-            self.logger.info(f"Processing record group: {record_group}")
-            existing_record_group = await self.arango_service.get_record_group_by_external_id(connector_name=record_group.connector_name,
-                                                                                              external_id=record_group.external_group_id, transaction=transaction)
-            if existing_record_group is None:
-                record_group.id = str(uuid.uuid4())
-                # Create a permission edge between the record group and the org if it doesn't exist
-                # Create a permission edge between the record group and the user if it doesn't exist
-                # Create a permission edge between the record group and the user group if it doesn't exist
-                # Create a permission edge between the record group and the org if it doesn't exist
-                # Create a edge between the record group and the app with sync status if it doesn't exist
-            else:
-                record_group.id = existing_record_group.id
+                self.logger.info(f"Processing record group: {record_group}")
+                existing_record_group = await self.arango_service.get_record_group_by_external_id(connector_name=record_group.connector_name,
+                                                                                                  external_id=record_group.external_group_id, transaction=transaction)
+                if existing_record_group is None:
+                    record_group.id = str(uuid.uuid4())
+                    # Create a permission edge between the record group and the org if it doesn't exist
+                    # Create a permission edge between the record group and the user if it doesn't exist
+                    # Create a permission edge between the record group and the user group if it doesn't exist
+                    # Create a permission edge between the record group and the org if it doesn't exist
+                    # Create a edge between the record group and the app with sync status if it doesn't exist
+                else:
+                    record_group.id = existing_record_group.id
 
-            await self.arango_service.batch_upsert_nodes(
-                [record_group.to_arango_base_record_group()], collection=CollectionNames.RECORD_GROUPS.value, transaction=transaction
-            )
-        transaction.commit_transaction()
-
-        # Commit the transaction
+                await self.arango_service.batch_upsert_nodes(
+                    [record_group.to_arango_base_record_group()], collection=CollectionNames.RECORD_GROUPS.value, transaction=transaction
+                )
+            transaction.commit_transaction()
+            transaction = None  # Mark as committed to avoid abort
+        except Exception as e:
+            self.logger.error(f"Error in on_new_record_groups: {str(e)}")
+            if transaction:
+                try:
+                    transaction.abort_transaction()
+                except Exception as abort_error:
+                    self.logger.warning(f"Failed to abort transaction: {abort_error}")
+            raise e
 
     async def on_new_users(self, users: List[User]) -> None:
         # Create a transaction
-        transaction = self.arango_service.db.begin_transaction(
-                    read=read_collections,
-                    write=write_collections,
-            )
-
-        # Get all users from the database(Active and Inactive)
-        existing_users = await self.arango_service.get_users(self.org_id, active=False)
-        existing_user_emails = {existing_user.get("email") for existing_user in existing_users if existing_user is not None}
-        for user in users:
-            self.logger.info(f"Processing user: {user}")
-
-            if user.email not in existing_user_emails:
-                user_record = user.to_arango_base_record()
-                user_record["isActive"] = False
-                user_record["_key"] = str(uuid.uuid4())
-                user_record["orgId"] = self.org_id
-                user_record["createdAtTimestamp"] = get_epoch_timestamp_in_ms()
-                user_record["updatedAtTimestamp"] = user_record["createdAtTimestamp"]
-                await self.arango_service.batch_upsert_nodes(
-                    [user_record],
-                    collection=CollectionNames.USERS.value, transaction=transaction
+        transaction = None
+        try:
+            transaction = self.arango_service.db.begin_transaction(
+                        read=read_collections,
+                        write=write_collections,
                 )
 
-                 # Create a edge between the user and the org if it doesn't exist
-                user_org_relation = {
-                    "_from": f"{CollectionNames.USERS.value}/{user_record['_key']}",
-                    "_to": f"{CollectionNames.ORGS.value}/{self.org_id}",
-                    "createdAtTimestamp": user_record["createdAtTimestamp"],
-                    "updatedAtTimestamp": user_record["updatedAtTimestamp"],
-                    "entityType": "ORGANIZATION",
-                }
+            # Get all users from the database(Active and Inactive)
+            existing_users = await self.arango_service.get_users(self.org_id, active=False)
+            existing_user_emails = {existing_user.get("email") for existing_user in existing_users if existing_user is not None}
+            for user in users:
+                self.logger.info(f"Processing user: {user}")
 
-                await self.arango_service.batch_create_edges(
-                    [user_org_relation], collection=CollectionNames.BELONGS_TO.value, transaction=transaction
-                )
+                if user.email not in existing_user_emails:
+                    user_record = user.to_arango_base_record()
+                    user_record["isActive"] = False
+                    user_record["_key"] = str(uuid.uuid4())
+                    user_record["orgId"] = self.org_id
+                    user_record["createdAtTimestamp"] = get_epoch_timestamp_in_ms()
+                    user_record["updatedAtTimestamp"] = user_record["createdAtTimestamp"]
+                    await self.arango_service.batch_upsert_nodes(
+                        [user_record],
+                        collection=CollectionNames.USERS.value, transaction=transaction
+                    )
 
-                # Create a edge between the user and the app with sync status if it doesn't exist
-                # user_app_relation = {
-                #     "_from": f"{CollectionNames.USERS.value}/{user_record['_key']}",
-                #     "_to": f"{CollectionNames.APPS.value}/{self.app.id}",
-                #     "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                #     "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                #     "syncState": "PENDING",
-                # }
+                     # Create a edge between the user and the org if it doesn't exist
+                    user_org_relation = {
+                        "_from": f"{CollectionNames.USERS.value}/{user_record['_key']}",
+                        "_to": f"{CollectionNames.ORGS.value}/{self.org_id}",
+                        "createdAtTimestamp": user_record["createdAtTimestamp"],
+                        "updatedAtTimestamp": user_record["updatedAtTimestamp"],
+                        "entityType": "ORGANIZATION",
+                    }
 
-                # await self.arango_service.batch_create_edges(
-                #     [user_app_relation], collection=CollectionNames.BELONGS_TO.value, transaction=transaction
-                # )
+                    await self.arango_service.batch_create_edges(
+                        [user_org_relation], collection=CollectionNames.BELONGS_TO.value, transaction=transaction
+                    )
 
-        # Commit the transaction
-        transaction.commit_transaction()
+                    # Create a edge between the user and the app with sync status if it doesn't exist
+                    # user_app_relation = {
+                    #     "_from": f"{CollectionNames.USERS.value}/{user_record['_key']}",
+                    #     "_to": f"{CollectionNames.APPS.value}/{self.app.id}",
+                    #     "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                    #     "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    #     "syncState": "PENDING",
+                    # }
+
+                    # await self.arango_service.batch_create_edges(
+                    #     [user_app_relation], collection=CollectionNames.BELONGS_TO.value, transaction=transaction
+                    # )
+
+            transaction.commit_transaction()
+            transaction = None  # Mark as committed to avoid abort
+        except Exception as e:
+            self.logger.error(f"Error in on_new_users: {str(e)}")
+            if transaction:
+                try:
+                    transaction.abort_transaction()
+                except Exception as abort_error:
+                    self.logger.warning(f"Failed to abort transaction: {abort_error}")
+            raise e
 
     async def on_new_user_groups(self, user_groups: List[UserGroup], permissions: List[Permission]) -> None:
         # Create a transaction
+        transaction = None
+        try:
+            transaction = self.arango_service.db.begin_transaction(
+                        read=read_collections,
+                        write=write_collections,
+                )
 
-        for user_group in user_groups:
-            self.logger.info(f"Processing user group: {user_group}")
-            # Create user group if it doesn't exist
-            # Create a edge between the user and user group
+            for user_group in user_groups:
+                self.logger.info(f"Processing user group: {user_group}")
+                # Create user group if it doesn't exist
+                # Create a edge between the user and user group
 
-        # Commit the transaction
-
+            transaction.commit_transaction()
+            transaction = None  # Mark as committed to avoid abort
+        except Exception as e:
+            self.logger.error(f"Error in on_new_user_groups: {str(e)}")
+            if transaction:
+                try:
+                    transaction.abort_transaction()
+                except Exception as abort_error:
+                    self.logger.warning(f"Failed to abort transaction: {abort_error}")
+            raise e
 
     async def on_new_app(self, app: App) -> None:
         pass

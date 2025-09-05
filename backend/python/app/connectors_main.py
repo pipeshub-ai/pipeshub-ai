@@ -16,10 +16,17 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.sources.localKB.api.kb_router import kb_router
-from app.connectors.sources.microsoft.common.apps import OneDriveApp
-from app.connectors.sources.microsoft.onedrive.onedrive import (
+from app.connectors.sources.microsoft.common.apps import (
+    OneDriveApp,
+    SharePointOnlineApp,
+)
+from app.connectors.sources.microsoft.onedrive.connector import (
     OneDriveConnector,
     OneDriveCredentials,
+)
+from app.connectors.sources.microsoft.sharepoint_online.connector import (
+    SharePointConnector,
+    SharePointCredentials,
 )
 from app.containers.connector import (
     ConnectorAppContainer,
@@ -102,7 +109,9 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
             drive_sync_service = None
             gmail_sync_service = None
             onedrive_connector = None
+            sharepoint_connector = None
             for app in enabled_apps:
+                print(app["name"], "app name")
                 if app["name"].lower() == Connectors.GOOGLE_CALENDAR.value.lower():
                     logger.info("Skipping calendar sync for org %s", org_id)
                     continue
@@ -144,6 +153,38 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
                     app_container.onedrive_connector.override(providers.Object(onedrive_connector))
                     asyncio.create_task(onedrive_connector.run())  # type: ignore
                     logger.info("OneDrive connector initialized for org %s", org_id)
+
+                if app["name"].lower() == Connectors.SHAREPOINT_ONLINE.value.replace(" ", "").lower():
+                    print("SharePoint Online connector initialized for org %s", org_id)
+                    config_service = app_container.config_service()
+                    arango_service = await app_container.arango_service()
+                    data_entities_processor = DataSourceEntitiesProcessor(logger, SharePointOnlineApp(), arango_service, config_service)
+                    await data_entities_processor.initialize()
+
+                    credentials_config = await config_service.get_config(f"/services/connectors/sharepoint/config/{org_id}")
+                    print(credentials_config, "sharepointcredentials config")
+                    if not credentials_config:
+                        logger.error("SharePoint credentials not found")
+                        return False
+
+                    tenant_id = credentials_config.get("tenantId")
+                    client_id = credentials_config.get("clientId")
+                    client_secret = credentials_config.get("clientSecret")
+
+                    sharepoint_domain = credentials_config.get("sharepointDomain")
+                    has_admin_consent = credentials_config.get("hasAdminConsent", False)
+                    credentials = SharePointCredentials(
+                        tenant_id=tenant_id,
+                        client_id=client_id,
+                        client_secret=client_secret,
+                        sharepoint_domain=sharepoint_domain,
+                        has_admin_consent=has_admin_consent,
+                    )
+
+                    sharepoint_connector = SharePointConnector(logger, data_entities_processor, arango_service, credentials)
+                    app_container.sharepoint_connector.override(providers.Object(sharepoint_connector))
+                    asyncio.create_task(sharepoint_connector.run())  # type: ignore
+                    logger.info("SharePoint connector initialized for org %s", org_id)
 
             if drive_sync_service is not None:
                 try:

@@ -10,10 +10,10 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.services.base_arango_service import BaseArangoService
-from app.connectors.sources.microsoft.common.apps import OneDriveApp
-from app.connectors.sources.microsoft.onedrive.connector import (
-    OneDriveConnector,
-    OneDriveCredentials,
+from app.connectors.sources.microsoft.common.apps import SharePointOnlineApp
+from app.connectors.sources.microsoft.sharepoint_online.connector import (
+    SharePointConnector,
+    SharePointCredentials,
 )
 from app.services.kafka_consumer import KafkaConsumerManager
 from app.utils.logger import create_logger
@@ -58,7 +58,7 @@ async def test_run() -> None:
         }], CollectionNames.BELONGS_TO.value)
 
 
-    logger = create_logger("onedrive_connector")
+    logger = create_logger("sharepoint_online_connector")
     key_value_store = InMemoryKeyValueStore(logger, "app/config/default_config.json")
     config_service = ConfigurationService(logger, key_value_store)
     kafka_service = KafkaConsumerManager(logger, config_service, None, None)
@@ -69,16 +69,17 @@ async def test_run() -> None:
     if user_email:
         await create_test_users(user_email, arango_service)
 
-    data_entities_processor = DataSourceEntitiesProcessor(logger, OneDriveApp(), arango_service, config_service)
+    data_entities_processor = DataSourceEntitiesProcessor(logger, SharePointOnlineApp(), arango_service, config_service)
     await data_entities_processor.initialize()
-    credentials = OneDriveCredentials(
+    credentials = SharePointCredentials(
         tenant_id=os.getenv("AZURE_TENANT_ID"),
         client_id=os.getenv("AZURE_CLIENT_ID"),
         client_secret=os.getenv("AZURE_CLIENT_SECRET"),
+        sharepoint_domain=os.getenv("SHAREPOINT_DOMAIN"),
         has_admin_consent=True,
     )
-    onedrive_connector = OneDriveConnector(logger, data_entities_processor, arango_service, credentials)
-    await onedrive_connector.run()
+    sharepoint_connector = SharePointConnector(logger, data_entities_processor, arango_service, credentials)
+    await sharepoint_connector.run()
 
 if __name__ == "__main__":
     asyncio.run(test_run())

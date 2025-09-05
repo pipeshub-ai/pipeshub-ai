@@ -15,6 +15,8 @@ class RecordGroupType(str, Enum):
     NOTION_WORKSPACE = "NOTION_WORKSPACE"
     DRIVE = "DRIVE"
     JIRA_PROJECT = "JIRA_PROJECT"
+    SHAREPOINT_SITE = "SHAREPOINT_SITE"
+    SHAREPOINT_SUBSITE = "SHAREPOINT_SUBSITE"
 
 class RecordType(str, Enum):
     FILE = "FILE"
@@ -23,6 +25,9 @@ class RecordType(str, Enum):
     MESSAGE = "MESSAGE"
     MAIL = "MAIL"
     TICKET = "TICKET"
+    SHAREPOINT_LIST = "SHAREPOINT_LIST"
+    SHAREPOINT_LIST_ITEM = "SHAREPOINT_LIST_ITEM"
+    SHAREPOINT_DOCUMENT_LIBRARY = "SHAREPOINT_DOCUMENT_LIBRARY"
     OTHERS = "OTHERS"
 
 class RecordStatus(str, Enum):
@@ -291,7 +296,6 @@ class TicketRecord(Record):
     reporter_email: Optional[str] = None
     assignee_email: Optional[str] = None
     reporter_name: Optional[str] = None
-    assignee_name: Optional[str] = None
     creator_email: Optional[str] = None
     creator_name: Optional[str] = None
 
@@ -299,6 +303,7 @@ class TicketRecord(Record):
         return {
             "_key": self.id,
             "orgId": self.org_id,
+            "name": self.record_name,
             "summary": self.summary,
             "description": self.description,
             "status": self.status,
@@ -329,6 +334,102 @@ class TicketRecord(Record):
             "sourceLastModifiedTimestamp": self.source_updated_at,
         }
 
+class SharePointListRecord(Record):
+    """Record class for SharePoint lists"""
+
+    def to_kafka_record(self) -> Dict:
+        return {
+            "recordId": self.id,
+            "orgId": self.org_id,
+            "recordName": self.record_name,
+            "recordType": self.record_type.value,
+            "externalRecordId": self.external_record_id,
+            "version": self.version,
+            "origin": self.origin,
+            "connectorName": self.connector_name,
+            "mimeType": self.mime_type,
+            "webUrl": self.weburl,
+            "createdAtTimestamp": self.created_at,
+            "updatedAtTimestamp": self.updated_at,
+            "sourceCreatedAtTimestamp": self.source_created_at,
+            "sourceLastModifiedTimestamp": self.source_updated_at,
+            "externalRevisionId": self.external_revision_id,
+            "externalGroupId": self.external_record_group_id,
+            "parentExternalRecordId": self.parent_external_record_id,
+        }
+
+class SharePointListItemRecord(Record):
+    """Record class for SharePoint list items"""
+
+    def to_kafka_record(self) -> Dict:
+        return {
+            "recordId": self.id,
+            "orgId": self.org_id,
+            "recordName": self.record_name,
+            "recordType": self.record_type.value,
+            "externalRecordId": self.external_record_id,
+            "version": self.version,
+            "origin": self.origin,
+            "connectorName": self.connector_name,
+            "mimeType": self.mime_type,
+            "webUrl": self.weburl,
+            "createdAtTimestamp": self.created_at,
+            "updatedAtTimestamp": self.updated_at,
+            "sourceCreatedAtTimestamp": self.source_created_at,
+            "sourceLastModifiedTimestamp": self.source_updated_at,
+            "externalRevisionId": self.external_revision_id,
+            "externalGroupId": self.external_record_group_id,
+            "parentExternalRecordId": self.parent_external_record_id,
+        }
+
+class SharePointDocumentLibraryRecord(Record):
+    """Record class for SharePoint document libraries"""
+
+    def to_kafka_record(self) -> Dict:
+        return {
+            "recordId": self.id,
+            "orgId": self.org_id,
+            "recordName": self.record_name,
+            "recordType": self.record_type.value,
+            "externalRecordId": self.external_record_id,
+            "version": self.version,
+            "origin": self.origin,
+            "connectorName": self.connector_name,
+            "mimeType": self.mime_type,
+            "webUrl": self.weburl,
+            "createdAtTimestamp": self.created_at,
+            "updatedAtTimestamp": self.updated_at,
+            "sourceCreatedAtTimestamp": self.source_created_at,
+            "sourceLastModifiedTimestamp": self.source_updated_at,
+            "externalRevisionId": self.external_revision_id,
+            "externalGroupId": self.external_record_group_id,
+            "parentExternalRecordId": self.parent_external_record_id,
+        }
+
+class SharePointPageRecord(Record):
+    """Record class for SharePoint pages"""
+
+    def to_kafka_record(self) -> Dict:
+        return {
+            "recordId": self.id,
+            "orgId": self.org_id,
+            "recordName": self.record_name,
+            "recordType": self.record_type.value,
+            "externalRecordId": self.external_record_id,
+            "version": self.version,
+            "origin": self.origin,
+            "connectorName": self.connector_name,
+            "mimeType": self.mime_type,
+            "webUrl": self.weburl,
+            "createdAtTimestamp": self.created_at,
+            "updatedAtTimestamp": self.updated_at,
+            "sourceCreatedAtTimestamp": self.source_created_at,
+            "sourceLastModifiedTimestamp": self.source_updated_at,
+            "externalRevisionId": self.external_revision_id,
+            "externalGroupId": self.external_record_group_id,
+            "parentExternalRecordId": self.parent_external_record_id,
+        }
+
 class RecordGroup(BaseModel):
     id: str = Field(description="Unique identifier for the record group", default_factory=lambda: str(uuid4()))
     org_id: str = Field(description="Unique identifier for the organization", default="")
@@ -336,6 +437,7 @@ class RecordGroup(BaseModel):
     short_name: Optional[str] = Field(default=None, description="Short name of the record group")
     description: Optional[str] = Field(default=None, description="Description of the record group")
     external_group_id: Optional[str] = Field(description="External identifier for the record group")
+    parent_external_group_id: Optional[str] = Field(default=None, description="External identifier for the parent record group")
     connector_name: Optional[str] = Field(description="Name of the connector used to create the record group")
     web_url: Optional[str] = Field(default=None, description="Web URL of the record group")
     group_type: Optional[RecordGroupType] = Field(description="Type of the record group")
@@ -351,6 +453,7 @@ class RecordGroup(BaseModel):
             "shortName": self.short_name,
             "description": self.description,
             "externalGroupId": self.external_group_id,
+            "parentExternalGroupId": self.parent_external_group_id,
             "connectorName": self.connector_name,
             "groupType": self.group_type.value,
             "webUrl": self.web_url,
@@ -369,6 +472,7 @@ class RecordGroup(BaseModel):
             short_name=arango_base_record_group.get("shortName", None),
             description=arango_base_record_group.get("description", None),
             external_group_id=arango_base_record_group["externalGroupId"],
+            parent_external_group_id=arango_base_record_group.get("parentExternalGroupId", None),
             connector_name=arango_base_record_group["connectorName"],
             group_type=arango_base_record_group["groupType"],
             web_url=arango_base_record_group.get("webUrl", None),

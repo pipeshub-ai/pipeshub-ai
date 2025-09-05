@@ -34,10 +34,10 @@ class Connectors(Enum):
     GOOGLE_CALENDAR = "CALENDAR"
 
     ONEDRIVE = "ONEDRIVE"
-    SHAREPOINT_ONLINE = "SHAREPOINT_ONLINE"
+    SHAREPOINT_ONLINE = "SHAREPOINT ONLINE"
     OUTLOOK = "OUTLOOK"
-    OUTLOOK_CALENDAR = "OUTLOOK_CALENDAR"
-    MICROSOFT_TEAMS = "MICROSOFT_TEAMS"
+    OUTLOOK_CALENDAR = "OUTLOOK CALENDAR"
+    MICROSOFT_TEAMS = "MICROSOFT TEAMS"
 
     NOTION = "NOTION"
     SLACK = "SLACK"
@@ -167,6 +167,7 @@ class MimeTypes(Enum):
     GOOGLE_DOCS = "application/vnd.google-apps.document"
     GOOGLE_SHEETS = "application/vnd.google-apps.spreadsheet"
     GOOGLE_DRIVE_FOLDER = "application/vnd.google-apps.folder"
+    FOLDER = "text/directory"
     DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     DOC = "application/msword"
     PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"

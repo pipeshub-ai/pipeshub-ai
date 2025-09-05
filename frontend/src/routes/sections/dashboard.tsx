@@ -342,7 +342,7 @@ export const dashboardRoutes = [
                         element: <BusinessAdminOnlyRoute component={OneDrivePage} />,
                       },
                       {
-                        path: 'sharepoint',
+                        path: 'sharepointOnline',
                         element: <BusinessAdminOnlyRoute component={SharepointPage} />,
                       },
                     ],
@@ -460,7 +460,7 @@ export const dashboardRoutes = [
                         element: <IndividualOnlyRoute component={OneDrivePage} />,
                       },
                       {
-                        path: 'sharepoint',
+                        path: 'sharepointOnline',
                         element: <IndividualOnlyRoute component={SharepointPage} />,
                       },
                     ],

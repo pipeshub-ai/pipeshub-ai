@@ -1,3 +1,6 @@
+from app.config.constants.arangodb import Connectors
+from app.models.entities import RecordGroupType, RecordType
+
 # User schema for ArangoDB
 orgs_schema = {
     "rule": {
@@ -57,13 +60,9 @@ user_group_schema = {
             "description": {"type": "string"},
             # should be a uuid
             "externalGroupId": {"type": "string", "minLength": 1},
-            "groupType": {
-                "type": "string",
-                "enum": ["MS_USER_GROUPS", "GOOGLE_USER_GROUPS"],
-            },
             "connectorName": {
                 "type": "string",
-                "enum": ["ONEDRIVE", "DRIVE", "GMAIL", "CONFLUENCE", "JIRA", "SLACK"],
+                "enum": [connector.value for connector in Connectors],
             },
             "mail": {"type": "string"},
             "mailEnabled": {"type": "boolean", "default": False},
@@ -80,8 +79,6 @@ user_group_schema = {
         "required": [
             "groupName",
             "externalGroupId",
-            "recordType",
-            "groupType",
             "connectorName",
             "createdAtTimestamp",
         ],
@@ -133,13 +130,13 @@ record_schema = {
             "externalRevisionId": {"type": ["string", "null"], "default": None},
             "recordType": {
                 "type": "string",
-                "enum": ["FILE", "DRIVE", "WEBPAGE", "MESSAGE", "MAIL", "NOTION_DATABASE", "WEBPAGE_COMMENTS", "TICKET","OTHERS"],
+                "enum": [record_type.value for record_type in RecordType],
             },
             "version": {"type": "number", "default": 0},
             "origin": {"type": "string", "enum": ["UPLOAD", "CONNECTOR"]},
             "connectorName": {
                 "type": "string",
-                "enum": ["ONEDRIVE", "DRIVE", "CONFLUENCE", "GMAIL", "SLACK", "NOTION", "JIRA"],
+                "enum": [connector.value for connector in Connectors],
             },
             "mimeType": {"type": ["string", "null"], "default": None},
             "webUrl": {"type": ["string", "null"]},
@@ -318,12 +315,13 @@ record_group_schema = {
             "externalRevisionId": {"type": ["string", "null"], "default": None},
             "groupType": {
                 "type": "string",
-                "enum": ["SLACK_CHANNEL", "CONFLUENCE_SPACES","KB", "NOTION_WORKSPACE", "DRIVE", "JIRA_PROJECT"],
+                "enum": [group_type.value for group_type in RecordGroupType],
             },
             "connectorName": {
                 "type": "string",
-                "enum": ["ONEDRIVE", "DRIVE", "CONFLUENCE", "JIRA", "SLACK","KB", "NOTION"],
+                "enum": [connector.value for connector in Connectors],
             },
+            "parentExternalGroupId": {"type": ["string", "null"]},
             "webUrl": {"type": ["string", "null"]},
             "createdBy":{"type": ["string", "null"]},
             "deletedByUserId":{"type": ["string", "null"]},

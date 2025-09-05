@@ -211,6 +211,7 @@ export const getSharePointConfig = async (
     configurationManagerCommandOptions,
   );
   const response = await cmCommand.execute();
+  console.log('sharepoint config', response);
   return response;
 };
 
@@ -243,6 +244,7 @@ export const setSharePointConfig = async (
   if (!req.user) {
     throw new NotFoundError('User Not Found');
   }
+  console.log('req.body', req.body);
   const configurationManagerCommandOptions: ConfigurationManagerCommandOptions =
     {
       uri: `${url}/${SHAREPOINT_CONFIG_PATH}`,
