@@ -208,20 +208,16 @@ export class Application {
   private configureMiddleware(appConfig: AppConfig): void {
     const isDev = process.env.NODE_ENV !== 'production';
     // Security middleware - configure helmet once with all options
-    const connectSrc = process.env.CSP_CONNECT_SRCS?.split(',') ?? [
-      "'self'",
-      "https://login.microsoftonline.com",
-      "https://graph.microsoft.com",
-    ];
-    if (!connectSrc.includes("'self'")) {
-      connectSrc.push("'self'");
-    }
-    
-    // Get connector public url
-    const connectorPublicUrl = appConfig.connectorPublicUrl;
-    if (connectorPublicUrl) {
-      connectSrc.push(connectorPublicUrl);
-    }
+    const envConnectSrcs = process.env.CSP_CONNECT_SRCS?.split(',').filter(Boolean) ?? [];
+    const connectSrc = [
+      ...new Set([
+        "'self'",
+        'https://login.microsoftonline.com',
+        'https://graph.microsoft.com',
+        ...envConnectSrcs,
+        appConfig.connectorPublicUrl,
+      ]),
+    ].filter(Boolean);
 
     this.app.use(helmet({
       crossOriginOpenerPolicy: { policy: "unsafe-none" }, // Required for MSAL popup
