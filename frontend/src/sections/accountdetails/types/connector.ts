@@ -22,7 +22,7 @@ export enum ConnectorNames {
   GOOGLE_WORKSPACE = 'Google Workspace',
   ATLASSIAN = 'Atlassian',
   ONEDRIVE = 'OneDrive',
-  SHAREPOINT_ONLINE = 'SharePoint Online',
+  SHAREPOINT_ONLINE = 'Sharepoint Online',
   GMAIL = 'Gmail',
   CALENDAR = 'Calendar',
   DRIVE = 'Drive',
