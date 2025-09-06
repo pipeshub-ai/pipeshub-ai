@@ -8,7 +8,9 @@ except ImportError:
     raise ImportError("dropbox is not installed. Please install it with `pip install dropbox`")
 
 from app.config.configuration_service import ConfigurationService
+
 from app.sources.client.iclient import IClient
+from app.sources.client.http.http_client import HTTPClient
 
 
 @dataclass
@@ -26,23 +28,11 @@ class DropboxResponse:
         return json.dumps(self.to_dict())
 
 
-class DropboxRESTClientViaToken:
-    async def request(self, method: str, url: str, headers: dict = None, json: dict = None, **kwargs):
-        """Basic async request wrapper for Dropbox API endpoints."""
-        import aiohttp
-        headers = headers or {}
-        headers['Authorization'] = f'Bearer {self.access_token}'
-        headers['Content-Type'] = 'application/json'
-        async with aiohttp.ClientSession() as session:
-            async with session.request(method, url, headers=headers, json=json, **kwargs) as resp:
-                data = await resp.read()
-                # Return a dict for compatibility with example.py
-                try:
-                    return await resp.json()
-                except Exception:
-                    return {"status": resp.status, "data": data}
+
+class DropboxRESTClientViaToken(HTTPClient):
     """Dropbox client via short/long‑lived OAuth2 access token."""
     def __init__(self, access_token: str, timeout: Optional[float] = None, base_url: str = "https://api.dropboxapi.com") -> None:
+        super().__init__(access_token, token_type="Bearer")
         self.access_token = access_token
         self.timeout = timeout
         self.base_url = base_url
@@ -54,7 +44,7 @@ class DropboxRESTClientViaToken:
     def get_base_url(self) -> str:
         return self.base_url
 
-class DropboxRESTClientViaOAuth2:
+class DropboxRESTClientViaOAuth2(HTTPClient):
     """
     Dropbox client via refresh token + app key/secret (recommended for servers).
 
@@ -74,6 +64,7 @@ class DropboxRESTClientViaOAuth2:
         user_agent: Optional[str] = None,
         base_url: str = "https://api.dropboxapi.com"
     ) -> None:
+        super().__init__(refresh_token, token_type="Bearer")
         self.app_key = app_key
         self.app_secret = app_secret
         self.refresh_token = refresh_token
@@ -90,20 +81,7 @@ class DropboxRESTClientViaOAuth2:
             user_agent=self.user_agent,
         )
     
-    async def request(self, method: str, url: str, headers: dict = None, json: dict = None, **kwargs):
-        """Basic async request wrapper for Dropbox API endpoints (OAuth2)."""
-        import aiohttp
-        # You would need to implement token refresh logic here for production use
-        headers = headers or {}
-        headers['Authorization'] = f'Bearer {self.refresh_token}'
-        headers['Content-Type'] = 'application/json'
-        async with aiohttp.ClientSession() as session:
-            async with session.request(method, url, headers=headers, json=json, **kwargs) as resp:
-                data = await resp.read()
-                try:
-                    return await resp.json()
-                except Exception:
-                    return {"status": resp.status, "data": data}
+    # Use HTTPClient's execute method for HTTP requests
 
     def get_base_url(self) -> str:
         return self.base_url
