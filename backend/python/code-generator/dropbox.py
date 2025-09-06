@@ -1,17 +1,15 @@
 # ruff: noqa
-
-# NOTE — Development-only generator (Dropbox)
+"""
+Dropbox code generator
+"""
 
 import sys
 from pathlib import Path
 from typing import List, Optional
-
 from utils import process_connector
 
 CONNECTOR = "dropbox"
-# TODO: Dropbox OpenAPI spec URL (replace with actual spec if available)
-SPEC_URL = "https://raw.githubusercontent.com/dropbox/dropbox-api-spec/main/openapi.yaml"
-
+SPEC_URL = str(Path(__file__).parent / "dropbox.yaml")
 
 def _parse_args(argv: list[str]) -> Optional[List[str]]:
     """
@@ -23,7 +21,6 @@ def _parse_args(argv: list[str]) -> Optional[List[str]]:
         return argv[2:] or None
     return None
 
-
 def main() -> None:
     prefixes = _parse_args(sys.argv)
     if prefixes:
@@ -31,7 +28,6 @@ def main() -> None:
     base_dir = Path(__file__).parent
     process_connector(CONNECTOR, SPEC_URL, base_dir, path_prefixes=prefixes)
     print("\n🎉 Done (Dropbox)!")
-
 
 if __name__ == "__main__":
     main()
