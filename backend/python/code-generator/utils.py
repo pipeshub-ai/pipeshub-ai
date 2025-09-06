@@ -21,6 +21,25 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 def download_spec(connector: str, url: str, spec_file: Path) -> None:
     """Download OpenAPI spec JSON to a local file."""
+    # If the url looks like a local file path, just copy/read it
+    if url.startswith("file://") or (not url.lower().startswith("http://") and not url.lower().startswith("https://")):
+        src_path = Path(url.replace("file://", ""))
+        if not src_path.exists():
+            raise FileNotFoundError(f"Spec file not found: {src_path}")
+        print(f"📥 Using local {connector.capitalize()} OpenAPI spec from {src_path}")
+        # Convert YAML to JSON if needed
+        if src_path.suffix in [".yaml", ".yml"] and spec_file.suffix == ".json":
+            import yaml
+            with open(src_path, "r", encoding="utf-8") as f:
+                yaml_data = yaml.safe_load(f)
+            with open(spec_file, "w", encoding="utf-8") as f:
+                json.dump(yaml_data, f, indent=2)
+            print(f"✅ {connector.capitalize()} OpenAPI YAML converted to JSON at {spec_file}")
+        else:
+            spec_file.write_text(src_path.read_text(encoding="utf-8"), encoding="utf-8")
+            print(f"✅ {connector.capitalize()} OpenAPI spec copied to {spec_file}")
+        return
+
     try:
         import requests
     except ImportError:
@@ -41,7 +60,7 @@ def generate_models(connector: str, spec_file: Path, model_file: Path) -> None:
     print("✅ Installed datamodel-code-generator")
 
     cmd = [
-        "datamodel-codegen",
+        sys.executable, "-m", "datamodel_code_generator",
         "--input", str(spec_file),
         "--input-file-type", "openapi",
         "--output", str(model_file),
