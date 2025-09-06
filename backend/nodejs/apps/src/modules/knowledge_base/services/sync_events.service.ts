@@ -8,6 +8,7 @@ export enum EventType {
   SyncDriveEvent = 'drive.resync',
   SyncGmailEvent = 'gmail.resync',
   SyncOneDriveEvent = 'onedrive.resync',
+  SyncSharePointOnlineEvent = 'sharepointOnline.resync',
 }
 
 export interface Event {
@@ -37,6 +38,7 @@ interface BaseSyncEvent {
 export interface SyncDriveEvent extends BaseSyncEvent {}
 export interface SyncGmailEvent extends BaseSyncEvent {}
 export interface SyncOneDriveEvent extends BaseSyncEvent {}
+export interface SyncSharePointOnlineEvent extends BaseSyncEvent {}
 
 @injectable()
 export class SyncEventProducer extends BaseKafkaProducerConnection {

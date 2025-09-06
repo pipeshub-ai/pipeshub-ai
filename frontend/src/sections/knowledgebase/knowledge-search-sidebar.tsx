@@ -5,6 +5,8 @@ import appIcon from '@iconify-icons/mdi/apps';
 import { useNavigate } from 'react-router-dom';
 import closeIcon from '@iconify-icons/mdi/close';
 import gmailIcon from '@iconify-icons/mdi/gmail';
+import onedriveIcon from '@iconify-icons/mdi/onedrive';
+import sharepointIcon from '@iconify-icons/mdi/microsoft-sharepoint';
 import upIcon from '@iconify-icons/mdi/chevron-up';
 import magnifyIcon from '@iconify-icons/mdi/magnify';
 import leftIcon from '@iconify-icons/mdi/chevron-left';
@@ -66,6 +68,8 @@ const apps = [
   { id: 'local', name: 'Local KB', icon: cloudUploadIcon, color: '#34A853' },
   { id: 'drive', name: 'Google Drive', icon: googleDriveIcon, color: '#4285F4' },
   { id: 'gmail', name: 'Gmail', icon: gmailIcon, color: '#EA4335' },
+  {id: 'onedrive', name: 'OneDrive', icon: onedriveIcon, color: '#0078D4' },
+  { id: 'sharepointOnline', name: 'SharePoint Online', icon: sharepointIcon, color: '#0078D4' },
 ];
 
 // Constants

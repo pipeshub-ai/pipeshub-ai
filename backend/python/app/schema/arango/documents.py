@@ -1,3 +1,6 @@
+from app.config.constants.arangodb import Connectors
+from app.models.entities import RecordGroupType, RecordType
+
 # User schema for ArangoDB
 orgs_schema = {
     "rule": {
@@ -57,13 +60,9 @@ user_group_schema = {
             "description": {"type": "string"},
             # should be a uuid
             "externalGroupId": {"type": "string", "minLength": 1},
-            "groupType": {
-                "type": "string",
-                "enum": ["MS_USER_GROUPS", "GOOGLE_USER_GROUPS"],
-            },
             "connectorName": {
                 "type": "string",
-                "enum": ["ONEDRIVE", "DRIVE", "GMAIL", "CONFLUENCE", "JIRA", "SLACK"],
+                "enum": [connector.value for connector in Connectors],
             },
             "mail": {"type": "string"},
             "mailEnabled": {"type": "boolean", "default": False},
@@ -80,8 +79,6 @@ user_group_schema = {
         "required": [
             "groupName",
             "externalGroupId",
-            "recordType",
-            "groupType",
             "connectorName",
             "createdAtTimestamp",
         ],
@@ -133,13 +130,13 @@ record_schema = {
             "externalRevisionId": {"type": ["string", "null"], "default": None},
             "recordType": {
                 "type": "string",
-                "enum": ["FILE", "DRIVE", "WEBPAGE", "MESSAGE", "MAIL", "NOTION_DATABASE", "WEBPAGE_COMMENTS", "TICKET","OTHERS"],
+                "enum": [record_type.value for record_type in RecordType],
             },
             "version": {"type": "number", "default": 0},
             "origin": {"type": "string", "enum": ["UPLOAD", "CONNECTOR"]},
             "connectorName": {
                 "type": "string",
-                "enum": ["ONEDRIVE", "DRIVE", "CONFLUENCE", "GMAIL", "SLACK", "NOTION", "JIRA"],
+                "enum": [connector.value for connector in Connectors],
             },
             "mimeType": {"type": ["string", "null"], "default": None},
             "webUrl": {"type": ["string", "null"]},
@@ -318,12 +315,13 @@ record_group_schema = {
             "externalRevisionId": {"type": ["string", "null"], "default": None},
             "groupType": {
                 "type": "string",
-                "enum": ["SLACK_CHANNEL", "CONFLUENCE_SPACES","KB", "NOTION_WORKSPACE", "DRIVE", "JIRA_PROJECT"],
+                "enum": [group_type.value for group_type in RecordGroupType],
             },
             "connectorName": {
                 "type": "string",
-                "enum": ["ONEDRIVE", "DRIVE", "CONFLUENCE", "JIRA", "SLACK","KB", "NOTION"],
+                "enum": [connector.value for connector in Connectors],
             },
+            "parentExternalGroupId": {"type": ["string", "null"]},
             "webUrl": {"type": ["string", "null"]},
             "createdBy":{"type": ["string", "null"]},
             "deletedByUserId":{"type": ["string", "null"]},
@@ -380,9 +378,11 @@ agent_template_schema = {
                         "name": {"type": "string", "minLength": 1},
                         "description": {"type": "string", "minLength": 1},
                     },
+                    "nullable": True,
                     "required": ["name"],
                     "additionalProperties": True,
-                }
+                },
+                "default": [],
             },
             "models": {
                 "type": "array",
@@ -394,15 +394,18 @@ agent_template_schema = {
                         "provider": {"type": "string", "minLength": 1},
                         "config": {"type": "object"},
                     },
+                    "nullable": True,
                     "required": ["name", "role", "provider"],
                     "additionalProperties": True,
-                }
+                },
+                "default": [],
             },
             "memory": {
                 "type": "object",
                 "properties": {
                     "type": {"type": "array", "items": {"type": "string", "enum": ["CONVERSATIONS", "KNOWLEDGE_BASE", "APPS", "ACTIVITIES", "VECTOR_DB"]}},
                 },
+                "nullable": True,
                 "required": ["type"],
                 "additionalProperties": True,
             },
@@ -421,7 +424,7 @@ agent_template_schema = {
             "deletedAtTimestamp": {"type": ["number", "null"]},
             "isDeleted": {"type": "boolean", "default": False},
         },
-        "required": ["name", "description", "startMessage", "systemPrompt", "tools"],
+        "required": ["name", "description", "startMessage", "systemPrompt"],
         "additionalProperties": True,
     },
     "level": "strict",
@@ -494,6 +497,27 @@ agent_schema = {
     "message": "Document does not match the agent schema.",
 }
 
+team_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "minLength": 1},
+            "description": {"type": "string", "minLength": 1},
+            "orgId": {"type": ["string", "null"]},
+            "createdBy": {"type": ["string", "null"]},
+            "updatedByUserId": {"type": ["string", "null"]},
+            "deletedByUserId": {"type": ["string", "null"]},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+            "deletedAtTimestamp": {"type": "number"},
+            "isDeleted": {"type": "boolean", "default": False},
+        },
+        "required": ["name", "description"],
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the team schema.",
+}
 
 # future schema
 

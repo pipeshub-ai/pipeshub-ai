@@ -39,6 +39,7 @@ import {
   SyncDriveEvent,
   SyncGmailEvent,
   SyncOneDriveEvent,
+  SyncSharePointOnlineEvent,
 } from './sync_events.service';
 import {
   IServiceFileRecord,
@@ -2791,6 +2792,8 @@ export class RecordRelationService {
                 return SyncEventType.SyncGmailEvent;
               case 'ONEDRIVE':
                 return SyncEventType.SyncOneDriveEvent;
+              case 'SHAREPOINT ONLINE':
+                return SyncEventType.SyncSharePointOnlineEvent;
               default:
                 return SyncEventType.SyncDriveEvent;
             }
@@ -2817,7 +2820,7 @@ export class RecordRelationService {
 
   async createResyncConnectorEventPayload(
     resyncConnectorEventPayload: any,
-  ): Promise<SyncDriveEvent | SyncGmailEvent | SyncOneDriveEvent> {
+  ): Promise<SyncDriveEvent | SyncGmailEvent | SyncOneDriveEvent | SyncSharePointOnlineEvent> {
     const connectorName = resyncConnectorEventPayload.connectorName;
 
     return {

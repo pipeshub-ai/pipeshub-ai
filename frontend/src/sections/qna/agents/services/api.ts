@@ -9,6 +9,7 @@ import type {
   AgentFilterOptions,
   AgentStats,
 } from 'src/types/agent';
+import { KBPermission } from 'src/sections/knowledgebase/types/kb';
 
 export interface PaginationParams {
   page?: number;
@@ -103,7 +104,7 @@ class AgentApiService {
   static async updateAgent(agentKey: string, data: Partial<AgentFormData>): Promise<Agent> {
     // Transform data before sending
     const transformedData = this.transformAgentFormData(data);
-    const response = await axios.patch(`${this.baseUrl}/${agentKey}`, transformedData);
+    const response = await axios.put(`${this.baseUrl}/${agentKey}`, transformedData);
     return response.data.agent;
   }
 
@@ -343,14 +344,16 @@ class AgentApiService {
 
     // Transform tools to ensure they're in the correct format
     if (transformed.tools && Array.isArray(transformed.tools)) {
-      transformed.tools = transformed.tools.map((tool) => {
-        // If tool is already in app_name.tool_name format, keep it
-        if (tool.includes('.')) {
+      transformed.tools = transformed.tools
+        .filter((tool) => tool && typeof tool === 'string') // Filter out undefined/null/non-string tools
+        .map((tool) => {
+          // If tool is already in app_name.tool_name format, keep it
+          if (tool.includes('.')) {
+            return tool;
+          }
+          // Otherwise, assume it needs transformation (though this shouldn't happen with the new UI)
           return tool;
-        }
-        // Otherwise, assume it needs transformation (though this shouldn't happen with the new UI)
-        return tool;
-      });
+        });
     }
 
     // Ensure KB field contains IDs (this should already be the case with the new UI)
@@ -461,6 +464,12 @@ class AgentApiService {
       return {};
     }
   }
+
+  static async listAgentPermissions(agentId: string): Promise<KBPermission[]> {
+    const response = await axios.get(`/api/v1/agents/${agentId}/permissions`);
+    return response.data.permissions;
+  }
+  
 }
 
 export default AgentApiService;

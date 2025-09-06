@@ -6,7 +6,9 @@ export type ConnectorName =
   | 'GOOGLE_DRIVE'
   | 'CONFLUENCE'
   | 'JIRA'
-  | 'SLACK';
+  | 'SLACK'
+  | 'SHAREPOINT ONLINE'
+  | 'GMAIL';
 export type IndexingStatus =
   | 'NOT_STARTED'
   | 'IN_PROGRESS'

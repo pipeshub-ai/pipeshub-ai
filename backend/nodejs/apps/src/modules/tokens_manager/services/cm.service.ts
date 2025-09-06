@@ -386,6 +386,15 @@ export class ConfigService {
     );
     return parsedUrl.connectors.endpoint;
   }
+  public async getConnectorPublicUrl(): Promise<string> {
+    const url =
+      (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
+      '{}';
+
+    let parsedUrl = JSON.parse(url);
+    return parsedUrl.connectors.publicEndpoint || process.env.CONNECTOR_PUBLIC_BACKEND;
+  }
+
   public async getIndexingUrl(): Promise<string> {
     const url =
       (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
