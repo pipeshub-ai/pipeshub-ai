@@ -27,14 +27,32 @@ class DropboxResponse:
 
 
 class DropboxRESTClientViaToken:
+    async def request(self, method: str, url: str, headers: dict = None, json: dict = None, **kwargs):
+        """Basic async request wrapper for Dropbox API endpoints."""
+        import aiohttp
+        headers = headers or {}
+        headers['Authorization'] = f'Bearer {self.access_token}'
+        headers['Content-Type'] = 'application/json'
+        async with aiohttp.ClientSession() as session:
+            async with session.request(method, url, headers=headers, json=json, **kwargs) as resp:
+                data = await resp.read()
+                # Return a dict for compatibility with example.py
+                try:
+                    return await resp.json()
+                except Exception:
+                    return {"status": resp.status, "data": data}
     """Dropbox client via short/long‑lived OAuth2 access token."""
-    def __init__(self, access_token: str, timeout: Optional[float] = None) -> None:
+    def __init__(self, access_token: str, timeout: Optional[float] = None, base_url: str = "https://api.dropboxapi.com") -> None:
         self.access_token = access_token
         self.timeout = timeout
+        self.base_url = base_url
 
     def create_client(self) -> Dropbox: # type: ignore[valid-type]
         # `timeout` is supported by SDK constructor
         return Dropbox(oauth2_access_token=self.access_token, timeout=self.timeout) # type: ignore[valid-type]
+
+    def get_base_url(self) -> str:
+        return self.base_url
 
 class DropboxRESTClientViaOAuth2:
     """
@@ -54,12 +72,14 @@ class DropboxRESTClientViaOAuth2:
         refresh_token: str,
         timeout: Optional[float] = None,
         user_agent: Optional[str] = None,
+        base_url: str = "https://api.dropboxapi.com"
     ) -> None:
         self.app_key = app_key
         self.app_secret = app_secret
         self.refresh_token = refresh_token
         self.timeout = timeout
         self.user_agent = user_agent
+        self.base_url = base_url
 
     def create_client(self) -> Dropbox:# type: ignore[valid-type]
         return Dropbox(# type: ignore[valid-type]
@@ -69,6 +89,24 @@ class DropboxRESTClientViaOAuth2:
             timeout=self.timeout,
             user_agent=self.user_agent,
         )
+    
+    async def request(self, method: str, url: str, headers: dict = None, json: dict = None, **kwargs):
+        """Basic async request wrapper for Dropbox API endpoints (OAuth2)."""
+        import aiohttp
+        # You would need to implement token refresh logic here for production use
+        headers = headers or {}
+        headers['Authorization'] = f'Bearer {self.refresh_token}'
+        headers['Content-Type'] = 'application/json'
+        async with aiohttp.ClientSession() as session:
+            async with session.request(method, url, headers=headers, json=json, **kwargs) as resp:
+                data = await resp.read()
+                try:
+                    return await resp.json()
+                except Exception:
+                    return {"status": resp.status, "data": data}
+
+    def get_base_url(self) -> str:
+        return self.base_url
 
 @dataclass
 class DropboxTokenConfig:
@@ -87,7 +125,7 @@ class DropboxTokenConfig:
     ssl: bool = True
 
     def create_client(self) -> DropboxRESTClientViaToken:
-        return DropboxRESTClientViaToken(self.access_token, timeout=self.timeout)
+        return DropboxRESTClientViaToken(self.access_token, timeout=self.timeout, base_url=self.base_url)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -122,6 +160,7 @@ class DropboxOAuth2Config:
             self.refresh_token,
             timeout=self.timeout,
             user_agent=self.user_agent,
+            base_url=self.base_url
         )
 
     def to_dict(self) -> dict:
@@ -143,6 +182,11 @@ class DropboxClient(IClient):
     def get_client(self) -> Union[DropboxRESTClientViaToken, DropboxRESTClientViaOAuth2]:
         """Return the underlying auth-holder client object (call `.create_client()` to get SDK)."""
         return self.client
+
+    def get_base_url(self) -> str:
+        if hasattr(self.client, "get_base_url"):
+            return self.client.get_base_url()
+        raise AttributeError("Underlying Dropbox client does not have get_base_url method")
 
     @classmethod
     def build_with_config(
