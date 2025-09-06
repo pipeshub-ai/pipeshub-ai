@@ -6,7 +6,7 @@ const SharePointConnector = () => (
     connectorId="sharepointOnline"
     accountType="business"
     configDialogComponent={ConfigureConnectorDialog}
-    statsConnectorNames={['Sharepoint Online']}
+    statsConnectorNames={['SharePoint Online']}
   />
 );
 
