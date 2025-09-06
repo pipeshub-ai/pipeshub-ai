@@ -48,14 +48,14 @@ class Record(BaseModel):
     record_type: RecordType = Field(description="Type/category of the record")
     record_status: RecordStatus = Field(default=RecordStatus.NOT_STARTED)
     parent_record_type: Optional[str] = Field(default=None, description="Type of the parent record")
-    record_group_type: Optional[str] = Field(description="Type of the record group")
+    record_group_type: Optional[str] = Field(description="Type of the record group",default=None)
     external_record_id: str = Field(description="Unique identifier for the record in the external system")
     external_revision_id: Optional[str] = Field(default=None, description="Unique identifier for the revision of the record in the external system")
     external_record_group_id: Optional[str] = Field(default=None, description="Unique identifier for the record group in the external system")
     parent_external_record_id: Optional[str] = Field(default=None, description="Unique identifier for the parent record in the external system")
     version: int = Field(description="Version of the record")
     origin: str = Field(description="Origin of the record")
-    connector_name: Optional[str] = Field(description="Name of the connector used to create the record")
+    connector_name: Optional[str] = Field(description="Name of the connector used to create the record",default=None)
     virtual_record_id: Optional[str] = Field(description="Virtual record identifier", default=None)
     summary_document_id: Optional[str] = Field(description="Summary document identifier", default=None)
     md5_hash: Optional[str] = Field(default=None, description="MD5 hash of the record")
@@ -70,12 +70,9 @@ class Record(BaseModel):
     weburl: Optional[str] = None
     signed_url: Optional[str] = None
     fetch_signed_url: Optional[str] = None
-    mime_type: Optional[str] = None
     # Content blocks
     block_containers: BlocksContainer = Field(default_factory=BlocksContainer, description="List of block containers in this record")
-
     semantic_metadata: Optional[SemanticMetadata] = None
-
     # Relationships
     parent_record_id: Optional[str] = None
     child_record_ids: Optional[List[str]] = Field(default_factory=list)

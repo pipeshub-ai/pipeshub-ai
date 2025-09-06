@@ -41,7 +41,7 @@ dependencies = [
     "jsonschema==4.23.0",
     "langchain-anthropic==0.3.17",
     "langchain-aws==0.2.18",
-    "langchain-cohere==0.4.4",
+    "langchain-cohere==0.4.5",
     "langchain-community==0.3.18",
     "langchain-experimental==0.3.4",
     "langchain-fireworks==0.3.0",

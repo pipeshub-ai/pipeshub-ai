@@ -14,21 +14,23 @@ def transform_bbox_to_corners(bbox: dict) -> list[list[float]]:
         list: Four corner coordinates as [[x1, y1], [x2, y2], [x3, y3], [x4, y4]]
               Order: top-left, top-right, bottom-right, bottom-left
     """
-    left, top, right, bottom = bbox['l'], bbox['t'], bbox['r'], bbox['b']
-    coord_origin = bbox.get('coord_origin', 'TOPLEFT')
+    # Validate input
 
-    if coord_origin == "BOTTOMLEFT":
-        actual_top = max(top, bottom)
-        actual_bottom = min(top, bottom)
-    else:
-        actual_top = min(top, bottom)
-        actual_bottom = max(top, bottom)
+
+    required_keys = ['l', 't', 'r', 'b']
+    for key in required_keys:
+        if key not in bbox:
+            raise ValueError(f"bbox missing required key: {key}")
+
+    left, top, right, bottom = bbox['l'], bbox['t'], bbox['r'], bbox['b']
+
+
 
     corners = [
-        [left, actual_top],        # top-left
-        [right, actual_top],        # top-right
-        [right, actual_bottom],     # bottom-right
-        [left, actual_bottom]      # bottom-left
+        [left, top],        # top-left
+        [right, top],        # top-right
+        [right, bottom],     # bottom-right
+        [left, bottom]      # bottom-left
     ]
 
     return corners
@@ -45,12 +47,19 @@ def normalize_corner_coordinates(corners: list[list[float]], page_width: float, 
     Returns:
         list: Normalized corner coordinates where each coordinate is in [0, 1] range
     """
-    normalized_corners = []
+    # Validate input
 
-    for corner in corners:
+    if page_width <= 0 or page_height <= 0:
+        raise ValueError(f"page_width and page_height must be positive, got {page_width}, {page_height}")
+
+    normalized_corners = []
+    CORNERS_COUNT = 2
+    for i, corner in enumerate(corners):
+        if not isinstance(corner, list) or len(corner) < CORNERS_COUNT:
+            raise ValueError(f"corner {i} must be a list with at least 2 elements, got {corner}")
         x, y = corner
         normalized_x = x / page_width
-        normalized_y = y / page_height
+        normalized_y = (page_height - y) / page_height
         normalized_corners.append([normalized_x, normalized_y])
 
     return normalized_corners

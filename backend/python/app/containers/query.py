@@ -41,6 +41,7 @@ class QueryAppContainer(BaseAppContainer):
         config_service=config_service,
         logger=logger,
         vector_db_service=vector_db_service,
+        arango_service=arango_service,
     )
     reranker_service = providers.Singleton(
         RerankerService,
