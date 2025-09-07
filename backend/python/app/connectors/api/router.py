@@ -335,6 +335,8 @@ async def stream_onedrive_file_content(request: Request, arango_service: BaseAra
     """
     try:
         onedrive_connector: OneDriveConnector = await get_onedrive_connector(request)
+        if not onedrive_connector:
+            raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="OneDrive connector not found")
         # Todo: Validate if user has access to the record
         record = await arango_service.get_record_by_id(record_id)
         if not record:
