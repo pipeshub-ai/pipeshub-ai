@@ -26,20 +26,23 @@ class DropboxResponse:
     def to_json(self) -> str:
         return json.dumps(self.to_dict())
 
+
 class DropboxRESTClientViaToken(HTTPClient):
-    """Dropbox client via short/long‑lived OAuth2 access token."""
+    """Dropbox client via short/long-lived OAuth2 access token."""
+
     def __init__(self, access_token: str, timeout: Optional[float] = None, base_url: str = "https://api.dropboxapi.com") -> None:
         super().__init__(access_token, token_type="Bearer")
         self.access_token = access_token
         self.timeout = timeout
         self.base_url = base_url
 
-    def create_client(self) -> Dropbox: # type: ignore[valid-type]
+    def create_client(self) -> Dropbox:  # type: ignore[valid-type]
         # `timeout` is supported by SDK constructor
-        return Dropbox(oauth2_access_token=self.access_token, timeout=self.timeout) # type: ignore[valid-type]
+        return Dropbox(oauth2_access_token=self.access_token, timeout=self.timeout)  # type: ignore[valid-type]
 
     def get_base_url(self) -> str:
         return self.base_url
+
 
 class DropboxRESTClientViaOAuth2(HTTPClient):
     """
@@ -52,6 +55,7 @@ class DropboxRESTClientViaOAuth2(HTTPClient):
         timeout: Optional request timeout (seconds)
         user_agent: Optional custom UA string
     """
+
     def __init__(
         self,
         app_key: str,
@@ -59,7 +63,7 @@ class DropboxRESTClientViaOAuth2(HTTPClient):
         refresh_token: str,
         timeout: Optional[float] = None,
         user_agent: Optional[str] = None,
-        base_url: str = "https://api.dropboxapi.com"
+        base_url: str = "https://api.dropboxapi.com",
     ) -> None:
         super().__init__(refresh_token, token_type="Bearer")
         self.app_key = app_key
@@ -69,8 +73,8 @@ class DropboxRESTClientViaOAuth2(HTTPClient):
         self.user_agent = user_agent
         self.base_url = base_url
 
-    def create_client(self) -> Dropbox:# type: ignore[valid-type]
-        return Dropbox(# type: ignore[valid-type]
+    def create_client(self) -> Dropbox:  # type: ignore[valid-type]
+        return Dropbox(  # type: ignore[valid-type]
             oauth2_refresh_token=self.refresh_token,
             app_key=self.app_key,
             app_secret=self.app_secret,
@@ -78,10 +82,9 @@ class DropboxRESTClientViaOAuth2(HTTPClient):
             user_agent=self.user_agent,
         )
 
-    # Use HTTPClient's execute method for HTTP requests
-
     def get_base_url(self) -> str:
         return self.base_url
+
 
 @dataclass
 class DropboxTokenConfig:
@@ -135,11 +138,12 @@ class DropboxOAuth2Config:
             self.refresh_token,
             timeout=self.timeout,
             user_agent=self.user_agent,
-            base_url=self.base_url
+            base_url=self.base_url,
         )
 
     def to_dict(self) -> dict:
         return asdict(self)
+
 
 class DropboxClient(IClient):
     """
@@ -148,10 +152,7 @@ class DropboxClient(IClient):
     Mirrors your SlackClient shape so it can be swapped in existing wiring.
     """
 
-    def __init__(
-        self,
-        client: Union[DropboxRESTClientViaToken, DropboxRESTClientViaOAuth2]
-    ) -> None:
+    def __init__(self, client: Union[DropboxRESTClientViaToken, DropboxRESTClientViaOAuth2]) -> None:
         self.client = client
 
     def get_client(self) -> Union[DropboxRESTClientViaToken, DropboxRESTClientViaOAuth2]:
@@ -164,10 +165,7 @@ class DropboxClient(IClient):
         raise AttributeError("Underlying Dropbox client does not have get_base_url method")
 
     @classmethod
-    def build_with_config(
-        cls,
-        config: Union[DropboxTokenConfig, DropboxOAuth2Config],
-    ) -> "DropboxClient":
+    def build_with_config(cls, config: Union[DropboxTokenConfig, DropboxOAuth2Config]) -> "DropboxClient":
         """Build DropboxClient using one of the config dataclasses."""
         return cls(config.create_client())
 
@@ -180,9 +178,6 @@ class DropboxClient(IClient):
         org_id: str,
         user_id: str,
     ) -> "DropboxClient":
-        """
-        Build DropboxClient using your configuration service & org/user context.
-        """
-
+        """Build DropboxClient using your configuration service & org/user context."""
         logger.info("DropboxClient.build_from_services: placeholder using empty client")
         return cls(client=DropboxRESTClientViaToken(access_token=""))
