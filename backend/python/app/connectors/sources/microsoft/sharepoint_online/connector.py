@@ -597,7 +597,11 @@ class SharePointConnector(BaseConnector):
                 self.logger.debug(f"Original delta_url: {repr(delta_url)}")
 
                 # Ensure we're not accidentally processing this URL
-                if not delta_url.startswith('https://graph.microsoft.com'):
+                parsed_url = urllib.parse.urlparse(delta_url)
+                if not (
+                    parsed_url.scheme == 'https' and
+                    parsed_url.hostname == 'graph.microsoft.com'
+                ):
                     self.logger.error(f"Invalid delta URL format: {delta_url}")
                     # Clear the sync point and start fresh
                     await self.drive_delta_sync_point.update_sync_point(
