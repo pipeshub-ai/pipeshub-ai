@@ -1,5 +1,6 @@
 import asyncio
 import urllib.parse
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -318,8 +319,11 @@ class SharePointConnector(BaseConnector):
                             self.logger.debug(f"exclude_onedrive_sites: {self.filters.get('exclude_onedrive_sites')}")
                             parsed_url = urllib.parse.urlparse(site.web_url)
                             hostname = parsed_url.hostname
-                            contains_onedrive = hostname is not None and hostname.endswith("-my.sharepoint.com")
-                            self.logger.debug(f"Contains '-my.sharepoint.com' in hostname: {contains_onedrive}")
+                            contains_onedrive = (
+                                hostname is not None and
+                                re.fullmatch(r"[a-zA-Z0-9-]+-my\.sharepoint\.com", hostname)
+                            )
+                            self.logger.debug(f"Hostname matches expected OneDrive pattern: {bool(contains_onedrive)}")
 
                             if self.filters.get('exclude_onedrive_sites') and contains_onedrive:
                                 self.logger.debug(f"Skipping OneDrive site: '{site.display_name or site.name}'")
