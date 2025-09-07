@@ -13,7 +13,7 @@ from app.models.entities import Record
 
 
 class BaseConnector(ABC):
-    """Base connector class for OneDrive"""
+    """Base abstract class for all connectors"""
     logger: Logger
     data_entities_processor: DataSourceEntitiesProcessor
     arango_service: BaseArangoService
