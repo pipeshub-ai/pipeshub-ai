@@ -159,7 +159,6 @@ const ConnectorCard = ({ connector }: { connector: ConnectorData }): JSX.Element
 
   // Extract connector data
   const { connector: connectorName, total, indexing_status } = connector;
-  console.log(connectorName, "connectorName");
   // Get display name and icon
   const displayName = CONNECTOR_DISPLAY_NAMES[connectorName] || connectorName;
   const iconName = CONNECTOR_ICONS[connectorName] || '/assets/icons/connectors/database.svg';

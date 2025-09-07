@@ -304,7 +304,6 @@ class ConfluenceConnector(BaseConnector):
                  arango_service: BaseArangoService,
                  config_service: ConfigurationService) -> None:
         super().__init__(logger, data_entities_processor, arango_service, config_service)
-        self.data_entities_processor = data_entities_processor
         self.provider = None
 
     async def init(self) -> None:

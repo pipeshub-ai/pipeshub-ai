@@ -289,7 +289,6 @@ class SharePointConnector(BaseConnector):
                     root_site = await self._safe_api_call(
                         self.client.sites.by_site_id("root").get()
                     )
-                    print(f"Root site: {root_site}")
                     if root_site:
                         sites.append(root_site)
                         self.logger.info(f"Root site found: '{root_site.display_name or root_site.name}' - ID: '{root_site.id}'")
@@ -313,7 +312,6 @@ class SharePointConnector(BaseConnector):
                     search_results = await self._safe_api_call(
                         self.client.sites.get()
                     )
-                    print(f"Search results: {search_results}")
                     if search_results and search_results.value:
                         for site in search_results.value:
                             self.logger.debug(f"Checking site: '{site.display_name or site.name}' - URL: '{site.web_url}'")
@@ -590,11 +588,6 @@ class SharePointConnector(BaseConnector):
 
             if delta_url:
                 # Continue from previous sync point - use the URL as-is
-                print(f"Continuing from previous sync point: {delta_url}")
-
-                # DEBUG: Check if URL is being modified somewhere
-                self.logger.debug(f"Original delta_url type: {type(delta_url)}")
-                self.logger.debug(f"Original delta_url: {repr(delta_url)}")
 
                 # Ensure we're not accidentally processing this URL
                 parsed_url = urllib.parse.urlparse(delta_url)

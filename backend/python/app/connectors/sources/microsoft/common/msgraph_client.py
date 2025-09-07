@@ -250,7 +250,6 @@ class MSGraphClient:
             }
 
             async with self.rate_limiter:
-                print(f"Delta URL: {url}")
                 request_info = RequestInformation(Method.GET, url)
                 error_mapping: Dict[str, type[ParsableFactory]] = {
                     "4XX": ODataError,
