@@ -4,6 +4,7 @@ from app.config.configuration_service import ConfigurationService
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.iclient import IClient
 
+
 class BoxRESTClientViaAccessToken(HTTPClient):
     """Box REST client via Access Token
     Args:

@@ -1,6 +1,6 @@
 from typing import Any, Dict, Optional
 
-from app.sources.client.box.box import BoxClient, BoxRESTClientViaAccessToken
+from app.sources.client.box.box import BoxClient
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.http.http_response import HTTPResponse
 
