@@ -26,8 +26,8 @@ class BaseConnector(ABC):
         self.config_service = config_service
 
     @abstractmethod
-    def init(self) -> None:
-        NotImplementedError("This method should be implemented by the subclass")
+    async def init(self) -> bool:
+        pass
 
     @abstractmethod
     def test_connection_and_access(self) -> bool:
