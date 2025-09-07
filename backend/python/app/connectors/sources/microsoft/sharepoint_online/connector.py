@@ -318,9 +318,12 @@ class SharePointConnector(BaseConnector):
                         for site in search_results.value:
                             self.logger.debug(f"Checking site: '{site.display_name or site.name}' - URL: '{site.web_url}'")
                             self.logger.debug(f"exclude_onedrive_sites: {self.filters.get('exclude_onedrive_sites')}")
-                            self.logger.debug(f"Contains '-my.sharepoint.com': {'-my.sharepoint.com' in site.web_url}")
+                            parsed_url = urllib.parse.urlparse(site.web_url)
+                            hostname = parsed_url.hostname
+                            contains_onedrive = hostname is not None and hostname.endswith("-my.sharepoint.com")
+                            self.logger.debug(f"Contains '-my.sharepoint.com' in hostname: {contains_onedrive}")
 
-                            if self.filters.get('exclude_onedrive_sites') and "-my.sharepoint.com" in site.web_url:
+                            if self.filters.get('exclude_onedrive_sites') and contains_onedrive:
                                 self.logger.debug(f"Skipping OneDrive site: '{site.display_name or site.name}'")
                                 continue
 
