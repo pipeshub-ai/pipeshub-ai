@@ -1,6 +1,7 @@
+
+import asyncio
 import json
 from dropbox.files import WriteMode
-import asyncio
 from app.sources.client.dropbox.dropbox import DropboxClient
 from app.sources.client.http.http_response import HTTPResponse
 
@@ -47,7 +48,7 @@ class DropboxDataSource:
     async def download(self, path: str) -> HTTPResponse:
         """Download file from Dropbox using SDK."""
         loop = asyncio.get_event_loop()
-        def _download():
+        def _download() -> dict:
             metadata, res = self._sdk.files_download(path)
             data = res.content
             return {"metadata": metadata, "data": data}
@@ -93,7 +94,7 @@ class DropboxDataSource:
     async def search(self, query: str, path: str = "", max_results: int = 10) -> HTTPResponse:
         """Search files/folders by name or metadata using SDK."""
         loop = asyncio.get_event_loop()
-        def _search():
+        def _search() -> object:
             options = None
             if path or max_results:
                 from dropbox.files import SearchOptions

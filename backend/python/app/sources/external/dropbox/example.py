@@ -1,9 +1,11 @@
+
 import asyncio
 from app.sources.client.dropbox.dropbox import DropboxClient, DropboxTokenConfig
 from app.sources.external.dropbox.dropbox import DropboxDataSource
 
 ACCESS_TOKEN = "DROPBOX_TOKEN"
-async def main():
+
+async def main() -> None:
     config = DropboxTokenConfig(access_token=ACCESS_TOKEN)
     client = DropboxClient.build_with_config(config)
     data_source = DropboxDataSource(client)
