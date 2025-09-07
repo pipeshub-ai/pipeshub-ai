@@ -382,6 +382,8 @@ async def stream_sharepoint_file_content(request: Request, arango_service: BaseA
     """
     try:
         sharepoint_connector: SharePointConnector = await get_sharepoint_connector(request)
+        if not sharepoint_connector:
+            raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="SharePoint connector not found")
 
         # Todo: Validate if user has access to the record
         record = await arango_service.get_record_by_id(record_id)
