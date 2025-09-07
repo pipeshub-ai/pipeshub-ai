@@ -1,10 +1,9 @@
 
 import asyncio
 
-from dropbox.files import WriteMode
+from dropbox.files import SearchOptions, WriteMode
 
 from app.sources.client.dropbox.dropbox import DropboxClient
-from app.sources.client.http.http_response import HTTPResponse
 
 
 class DropboxDataSource:
@@ -19,36 +18,36 @@ class DropboxDataSource:
     def get_data_source(self) -> 'DropboxDataSource':
         return self
 
-    async def list_folder(self, path: str = "", recursive: bool = False, **kwargs) -> HTTPResponse:
+    async def list_folder(self, path: str = "", recursive: bool = False, **kwargs) -> object:
         """List folder contents using Dropbox SDK."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
             lambda: self._sdk.files_list_folder(path=path, recursive=recursive, **kwargs)
         )
         return result
 
-    async def get_metadata(self, path: str, **kwargs) -> HTTPResponse:
+    async def get_metadata(self, path: str, **kwargs) -> object:
         """Get file/folder metadata using Dropbox SDK."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
             lambda: self._sdk.files_get_metadata(path, **kwargs)
         )
         return result
 
-    async def upload(self, path: str, contents: bytes, mode: str = "add") -> HTTPResponse:
+    async def upload(self, path: str, contents: bytes, mode: str = "add") -> object:
         """Upload a file to Dropbox using SDK."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
             lambda: self._sdk.files_upload(contents, path, mode=WriteMode(mode))
         )
         return result
 
-    async def download(self, path: str) -> HTTPResponse:
+    async def download(self, path: str) -> object:
         """Download file from Dropbox using SDK."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         def _download() -> dict:
             metadata, res = self._sdk.files_download(path)
             data = res.content
@@ -56,49 +55,48 @@ class DropboxDataSource:
         result = await loop.run_in_executor(None, _download)
         return result
 
-    async def delete(self, path: str) -> HTTPResponse:
+    async def delete(self, path: str) -> object:
         """Delete a file or folder using SDK."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
             lambda: self._sdk.files_delete_v2(path)
         )
         return result
 
-    async def move(self, from_path: str, to_path: str) -> HTTPResponse:
+    async def move(self, from_path: str, to_path: str) -> object:
         """Move or rename file/folder using SDK."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
             lambda: self._sdk.files_move_v2(from_path, to_path)
         )
         return result
 
-    async def copy(self, from_path: str, to_path: str) -> HTTPResponse:
+    async def copy(self, from_path: str, to_path: str) -> object:
         """Copy file/folder using SDK."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
             lambda: self._sdk.files_copy_v2(from_path, to_path)
         )
         return result
 
-    async def create_folder(self, path: str) -> HTTPResponse:
+    async def create_folder(self, path: str) -> object:
         """Create a new folder using SDK."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
             lambda: self._sdk.files_create_folder_v2(path, autorename=False)
         )
         return result
 
-    async def search(self, query: str, path: str = "", max_results: int = 10) -> HTTPResponse:
+    async def search(self, query: str, path: str = "", max_results: int = 10) -> object:
         """Search files/folders by name or metadata using SDK."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         def _search() -> object:
             options = None
             if path or max_results:
-                from dropbox.files import SearchOptions
                 options = SearchOptions(path=path, max_results=max_results)
             return self._sdk.files_search_v2(query, options=options)
         result = await loop.run_in_executor(None, _search)

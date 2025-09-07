@@ -26,8 +26,6 @@ class DropboxResponse:
     def to_json(self) -> str:
         return json.dumps(self.to_dict())
 
-
-
 class DropboxRESTClientViaToken(HTTPClient):
     """Dropbox client via short/long‑lived OAuth2 access token."""
     def __init__(self, access_token: str, timeout: Optional[float] = None, base_url: str = "https://api.dropboxapi.com") -> None:
