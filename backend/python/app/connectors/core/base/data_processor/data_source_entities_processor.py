@@ -85,9 +85,8 @@ write_collections = [
 ]
 
 class DataSourceEntitiesProcessor:
-    def __init__(self, logger, app: App, arango_service: BaseArangoService, config_service: ConfigurationService) -> None:
+    def __init__(self, logger, arango_service: BaseArangoService, config_service: ConfigurationService) -> None:
         self.logger = logger
-        self.app = app
         self.arango_service: BaseArangoService = arango_service
         self.config_service: ConfigurationService = config_service
         self.org_id = ""

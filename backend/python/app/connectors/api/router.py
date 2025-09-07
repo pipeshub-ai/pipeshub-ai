@@ -239,7 +239,7 @@ async def get_signed_url(
     try:
         additional_claims = {"connector": connector, "purpose": "file_processing"}
 
-        signed_url = await signed_url_handler.create_signed_url(
+        signed_url = await signed_url_handler.get_signed_url(
             record_id,
             org_id,
             user_id,
@@ -329,16 +329,18 @@ async def handle_record_deletion(
             detail=f"Internal server error while deleting record: {str(e)}",
         )
 
-async def stream_onedrive_file_content(request: Request, record_id: str) -> StreamingResponse:
+async def stream_onedrive_file_content(request: Request, arango_service: BaseArangoService, record_id: str) -> StreamingResponse:
     """
     Helper function to stream content from OneDrive.
     """
     try:
         onedrive_connector: OneDriveConnector = await get_onedrive_connector(request)
-        if not onedrive_connector:
-            raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="OneDrive connector not found")
+        # Todo: Validate if user has access to the record
+        record = await arango_service.get_record_by_id(record_id)
+        if not record:
+            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
-        record, signed_url = await onedrive_connector.create_signed_url(record_id)
+        signed_url = await onedrive_connector.get_signed_url(record)
 
         if not signed_url:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
@@ -372,16 +374,19 @@ async def stream_onedrive_file_content(request: Request, record_id: str) -> Stre
         logger.error(f"Error accessing OneDrive connector or streaming file: {str(e)}")
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="OneDrive connector not available or file streaming failed")
 
-async def stream_sharepoint_file_content(request: Request, record_id: str) -> StreamingResponse:
+async def stream_sharepoint_file_content(request: Request, arango_service: BaseArangoService, record_id: str) -> StreamingResponse:
     """
     Helper function to stream content from SharePoint.
     """
     try:
         sharepoint_connector: SharePointConnector = await get_sharepoint_connector(request)
-        if not sharepoint_connector:
-            raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="SharePoint connector not found")
 
-        record, signed_url = await sharepoint_connector.create_signed_url(record_id)
+        # Todo: Validate if user has access to the record
+        record = await arango_service.get_record_by_id(record_id)
+        if not record:
+            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
+
+        signed_url = await sharepoint_connector.get_signed_url(record)
         if not signed_url:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
 
@@ -820,9 +825,9 @@ async def download_file(
                 )
 
             elif connector.lower() == Connectors.ONEDRIVE.value.lower():
-                return await stream_onedrive_file_content(request, record_id)
+                return await stream_onedrive_file_content(request, arango_service, record_id)
             elif connector.lower() == Connectors.SHAREPOINT_ONLINE.value.lower():
-                return await stream_sharepoint_file_content(request, record_id)
+                return await stream_sharepoint_file_content(request, arango_service, record_id)
             else:
                 raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Invalid connector type")
 
@@ -1438,10 +1443,10 @@ async def stream_record(
                 )
 
             elif connector.lower() == Connectors.ONEDRIVE.value.lower():
-                return await stream_onedrive_file_content(request, record_id)
+                return await stream_onedrive_file_content(request, arango_service, record_id)
 
             elif connector.lower() == Connectors.SHAREPOINT_ONLINE.value.lower():
-                return await stream_sharepoint_file_content(request, record_id)
+                return await stream_sharepoint_file_content(request, arango_service, record_id)
             else:
                 raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Invalid connector type")
 

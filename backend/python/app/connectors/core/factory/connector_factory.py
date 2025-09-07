@@ -3,7 +3,7 @@
 import logging
 from typing import Any, Dict, List, Optional, Type
 
-from app.connectors.core.base.connector.connector_service import BaseConnectorService
+from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_processor import BaseDataProcessor
 from app.connectors.core.base.data_service.data_service import BaseDataService
 from app.connectors.core.base.error.error import BaseErrorHandlingService
@@ -17,9 +17,6 @@ from app.connectors.core.interfaces.connector.iconnector_config import Connector
 from app.connectors.core.interfaces.connector.iconnector_factory import (
     IConnectorFactory,
 )
-from app.connectors.core.interfaces.connector.iconnector_service import (
-    IConnectorService,
-)
 from app.connectors.enums.enums import ConnectorType
 
 
@@ -27,7 +24,7 @@ class ConnectorRegistry:
     """Registry for connector implementations"""
 
     def __init__(self) -> None:
-        self._connectors: Dict[ConnectorType, Type[BaseConnectorService]] = {}
+        self._connectors: Dict[ConnectorType, Type[BaseConnector]] = {}
         self._token_services: Dict[ConnectorType, Type[BaseTokenService]] = {}
         self._data_services: Dict[ConnectorType, Type[BaseDataService]] = {}
         self._data_processors: Dict[ConnectorType, Type[BaseDataProcessor]] = {}
@@ -41,7 +38,7 @@ class ConnectorRegistry:
     def register_connector(
         self,
         connector_type: ConnectorType,
-        connector_class: Type[BaseConnectorService],
+        connector_class: Type[BaseConnector],
         token_service_class: Type[BaseTokenService],
         data_service_class: Type[BaseDataService],
         data_processor_class: Type[BaseDataProcessor],
@@ -64,7 +61,7 @@ class ConnectorRegistry:
         self._connectors[connector_type] = connector_class
         self._configs[connector_type] = config
 
-    def get_connector_class(self, connector_type: ConnectorType) -> Optional[Type[BaseConnectorService]]:
+    def get_connector_class(self, connector_type: ConnectorType) -> Optional[Type[BaseConnector]]:
         """Get connector class for a type"""
         return self._connectors.get(connector_type)
 
@@ -134,7 +131,7 @@ class UniversalConnectorFactory(IConnectorFactory):
     def register_connector_implementation(
         self,
         connector_type: ConnectorType,
-        connector_class: Type[BaseConnectorService],
+        connector_class: Type[BaseConnector],
         token_service_class: Type[BaseTokenService],
         data_service_class: Type[BaseDataService],
         data_processor_class: Type[BaseDataProcessor],
@@ -151,7 +148,7 @@ class UniversalConnectorFactory(IConnectorFactory):
         )
         self.logger.info(f"Registered connector: {connector_type.value}")
 
-    def create_connector(self, connector_type: ConnectorType, config: ConnectorConfig) -> IConnectorService:
+    def create_connector(self, connector_type: ConnectorType, config: ConnectorConfig) -> BaseConnector:
         """Create a connector instance"""
         try:
             self.logger.info(f"Creating connector for {connector_type.value} with config: {config}")
@@ -178,25 +175,12 @@ class UniversalConnectorFactory(IConnectorFactory):
             token_service = token_service_class(self.logger, config)
             data_service = data_service_class(self.logger, token_service)
             data_processor = data_processor_class(self.logger)
-            sync_service = sync_service_class(self.logger)
-            rate_limiter = rate_limiter_class(self.logger, config.rate_limits['max_rate'], config.rate_limits['time_window'])
-            user_service = user_service_class(self.logger, rate_limiter, config)
-            error_service = error_service_class(self.logger)
-            event_service = event_service_class(self.logger)
 
             # Create connector instance
             connector = connector_class(
                 logger=self.logger,
-                connector_type=connector_type,
-                config=config,
-                token_service=token_service,
-                data_service=data_service,
-                data_processor=data_processor,
-                error_service=error_service,
-                event_service=event_service,
-                rate_limiter=rate_limiter,
-                user_service=user_service,
-                sync_service=sync_service,
+                data_entities_processor=data_processor,
+                arango_service=data_service,
             )
 
             self.logger.info(f"Created connector instance for {connector_type.value}")
@@ -280,7 +264,7 @@ class ConnectorBuilder:
         self._custom_services['error_service'] = error_service
         return self
 
-    def build(self) -> IConnectorService:
+    def build(self) -> BaseConnector:
         """Build the connector instance"""
         if not self._connector_type:
             raise ValueError("Connector type must be specified")
@@ -301,7 +285,7 @@ class ConnectorManager:
 
     def __init__(self, factory: UniversalConnectorFactory) -> None:
         self.factory = factory
-        self._active_connectors: Dict[str, IConnectorService] = {}
+        self._active_connectors: Dict[str, BaseConnector] = {}
         self.logger = factory.logger
 
     async def create_and_connect(
@@ -309,7 +293,7 @@ class ConnectorManager:
         connector_type: ConnectorType,
         credentials: Dict[str, Any],
         config: Optional[ConnectorConfig] = None
-    ) -> Optional[IConnectorService]:
+    ) -> Optional[BaseConnector]:
         """Create a connector and connect it"""
         try:
             if not config:
@@ -323,7 +307,7 @@ class ConnectorManager:
             connector = self.factory.create_connector(connector_type, config)
 
             # Connect
-            if await connector.connect(credentials):
+            if await connector.init():
                 connector_id = f"{connector_type.value}_{len(self._active_connectors)}"
                 self._active_connectors[connector_id] = connector
                 self.logger.info(f"Created and connected connector: {connector_id}")
@@ -340,18 +324,18 @@ class ConnectorManager:
         """Disconnect all active connectors"""
         for connector_id, connector in self._active_connectors.items():
             try:
-                await connector.disconnect()
+                await connector.cleanup()
                 self.logger.info(f"Disconnected connector: {connector_id}")
             except Exception as e:
                 self.logger.error(f"Failed to disconnect connector {connector_id}: {str(e)}")
 
         self._active_connectors.clear()
 
-    def get_active_connectors(self) -> Dict[str, IConnectorService]:
+    def get_active_connectors(self) -> Dict[str, BaseConnector]:
         """Get all active connectors"""
         return self._active_connectors.copy()
 
-    def get_connector(self, connector_id: str) -> Optional[IConnectorService]:
+    def get_connector(self, connector_id: str) -> Optional[BaseConnector]:
         """Get a specific connector by ID"""
         return self._active_connectors.get(connector_id)
 
@@ -360,7 +344,7 @@ class ConnectorManager:
         if connector_id in self._active_connectors:
             connector = self._active_connectors[connector_id]
             try:
-                await connector.disconnect()
+                await connector.cleanup()
                 del self._active_connectors[connector_id]
                 self.logger.info(f"Removed connector: {connector_id}")
                 return True

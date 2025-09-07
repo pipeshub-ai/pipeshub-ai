@@ -7,11 +7,14 @@ from typing import AsyncGenerator, Dict, List, Optional, Tuple
 
 from aiolimiter import AsyncLimiter
 from azure.identity.aio import ClientSecretCredential
+from fastapi.responses import StreamingResponse
 from msgraph import GraphServiceClient
 from msgraph.generated.models.drive_item import DriveItem
 from msgraph.generated.models.subscription import Subscription
 
+from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors, OriginTypes
+from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -43,31 +46,20 @@ class OneDriveCredentials:
     client_secret: str
     has_admin_consent: bool = False
 
-class OneDriveConnector():
-    def __init__(self, logger, data_entities_processor: DataSourceEntitiesProcessor,
-        arango_service: BaseArangoService, credentials: OneDriveCredentials) -> None:
-        self.logger = logger
-        self.data_entities_processor = data_entities_processor
-        self.arango_service = arango_service
+class OneDriveConnector(BaseConnector):
+    def __init__(self, logger: Logger, data_entities_processor: DataSourceEntitiesProcessor,
+        arango_service: BaseArangoService, config_service: ConfigurationService) -> None:
+        super().__init__(logger, data_entities_processor, arango_service, config_service)
+
         self.connector_name = Connectors.ONEDRIVE.value
 
         def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
             return SyncPoint(
                 connector_name=self.connector_name,
-                org_id=data_entities_processor.org_id,
+                org_id=self.data_entities_processor.org_id,
                 sync_data_point_type=sync_data_point_type,
-                arango_service=arango_service
+                arango_service=self.arango_service
             )
-
-        # Initialize MS Graph client
-        credential = ClientSecretCredential(
-            tenant_id=credentials.tenant_id,
-            client_id=credentials.client_id,
-            client_secret=credentials.client_secret,
-        )
-        self.client = GraphServiceClient(credential, scopes=["https://graph.microsoft.com/.default"])
-        self.msgraph_client = MSGraphClient(self.client, self.logger)
-
         # Initialize sync points
         self.drive_delta_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
         self.user_sync_point = _create_sync_point(SyncDataPointType.USERS)
@@ -78,6 +70,42 @@ class OneDriveConnector():
         self.max_concurrent_batches = 3
 
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
+
+    async def init(self) -> bool:
+        credentials_config = await self.config_service.get_config(f"/services/connectors/onedrive/config/{self.data_entities_processor.org_id}")
+        if not credentials_config:
+            self.logger.error("OneDrive credentials not found")
+            return False
+
+        self.config = {"credentials": credentials_config}
+        if not credentials_config:
+            self.logger.error("OneDrive credentials not found")
+            raise ValueError("OneDrive credentials not found")
+
+        tenant_id = credentials_config.get("tenantId")
+        client_id = credentials_config.get("clientId")
+        client_secret = credentials_config.get("clientSecret")
+        if not all((tenant_id, client_id, client_secret)):
+            self.logger.error("Incomplete OneDrive credentials. Ensure tenantId, clientId, and clientSecret are configured.")
+            raise ValueError("Incomplete OneDrive credentials. Ensure tenantId, clientId, and clientSecret are configured.")
+
+        has_admin_consent = credentials_config.get("hasAdminConsent", False)
+        credentials = OneDriveCredentials(
+            tenant_id=tenant_id,
+            client_id=client_id,
+            client_secret=client_secret,
+            has_admin_consent=has_admin_consent,
+        )
+         # Initialize MS Graph client
+        credential = ClientSecretCredential(
+            tenant_id=credentials.tenant_id,
+            client_id=credentials.client_id,
+            client_secret=credentials.client_secret,
+        )
+        self.client = GraphServiceClient(credential, scopes=["https://graph.microsoft.com/.default"])
+        self.msgraph_client = MSGraphClient(self.client, self.logger)
+
+        return True
 
     async def _process_delta_item(self, item: DriveItem) -> Optional[RecordUpdate]:
         """
@@ -90,6 +118,9 @@ class OneDriveConnector():
             # Check if item is deleted
             if hasattr(item, 'deleted') and item.deleted is not None:
                 self.logger.info(f"Item {item.id} has been deleted")
+                await self.data_entities_processor.on_record_deleted(
+                    record_id=item.id
+                )
                 return RecordUpdate(
                     record=None,
                     external_record_id=item.id,
@@ -103,7 +134,7 @@ class OneDriveConnector():
 
             # Get existing record if any
             existing_record = await self.arango_service.get_record_by_external_id(
-                connector_name=Connectors.ONEDRIVE.value,
+                connector_name=self.connector_name,
                 external_id=item.id
             )
 
@@ -132,7 +163,7 @@ class OneDriveConnector():
             # Create/update file record
             signed_url = None
             if item.file is not None:
-                signed_url = await self.msgraph_client.get_download_url(
+                signed_url = await self.msgraph_client.get_signed_url(
                     item.parent_reference.drive_id,
                     item.id,
                 )
@@ -147,7 +178,7 @@ class OneDriveConnector():
                 external_revision_id=item.e_tag,
                 version=0 if is_new else existing_record.version + 1,
                 origin=OriginTypes.CONNECTOR.value,
-                connector_name=Connectors.ONEDRIVE.value,
+                connector_name=self.connector_name,
                 created_at=int(item.created_date_time.timestamp() * 1000),
                 updated_at=int(item.last_modified_date_time.timestamp() * 1000),
                 source_created_at=int(item.created_date_time.timestamp() * 1000),
@@ -193,7 +224,7 @@ class OneDriveConnector():
             )
 
         except Exception as ex:
-            self.logger.error(f"Error processing delta item {item.id}: {ex}")
+            self.logger.error(f"Error processing delta item {item.id}: {ex}", exc_info=True)
             return None
 
     async def _convert_to_permissions(self, msgraph_permissions: List) -> List[Permission]:
@@ -255,7 +286,7 @@ class OneDriveConnector():
                         ))
 
             except Exception as e:
-                self.logger.error(f"Error converting permission: {e}")
+                self.logger.error(f"Error converting permission: {e}", exc_info=True)
                 continue
 
         return permissions
@@ -296,7 +327,7 @@ class OneDriveConnector():
                 await asyncio.sleep(0)
 
             except Exception as e:
-                self.logger.error(f"Error processing item in generator: {e}")
+                self.logger.error(f"Error processing item in generator: {e}", exc_info=True)
                 continue
 
     async def _handle_record_updates(self, record_update: RecordUpdate) -> None:
@@ -333,7 +364,7 @@ class OneDriveConnector():
                     )
 
         except Exception as e:
-            self.logger.error(f"Error handling record updates: {e}")
+            self.logger.error(f"Error handling record updates: {e}", exc_info=True)
 
     async def _sync_user_groups(self) -> None:
         """
@@ -368,13 +399,14 @@ class OneDriveConnector():
                     )
 
                 except Exception as e:
-                    self.logger.error(f"Error processing group {group.name}: {e}")
+                    self.logger.error(f"Error processing group {group.name}: {e}", exc_info=True)
                     continue
 
             self.logger.info(f"Processed {len(user_groups)} user groups")
 
         except Exception as e:
-            self.logger.error(f"Error syncing user groups: {e}")
+            self.logger.error(f"Error syncing user groups: {e}", exc_info=True)
+            raise
 
     async def _run_sync_with_yield(self, user_id: str) -> None:
         """
@@ -602,7 +634,7 @@ class OneDriveConnector():
         except Exception as e:
             self.logger.error(f"Error handling webhook notification: {e}")
 
-    async def run(self) -> None:
+    async def run_sync(self) -> None:
         """
         Main entry point for the OneDrive connector.
         Implements non-blocking sync with all requested features.
@@ -675,22 +707,41 @@ class OneDriveConnector():
         except Exception as e:
             self.logger.error(f"Error during cleanup: {e}")
 
-    async def create_signed_url(self, record_id: str) -> Optional[Tuple[Record, str]]:
+    async def get_signed_url(self, record: Record) -> str:
         """
         Create a signed URL for a specific record.
         """
         try:
-            # Get the record from database
-            record = await self.arango_service.get_record_by_id(record_id)
-
-            if not record:
-                raise ValueError(f"Record {record_id} not found")
-
-            # Get the signed URL
-            return record, await self.msgraph_client.get_download_url(record.external_record_group_id, record.external_record_id)
+            return await self.msgraph_client.get_signed_url(record.external_record_group_id, record.external_record_id)
         except Exception as e:
-            self.logger.error(f"Error creating signed URL for record {record_id}: {e}")
-            return None
+            self.logger.error(f"Error creating signed URL for record {record.id}: {e}")
+            raise
+
+    async def stream_record(self, record: Record) -> StreamingResponse:
+        """Stream a record from SharePoint."""
+        NotImplementedError("This method is not supported")
+
+    async def download_record(self, record: Record) -> StreamingResponse:
+        """Stream a record from SharePoint."""
+        NotImplementedError("This method is not supported")
+
+    async def test_connection_and_access(self) -> bool:
+        """Test connection and access to OneDrive."""
+        try:
+            self.logger.info("Testing connection and access to OneDrive")
+            return True
+        except Exception as e:
+            self.logger.error(f"Error testing connection and access to OneDrive: {e}")
+            return False
+
+    @classmethod
+    async def create_connector(cls, logger: Logger,
+        arango_service: BaseArangoService, config_service: ConfigurationService) -> BaseConnector:
+        data_entities_processor = DataSourceEntitiesProcessor(logger, arango_service, config_service)
+        await data_entities_processor.initialize()
+
+        return OneDriveConnector(logger, data_entities_processor, arango_service, config_service)
+
 
 # Additional helper class for managing OneDrive subscriptions
 class OneDriveSubscriptionManager:

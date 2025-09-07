@@ -10,6 +10,7 @@ from typing import AsyncGenerator, Dict, List, Optional, Tuple
 import httpx
 from aiolimiter import AsyncLimiter
 from azure.identity.aio import ClientSecretCredential
+from fastapi.responses import StreamingResponse
 from msgraph import GraphServiceClient
 from msgraph.generated.models.drive_item import DriveItem
 from msgraph.generated.models.list_item import ListItem
@@ -17,11 +18,13 @@ from msgraph.generated.models.site import Site
 from msgraph.generated.models.site_page import SitePage
 from msgraph.generated.models.subscription import Subscription
 
+from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     Connectors,
     OriginTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -86,7 +89,7 @@ class SiteMetadata:
     updated_at: Optional[datetime] = None
 
 
-class SharePointConnector:
+class SharePointConnector(BaseConnector):
     """
     Complete SharePoint Online Connector implementation with robust error handling,
     proper URL encoding, and comprehensive data synchronization.
@@ -97,39 +100,18 @@ class SharePointConnector:
         logger: Logger,
         data_entities_processor: DataSourceEntitiesProcessor,
         arango_service: BaseArangoService,
-        credentials: SharePointCredentials
+        config_service: ConfigurationService,
     ) -> None:
-        self.logger = logger
-        self.data_entities_processor = data_entities_processor
-        self.arango_service = arango_service
+        super().__init__(logger, data_entities_processor, arango_service, config_service)
         self.connector_name = Connectors.SHAREPOINT_ONLINE.value
-        self.credentials = credentials
-        self.ignore_onedrive_sites = True
-        self.sharepoint_domain = credentials.sharepoint_domain
 
         def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
             return SyncPoint(
                 connector_name=self.connector_name,
-                org_id=data_entities_processor.org_id,
+                org_id=self.data_entities_processor.org_id,
                 sync_data_point_type=sync_data_point_type,
-                arango_service=arango_service
+                arango_service=self.arango_service
             )
-
-        # Initialize MS Graph client with proper error handling
-        try:
-            credential = ClientSecretCredential(
-                tenant_id=credentials.tenant_id,
-                client_id=credentials.client_id,
-                client_secret=credentials.client_secret,
-            )
-            self.client = GraphServiceClient(
-                credential,
-                scopes=["https://graph.microsoft.com/.default"]
-            )
-            self.msgraph_client = MSGraphClient(self.client, self.logger)
-        except Exception as init_error:
-            self.logger.error(f"Failed to initialize Graph client: {init_error}")
-            raise
 
         # Initialize sync points
         self.site_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
@@ -139,6 +121,7 @@ class SharePointConnector:
         self.user_sync_point = _create_sync_point(SyncDataPointType.USERS)
         self.user_group_sync_point = _create_sync_point(SyncDataPointType.USER_GROUPS)
 
+        self.filters = {"exclude_onedrive_sites": True, "exclude_pages": False, "exclude_lists": True, "exclude_document_libraries": False}
         # Batch processing configuration
         self.batch_size = 50  # Reduced for better memory management
         self.max_concurrent_batches = 2  # Reduced to avoid rate limiting
@@ -148,8 +131,7 @@ class SharePointConnector:
         self.site_cache: Dict[str, SiteMetadata] = {}
 
         # Configuration flags
-        self.enable_subsite_discovery = credentials.enable_subsite_discovery
-
+        self.enable_subsite_discovery = True
         # Statistics tracking
         self.stats = {
             'sites_processed': 0,
@@ -160,6 +142,41 @@ class SharePointConnector:
             'items_processed': 0,
             'errors_encountered': 0
         }
+
+    async def init(self) -> None:
+        credentials_config = await self.config_service.get_config(f"/services/connectors/sharepoint/config/{self.data_entities_processor.org_id}")
+
+        if not credentials_config:
+            self.logger.error("SharePoint Online credentials not found")
+            raise ValueError("SharePoint Online credentials not found")
+
+        tenant_id = credentials_config.get("tenantId")
+        client_id = credentials_config.get("clientId")
+        client_secret = credentials_config.get("clientSecret")
+        sharepoint_domain = credentials_config.get("sharepointDomain")
+
+        if not all((tenant_id, client_id, client_secret, sharepoint_domain)):
+            self.logger.error("Incomplete SharePoint Online credentials. Ensure tenantId, clientId, and clientSecret are configured.")
+            raise ValueError("Incomplete SharePoint Online credentials. Ensure tenantId, clientId, and clientSecret are configured.")
+        has_admin_consent = credentials_config.get("hasAdminConsent", False)
+        credentials = SharePointCredentials(
+            tenant_id=tenant_id,
+            client_id=client_id,
+            client_secret=client_secret,
+            sharepoint_domain=sharepoint_domain,
+            has_admin_consent=has_admin_consent,
+        )
+        credential = ClientSecretCredential(
+                tenant_id=credentials.tenant_id,
+                client_id=credentials.client_id,
+                client_secret=credentials.client_secret,
+            )
+        self.sharepoint_domain = credentials.sharepoint_domain
+        self.client = GraphServiceClient(
+            credential,
+            scopes=["https://graph.microsoft.com/.default"]
+        )
+        self.msgraph_client = MSGraphClient(self.client, self.logger)
 
     def _construct_site_url(self, site_id: str) -> str:
         """
@@ -272,6 +289,7 @@ class SharePointConnector:
                     root_site = await self._safe_api_call(
                         self.client.sites.by_site_id("root").get()
                     )
+                    print(f"Root site: {root_site}")
                     if root_site:
                         sites.append(root_site)
                         self.logger.info(f"Root site found: '{root_site.display_name or root_site.name}' - ID: '{root_site.id}'")
@@ -295,13 +313,14 @@ class SharePointConnector:
                     search_results = await self._safe_api_call(
                         self.client.sites.get()
                     )
+                    print(f"Search results: {search_results}")
                     if search_results and search_results.value:
                         for site in search_results.value:
                             self.logger.debug(f"Checking site: '{site.display_name or site.name}' - URL: '{site.web_url}'")
-                            self.logger.debug(f"ignore_onedrive_sites: {self.ignore_onedrive_sites}")
+                            self.logger.debug(f"exclude_onedrive_sites: {self.filters.get('exclude_onedrive_sites')}")
                             self.logger.debug(f"Contains '-my.sharepoint.com': {'-my.sharepoint.com' in site.web_url}")
 
-                            if self.ignore_onedrive_sites and "-my.sharepoint.com" in site.web_url:
+                            if self.filters.get('exclude_onedrive_sites') and "-my.sharepoint.com" in site.web_url:
                                 self.logger.debug(f"Skipping OneDrive site: '{site.display_name or site.name}'")
                                 continue
 
@@ -552,8 +571,6 @@ class SharePointConnector:
         Process drive items using delta API for a specific drive.
         """
         try:
-            encoded_site_id = self._construct_site_url(site_id)
-
             sync_point_key = generate_record_sync_point_key(
                 SharePointRecordType.DOCUMENT_LIBRARY.value,
                 site_id,
@@ -569,12 +586,31 @@ class SharePointConnector:
                 delta_url = sync_point.get('deltaLink') or sync_point.get('nextLink')
 
             if delta_url:
-                # Continue from previous sync point
-                result = await self.msgraph_client.get_delta_response(delta_url)
-            else:
-                # Start fresh delta sync using URL-based approach
-                root_url = f"/sites/{encoded_site_id}/drives/{drive_id}/root/delta"
-                result = await self.msgraph_client.get_delta_response(f"{{+baseurl}}{root_url}")
+                # Continue from previous sync point - use the URL as-is
+                print(f"Continuing from previous sync point: {delta_url}")
+
+                # DEBUG: Check if URL is being modified somewhere
+                self.logger.debug(f"Original delta_url type: {type(delta_url)}")
+                self.logger.debug(f"Original delta_url: {repr(delta_url)}")
+
+                # Ensure we're not accidentally processing this URL
+                if not delta_url.startswith('https://graph.microsoft.com'):
+                    self.logger.error(f"Invalid delta URL format: {delta_url}")
+                    # Clear the sync point and start fresh
+                    await self.drive_delta_sync_point.update_sync_point(
+                        sync_point_key,
+                        sync_point_data={"nextLink": None, "deltaLink": None}
+                    )
+                    delta_url = None
+                else:
+                    result = await self.msgraph_client.get_delta_response(delta_url)
+
+            if not delta_url:
+                # Start fresh delta sync
+                encoded_site_id = self._construct_site_url(site_id)
+                root_url = f"https://graph.microsoft.com/v1.0/sites/{encoded_site_id}/drives/{drive_id}/root/delta"
+                self.logger.debug(f"Starting fresh delta sync with URL: {root_url}")
+                result = await self.msgraph_client.get_delta_response(root_url)
 
                 if not result:
                     return
@@ -603,6 +639,7 @@ class SharePointConnector:
                 # Handle pagination
                 next_link = result.get('next_link')
                 if next_link:
+                    self.logger.debug(f"Storing next_link: {next_link}")
                     await self.drive_delta_sync_point.update_sync_point(
                         sync_point_key,
                         sync_point_data={"nextLink": next_link}
@@ -610,6 +647,7 @@ class SharePointConnector:
                     result = await self.msgraph_client.get_delta_response(next_link)
                 else:
                     delta_link = result.get('delta_link')
+                    self.logger.debug(f"Storing delta_link: {delta_link}")
                     await self.drive_delta_sync_point.update_sync_point(
                         sync_point_key,
                         sync_point_data={
@@ -621,6 +659,15 @@ class SharePointConnector:
 
         except Exception as e:
             self.logger.error(f"Error processing drive delta for drive {drive_id}: {e}")
+            # Clear the sync point to force a fresh start on next attempt
+            try:
+                await self.drive_delta_sync_point.update_sync_point(
+                    sync_point_key,
+                    sync_point_data={"nextLink": None, "deltaLink": None}
+                )
+                self.logger.info(f"Cleared sync point for drive {drive_id} due to error")
+            except Exception as clear_error:
+                self.logger.error(f"Failed to clear sync point: {clear_error}")
 
     async def _process_drive_item(self, item: DriveItem, site_id: str, drive_id: str, users: List[User]) -> Optional[RecordUpdate]:
         """
@@ -751,7 +798,7 @@ class SharePointConnector:
             signed_url = None
             if is_file:
                 try:
-                    signed_url = await self.msgraph_client.get_download_url(drive_id, item_id)
+                    signed_url = await self.msgraph_client.get_signed_url(drive_id, item_id)
                 except Exception:
                     pass  # Download URL is optional
 
@@ -1908,8 +1955,7 @@ class SharePointConnector:
         except Exception as e:
             self.logger.error(f"Error handling record updates: {e}")
 
-    # Main run method
-    async def run(self) -> None:
+    async def run_sync(self) -> None:
         """Main entry point for the SharePoint connector."""
         start_time = datetime.now()
 
@@ -1925,13 +1971,13 @@ class SharePointConnector:
             except Exception as user_error:
                 self.logger.error(f"❌ Error syncing users: {user_error}")
 
-            # Step 2: Sync user groups
-            self.logger.info("👥 Syncing SharePoint groups...")
-            try:
-                await self._sync_user_groups()
-                self.logger.info("✅ Successfully synced SharePoint groups")
-            except Exception as group_error:
-                self.logger.error(f"❌ Error syncing groups: {group_error}")
+            # # Step 2: Sync user groups
+            # self.logger.info("👥 Syncing SharePoint groups...")
+            # try:
+            #     # await self._sync_user_groups()
+            #     # self.logger.info("✅ Successfully synced SharePoint groups")
+            # except Exception as group_error:
+            #     self.logger.error(f"❌ Error syncing groups: {group_error}")
 
             # Step 3: Discover and sync sites
             sites = await self._get_all_sites()
@@ -1974,11 +2020,6 @@ class SharePointConnector:
             duration = datetime.now() - start_time
             self.logger.error(f"💥 Critical error in SharePoint connector after {duration}: {e}")
             raise
-        finally:
-            try:
-                await self.cleanup()
-            except Exception as cleanup_error:
-                self.logger.error(f"⚠️ Error during cleanup: {cleanup_error}")
 
     async def run_incremental_sync(self) -> None:
         """Run incremental sync for SharePoint content."""
@@ -1999,6 +2040,24 @@ class SharePointConnector:
         except Exception as e:
             self.logger.error(f"❌ Error in SharePoint incremental sync: {e}")
             raise
+
+    async def test_connection_and_access(self) -> bool:
+        """Test connection and access to SharePoint."""
+        try:
+            self.logger.info("Testing connection and access to SharePoint")
+            return True
+        except Exception as e:
+            self.logger.error(f"Error testing connection and access to SharePoint: {e}")
+            return False
+
+    async def stream_record(self, record: Record) -> StreamingResponse:
+        """Stream a record from SharePoint."""
+        NotImplementedError("This method is not supported")
+
+    async def download_record(self, record: Record) -> StreamingResponse:
+        """Stream a record from SharePoint."""
+        NotImplementedError("This method is not supported")
+
 
     # Utility methods
     async def handle_webhook_notification(self, notification: Dict) -> None:
@@ -2029,30 +2088,25 @@ class SharePointConnector:
         except Exception as e:
             self.logger.error(f"❌ Error handling SharePoint webhook notification: {e}")
 
-    async def create_signed_url(self, record_id: str) -> Optional[Tuple[Record, str]]:
+    async def get_signed_url(self, record: Record) -> str:
         """Create a signed URL for a specific SharePoint record."""
         try:
-            record = await self.arango_service.get_record_by_id(record_id)
-
-            if not record:
-                raise ValueError(f"Record {record_id} not found")
-
             if record.record_type != RecordType.FILE:
-                return record, None
+                return None
 
             drive_id = record.external_record_group_id
 
             if not drive_id:
-                self.logger.error(f"Missing drive_id for record {record_id}")
-                return record, None
+                self.logger.error(f"Missing drive_id for record {record.id}")
+                return None
 
             # Get download URL
-            signed_url = await self.msgraph_client.get_download_url(drive_id, record.external_record_id)
-            return record, signed_url
+            signed_url = await self.msgraph_client.get_signed_url(drive_id, record.external_record_id)
+            return signed_url
 
         except Exception as e:
-            self.logger.error(f"Error creating signed URL for record {record_id}: {e}")
-            return None
+            self.logger.error(f"Error creating signed URL for record {record.id}: {e}")
+            raise
 
     async def cleanup(self) -> None:
         """Cleanup resources when shutting down the connector."""
@@ -2088,6 +2142,13 @@ class SharePointConnector:
         except Exception as e:
             self.logger.error(f"❌ Error during SharePoint connector cleanup: {e}")
 
+    @classmethod
+    async def create_connector(cls, logger: Logger,
+        arango_service: BaseArangoService, config_service: ConfigurationService) -> BaseConnector:
+        data_entities_processor = DataSourceEntitiesProcessor(logger, arango_service, config_service)
+        await data_entities_processor.initialize()
+
+        return SharePointConnector(logger, data_entities_processor, arango_service, config_service)
 
 # Subscription manager for webhook handling
 class SharePointSubscriptionManager:
@@ -2198,52 +2259,3 @@ class SharePointSubscriptionManager:
 
         except Exception as e:
             self.logger.error(f"Error during subscription cleanup: {e}")
-
-
-# Usage example and configuration
-def create_sharepoint_connector(
-    logger: Logger,
-    data_entities_processor: DataSourceEntitiesProcessor,
-    arango_service: BaseArangoService,
-    tenant_id: str,
-    client_id: str,
-    client_secret: str,
-    sharepoint_domain: str,
-    enable_subsite_discovery: bool = True
-) -> SharePointConnector:
-    """
-    Factory function to create a SharePoint connector with proper configuration.
-
-    Args:
-        logger: Logger instance
-        data_entities_processor: Data processor for handling entities
-        arango_service: ArangoDB service instance
-        tenant_id: Azure AD tenant ID
-        client_id: Azure AD application client ID
-        client_secret: Azure AD application client secret
-        sharepoint_domain: SharePoint domain
-        enable_subsite_discovery: Whether to discover subsites
-
-    Returns:
-        Configured SharePoint connector instance
-
-    Required Microsoft Graph API permissions:
-        - Sites.Read.All or Sites.ReadWrite.All
-        - Files.Read.All or Files.ReadWrite.All
-        - User.Read.All
-        - Directory.Read.All (for groups)
-    """
-    credentials = SharePointCredentials(
-        tenant_id=tenant_id,
-        client_id=client_id,
-        client_secret=client_secret,
-        sharepoint_domain=sharepoint_domain,
-        enable_subsite_discovery=enable_subsite_discovery
-    )
-
-    return SharePointConnector(
-        logger=logger,
-        data_entities_processor=data_entities_processor,
-        arango_service=arango_service,
-        credentials=credentials
-    )

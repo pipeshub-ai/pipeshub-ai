@@ -56,7 +56,7 @@ class BaseMSGraphStorageConnector(ABC):
 
 
     @abstractmethod
-    async def run(self) -> None:
+    async def run_sync(self) -> None:
         pass
 
     @abstractmethod

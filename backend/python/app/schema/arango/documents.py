@@ -128,6 +128,7 @@ record_schema = {
             "externalGroupId": {"type": ["string", "null"]},
             "externalParentId": {"type": ["string", "null"]},
             "externalRevisionId": {"type": ["string", "null"], "default": None},
+            "externalRootGroupId": {"type": ["string", "null"]},
             "recordType": {
                 "type": "string",
                 "enum": [record_type.value for record_type in RecordType],

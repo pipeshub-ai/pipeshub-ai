@@ -6,14 +6,9 @@ from arango import ArangoClient
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
 from app.config.providers.in_memory_store import InMemoryKeyValueStore
-from app.connectors.core.base.data_processor.data_source_entities_processor import (
-    DataSourceEntitiesProcessor,
-)
 from app.connectors.services.base_arango_service import BaseArangoService
-from app.connectors.sources.microsoft.common.apps import SharePointOnlineApp
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
     SharePointConnector,
-    SharePointCredentials,
 )
 from app.services.kafka_consumer import KafkaConsumerManager
 from app.utils.logger import create_logger
@@ -24,9 +19,9 @@ def is_valid_email(email: str) -> bool:
 
 async def test_run() -> None:
     user_email = os.getenv("TEST_USER_EMAIL")
+    org_id = "org_1"
 
     async def create_test_users(user_email: str, arango_service: BaseArangoService) -> None:
-        org_id = "org_1"
         org = {
                 "_key": org_id,
                 "accountType": "enterprise",
@@ -64,22 +59,26 @@ async def test_run() -> None:
     kafka_service = KafkaConsumerManager(logger, config_service, None, None)
     arango_client = ArangoClient()
     arango_service = BaseArangoService(logger, arango_client, config_service, kafka_service)
+
     await arango_service.connect()
 
     if user_email:
         await create_test_users(user_email, arango_service)
 
-    data_entities_processor = DataSourceEntitiesProcessor(logger, SharePointOnlineApp(), arango_service, config_service)
-    await data_entities_processor.initialize()
-    credentials = SharePointCredentials(
-        tenant_id=os.getenv("AZURE_TENANT_ID"),
-        client_id=os.getenv("AZURE_CLIENT_ID"),
-        client_secret=os.getenv("AZURE_CLIENT_SECRET"),
-        sharepoint_domain=os.getenv("SHAREPOINT_DOMAIN"),
-        has_admin_consent=True,
-    )
-    sharepoint_connector = SharePointConnector(logger, data_entities_processor, arango_service, credentials)
-    await sharepoint_connector.run()
+    config = {
+        "credentials": {
+            "tenantId":os.getenv("AZURE_TENANT_ID"),
+            "clientId":os.getenv("AZURE_CLIENT_ID"),
+            "clientSecret": os.getenv("AZURE_CLIENT_SECRET"),
+            "sharepointDomain": os.getenv("SHAREPOINT_DOMAIN"),
+            "hasAdminConsent": True,
+        }
+    }
+    key_value_store.set_config(f"services/connectors/sharepoint/config/{org_id}", config)
+
+    sharepoint_connector = await SharePointConnector.create_connector(logger, arango_service, config_service)
+    await sharepoint_connector.init()
+    await sharepoint_connector.run_sync()
 
 if __name__ == "__main__":
     asyncio.run(test_run())

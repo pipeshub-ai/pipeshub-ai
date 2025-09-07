@@ -266,13 +266,6 @@ class KafkaUtils:
                     return await google_drive_event_service.process_event(event_type, payload)
 
                 elif connector.lower() == Connectors.ONEDRIVE.value.lower():
-                    # onedrive_sync_tasks = sync_tasks_registry.get('onedrive')
-                    # if not onedrive_sync_tasks:
-                    #     logger.error("OneDrive sync tasks not found in registry")
-                    #     return False
-
-                    # # Handle onedrive sync events
-
                     onedrive_event_service = OneDriveEventService(
                         logger=logger,
                         arango_service=arango_service,
@@ -282,7 +275,7 @@ class KafkaUtils:
                     logger.info(f"Processing sync event: {event_type} for MICROSOFT ONEDRIVE")
                     return await onedrive_event_service.process_event(event_type, payload)
 
-                elif connector.lower() == Connectors.SHAREPOINT_ONLINE.value.replace(" ", "").lower():
+                elif connector.replace(" ", "").lower() == Connectors.SHAREPOINT_ONLINE.value.replace(" ", "").lower():
                     sharepoint_event_service = SharePointOnlineEventService(
                         logger=logger,
                         arango_service=arango_service,

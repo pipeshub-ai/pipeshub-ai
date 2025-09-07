@@ -12,21 +12,12 @@ from app.api.middlewares.auth import authMiddleware
 from app.api.routes.entity import router as entity_router
 from app.config.constants.arangodb import AccountType, Connectors
 from app.connectors.api.router import router
-from app.connectors.core.base.data_processor.data_source_entities_processor import (
-    DataSourceEntitiesProcessor,
-)
 from app.connectors.sources.localKB.api.kb_router import kb_router
-from app.connectors.sources.microsoft.common.apps import (
-    OneDriveApp,
-    SharePointOnlineApp,
-)
 from app.connectors.sources.microsoft.onedrive.connector import (
     OneDriveConnector,
-    OneDriveCredentials,
 )
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
     SharePointConnector,
-    SharePointCredentials,
 )
 from app.containers.connector import (
     ConnectorAppContainer,
@@ -128,59 +119,20 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
                 if app["name"].lower() == Connectors.ONEDRIVE.value.lower():
                     config_service = app_container.config_service()
                     arango_service = await app_container.arango_service()
-                    data_entities_processor = DataSourceEntitiesProcessor(logger, OneDriveApp(), arango_service, config_service)
-                    await data_entities_processor.initialize()
-                    credentials_config = await config_service.get_config(f"/services/connectors/onedrive/config/{org_id}")
-                    if not credentials_config:
-                            logger.error("OneDrive credentials not found")
-                            return False
-
-                    tenant_id = credentials_config.get("tenantId")
-                    client_id = credentials_config.get("clientId")
-                    client_secret = credentials_config.get("clientSecret")
-                    if not all((tenant_id, client_id, client_secret)):
-                        logger.error(f"Incomplete OneDrive credentials for org_id: {org_id}. Ensure tenantId, clientId, and clientSecret are configured.")
-                        return False
-                    has_admin_consent = credentials_config.get("hasAdminConsent", False)
-                    credentials = OneDriveCredentials(
-                        tenant_id=tenant_id,
-                        client_id=client_id,
-                        client_secret=client_secret,
-                        has_admin_consent=has_admin_consent,
-                    )
-                    onedrive_connector = OneDriveConnector(logger, data_entities_processor, arango_service, credentials)
+                    onedrive_connector = await OneDriveConnector.create_connector(logger, arango_service, config_service)
+                    await onedrive_connector.init()
                     app_container.onedrive_connector.override(providers.Object(onedrive_connector))
-                    asyncio.create_task(onedrive_connector.run())  # type: ignore
+                    asyncio.create_task(onedrive_connector.run_sync())
                     logger.info("OneDrive connector initialized for org %s", org_id)
 
                 if app["name"].lower() == Connectors.SHAREPOINT_ONLINE.value.replace(" ", "").lower():
                     config_service = app_container.config_service()
                     arango_service = await app_container.arango_service()
-                    data_entities_processor = DataSourceEntitiesProcessor(logger, SharePointOnlineApp(), arango_service, config_service)
-                    await data_entities_processor.initialize()
 
-                    credentials_config = await config_service.get_config(f"/services/connectors/sharepoint/config/{org_id}")
-                    if not credentials_config:
-                        logger.error("SharePoint credentials not found")
-                        return False
-
-                    tenant_id = credentials_config.get("tenantId")
-                    client_id = credentials_config.get("clientId")
-                    client_secret = credentials_config.get("clientSecret")
-
-                    sharepoint_domain = credentials_config.get("sharepointDomain")
-                    has_admin_consent = credentials_config.get("hasAdminConsent", False)
-                    credentials = SharePointCredentials(
-                        tenant_id=tenant_id,
-                        client_id=client_id,
-                        client_secret=client_secret,
-                        sharepoint_domain=sharepoint_domain,
-                        has_admin_consent=has_admin_consent,
-                    )
-
-                    sharepoint_connector = SharePointConnector(logger, data_entities_processor, arango_service, credentials)
+                    sharepoint_connector = await SharePointConnector.create_connector(logger, arango_service, config_service)
+                    await sharepoint_connector.init()
                     app_container.sharepoint_connector.override(providers.Object(sharepoint_connector))
-                    asyncio.create_task(sharepoint_connector.run())  # type: ignore
+                    asyncio.create_task(sharepoint_connector.run_sync())
                     logger.info("SharePoint connector initialized for org %s", org_id)
 
             if drive_sync_service is not None:

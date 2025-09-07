@@ -99,7 +99,7 @@ const CONNECTOR_DISPLAY_NAMES: Record<string, string> = {
   SLACK: ConnectorIdToNameMap[ConnectorId.SLACK],
   JIRA: ConnectorIdToNameMap[ConnectorId.JIRA],
   TEAMS: ConnectorIdToNameMap[ConnectorId.MICROSOFT_TEAMS],
-  SHAREPOINT_ONLINE: ConnectorIdToNameMap[ConnectorId.SHAREPOINT_ONLINE],
+  "SHAREPOINT ONLINE": ConnectorIdToNameMap[ConnectorId.SHAREPOINT_ONLINE],
   OUTLOOK: ConnectorIdToNameMap[ConnectorId.OUTLOOK],
   DROPBOX: ConnectorIdToNameMap[ConnectorId.DROPBOX],
   BOX: ConnectorIdToNameMap[ConnectorId.BOX],
@@ -114,7 +114,7 @@ const CONNECTOR_ICONS: Record<string, string> = {
   JIRA: '/assets/icons/connectors/jira.svg',
   CONFLUENCE: '/assets/icons/connectors/confluence.svg',
   ONEDRIVE: '/assets/icons/connectors/onedrive.svg',
-  SHAREPOINT_ONLINE: '/assets/icons/connectors/sharepoint.svg',
+  "SHAREPOINT ONLINE": '/assets/icons/connectors/sharepoint.svg',
 };
 
 // Ultra-minimalistic SaaS color palette - monochromatic with a single accent
@@ -159,7 +159,7 @@ const ConnectorCard = ({ connector }: { connector: ConnectorData }): JSX.Element
 
   // Extract connector data
   const { connector: connectorName, total, indexing_status } = connector;
-
+  console.log(connectorName, "connectorName");
   // Get display name and icon
   const displayName = CONNECTOR_DISPLAY_NAMES[connectorName] || connectorName;
   const iconName = CONNECTOR_ICONS[connectorName] || '/assets/icons/connectors/database.svg';
