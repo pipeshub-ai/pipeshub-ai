@@ -1,4 +1,3 @@
-
 import json
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional, Union
@@ -9,8 +8,8 @@ except ImportError:
     raise ImportError("dropbox is not installed. Please install it with `pip install dropbox`")
 
 from app.config.configuration_service import ConfigurationService
-from app.sources.client.iclient import IClient
 from app.sources.client.http.http_client import HTTPClient
+from app.sources.client.iclient import IClient
 
 
 @dataclass
@@ -80,7 +79,7 @@ class DropboxRESTClientViaOAuth2(HTTPClient):
             timeout=self.timeout,
             user_agent=self.user_agent,
         )
-    
+
     # Use HTTPClient's execute method for HTTP requests
 
     def get_base_url(self) -> str:

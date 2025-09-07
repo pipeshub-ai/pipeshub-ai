@@ -1,7 +1,8 @@
 
 import asyncio
-import json
+
 from dropbox.files import WriteMode
+
 from app.sources.client.dropbox.dropbox import DropboxClient
 from app.sources.client.http.http_response import HTTPResponse
 
@@ -83,7 +84,7 @@ class DropboxDataSource:
         return result
 
     async def create_folder(self, path: str) -> HTTPResponse:
-        """Create a new folder using SDK."""  
+        """Create a new folder using SDK."""
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             None,
