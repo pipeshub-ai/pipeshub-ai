@@ -435,39 +435,39 @@ class BaseArangoService:
     async def get_connector_stats(
         self,
         org_id: str,
-        connector: str = None,
+        connector: str,
     ) -> Dict:
         """
         Get connector statistics for a specific connector or knowledge base
-        
+
         Args:
             org_id: Organization ID
-            connector: Specific connector name (e.g., "GOOGLE_DRIVE", "SLACK"). 
+            connector: Specific connector name (e.g., "GOOGLE_DRIVE", "SLACK").
                         If None, returns Knowledge Base stats
         """
         try:
             self.logger.info(f"Getting connector stats for organization: {org_id}, connector: {connector or 'KNOWLEDGE_BASE'}")
 
             db = self.db
-            
+
             # Determine if we're querying Knowledge Base or a specific connector
             is_knowledge_base = connector == "KB"
-            
+
             if is_knowledge_base:
                 # Query for Knowledge Base (UPLOAD origin)
                 query = """
                 LET org_id = @org_id
-                
+
                 // Get all upload records for the organization
                 LET records = (
                     FOR doc IN @@records
-                        FILTER doc.orgId == org_id 
+                        FILTER doc.orgId == org_id
                         FILTER doc.origin == "UPLOAD"
                         FILTER doc.recordType != @drive_record_type
                         FILTER doc.isDeleted != true
                         RETURN doc
                 )
-                
+
                 // Overall stats
                 LET total_stats = {
                     total: LENGTH(records),
@@ -480,7 +480,7 @@ class BaseArangoService:
                         AUTO_INDEX_OFF: LENGTH(records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"])
                     }
                 }
-                
+
                 // Record type breakdown
                 LET by_record_type = (
                     FOR record_type IN UNIQUE(records[*].recordType)
@@ -499,7 +499,7 @@ class BaseArangoService:
                             }
                         }
                 )
-                
+
                 RETURN {
                     org_id: org_id,
                     connector: "KNOWLEDGE_BASE",
@@ -508,7 +508,7 @@ class BaseArangoService:
                     by_record_type: by_record_type
                 }
                 """
-                
+
                 bind_vars = {
                     "org_id": org_id,
                     "@records": CollectionNames.RECORDS.value,
@@ -520,18 +520,18 @@ class BaseArangoService:
                 query = """
                 LET org_id = @org_id
                 LET connector = @connector
-                
+
                 // Get all records for the specific connector
                 LET records = (
                     FOR doc IN @@records
-                        FILTER doc.orgId == org_id 
+                        FILTER doc.orgId == org_id
                         FILTER doc.origin == "CONNECTOR"
                         FILTER doc.connectorName == connector
                         FILTER doc.recordType != @drive_record_type
                         FILTER doc.isDeleted != true
                         RETURN doc
                 )
-                
+
                 // Overall stats
                 LET total_stats = {
                     total: LENGTH(records),
@@ -544,7 +544,7 @@ class BaseArangoService:
                         AUTO_INDEX_OFF: LENGTH(records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"])
                     }
                 }
-                
+
                 // Record type breakdown
                 LET by_record_type = (
                     FOR record_type IN UNIQUE(records[*].recordType)
@@ -563,7 +563,7 @@ class BaseArangoService:
                             }
                         }
                 )
-                
+
                 RETURN {
                     org_id: org_id,
                     connector: connector,
@@ -572,7 +572,7 @@ class BaseArangoService:
                     by_record_type: by_record_type
                 }
                 """
-                
+
                 bind_vars = {
                     "org_id": org_id,
                     "connector": connector,
