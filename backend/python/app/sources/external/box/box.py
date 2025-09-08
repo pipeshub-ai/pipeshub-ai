@@ -33,8 +33,8 @@ class BoxDataSource:
         endpoint: str,
         headers: Optional[Dict[str, Any]] = None,
         query_params: Optional[Dict[str, Any]] = None,
-        body: Any = None,
-        multipart: dict = None,
+        body: Optional[dict] = None,
+        multipart: Optional[dict] = None,
     ) -> HTTPResponse:
         url = f"{self.base_url}{endpoint}"
         req_kwargs = dict(
@@ -126,7 +126,7 @@ class BoxDataSource:
 
     # ---------------- Helper to extract response body ----------------
     @staticmethod
-    def extract_body(response: HTTPResponse):
+    def extract_body(response: HTTPResponse) -> Any:
         """
         Usage:
             resp = await data_source.get_user_info()

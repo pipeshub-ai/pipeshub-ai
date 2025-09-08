@@ -4,7 +4,7 @@ from app.sources.client.box.box import BoxAccessTokenConfig, BoxClient
 from app.sources.external.box.box import BoxDataSource
 
 
-async def main():
+async def main() -> None:
     access_token = "BOX_TOKEN"  # Replace with real access token
     base_url = "https://api.box.com/2.0"
 
