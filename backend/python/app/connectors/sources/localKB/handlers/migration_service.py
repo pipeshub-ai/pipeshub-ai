@@ -691,25 +691,31 @@ class KnowledgeBaseMigrationService:
         self.logger.info("🧹 Starting cleanup of old collections")
 
         try:
-            # Create cleanup transaction
-            cleanup_transaction = self.db.begin_transaction(
-                write=[
-                    self.OLD_KB_COLLECTION,
-                    self.OLD_USER_TO_KB_EDGES,
-                    self.OLD_KB_TO_RECORD_EDGES,
-                ]
-            )
+            # Determine which old collections still exist
+            target_collections = [
+                self.OLD_KB_TO_RECORD_EDGES,
+                self.OLD_USER_TO_KB_EDGES,
+                self.OLD_KB_COLLECTION,
+            ]
+
+            existing_collections = [
+                name for name in target_collections if self.db.has_collection(name)
+            ]
+
+            if not existing_collections:
+                self.logger.info("⏭️ No old collections found - skipping cleanup")
+                return
+
+            # Create cleanup transaction only for existing collections
+            cleanup_transaction = self.db.begin_transaction(write=existing_collections)
 
             try:
                 # Delete old data
 
-                for collection_name in [self.OLD_KB_TO_RECORD_EDGES, self.OLD_USER_TO_KB_EDGES, self.OLD_KB_COLLECTION]:
-                    if self.db.has_collection(collection_name):
-                        delete_query = f"FOR doc IN {collection_name} REMOVE doc IN {collection_name}"
-                        cleanup_transaction.aql.execute(delete_query)
-                        self.logger.info(f"🗑️ Deleted data from {collection_name}")
-                    else:
-                        self.logger.info(f"⏭️ Collection '{collection_name}' does not exist - skipping deletion")
+                for collection_name in existing_collections:
+                    delete_query = f"FOR doc IN {collection_name} REMOVE doc IN {collection_name}"
+                    cleanup_transaction.aql.execute(delete_query)
+                    self.logger.info(f"🗑️ Deleted data from {collection_name}")
 
                 await asyncio.to_thread(lambda: cleanup_transaction.commit_transaction())
                 self.logger.info("✅ Old data deleted successfully")
@@ -721,11 +727,7 @@ class KnowledgeBaseMigrationService:
 
             # Step 2: Drop the now-empty collections (non-transactional)
             self.logger.info("🗑️ Dropping empty old collections")
-            collections_to_drop = [
-                self.OLD_KB_COLLECTION,                # "knowledgeBase"
-                self.OLD_USER_TO_KB_EDGES,            # "permissionsToKnowledgeBase"
-                self.OLD_KB_TO_RECORD_EDGES,          # "belongsToKnowledgeBase"
-            ]
+            collections_to_drop = existing_collections
 
             for collection_name in collections_to_drop:
                 try:
