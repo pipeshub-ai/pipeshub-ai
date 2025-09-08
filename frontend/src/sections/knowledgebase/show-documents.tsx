@@ -31,7 +31,6 @@ import {
 
 import axios from 'src/utils/axios';
 import { CONFIG } from 'src/config-global';
-import { handleDownloadDocument } from './utils';
 import type { Record } from './types/record-details';
 import { getConnectorPublicUrl } from '../accountdetails/account-settings/services/utils/services-configuration-service';
 import { ORIGIN } from './constants/knowledge-search';
@@ -41,6 +40,7 @@ import ExcelViewer from '../qna/chatbot/components/excel-highlighter';
 import HtmlViewer from '../qna/chatbot/components/html-highlighter';
 import TextViewer from '../qna/chatbot/components/text-highlighter';
 import MarkdownViewer from '../qna/chatbot/components/markdown-highlighter';
+import { KnowledgeBaseAPI } from './services/api';
 
 // Simplified state management for viewport mode
 interface DocumentViewerState {
@@ -435,15 +435,9 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
 
   const handleDownload = async () => {
     try {
-      if (origin === 'CONNECTOR') {
-        const webUrl = record.fileRecord?.webUrl || record.mailRecord?.webUrl;
-        if (webUrl) {
-          window.open(webUrl, '_blank', 'noopener,noreferrer');
-          return;
-        }
-      }
       setIsDownloading(true);
-      await handleDownloadDocument(externalRecordId, recordName);
+      const recordId = origin === ORIGIN.UPLOAD ? externalRecordId : record._key;
+      await KnowledgeBaseAPI.handleDownloadDocument(recordId, recordName, origin);
     } catch (error) {
       console.error('Failed to download document:', error);
       setSnackbar({
@@ -734,12 +728,15 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
             </Typography>
           </Box>
 
-          {/* Download/Open Button - for connectors vs uploads */}
-          {origin === 'CONNECTOR' ? (
-            // Open in new tab for connector records
-            <Tooltip title="Open in new tab" arrow placement="top">
+          {/* Download Button */}
+          <Tooltip title="Download document" arrow placement="top">
+            {isDownloading ? (
+              <Box sx={{ p: 1 }}>
+                <CircularProgress size={24} />
+              </Box>
+            ) : (
               <IconButton
-                onClick={handleDownload} // This handles the connector opening logic
+                onClick={handleDownload}
                 sx={{
                   color: 'primary.main',
                   '&:hover': {
@@ -749,33 +746,10 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
                 }}
                 disabled={viewerState.phase === 'loading'}
               >
-                <Icon icon={openInNewIcon} width={24} />
+                <Icon icon={downloadIcon} width={24} />
               </IconButton>
-            </Tooltip>
-          ) : (
-            // Download for uploaded files
-            <Tooltip title="Download document" arrow placement="top">
-              {isDownloading ? (
-                <Box sx={{ p: 1 }}>
-                  <CircularProgress size={24} />
-                </Box>
-              ) : (
-                <IconButton
-                  onClick={handleDownload}
-                  sx={{
-                    color: 'primary.main',
-                    '&:hover': {
-                      backgroundColor: 'primary.light',
-                      color: 'white',
-                    },
-                  }}
-                  disabled={viewerState.phase === 'loading'}
-                >
-                  <Icon icon={downloadIcon} width={24} />
-                </IconButton>
-              )}
-            </Tooltip>
-          )}
+            )}
+          </Tooltip>
 
           {/* View Document Button */}
           <Tooltip title="Preview document" arrow placement="top">

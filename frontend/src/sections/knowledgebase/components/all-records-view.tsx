@@ -69,6 +69,7 @@ import { KnowledgeBaseAPI } from '../services/api';
 import DeleteRecordDialog from '../delete-record-dialog';
 import KnowledgeBaseSideBar from '../knowledge-base-sidebar';
 import { Filters } from '../types/knowledge-base';
+import { ORIGIN } from '../constants/knowledge-search';
 
 // Import the Filters type from the sidebar to ensure compatibility
 
@@ -670,9 +671,9 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
   };
 
   // Handle download document
-  const handleDownload = async (externalRecordId: string, recordName: string) => {
+  const handleDownload = async (externalRecordId: string, recordName: string,origin: string) => {
     try {
-      await KnowledgeBaseAPI.handleDownloadDocument(externalRecordId, recordName);
+      await KnowledgeBaseAPI.handleDownloadDocument(externalRecordId, recordName,origin);
       setSnackbar({
         open: true,
         message: 'Download started successfully',
@@ -1082,7 +1083,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
               label: getDownloadLabel(),
               icon: downloadIcon,
               color: theme.palette.primary.main,
-              onClick: () => handleDownload(params.row.externalRecordId!, params.row.recordName),
+              onClick: () => handleDownload(params.row.origin === ORIGIN.UPLOAD ? params.row.externalRecordId! : params.row.id, params.row.recordName,params.row.origin),
             },
             // Only show reindex options for OWNER and WRITER of this specific record
             ...(canReindex &&
