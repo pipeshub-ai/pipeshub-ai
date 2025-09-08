@@ -1,5 +1,5 @@
 import json
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 from app.sources.client.box.box import BoxClient
 from app.sources.client.http.http_request import HTTPRequest
@@ -126,7 +126,7 @@ class BoxDataSource:
 
     # ---------------- Helper to extract response body ----------------
     @staticmethod
-    def extract_body(response: HTTPResponse) -> Any:
+    def extract_body(response: HTTPResponse) -> Union[dict, str, bytes]:
         """
         Usage:
             resp = await data_source.get_user_info()
