@@ -21,6 +21,140 @@ import { SearchFilters, SearchResponse } from '../types/search-response';
 const API_BASE = '/api/v1/knowledgeBase';
 
 export class KnowledgeBaseAPI {
+  private static async downloadUploadDocument(
+    externalRecordId: string,
+    fileName: string
+  ): Promise<void> {
+    const response = await axios.get(
+      `${CONFIG.backendUrl}/api/v1/document/${externalRecordId}/download`,
+      { responseType: 'blob' } // Set response type to blob to handle binary data
+    );
+    // Read the blob response as text to check if it's JSON with signedUrl
+    const reader = new FileReader();
+    const textPromise = new Promise<string>((resolve) => {
+      reader.onload = () => {
+        resolve(reader.result?.toString() || '');
+      };
+    });
+
+    reader.readAsText(response.data);
+    const text = await textPromise;
+
+    let downloadUrl;
+    // Use the provided fileName instead of extracting it from headers or URL
+    // Get filename from Content-Disposition header if available
+    let filename;
+    const contentDisposition = response.headers['content-disposition'];
+    if (contentDisposition) {
+      const filenameMatch = contentDisposition.match(/filename="?([^"]*)"?/);
+      if (filenameMatch && filenameMatch[1]) {
+        filename = filenameMatch[1];
+      }
+    }
+
+    if (!filename) {
+      filename = fileName || `document-${externalRecordId}`;
+    }
+
+    // Try to parse as JSON to check for signedUrl property
+    try {
+      const jsonData = JSON.parse(text);
+      if (jsonData && jsonData.signedUrl) {
+        // Create a hidden link with download attribute
+        const downloadLink = document.createElement('a');
+        downloadLink.href = jsonData.signedUrl;
+        downloadLink.setAttribute('download', filename); // Use provided filename
+        downloadLink.setAttribute('target', '_blank');
+        downloadLink.style.display = 'none';
+
+        document.body.appendChild(downloadLink);
+        downloadLink.click();
+        document.body.removeChild(downloadLink);
+      }
+    } catch (e) {
+      // Case 2: Response is binary data
+      const contentType = response.headers['content-type'] || 'application/octet-stream';
+      const blob = new Blob([response.data], { type: contentType });
+      downloadUrl = URL.createObjectURL(blob);
+
+      // Create a temporary anchor element for download of binary data
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      link.setAttribute('download', filename); // Use provided filename
+
+      // Append to the document, trigger click, and then remove
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      // Clean up the blob URL we created
+      URL.revokeObjectURL(downloadUrl);
+    }
+  }
+
+  private static async downloadConnectorDocument(
+    externalRecordId: string,
+    fileName: string
+  ): Promise<void> {
+    try {
+      const publicConnectorUrlResponse = await getConnectorPublicUrl();
+      let connectorResponse;
+
+      if (publicConnectorUrlResponse && publicConnectorUrlResponse.url) {
+        const CONNECTOR_URL = publicConnectorUrlResponse.url;
+        connectorResponse = await axios.get(
+          `${CONNECTOR_URL}/api/v1/stream/record/${externalRecordId}`,
+          {
+            responseType: 'blob',
+          }
+        );
+      } else {
+        connectorResponse = await axios.get(
+          `${CONFIG.backendUrl}/api/v1/knowledgeBase/stream/record/${externalRecordId}`,
+          {
+            responseType: 'blob',
+          }
+        );
+      }
+
+      if (!connectorResponse) return;
+
+      // Extract filename from response headers or use fallback
+      let filename = fileName || `document-${externalRecordId}`;
+      const contentDisposition = connectorResponse.headers['content-disposition'];
+      if (contentDisposition) {
+        const filenameMatch = contentDisposition.match(
+          /filename[*]?=['"]?(?:UTF-\d['"]*)?([^;\r\n"']*)['"]?;?/
+        );
+        if (filenameMatch && filenameMatch[1]) {
+          filename = decodeURIComponent(filenameMatch[1]);
+        }
+      }
+
+      // Get the blob data directly
+      const blob = connectorResponse.data;
+
+      // Create download link and trigger download
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+
+      // Append to body, click, and cleanup
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      // Clean up the blob URL
+      window.URL.revokeObjectURL(url);
+
+      console.log(`File "${filename}" downloaded successfully`);
+    } catch (err) {
+      console.error('Error downloading document:', err);
+      throw new Error('Failed to download document');
+    }
+  }
+
   // Knowledge Base operations
   static async getKnowledgeBases(params?: {
     page?: number;
@@ -287,129 +421,9 @@ export class KnowledgeBaseAPI {
   ): Promise<void> {
     try {
       if (origin === ORIGIN.UPLOAD) {
-        const response = await axios.get(
-          `${CONFIG.backendUrl}/api/v1/document/${externalRecordId}/download`,
-          { responseType: 'blob' } // Set response type to blob to handle binary data
-        );
-        // Read the blob response as text to check if it's JSON with signedUrl
-        const reader = new FileReader();
-        const textPromise = new Promise<string>((resolve) => {
-          reader.onload = () => {
-            resolve(reader.result?.toString() || '');
-          };
-        });
-
-        reader.readAsText(response.data);
-        const text = await textPromise;
-
-        let downloadUrl;
-        // Use the provided fileName instead of extracting it from headers or URL
-        // Get filename from Content-Disposition header if available
-        let filename;
-        const contentDisposition = response.headers['content-disposition'];
-        if (contentDisposition) {
-          const filenameMatch = contentDisposition.match(/filename="?([^"]*)"?/);
-          if (filenameMatch && filenameMatch[1]) {
-            filename = filenameMatch[1];
-          }
-        }
-
-        if (!filename) {
-          filename = fileName || `document-${externalRecordId}`;
-        }
-
-        // Try to parse as JSON to check for signedUrl property
-        try {
-          const jsonData = JSON.parse(text);
-          if (jsonData && jsonData.signedUrl) {
-            // Create a hidden link with download attribute
-            const downloadLink = document.createElement('a');
-            downloadLink.href = jsonData.signedUrl;
-            downloadLink.setAttribute('download', filename); // Use provided filename
-            downloadLink.setAttribute('target', '_blank');
-            downloadLink.style.display = 'none';
-
-            document.body.appendChild(downloadLink);
-            downloadLink.click();
-            document.body.removeChild(downloadLink);
-          }
-        } catch (e) {
-          // Case 2: Response is binary data
-          const contentType = response.headers['content-type'] || 'application/octet-stream';
-          const blob = new Blob([response.data], { type: contentType });
-          downloadUrl = URL.createObjectURL(blob);
-
-          // Create a temporary anchor element for download of binary data
-          const link = document.createElement('a');
-          link.href = downloadUrl;
-          link.setAttribute('download', filename); // Use provided filename
-
-          // Append to the document, trigger click, and then remove
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-
-          // Clean up the blob URL we created
-          URL.revokeObjectURL(downloadUrl);
-        }
+        await this.downloadUploadDocument(externalRecordId, fileName);
       } else if (origin === ORIGIN.CONNECTOR) {
-        try {
-          const publicConnectorUrlResponse = await getConnectorPublicUrl();
-          let connectorResponse;
-
-          if (publicConnectorUrlResponse && publicConnectorUrlResponse.url) {
-            const CONNECTOR_URL = publicConnectorUrlResponse.url;
-            connectorResponse = await axios.get(
-              `${CONNECTOR_URL}/api/v1/stream/record/${externalRecordId}`,
-              {
-                responseType: 'blob',
-              }
-            );
-          } else {
-            connectorResponse = await axios.get(
-              `${CONFIG.backendUrl}/api/v1/knowledgeBase/stream/record/${externalRecordId}`,
-              {
-                responseType: 'blob',
-              }
-            );
-          }
-
-          if (!connectorResponse) return;
-
-          // Extract filename from response headers or use fallback
-          let filename = fileName || `document-${externalRecordId}`;
-          const contentDisposition = connectorResponse.headers['content-disposition'];
-          if (contentDisposition) {
-            const filenameMatch = contentDisposition.match(
-              /filename[*]?=['"]?(?:UTF-\d['"]*)?([^;\r\n"']*)['"]?;?/
-            );
-            if (filenameMatch && filenameMatch[1]) {
-              filename = decodeURIComponent(filenameMatch[1]);
-            }
-          }
-
-          // Get the blob data directly
-          const blob = connectorResponse.data;
-
-          // Create download link and trigger download
-          const url = window.URL.createObjectURL(blob);
-          const link = document.createElement('a');
-          link.href = url;
-          link.download = filename;
-
-          // Append to body, click, and cleanup
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-
-          // Clean up the blob URL
-          window.URL.revokeObjectURL(url);
-
-          console.log(`File "${filename}" downloaded successfully`);
-        } catch (err) {
-          console.error('Error downloading document:', err);
-          throw new Error('Failed to download document');
-        }
+        await this.downloadConnectorDocument(externalRecordId, fileName);
       }
     } catch (error) {
       throw new Error('Failed to download document');
