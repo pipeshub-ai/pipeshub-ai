@@ -1,6 +1,6 @@
 import asyncio
-import urllib.parse
 import re
+import urllib.parse
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
