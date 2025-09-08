@@ -2095,13 +2095,13 @@ async def reindex_failed_records(
             detail=f"Internal server error while reindexing failed records: {str(e)}"
         )
 
-@router.get("/api/v1/connector-stats")
+@router.get("/api/v1/stats")
 async def get_connector_stats_endpoint(
-    user_id: str,
     org_id: str,
+    connector: str,
     arango_service: BaseArangoService = Depends(get_arango_service)
 )-> Dict[str, Any]:
-    result = await arango_service.get_connector_stats(org_id, user_id)
+    result = await arango_service.get_connector_stats(org_id, connector)
 
     if result["success"]:
         return {"success": True, "data": result["data"]}

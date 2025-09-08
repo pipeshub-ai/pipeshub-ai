@@ -36,6 +36,10 @@ export const resyncConnectorSchema = z.object({
   }),
 });
 
+export const getConnectorStatsSchema = z.object({
+  params: z.object({ connector: z.string().min(1) }),
+});
+
 export const uploadRecordsSchema = z.object({
   body: z
     .object({

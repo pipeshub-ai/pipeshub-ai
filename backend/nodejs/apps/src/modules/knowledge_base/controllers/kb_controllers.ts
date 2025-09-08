@@ -2435,11 +2435,11 @@ export const getConnectorStats =
       try {
         // Call the Python service to get record
         const response = await axios.get(
-          `${appConfig.connectorBackend}/api/v1/connector-stats`,
+          `${appConfig.connectorBackend}/api/v1/stats`,
           {
             params: {
-              user_id: userId,
               org_id: orgId,
+              connector: req.params.connector,
             },
           },
         );
