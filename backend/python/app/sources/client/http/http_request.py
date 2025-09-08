@@ -20,6 +20,7 @@ class HTTPRequest(BaseModel):
     method: str = Field(default="GET")
     headers: dict[str, str] = Field(default_factory=dict)
     body: dict[str, Any] | bytes | None = None
+    multipart: dict[str, Any] | None = None  # For multipart/form-data
     path_params: dict[str, str] = Field(default_factory=dict, alias="path")
     query_params: dict[str, str] = Field(default_factory=dict, alias="query")
 

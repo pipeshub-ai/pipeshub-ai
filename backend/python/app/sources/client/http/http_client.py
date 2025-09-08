@@ -36,7 +36,22 @@ class HTTPClient(IClient):
 
         request_kwargs = {"params": request.query_params, "headers": headers, **kwargs}
 
-        if isinstance(request.body, dict):
+        # Handle multipart/form-data
+        if getattr(request, "multipart", None):
+            from aiohttp import FormData
+            form = FormData()
+            multipart = request.multipart
+            for key, value in multipart.items():
+                if isinstance(value, tuple):
+                    # (filename, file_content, content_type)
+                    form.add_field(key, value[1], filename=value[0], content_type=value[2])
+                else:
+                    form.add_field(key, value)
+            request_kwargs["data"] = form
+            # Remove Content-Type if present, aiohttp sets it
+            if "headers" in request_kwargs and "Content-Type" in request_kwargs["headers"]:
+                del request_kwargs["headers"]["Content-Type"]
+        elif isinstance(request.body, dict):
             request_kwargs["json"] = request.body
         elif isinstance(request.body, bytes):
             request_kwargs["data"] = request.body
