@@ -914,32 +914,35 @@ class KnowledgeBaseService :
         self,
         kb_id: str,
         requester_id: str,
-        users: List[str],  # External user IDs
+        user_ids: List[str],  # External user IDs
+        team_ids: List[str],  # External team IDs
         role: str,
     ) -> Optional[Dict]:
         """Optimized version - single AQL query approach"""
         try:
-            self.logger.info(f"🚀 Creating {role} permissions for {len(users)} users on KB {kb_id}")
+            self.logger.info(f"🚀 Creating {role} permissions for {len(user_ids)} users and {len(team_ids)} teams on KB {kb_id}")
 
             # Step 1: Validate inputs early
             valid_roles = ["OWNER", "ORGANIZER", "FILEORGANIZER", "WRITER", "COMMENTER", "READER"]
             if role not in valid_roles:
                 return {"success": False, "reason": f"Invalid role: {role}", "code": 400}
 
-            unique_users = list(set(users))
-            if not unique_users:
-                return {"success": False, "reason": "No users provided", "code": 400}
+            unique_users = list(set(user_ids))
+            unique_teams = list(set(team_ids))
+            if not unique_users and not unique_teams:
+                return {"success": False, "reason": "No users or teams provided", "code": 400}
 
             # Step 2: Single AQL query to do everything at once
             result = await self.arango_service.create_kb_permissions(
                 kb_id=kb_id,
-                requester_external_id=requester_id,
-                user_external_ids=unique_users,
+                requester_id=requester_id,
+                user_ids=unique_users,
+                team_ids=unique_teams,
                 role=role
             )
 
             if result.get("success"):
-                self.logger.info(f"✅ Permissions created: {result['grantedCount']} granted, {result['updatedCount']} updated")
+                self.logger.info(f"✅ Permissions created: {result['grantedCount']} granted")
                 return result
             else:
                 self.logger.error(f"❌ Permission creation failed: {result.get('reason')}")
@@ -953,12 +956,22 @@ class KnowledgeBaseService :
         self,
         kb_id: str,
         requester_id: str,
-        user_id: str,
-        new_role: str,
+        user_ids: List[str],
+        team_ids: List[str],
+        new_role: str
     ) -> Optional[Dict]:
-        """Update a single user's permission on a knowledge base"""
+        """Update permissions for users and teams on a knowledge base"""
         try:
-            self.logger.info(f"🚀 Updating permission for user {user_id} on KB {kb_id} to {new_role}")
+            self.logger.info(f"🚀 Updating permission for {len(user_ids)} users and {len(team_ids)} teams on KB {kb_id} to {new_role}")
+
+            # Check if at least one of user_ids or team_ids is provided
+            if not user_ids and not team_ids:
+                return {
+                    "success": False,
+                    "reason": "No users or teams provided for permission update",
+                    "code": "400"
+                }
+
             self.logger.info(f"Looking up requester by requester: {requester_id}")
             requester = await self.arango_service.get_user_by_user_id(user_id=requester_id)
 
@@ -971,17 +984,6 @@ class KnowledgeBaseService :
                 }
             requester_key = requester.get('_key')
 
-            self.logger.info(f"Looking up user by user_id: {user_id}")
-            user = await self.arango_service.get_user_by_user_id(user_id=user_id)
-
-            if not user:
-                self.logger.warning(f"⚠️ User not found for user_id: {user_id}")
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
-                }
-            user_key = user.get('_key')
             # Validate requester has permission to update permissions
             requester_role = await self.arango_service.get_user_kb_permission(kb_id, requester_key)
             if requester_role not in ["OWNER"]:
@@ -1000,24 +1002,63 @@ class KnowledgeBaseService :
                     "code": "400"
                 }
 
-            # Check if user exists and has current permission
-            current_role = await self.arango_service.get_user_kb_permission(kb_id, user_key)
-            if not current_role:
+            # Get current permissions for all users and teams in a single batch query
+            current_permissions = await self.arango_service.get_kb_permissions(
+                kb_id=kb_id,
+                user_ids=user_ids,
+                team_ids=team_ids
+            )
+
+            # Filter out users/teams that don't have permissions (skip them instead of erroring)
+            valid_user_ids = []
+            skipped_users = []
+            if user_ids:
+                for user_id in user_ids:
+                    if user_id in current_permissions["users"]:
+                        valid_user_ids.append(user_id)
+                    else:
+                        skipped_users.append(user_id)
+                        self.logger.warning(f"⚠️ Skipping user {user_id} - no permission found on KB {kb_id}")
+
+            valid_team_ids = []
+            skipped_teams = []
+            if team_ids:
+                for team_id in team_ids:
+                    if team_id in current_permissions["teams"]:
+                        valid_team_ids.append(team_id)
+                    else:
+                        skipped_teams.append(team_id)
+                        self.logger.warning(f"⚠️ Skipping team {team_id} - no permission found on KB {kb_id}")
+
+            # Check if we have any valid entities to update
+            if not valid_user_ids and not valid_team_ids:
                 return {
                     "success": False,
-                    "reason": f"User {user_key} does not have permission on KB {kb_id}",
-                    "code": "404"
+                    "reason": "No users or teams with existing permissions found to update",
+                    "code": "404",
+                    "skipped_users": skipped_users,
+                    "skipped_teams": skipped_teams
                 }
 
-            # Update permission
-            result = await self.arango_service.update_kb_permission(kb_id, user_key, new_role)
+            # Update permissions using batch update method for valid entities only
+            result = await self.arango_service.update_kb_permission(
+                kb_id=kb_id,
+                requester_id=requester_key,
+                user_ids=valid_user_ids,
+                team_ids=valid_team_ids,
+                new_role=new_role
+            )
 
             if result:
-                self.logger.info(f"✅ Permission updated successfully for user {user_key}")
+                success_msg = f"✅ Permission updated successfully for {len(valid_user_ids)} users and {len(valid_team_ids)} teams"
+                if skipped_users or skipped_teams:
+                    success_msg += f" (skipped {len(skipped_users)} users and {len(skipped_teams)} teams without permissions)"
+                self.logger.info(success_msg)
+
                 return {
                     "success": True,
-                    "userId": user_id,
-                    "previousRole": current_role,
+                    "userIds": valid_user_ids,
+                    "teamIds": valid_team_ids,
                     "newRole": new_role,
                     "kbId": kb_id,
                 }
@@ -1040,11 +1081,21 @@ class KnowledgeBaseService :
         self,
         kb_id: str,
         requester_id: str,
-        user_id: str,
+        user_ids: List[str],
+        team_ids: List[str],
     ) -> Optional[Dict]:
-        """Remove a user's permission from a knowledge base"""
+        """Remove permissions for users and teams from a knowledge base"""
         try:
-            self.logger.info(f"🚀 Removing permission for user {user_id} from KB {kb_id}")
+            self.logger.info(f"🚀 Removing permission for {len(user_ids)} users and {len(team_ids)} teams from KB {kb_id}")
+
+            # Check if at least one of user_ids or team_ids is provided
+            if not user_ids and not team_ids:
+                return {
+                    "success": False,
+                    "reason": "No users or teams provided for permission removal",
+                    "code": "400"
+                }
+
             self.logger.info(f"Looking up requester by requester: {requester_id}")
             requester = await self.arango_service.get_user_by_user_id(user_id=requester_id)
 
@@ -1057,18 +1108,6 @@ class KnowledgeBaseService :
                 }
             requester_key = requester.get('_key')
 
-            self.logger.info(f"Looking up user by user_id: {user_id}")
-            user = await self.arango_service.get_user_by_user_id(user_id=user_id)
-
-            if not user:
-                self.logger.warning(f"⚠️ User not found for user_id: {user_id}")
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
-                }
-            user_key = user.get('_key')
-
             # Validate requester has permission to remove permissions
             requester_role = await self.arango_service.get_user_kb_permission(kb_id, requester_key)
             if requester_role not in ["OWNER"]:
@@ -1078,40 +1117,85 @@ class KnowledgeBaseService :
                     "code": "403"
                 }
 
-            # Check if user has current permission
-            current_role = await self.arango_service.get_user_kb_permission(kb_id, user_key)
-            if not current_role:
+            # Get current permissions for all users and teams in a single batch query
+            current_permissions = await self.arango_service.get_kb_permissions(
+                kb_id=kb_id,
+                user_ids=user_ids,
+                team_ids=team_ids
+            )
+
+            # Filter out users/teams that don't have permissions and check for owner removal
+            valid_user_ids = []
+            skipped_users = []
+            owner_users_to_remove = []
+
+            if user_ids:
+                for user_id in user_ids:
+                    if user_id in current_permissions["users"]:
+                        current_role = current_permissions["users"][user_id]
+                        if current_role == "OWNER":
+                            owner_users_to_remove.append(user_id)
+                        valid_user_ids.append(user_id)
+                    else:
+                        skipped_users.append(user_id)
+                        self.logger.warning(f"⚠️ Skipping user {user_id} - no permission found on KB {kb_id}")
+
+            valid_team_ids = []
+            skipped_teams = []
+            if team_ids:
+                for team_id in team_ids:
+                    if team_id in current_permissions["teams"]:
+                        valid_team_ids.append(team_id)
+                    else:
+                        skipped_teams.append(team_id)
+                        self.logger.warning(f"⚠️ Skipping team {team_id} - no permission found on KB {kb_id}")
+
+            # Check if we have any valid entities to remove
+            if not valid_user_ids and not valid_team_ids:
                 return {
                     "success": False,
-                    "reason": f"User {user_key} does not have permission on KB {kb_id}",
-                    "code": "404"
+                    "reason": "No users or teams with existing permissions found to remove",
+                    "code": "404",
+                    "skipped_users": skipped_users,
+                    "skipped_teams": skipped_teams
                 }
 
-            # Prevent removing the last owner
-            if current_role == "OWNER":
+            # Check for owner removal restrictions
+            if owner_users_to_remove:
+                # Count total owners in the KB
                 owner_count = await self.arango_service.count_kb_owners(kb_id)
-                if owner_count <= 1:
+                if owner_count <= len(owner_users_to_remove):
                     return {
                         "success": False,
-                        "reason": "Cannot remove the last owner of the knowledge base",
-                        "code": "400"
+                        "reason": "Cannot remove all owners from the knowledge base. At least one owner must remain.",
+                        "code": "400",
+                        "owner_users": owner_users_to_remove
                     }
 
-            # Remove permission
-            result = await self.arango_service.remove_kb_permission(kb_id, user_key)
+            # Remove permissions using batch remove method for valid entities only
+            result = await self.arango_service.remove_kb_permission(
+                kb_id=kb_id,
+                user_ids=valid_user_ids,
+                team_ids=valid_team_ids
+            )
 
             if result:
-                self.logger.info(f"✅ Permission removed successfully for user {user_id}")
+                success_msg = f"✅ Permission removed successfully for {len(valid_user_ids)} users and {len(valid_team_ids)} teams"
+                if skipped_users or skipped_teams:
+                    success_msg += f" (skipped {len(skipped_users)} users and {len(skipped_teams)} teams without permissions)"
+                self.logger.info(success_msg)
+
+
                 return {
                     "success": True,
-                    "userId": user_id,
-                    "removedRole": current_role,
+                    "userIds": valid_user_ids,
+                    "teamIds": valid_team_ids,
                     "kbId": kb_id,
                 }
             else:
                 return {
                     "success": False,
-                    "reason": "Failed to remove permission",
+                    "reason": "Failed to remove permissions",
                     "code": "500"
                 }
 
@@ -1122,6 +1206,7 @@ class KnowledgeBaseService :
                 "reason": str(e),
                 "code": "500"
             }
+
 
     async def list_kb_permissions(
         self,

@@ -98,6 +98,5 @@ if __name__ == "__main__":
     try:
         encrypted = ""
         decrypted = service.decrypt(encrypted)
-        print("Decrypted:", decrypted)
     except Exception as error:
         print(error)

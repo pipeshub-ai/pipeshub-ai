@@ -3,10 +3,10 @@ import ConfigureConnectorDialog from './components/configure-connector-company-d
 
 const SharePointConnector = () => (
   <ConnectorConfigLayout
-    connectorId="sharepoint"
+    connectorId="sharepointOnline"
     accountType="business"
     configDialogComponent={ConfigureConnectorDialog}
-    statsConnectorNames={['SharePoint']}
+    statsConnectorNames={['SharePoint Online']}
   />
 );
 

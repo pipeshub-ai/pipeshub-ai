@@ -11,7 +11,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 )
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.connectors.sources.microsoft.common.apps import OneDriveApp
-from app.connectors.sources.microsoft.onedrive.onedrive import (
+from app.connectors.sources.microsoft.onedrive.connector import (
     OneDriveConnector,
     OneDriveCredentials,
 )

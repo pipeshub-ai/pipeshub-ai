@@ -73,7 +73,7 @@ class RecordBuilder:
         return self
 
     def with_connector(self, connector_name: str) -> 'RecordBuilder':
-        valid_connectors = ["ONEDRIVE", "DRIVE", "CONFLUENCE", "GMAIL", "SLACK", "NOTION", "LINEAR"]
+        valid_connectors = ["ONEDRIVE", "DRIVE", "CONFLUENCE", "GMAIL", "SLACK", "NOTION", "LINEAR", "SHAREPOINT ONLINE"]
         if connector_name and connector_name not in valid_connectors:
             raise ValueError(f"Invalid connector: {connector_name}")
         self._connector_name = connector_name

@@ -26,7 +26,12 @@ from app.connectors.sources.microsoft.common.msgraph_client import (
     RecordUpdate,
     map_msgraph_role_to_permission_type,
 )
-from app.models.entities import FileRecord, Record, RecordStatus, RecordType
+from app.models.entities import (
+    FileRecord,
+    Record,
+    RecordGroupType,
+    RecordType,
+)
 from app.models.permission import EntityType, Permission, PermissionType
 from app.models.users import User
 
@@ -136,9 +141,8 @@ class OneDriveConnector():
                 id=existing_record.id if existing_record else str(uuid.uuid4()),
                 record_name=item.name,
                 record_type=RecordType.FILE,
-                record_status=RecordStatus.NOT_STARTED if is_new else existing_record.record_status,
-                record_group_type="DRIVE",
-                parent_record_type="FILE",
+                record_group_type=RecordGroupType.DRIVE.value,
+                parent_record_type=RecordType.FILE.value,
                 external_record_id=item.id,
                 external_revision_id=item.e_tag,
                 version=0 if is_new else existing_record.version + 1,
