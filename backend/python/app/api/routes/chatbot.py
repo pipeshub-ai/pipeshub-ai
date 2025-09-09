@@ -1,6 +1,5 @@
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
-from app.utils.chat_helpers import get_flattened_results, get_message_content
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -15,8 +14,8 @@ from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_arango import ArangoService
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
-from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
 from app.utils.aimodels import get_generator_model
+from app.utils.chat_helpers import get_flattened_results, get_message_content
 from app.utils.citations import process_citations
 from app.utils.query_decompose import QueryDecompositionExpansionService
 from app.utils.query_transform import (

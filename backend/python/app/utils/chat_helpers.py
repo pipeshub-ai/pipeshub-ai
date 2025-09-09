@@ -1,11 +1,17 @@
+import re
 from typing import Any, Dict, List, Tuple
 from uuid import uuid4
+
 from jinja2 import Template
 
-from app.modules.transformers.blob_storage import BlobStorage
 from app.containers.utils.utils import ContainerUtils
 from app.models.blocks import BlockType, GroupType
-from app.modules.qna.prompt_templates import qna_prompt_context, qna_prompt_instructions_1, qna_prompt_instructions_2
+from app.modules.qna.prompt_templates import (
+    qna_prompt_context,
+    qna_prompt_instructions_1,
+    qna_prompt_instructions_2,
+)
+from app.modules.transformers.blob_storage import BlobStorage
 from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
 from app.utils.mimetype_to_extension import get_extension_from_mimetype
 
