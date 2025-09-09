@@ -8,12 +8,14 @@ from typing import AsyncGenerator, Dict, List, Optional, Tuple
 from aiolimiter import AsyncLimiter
 from azure.identity.aio import ClientSecretCredential
 from fastapi.responses import StreamingResponse
+from fastapi import HTTPException
 from msgraph import GraphServiceClient
 from msgraph.generated.models.drive_item import DriveItem
 from msgraph.generated.models.subscription import Subscription
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors, OriginTypes
+from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -37,7 +39,8 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.models.users import User
-
+from app.utils.streaming import stream_content
+from app.connectors.sources.microsoft.common.apps import OneDriveApp
 
 @dataclass
 class OneDriveCredentials:
@@ -49,7 +52,7 @@ class OneDriveCredentials:
 class OneDriveConnector(BaseConnector):
     def __init__(self, logger: Logger, data_entities_processor: DataSourceEntitiesProcessor,
         arango_service: BaseArangoService, config_service: ConfigurationService) -> None:
-        super().__init__(logger, data_entities_processor, arango_service, config_service)
+        super().__init__(OneDriveApp(), logger, data_entities_processor, arango_service, config_service)
 
         self.connector_name = Connectors.ONEDRIVE.value
 
@@ -719,11 +722,18 @@ class OneDriveConnector(BaseConnector):
 
     async def stream_record(self, record: Record) -> StreamingResponse:
         """Stream a record from SharePoint."""
-        NotImplementedError("This method is not supported")
+        signed_url = await self.get_signed_url(record)
+        if not signed_url:
+            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
 
-    async def download_record(self, record: Record) -> StreamingResponse:
-        """Stream a record from SharePoint."""
-        NotImplementedError("This method is not supported")
+        return StreamingResponse(
+            stream_content(signed_url),
+            media_type=record.mime_type,
+            headers={
+                "Content-Disposition": f"attachment; filename={record.record_name}"
+            }
+        )
+
 
     async def test_connection_and_access(self) -> bool:
         """Test connection and access to OneDrive."""

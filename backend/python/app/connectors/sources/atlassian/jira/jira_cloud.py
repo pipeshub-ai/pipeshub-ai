@@ -33,6 +33,7 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.models.users import User
+from app.connectors.sources.atlassian.core.apps import JiraApp
 
 RESOURCE_URL = "https://api.atlassian.com/oauth/token/accessible-resources"
 BASE_URL = "https://api.atlassian.com/ex/jira"
@@ -416,10 +417,8 @@ class JiraConnector(BaseConnector):
     def __init__(self, logger: Logger, data_entities_processor: DataSourceEntitiesProcessor,
                  arango_service: BaseArangoService,
                  config_service: ConfigurationService) -> None:
-        super().__init__(logger, data_entities_processor, arango_service, config_service)
+        super().__init__(JiraApp(), logger, data_entities_processor, arango_service, config_service)
         self.logger = logger
-        self.data_entities_processor = data_entities_processor
-        self.config_service = config_service
         self.provider = None
 
     async def init(self) -> None:
@@ -473,8 +472,3 @@ class JiraConnector(BaseConnector):
         return StreamingResponse(
             iter([issue_content]), media_type=MimeTypes.PLAIN_TEXT.value, headers={}
         )
-
-    async def download_record(self, record: Record) -> Optional[str]:
-        jira_client = await self.get_jira_client(record.org_id)
-        issue_content = await jira_client.fetch_issue_content(record.external_record_id)
-        return issue_content

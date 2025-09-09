@@ -8,7 +8,6 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional
-
 import aiohttp
 import google.oauth2.credentials
 import jwt
@@ -72,6 +71,7 @@ from app.modules.parsers.google_files.google_sheets_parser import GoogleSheetsPa
 from app.modules.parsers.google_files.google_slides_parser import GoogleSlidesParser
 from app.utils.llm import get_llm
 from app.utils.logger import create_logger
+from app.utils.streaming import stream_content
 
 logger = create_logger("connector_service")
 
@@ -335,43 +335,14 @@ async def stream_onedrive_file_content(request: Request, arango_service: BaseAra
     """
     try:
         onedrive_connector: OneDriveConnector = await get_onedrive_connector(request)
-        if not onedrive_connector:
-            raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="OneDrive connector not found")
+
         # Todo: Validate if user has access to the record
         record = await arango_service.get_record_by_id(record_id)
         if not record:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
-        signed_url = await onedrive_connector.get_signed_url(record)
+        return await onedrive_connector.stream_record(record)
 
-        if not signed_url:
-            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
-
-        async def stream_content() -> AsyncGenerator[bytes, None]:
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(signed_url) as response:
-                        if response.status != HttpStatusCode.SUCCESS.value:
-                            raise HTTPException(
-                                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                                detail=f"Failed to fetch file content: {response.status}"
-                            )
-                        async for chunk in response.content.iter_chunked(8192):
-                            yield chunk
-            except aiohttp.ClientError as e:
-                logger.error(f"Error fetching file from signed URL: {str(e)}")
-                raise HTTPException(
-                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                    detail="Failed to fetch file content"
-                )
-
-        return StreamingResponse(
-            stream_content(),
-            media_type=record.mime_type,
-            headers={
-                "Content-Disposition": f"attachment; filename={record.record_name}"
-            }
-        )
     except Exception as e:
         logger.error(f"Error accessing OneDrive connector or streaming file: {str(e)}")
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="OneDrive connector not available or file streaming failed")
@@ -382,43 +353,14 @@ async def stream_sharepoint_file_content(request: Request, arango_service: BaseA
     """
     try:
         sharepoint_connector: SharePointConnector = await get_sharepoint_connector(request)
-        if not sharepoint_connector:
-            raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="SharePoint connector not found")
 
         # Todo: Validate if user has access to the record
         record = await arango_service.get_record_by_id(record_id)
         if not record:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
-        signed_url = await sharepoint_connector.get_signed_url(record)
-        if not signed_url:
-            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
+        return await sharepoint_connector.stream_record(record)
 
-        async def stream_content() -> AsyncGenerator[bytes, None]:
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(signed_url) as response:
-                        if response.status != HttpStatusCode.SUCCESS.value:
-                            raise HTTPException(
-                                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                                detail=f"Failed to fetch file content: {response.status}"
-                            )
-                        async for chunk in response.content.iter_chunked(8192):
-                            yield chunk
-            except aiohttp.ClientError as e:
-                logger.error(f"Error fetching file from signed URL: {str(e)}")
-                raise HTTPException(
-                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                    detail="Failed to fetch file content"
-                )
-
-        return StreamingResponse(
-            stream_content(),
-            media_type=record.mime_type,
-            headers={
-                "Content-Disposition": f"attachment; filename={record.record_name}"
-            }
-        )
     except Exception as e:
         logger.error(f"Error accessing SharePoint connector or streaming file: {str(e)}")
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="SharePoint connector not available or file streaming failed")

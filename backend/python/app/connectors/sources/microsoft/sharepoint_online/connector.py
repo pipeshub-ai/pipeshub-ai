@@ -12,6 +12,7 @@ import httpx
 from aiolimiter import AsyncLimiter
 from azure.identity.aio import ClientSecretCredential
 from fastapi.responses import StreamingResponse
+from fastapi import HTTPException
 from msgraph import GraphServiceClient
 from msgraph.generated.models.drive_item import DriveItem
 from msgraph.generated.models.list_item import ListItem
@@ -53,7 +54,9 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.models.users import User
+from app.utils.streaming import stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.connectors.sources.microsoft.common.apps import SharePointOnlineApp
 
 
 class SharePointRecordType(Enum):
@@ -103,7 +106,7 @@ class SharePointConnector(BaseConnector):
         arango_service: BaseArangoService,
         config_service: ConfigurationService,
     ) -> None:
-        super().__init__(logger, data_entities_processor, arango_service, config_service)
+        super().__init__(SharePointOnlineApp(), logger, data_entities_processor, arango_service, config_service)
         self.connector_name = Connectors.SHAREPOINT_ONLINE.value
 
         def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
@@ -122,7 +125,7 @@ class SharePointConnector(BaseConnector):
         self.user_sync_point = _create_sync_point(SyncDataPointType.USERS)
         self.user_group_sync_point = _create_sync_point(SyncDataPointType.USER_GROUPS)
 
-        self.filters = {"exclude_onedrive_sites": True, "exclude_pages": False, "exclude_lists": True, "exclude_document_libraries": False}
+        self.filters = {"exclude_onedrive_sites": True, "exclude_pages": True, "exclude_lists": True, "exclude_document_libraries": True}
         # Batch processing configuration
         self.batch_size = 50  # Reduced for better memory management
         self.max_concurrent_batches = 2  # Reduced to avoid rate limiting
@@ -1603,7 +1606,6 @@ class SharePointConnector(BaseConnector):
             self.logger.error(f"Error getting SharePoint access token: {e}")
             return None
 
-
     async def _get_sharepoint_group_members(self, site_url: str, group_id: int, access_token: str) -> List[Dict]:
         """Get members of a SharePoint group using REST API."""
         try:
@@ -2056,12 +2058,21 @@ class SharePointConnector(BaseConnector):
 
     async def stream_record(self, record: Record) -> StreamingResponse:
         """Stream a record from SharePoint."""
-        NotImplementedError("This method is not supported")
 
-    async def download_record(self, record: Record) -> StreamingResponse:
-        """Stream a record from SharePoint."""
-        NotImplementedError("This method is not supported")
+        if record.record_type != RecordType.FILE:
+            raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="File not found or access denied")
 
+        signed_url = await self.get_signed_url(record)
+        if not signed_url:
+            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
+
+        return StreamingResponse(
+            stream_content(signed_url),
+            media_type=record.mime_type,
+            headers={
+                "Content-Disposition": f"attachment; filename={record.record_name}"
+            }
+        )
 
     # Utility methods
     async def handle_webhook_notification(self, notification: Dict) -> None:

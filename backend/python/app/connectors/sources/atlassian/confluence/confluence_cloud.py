@@ -25,6 +25,7 @@ from app.connectors.sources.atlassian.core.oauth import (
     AtlassianOAuthProvider,
     AtlassianScope,
 )
+from app.connectors.sources.atlassian.core.apps import ConfluenceApp
 from app.models.entities import RecordGroupType, RecordType, WebpageRecord
 from app.models.permission import EntityType, Permission, PermissionType
 from app.models.users import User
@@ -303,7 +304,7 @@ class ConfluenceConnector(BaseConnector):
     def __init__(self, logger: Logger, data_entities_processor: DataSourceEntitiesProcessor,
                  arango_service: BaseArangoService,
                  config_service: ConfigurationService) -> None:
-        super().__init__(logger, data_entities_processor, arango_service, config_service)
+        super().__init__(ConfluenceApp(), logger, data_entities_processor, arango_service, config_service)
         self.provider = None
 
     async def init(self) -> None:

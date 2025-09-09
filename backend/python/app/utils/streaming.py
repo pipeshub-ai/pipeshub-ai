@@ -2,8 +2,31 @@ import json
 import re
 from typing import Any, AsyncGenerator, Dict, Union
 
+import aiohttp
+from fastapi import HTTPException
+
 from app.modules.qna.prompt_templates import AnswerWithMetadata
 from app.utils.citations import normalize_citations_and_chunks
+
+from app.config.constants.http_status_code import HttpStatusCode
+
+
+async def stream_content(signed_url: str) -> AsyncGenerator[bytes, None]:
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(signed_url) as response:
+                if response.status != HttpStatusCode.SUCCESS.value:
+                    raise HTTPException(
+                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                        detail=f"Failed to fetch file content: {response.status}"
+                    )
+                async for chunk in response.content.iter_chunked(8192):
+                    yield chunk
+    except aiohttp.ClientError as e:
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Failed to fetch file content from signed URL {str(e)}"
+        )
 
 
 def find_unescaped_quote(text: str) -> int:
