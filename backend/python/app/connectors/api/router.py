@@ -8,7 +8,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional
-import aiohttp
+
 import google.oauth2.credentials
 import jwt
 from dependency_injector.wiring import Provide, inject
@@ -71,7 +71,6 @@ from app.modules.parsers.google_files.google_sheets_parser import GoogleSheetsPa
 from app.modules.parsers.google_files.google_slides_parser import GoogleSlidesParser
 from app.utils.llm import get_llm
 from app.utils.logger import create_logger
-from app.utils.streaming import stream_content
 
 logger = create_logger("connector_service")
 

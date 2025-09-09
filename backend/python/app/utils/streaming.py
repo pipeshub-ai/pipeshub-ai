@@ -5,10 +5,9 @@ from typing import Any, AsyncGenerator, Dict, Union
 import aiohttp
 from fastapi import HTTPException
 
+from app.config.constants.http_status_code import HttpStatusCode
 from app.modules.qna.prompt_templates import AnswerWithMetadata
 from app.utils.citations import normalize_citations_and_chunks
-
-from app.config.constants.http_status_code import HttpStatusCode
 
 
 async def stream_content(signed_url: str) -> AsyncGenerator[bytes, None]:

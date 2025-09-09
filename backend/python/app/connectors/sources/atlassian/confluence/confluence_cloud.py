@@ -19,13 +19,13 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 )
 from app.connectors.core.base.token_service.oauth_service import OAuthToken
 from app.connectors.services.base_arango_service import BaseArangoService
+from app.connectors.sources.atlassian.core.apps import ConfluenceApp
 from app.connectors.sources.atlassian.core.oauth import (
     OAUTH_CONFIG_PATH,
     OAUTH_CREDENTIALS_PATH,
     AtlassianOAuthProvider,
     AtlassianScope,
 )
-from app.connectors.sources.atlassian.core.apps import ConfluenceApp
 from app.models.entities import RecordGroupType, RecordType, WebpageRecord
 from app.models.permission import EntityType, Permission, PermissionType
 from app.models.users import User

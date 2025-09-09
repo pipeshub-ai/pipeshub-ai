@@ -11,8 +11,8 @@ from typing import AsyncGenerator, Dict, List, Optional, Tuple
 import httpx
 from aiolimiter import AsyncLimiter
 from azure.identity.aio import ClientSecretCredential
-from fastapi.responses import StreamingResponse
 from fastapi import HTTPException
+from fastapi.responses import StreamingResponse
 from msgraph import GraphServiceClient
 from msgraph.generated.models.drive_item import DriveItem
 from msgraph.generated.models.list_item import ListItem
@@ -36,6 +36,7 @@ from app.connectors.core.base.sync_point.sync_point import (
     generate_record_sync_point_key,
 )
 from app.connectors.services.base_arango_service import BaseArangoService
+from app.connectors.sources.microsoft.common.apps import SharePointOnlineApp
 from app.connectors.sources.microsoft.common.msgraph_client import (
     MSGraphClient,
     RecordUpdate,
@@ -56,7 +57,6 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.models.users import User
 from app.utils.streaming import stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.connectors.sources.microsoft.common.apps import SharePointOnlineApp
 
 
 class SharePointRecordType(Enum):

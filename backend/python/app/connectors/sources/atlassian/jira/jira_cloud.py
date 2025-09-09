@@ -18,6 +18,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 )
 from app.connectors.core.base.token_service.oauth_service import OAuthToken
 from app.connectors.services.base_arango_service import BaseArangoService
+from app.connectors.sources.atlassian.core.apps import JiraApp
 from app.connectors.sources.atlassian.core.oauth import (
     OAUTH_CONFIG_PATH,
     OAUTH_CREDENTIALS_PATH,
@@ -33,7 +34,6 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.models.users import User
-from app.connectors.sources.atlassian.core.apps import JiraApp
 
 RESOURCE_URL = "https://api.atlassian.com/oauth/token/accessible-resources"
 BASE_URL = "https://api.atlassian.com/ex/jira"

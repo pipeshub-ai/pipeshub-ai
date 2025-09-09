@@ -1,7 +1,6 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 
-from app.connectors.core.interfaces.connector.apps import AppGroup
 import google.oauth2.credentials
 from dependency_injector import containers, providers
 from google.oauth2 import service_account

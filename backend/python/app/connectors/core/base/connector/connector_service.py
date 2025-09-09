@@ -2,13 +2,13 @@ from abc import ABC, abstractmethod
 from logging import Logger
 from typing import Dict, Optional
 
-from app.connectors.core.interfaces.connector.apps import App, AppGroup
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
+from app.connectors.core.interfaces.connector.apps import App, AppGroup
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.models.entities import Record
 
