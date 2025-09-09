@@ -418,7 +418,6 @@ class JiraConnector(BaseConnector):
                  arango_service: BaseArangoService,
                  config_service: ConfigurationService) -> None:
         super().__init__(JiraApp(), logger, data_entities_processor, arango_service, config_service)
-        self.logger = logger
         self.provider = None
 
     async def init(self) -> None:
