@@ -8,7 +8,7 @@ from app.sources.external.dropbox.dropbox_ import DropboxDataSource
 ACCESS_TOKEN = os.getenv("DROPBOX_TOKEN")
 
 async def main() -> None:
-    config = DropboxAppKeySecretConfig(app_key=os.getenv("DROPBOX_APP_KEY"), app_secret=os.getenv("DROPBOX_APP_SECRET"))
+    config = DropboxTokenConfig(token=ACCESS_TOKEN)
     client = await DropboxClient.build_with_config(config, is_team=False)
     data_source = DropboxDataSource(client)
 
@@ -24,7 +24,7 @@ async def main() -> None:
 
     # # Download the file
     # print("\nDownloading test.txt...")
-    # download_resp = await data_source.files_download("/test.txt")
+    # download_resp = await data_source.files_download("/IMG_1677.jpg")
     # print(f"Downloaded bytes: {len(download_resp['data'])}")
 
     # # Get metadata

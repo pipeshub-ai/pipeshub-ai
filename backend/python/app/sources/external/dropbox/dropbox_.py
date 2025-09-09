@@ -1,3 +1,4 @@
+import asyncio
 from typing import Dict, List, Optional, Union
 
 from dropbox import Dropbox, DropboxTeam
@@ -46,13 +47,13 @@ class DropboxDataSource:
     async def _get_user_client(self) -> Dropbox:
         """Get or create user client."""
         if self._user_client is None:
-            self._user_client = await self._dropbox_client.get_client().create_client()
+            self._user_client = self._dropbox_client.get_client().create_client()
         return self._user_client
 
     async def _get_team_client(self) -> DropboxTeam:
         """Get or create team client."""
         if self._team_client is None:
-            self._team_client = await self._dropbox_client.get_client().create_client(is_team=True)
+            self._team_client = self._dropbox_client.get_client().create_client()
             if self._team_client is None:
                 raise Exception("Team operations require team admin token")
         return self._team_client
@@ -85,7 +86,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.account_set_profile_photo(photo)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.account_set_profile_photo(photo))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -120,7 +122,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.auth_token_from_oauth1(oauth1_token, oauth1_token_secret)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.auth_token_from_oauth1(oauth1_token, oauth1_token_secret))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -143,7 +146,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.auth_token_revoke()
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.auth_token_revoke())
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -175,7 +179,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.check_app(query=query)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.check_app(query=query))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -209,7 +214,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.check_user(query=query)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.check_user(query=query))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -233,7 +239,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.contacts_delete_manual_contacts()
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.contacts_delete_manual_contacts())
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -266,7 +273,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.contacts_delete_manual_contacts_batch(email_addresses)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.contacts_delete_manual_contacts_batch(email_addresses))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -306,7 +314,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.file_properties_properties_add(path, property_groups)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.file_properties_properties_add(path, property_groups))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -349,7 +358,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.file_properties_properties_overwrite(path, property_groups)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.file_properties_properties_overwrite(path, property_groups))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -392,7 +402,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.file_properties_properties_remove(path, property_template_ids)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.file_properties_properties_remove(path, property_template_ids))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -430,7 +441,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.file_properties_properties_search(queries, template_filter=template_filter)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.file_properties_properties_search(queries, template_filter=template_filter))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -1752,7 +1764,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_download(path, rev=rev)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_download(path, rev=rev))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -2389,7 +2402,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_get_thumbnail_to_file(download_path, path, format=format, size=size, mode=mode)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_get_thumbnail_to_file(download_path, path, format=format, size=size, mode=mode))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -2445,7 +2459,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_get_thumbnail_to_file_v2(download_path, resource, format=format, size=size, mode=mode)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_get_thumbnail_to_file_v2(download_path, resource, format=format, size=size, mode=mode))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -2504,7 +2519,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_get_thumbnail_v2(resource, format=format, size=size, mode=mode)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_get_thumbnail_v2(resource, format=format, size=size, mode=mode))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -2605,7 +2621,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_list_folder(path, recursive=recursive, include_media_info=include_media_info, include_deleted=include_deleted, include_has_explicit_shared_members=include_has_explicit_shared_members, include_mounted_folders=include_mounted_folders, limit=limit, shared_link=shared_link, include_property_groups=include_property_groups, include_non_downloadable_files=include_non_downloadable_files)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_list_folder(path, recursive=recursive, include_media_info=include_media_info, include_deleted=include_deleted, include_has_explicit_shared_members=include_has_explicit_shared_members, include_mounted_folders=include_mounted_folders, limit=limit, shared_link=shared_link, include_property_groups=include_property_groups, include_non_downloadable_files=include_non_downloadable_files))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -2640,7 +2657,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_list_folder_continue(cursor)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_list_folder_continue(cursor))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -2722,7 +2740,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_list_folder_get_latest_cursor(path, recursive=recursive, include_media_info=include_media_info, include_deleted=include_deleted, include_has_explicit_shared_members=include_has_explicit_shared_members, include_mounted_folders=include_mounted_folders, limit=limit, shared_link=shared_link, include_property_groups=include_property_groups, include_non_downloadable_files=include_non_downloadable_files)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_list_folder_get_latest_cursor(path, recursive=recursive, include_media_info=include_media_info, include_deleted=include_deleted, include_has_explicit_shared_members=include_has_explicit_shared_members, include_mounted_folders=include_mounted_folders, limit=limit, shared_link=shared_link, include_property_groups=include_property_groups, include_non_downloadable_files=include_non_downloadable_files))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -2769,7 +2788,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_list_folder_longpoll(cursor, timeout=timeout)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_list_folder_longpoll(cursor, timeout=timeout))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -2817,7 +2837,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_list_revisions(path, mode=mode, limit=limit)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_list_revisions(path, mode=mode, limit=limit))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -2855,7 +2876,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_lock_file_batch(entries)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_lock_file_batch(entries))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -2901,7 +2923,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_move(from_path, to_path, allow_shared_folder=allow_shared_folder, autorename=autorename, allow_ownership_transfer=allow_ownership_transfer)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_move(from_path, to_path, allow_shared_folder=allow_shared_folder, autorename=autorename, allow_ownership_transfer=allow_ownership_transfer))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -2942,7 +2965,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_move_batch(entries, autorename=autorename, allow_shared_folder=allow_shared_folder, allow_ownership_transfer=allow_ownership_transfer)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_move_batch(entries, autorename=autorename, allow_shared_folder=allow_shared_folder, allow_ownership_transfer=allow_ownership_transfer))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -2976,7 +3000,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_move_batch_check(async_job_id)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_move_batch_check(async_job_id))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -3010,7 +3035,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_move_batch_check_v2(async_job_id)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_move_batch_check_v2(async_job_id))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -3052,7 +3078,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_move_batch_v2(entries, autorename=autorename, allow_ownership_transfer=allow_ownership_transfer)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_move_batch_v2(entries, autorename=autorename, allow_ownership_transfer=allow_ownership_transfer))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -3099,7 +3126,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_move_v2(from_path, to_path, allow_shared_folder=allow_shared_folder, autorename=autorename, allow_ownership_transfer=allow_ownership_transfer)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_move_v2(from_path, to_path, allow_shared_folder=allow_shared_folder, autorename=autorename, allow_ownership_transfer=allow_ownership_transfer))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -3140,7 +3168,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_paper_create(f, path, import_format)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_paper_create(f, path, import_format))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -3190,7 +3219,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_paper_update(f, path, import_format, doc_update_policy, paper_revision=paper_revision)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_paper_update(f, path, import_format, doc_update_policy, paper_revision=paper_revision))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -3231,7 +3261,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_permanently_delete(path, parent_rev=parent_rev)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_permanently_delete(path, parent_rev=parent_rev))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -3267,7 +3298,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_properties_add(path, property_groups)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_properties_add(path, property_groups))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -3303,7 +3335,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_properties_overwrite(path, property_groups)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_properties_overwrite(path, property_groups))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -3339,7 +3372,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_properties_remove(path, property_template_ids)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_properties_remove(path, property_template_ids))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -3372,7 +3406,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_properties_template_get(template_id)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_properties_template_get(template_id))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -3396,7 +3431,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_properties_template_list()
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_properties_template_list())
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -3432,7 +3468,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_properties_update(path, update_property_groups)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_properties_update(path, update_property_groups))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -3467,7 +3504,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_restore(path, rev)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_restore(path, rev))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -3506,7 +3544,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_save_url(path, url)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_save_url(path, url))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -3539,7 +3578,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_save_url_check_job_status(async_job_id)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_save_url_check_job_status(async_job_id))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -3594,7 +3634,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_search(path, query, start=start, max_results=max_results, mode=mode)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_search(path, query, start=start, max_results=max_results, mode=mode))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -3632,7 +3673,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_search_continue_v2(cursor)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_search_continue_v2(cursor))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -3681,7 +3723,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_search_v2(query, options=options, match_field_options=match_field_options, include_highlights=include_highlights)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_search_v2(query, options=options, match_field_options=match_field_options, include_highlights=include_highlights))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -3719,7 +3762,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_tags_add(path, tag_text)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_tags_add(path, tag_text))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -3751,7 +3795,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_tags_get(paths)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_tags_get(paths))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -3787,7 +3832,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_tags_remove(path, tag_text)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_tags_remove(path, tag_text))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -3825,7 +3871,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_unlock_file_batch(entries)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_unlock_file_batch(entries))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -3884,7 +3931,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_upload(f, path, mode=mode, autorename=autorename, client_modified=client_modified, mute=mute, property_groups=property_groups, strict_conflict=strict_conflict, content_hash=content_hash)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_upload(f, path, mode=mode, autorename=autorename, client_modified=client_modified, mute=mute, property_groups=property_groups, strict_conflict=strict_conflict, content_hash=content_hash))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -3931,7 +3979,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_upload_session_append(f, session_id, offset)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_upload_session_append(f, session_id, offset))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -3987,7 +4036,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_upload_session_append_v2(f, cursor, close=close, content_hash=content_hash)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_upload_session_append_v2(f, cursor, close=close, content_hash=content_hash))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -4042,7 +4092,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_upload_session_finish(f, cursor, commit, content_hash=content_hash)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_upload_session_finish(f, cursor, commit, content_hash=content_hash))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -4091,7 +4142,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_upload_session_finish_batch(entries)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_upload_session_finish_batch(entries))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -4126,7 +4178,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_upload_session_finish_batch_check(async_job_id)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_upload_session_finish_batch_check(async_job_id))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -4171,7 +4224,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_upload_session_finish_batch_v2(entries)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_upload_session_finish_batch_v2(entries))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -4254,7 +4308,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_upload_session_start(f, close=close, session_type=session_type, content_hash=content_hash)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_upload_session_start(f, close=close, session_type=session_type, content_hash=content_hash))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -4293,7 +4348,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.files_upload_session_start_batch(num_sessions, session_type=session_type)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.files_upload_session_start_batch(num_sessions, session_type=session_type))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -4333,7 +4389,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.paper_docs_archive(doc_id)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.paper_docs_archive(doc_id))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -4381,7 +4438,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.paper_docs_create(f, import_format, parent_folder_id=parent_folder_id)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.paper_docs_create(f, import_format, parent_folder_id=parent_folder_id))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -4428,7 +4486,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.paper_docs_download(doc_id, export_format)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.paper_docs_download(doc_id, export_format))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -4472,7 +4531,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.paper_docs_download_to_file(download_path, doc_id, export_format)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.paper_docs_download_to_file(download_path, doc_id, export_format))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -4518,7 +4578,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.paper_docs_folder_users_list(doc_id, limit=limit)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.paper_docs_folder_users_list(doc_id, limit=limit))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -4563,7 +4624,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.paper_docs_folder_users_list_continue(doc_id, cursor)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.paper_docs_folder_users_list_continue(doc_id, cursor))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -4607,7 +4669,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.paper_docs_get_folder_info(doc_id)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.paper_docs_get_folder_info(doc_id))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -4661,7 +4724,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.paper_docs_list(filter_by=filter_by, sort_by=sort_by, sort_order=sort_order, limit=limit)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.paper_docs_list(filter_by=filter_by, sort_by=sort_by, sort_order=sort_order, limit=limit))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -4702,7 +4766,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.paper_docs_list_continue(cursor)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.paper_docs_list_continue(cursor))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -4742,7 +4807,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.paper_docs_permanently_delete(doc_id)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.paper_docs_permanently_delete(doc_id))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -4781,7 +4847,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.paper_docs_sharing_policy_get(doc_id)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.paper_docs_sharing_policy_get(doc_id))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -4827,7 +4894,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.paper_docs_sharing_policy_set(doc_id, sharing_policy)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.paper_docs_sharing_policy_set(doc_id, sharing_policy))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -4881,7 +4949,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.paper_docs_update(f, doc_id, doc_update_policy, revision, import_format)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.paper_docs_update(f, doc_id, doc_update_policy, revision, import_format))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -4934,7 +5003,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.paper_docs_users_add(doc_id, members, custom_message=custom_message, quiet=quiet)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.paper_docs_users_add(doc_id, members, custom_message=custom_message, quiet=quiet))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -4985,7 +5055,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.paper_docs_users_list(doc_id, limit=limit, filter_by=filter_by)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.paper_docs_users_list(doc_id, limit=limit, filter_by=filter_by))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -5029,7 +5100,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.paper_docs_users_list_continue(doc_id, cursor)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.paper_docs_users_list_continue(doc_id, cursor))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -5073,7 +5145,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.paper_docs_users_remove(doc_id, member)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.paper_docs_users_remove(doc_id, member))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -5126,7 +5199,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.paper_folders_create(name, parent_folder_id=parent_folder_id, is_team_folder=is_team_folder)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.paper_folders_create(name, parent_folder_id=parent_folder_id, is_team_folder=is_team_folder))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -5181,7 +5255,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_add_file_member(file, members, custom_message=custom_message, quiet=quiet, access_level=access_level, add_message_as_comment=add_message_as_comment)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_add_file_member(file, members, custom_message=custom_message, quiet=quiet, access_level=access_level, add_message_as_comment=add_message_as_comment))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -5229,7 +5304,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_add_folder_member(shared_folder_id, members, quiet=quiet, custom_message=custom_message)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_add_folder_member(shared_folder_id, members, quiet=quiet, custom_message=custom_message))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -5262,7 +5338,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_check_job_status(async_job_id)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_check_job_status(async_job_id))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -5295,7 +5372,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_check_remove_member_job_status(async_job_id)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_check_remove_member_job_status(async_job_id))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -5328,7 +5406,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_check_share_job_status(async_job_id)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_check_share_job_status(async_job_id))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -5375,7 +5454,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_create_shared_link(path, short_url=short_url, pending_upload=pending_upload)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_create_shared_link(path, short_url=short_url, pending_upload=pending_upload))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -5414,7 +5494,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_create_shared_link_with_settings(path, settings=settings)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_create_shared_link_with_settings(path, settings=settings))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -5453,7 +5534,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_get_file_metadata(file, actions=actions)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_get_file_metadata(file, actions=actions))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -5492,7 +5574,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_get_file_metadata_batch(files, actions=actions)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_get_file_metadata_batch(files, actions=actions))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -5531,7 +5614,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_get_folder_metadata(shared_folder_id, actions=actions)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_get_folder_metadata(shared_folder_id, actions=actions))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -5578,7 +5662,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_get_shared_link_file(url, path=path, link_password=link_password)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_get_shared_link_file(url, path=path, link_password=link_password))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -5622,7 +5707,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_get_shared_link_file_to_file(download_path, url, path=path, link_password=link_password)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_get_shared_link_file_to_file(download_path, url, path=path, link_password=link_password))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -5663,7 +5749,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_get_shared_link_metadata(url, path=path, link_password=link_password)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_get_shared_link_metadata(url, path=path, link_password=link_password))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -5701,7 +5788,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_get_shared_links(path=path)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_get_shared_links(path=path))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -5746,7 +5834,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_list_file_members(file, actions=actions, include_inherited=include_inherited, limit=limit)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_list_file_members(file, actions=actions, include_inherited=include_inherited, limit=limit))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -5786,7 +5875,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_list_file_members_batch(files, limit=limit)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_list_file_members_batch(files, limit=limit))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -5823,7 +5913,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_list_file_members_continue(cursor)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_list_file_members_continue(cursor))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -5859,7 +5950,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_list_folder_members(shared_folder_id, actions=actions, limit=limit)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_list_folder_members(shared_folder_id, actions=actions, limit=limit))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -5895,7 +5987,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_list_folder_members_continue(cursor)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_list_folder_members_continue(cursor))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -5931,7 +6024,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_list_folders(limit=limit, actions=actions)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_list_folders(limit=limit, actions=actions))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -5967,7 +6061,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_list_folders_continue(cursor)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_list_folders_continue(cursor))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -6004,7 +6099,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_list_mountable_folders(limit=limit, actions=actions)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_list_mountable_folders(limit=limit, actions=actions))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -6041,7 +6137,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_list_mountable_folders_continue(cursor)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_list_mountable_folders_continue(cursor))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -6083,7 +6180,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_list_received_files(limit=limit, actions=actions)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_list_received_files(limit=limit, actions=actions))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -6115,7 +6213,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_list_received_files_continue(cursor)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_list_received_files_continue(cursor))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -6165,7 +6264,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_list_shared_links(path=path, cursor=cursor, direct_only=direct_only)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_list_shared_links(path=path, cursor=cursor, direct_only=direct_only))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -6212,7 +6312,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_modify_shared_link_settings(url, settings, remove_expiration=remove_expiration)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_modify_shared_link_settings(url, settings, remove_expiration=remove_expiration))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -6246,7 +6347,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_mount_folder(shared_folder_id)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_mount_folder(shared_folder_id))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -6280,7 +6382,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_relinquish_file_membership(file)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_relinquish_file_membership(file))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -6321,7 +6424,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_relinquish_folder_membership(shared_folder_id, leave_a_copy=leave_a_copy)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_relinquish_folder_membership(shared_folder_id, leave_a_copy=leave_a_copy))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -6360,7 +6464,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_remove_file_member(file, member)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_remove_file_member(file, member))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -6399,7 +6504,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_remove_file_member_2(file, member)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_remove_file_member_2(file, member))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -6443,7 +6549,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_remove_folder_member(shared_folder_id, member, leave_a_copy)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_remove_folder_member(shared_folder_id, member, leave_a_copy))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -6480,7 +6587,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_revoke_shared_link(url)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_revoke_shared_link(url))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -6521,7 +6629,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_set_access_inheritance(shared_folder_id, access_inheritance=access_inheritance)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_set_access_inheritance(shared_folder_id, access_inheritance=access_inheritance))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -6580,7 +6689,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_share_folder(path, acl_update_policy=acl_update_policy, force_async=force_async, member_policy=member_policy, shared_link_policy=shared_link_policy, viewer_info_policy=viewer_info_policy, access_inheritance=access_inheritance, actions=actions, link_settings=link_settings)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_share_folder(path, acl_update_policy=acl_update_policy, force_async=force_async, member_policy=member_policy, shared_link_policy=shared_link_policy, viewer_info_policy=viewer_info_policy, access_inheritance=access_inheritance, actions=actions, link_settings=link_settings))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -6618,7 +6728,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_transfer_folder(shared_folder_id, to_dropbox_id)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_transfer_folder(shared_folder_id, to_dropbox_id))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -6651,7 +6762,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_unmount_folder(shared_folder_id)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_unmount_folder(shared_folder_id))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -6683,7 +6795,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_unshare_file(file)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_unshare_file(file))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -6723,7 +6836,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_unshare_folder(shared_folder_id, leave_a_copy=leave_a_copy)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_unshare_folder(shared_folder_id, leave_a_copy=leave_a_copy))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -6763,7 +6877,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_update_file_member(file, member, access_level)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_update_file_member(file, member, access_level))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -6806,7 +6921,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_update_folder_member(shared_folder_id, member, access_level)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_update_folder_member(shared_folder_id, member, access_level))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -6872,7 +6988,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.sharing_update_folder_policy(shared_folder_id, member_policy=member_policy, acl_update_policy=acl_update_policy, viewer_info_policy=viewer_info_policy, shared_link_policy=shared_link_policy, link_settings=link_settings, actions=actions)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.sharing_update_folder_policy(shared_folder_id, member_policy=member_policy, acl_update_policy=acl_update_policy, viewer_info_policy=viewer_info_policy, shared_link_policy=shared_link_policy, link_settings=link_settings, actions=actions))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -6908,7 +7025,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.users_features_get_values(features)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.users_features_get_values(features))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -6940,7 +7058,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.users_get_account(account_id)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.users_get_account(account_id))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -6974,7 +7093,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.users_get_account_batch(account_ids)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.users_get_account_batch(account_ids))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -6996,7 +7116,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.users_get_current_account()
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.users_get_current_account())
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -7018,7 +7139,8 @@ class DropboxDataSource:
         """
         client = await self._get_user_client()
         try:
-            response = client.users_get_space_usage()
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.users_get_space_usage())
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -7055,7 +7177,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.file_properties_templates_add_for_team(name, description, fields)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.file_properties_templates_add_for_team(name, description, fields))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -7089,7 +7212,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.file_properties_templates_get_for_team(template_id)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.file_properties_templates_get_for_team(template_id))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -7115,7 +7239,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.file_properties_templates_list_for_team()
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.file_properties_templates_list_for_team())
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -7152,7 +7277,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.file_properties_templates_remove_for_team(template_id)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.file_properties_templates_remove_for_team(template_id))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -7202,7 +7328,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.file_properties_templates_update_for_team(template_id, name=name, description=description, add_fields=add_fields)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.file_properties_templates_update_for_team(template_id, name=name, description=description, add_fields=add_fields))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -7246,7 +7373,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_devices_list_member_devices(team_member_id, include_web_sessions=include_web_sessions, include_desktop_clients=include_desktop_clients, include_mobile_clients=include_mobile_clients)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_devices_list_member_devices(team_member_id, include_web_sessions=include_web_sessions, include_desktop_clients=include_desktop_clients, include_mobile_clients=include_mobile_clients))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -7295,7 +7423,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_devices_list_members_devices(cursor=cursor, include_web_sessions=include_web_sessions, include_desktop_clients=include_desktop_clients, include_mobile_clients=include_mobile_clients)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_devices_list_members_devices(cursor=cursor, include_web_sessions=include_web_sessions, include_desktop_clients=include_desktop_clients, include_mobile_clients=include_mobile_clients))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -7344,7 +7473,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_devices_list_team_devices(cursor=cursor, include_web_sessions=include_web_sessions, include_desktop_clients=include_desktop_clients, include_mobile_clients=include_mobile_clients)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_devices_list_team_devices(cursor=cursor, include_web_sessions=include_web_sessions, include_desktop_clients=include_desktop_clients, include_mobile_clients=include_mobile_clients))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -7376,7 +7506,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_devices_revoke_device_session(arg)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_devices_revoke_device_session(arg))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -7408,7 +7539,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_devices_revoke_device_session_batch(revoke_devices)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_devices_revoke_device_session_batch(revoke_devices))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -7444,7 +7576,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_features_get_values(features)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_features_get_values(features))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -7466,7 +7599,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_get_info()
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_get_info())
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -7512,7 +7646,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_groups_create(group_name, add_creator_as_owner=add_creator_as_owner, group_external_id=group_external_id, group_management_type=group_management_type)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_groups_create(group_name, add_creator_as_owner=add_creator_as_owner, group_external_id=group_external_id, group_management_type=group_management_type))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -7549,7 +7684,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_groups_delete(arg)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_groups_delete(arg))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -7585,7 +7721,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_groups_get_info(arg)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_groups_get_info(arg))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -7621,7 +7758,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_groups_job_status_get(async_job_id)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_groups_job_status_get(async_job_id))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -7650,7 +7788,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_groups_list(limit=limit)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_groups_list(limit=limit))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -7684,7 +7823,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_groups_list_continue(cursor)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_groups_list_continue(cursor))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -7726,7 +7866,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_groups_members_add(group, members, return_members=return_members)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_groups_members_add(group, members, return_members=return_members))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -7762,7 +7903,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_groups_members_list(group, limit=limit)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_groups_members_list(group, limit=limit))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -7797,7 +7939,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_groups_members_list_continue(cursor)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_groups_members_list_continue(cursor))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -7841,7 +7984,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_groups_members_remove(group, users, return_members=return_members)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_groups_members_remove(group, users, return_members=return_members))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -7885,7 +8029,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_groups_members_set_access_type(group, user, access_type, return_members=return_members)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_groups_members_set_access_type(group, user, access_type, return_members=return_members))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -7936,7 +8081,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_groups_update(group, return_members=return_members, new_group_name=new_group_name, new_group_external_id=new_group_external_id, new_group_management_type=new_group_management_type)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_groups_update(group, return_members=return_members, new_group_name=new_group_name, new_group_external_id=new_group_external_id, new_group_management_type=new_group_management_type))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -7983,7 +8129,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_legal_holds_create_policy(name, members, description=description, start_date=start_date, end_date=end_date)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_legal_holds_create_policy(name, members, description=description, start_date=start_date, end_date=end_date))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -8016,7 +8163,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_legal_holds_get_policy(id)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_legal_holds_get_policy(id))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -8050,7 +8198,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_legal_holds_list_held_revisions(id)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_legal_holds_list_held_revisions(id))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -8089,7 +8238,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_legal_holds_list_held_revisions_continue(id, cursor=cursor)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_legal_holds_list_held_revisions_continue(id, cursor=cursor))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -8123,7 +8273,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_legal_holds_list_policies(include_released=include_released)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_legal_holds_list_policies(include_released=include_released))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -8156,7 +8307,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_legal_holds_release_policy(id)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_legal_holds_release_policy(id))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -8199,7 +8351,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_legal_holds_update_policy(id, name=name, description=description, members=members)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_legal_holds_update_policy(id, name=name, description=description, members=members))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -8232,7 +8385,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_linked_apps_list_member_linked_apps(team_member_id)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_linked_apps_list_member_linked_apps(team_member_id))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -8269,7 +8423,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_linked_apps_list_members_linked_apps(cursor=cursor)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_linked_apps_list_members_linked_apps(cursor=cursor))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -8306,7 +8461,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_linked_apps_list_team_linked_apps(cursor=cursor)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_linked_apps_list_team_linked_apps(cursor=cursor))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -8347,7 +8503,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_linked_apps_revoke_linked_app(app_id, team_member_id, keep_app_folder=keep_app_folder)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_linked_apps_revoke_linked_app(app_id, team_member_id, keep_app_folder=keep_app_folder))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -8380,7 +8537,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_linked_apps_revoke_linked_app_batch(revoke_linked_app)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_linked_apps_revoke_linked_app_batch(revoke_linked_app))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -8445,7 +8603,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_log_get_events(limit=limit, account_id=account_id, time=time, category=category, event_type=event_type)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_log_get_events(limit=limit, account_id=account_id, time=time, category=category, event_type=event_type))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -8479,7 +8638,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_log_get_events_continue(cursor)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_log_get_events_continue(cursor))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -8512,7 +8672,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_member_space_limits_excluded_users_add(users=users)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_member_space_limits_excluded_users_add(users=users))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -8544,7 +8705,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_member_space_limits_excluded_users_list(limit=limit)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_member_space_limits_excluded_users_list(limit=limit))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -8577,7 +8739,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_member_space_limits_excluded_users_list_continue(cursor)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_member_space_limits_excluded_users_list_continue(cursor))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -8610,7 +8773,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_member_space_limits_excluded_users_remove(users=users)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_member_space_limits_excluded_users_remove(users=users))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -8645,7 +8809,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_member_space_limits_get_custom_quota(users)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_member_space_limits_get_custom_quota(users))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -8681,7 +8846,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_member_space_limits_remove_custom_quota(users)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_member_space_limits_remove_custom_quota(users))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -8718,7 +8884,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_member_space_limits_set_custom_quota(users_and_quotas)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_member_space_limits_set_custom_quota(users_and_quotas))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -8760,7 +8927,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_members_add(new_members, force_async=force_async)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_members_add(new_members, force_async=force_async))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -8795,7 +8963,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_members_add_job_status_get(async_job_id)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_members_add_job_status_get(async_job_id))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -8830,7 +8999,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_members_add_job_status_get_v2(async_job_id)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_members_add_job_status_get_v2(async_job_id))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -8872,7 +9042,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_members_add_v2(new_members, force_async=force_async)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_members_add_v2(new_members, force_async=force_async))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -8906,7 +9077,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_members_delete_profile_photo(user)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_members_delete_profile_photo(user))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -8940,7 +9112,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_members_delete_profile_photo_v2(user)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_members_delete_profile_photo_v2(user))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -8964,7 +9137,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_members_get_available_team_member_roles()
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_members_get_available_team_member_roles())
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -9000,7 +9174,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_members_get_info(members)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_members_get_info(members))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -9036,7 +9211,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_members_get_info_v2(members)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_members_get_info_v2(members))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -9071,7 +9247,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_members_list(limit=limit, include_removed=include_removed)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_members_list(limit=limit, include_removed=include_removed))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -9106,7 +9283,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_members_list_continue(cursor)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_members_list_continue(cursor))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -9141,7 +9319,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_members_list_continue_v2(cursor)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_members_list_continue_v2(cursor))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -9176,7 +9355,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_members_list_v2(limit=limit, include_removed=include_removed)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_members_list_v2(limit=limit, include_removed=include_removed))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -9221,7 +9401,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_members_move_former_member_files(user, transfer_dest_id, transfer_admin_id)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_members_move_former_member_files(user, transfer_dest_id, transfer_admin_id))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -9256,7 +9437,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_members_move_former_member_files_job_status_check(async_job_id)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_members_move_former_member_files_job_status_check(async_job_id))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -9291,7 +9473,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_members_recover(user)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_members_recover(user))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -9363,7 +9546,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_members_remove(user, wipe_data=wipe_data, transfer_dest_id=transfer_dest_id, transfer_admin_id=transfer_admin_id, keep_account=keep_account, retain_team_shares=retain_team_shares)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_members_remove(user, wipe_data=wipe_data, transfer_dest_id=transfer_dest_id, transfer_admin_id=transfer_admin_id, keep_account=keep_account, retain_team_shares=retain_team_shares))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -9398,7 +9582,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_members_remove_job_status_get(async_job_id)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_members_remove_job_status_get(async_job_id))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -9434,7 +9619,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_members_secondary_emails_add(new_secondary_emails)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_members_secondary_emails_add(new_secondary_emails))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -9467,7 +9653,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_members_secondary_emails_delete(emails_to_delete)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_members_secondary_emails_delete(emails_to_delete))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -9499,7 +9686,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_members_secondary_emails_resend_verification_emails(emails_to_resend)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_members_secondary_emails_resend_verification_emails(emails_to_resend))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -9536,7 +9724,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_members_send_welcome_email(arg)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_members_send_welcome_email(arg))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -9574,7 +9763,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_members_set_admin_permissions(user, new_role)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_members_set_admin_permissions(user, new_role))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -9613,7 +9803,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_members_set_admin_permissions_v2(user, new_roles=new_roles)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_members_set_admin_permissions_v2(user, new_roles=new_roles))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -9666,7 +9857,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_members_set_profile(user, new_email=new_email, new_external_id=new_external_id, new_given_name=new_given_name, new_surname=new_surname, new_persistent_id=new_persistent_id, new_is_directory_restricted=new_is_directory_restricted)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_members_set_profile(user, new_email=new_email, new_external_id=new_external_id, new_given_name=new_given_name, new_surname=new_surname, new_persistent_id=new_persistent_id, new_is_directory_restricted=new_is_directory_restricted))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -9704,7 +9896,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_members_set_profile_photo(user, photo)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_members_set_profile_photo(user, photo))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -9742,7 +9935,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_members_set_profile_photo_v2(user, photo)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_members_set_profile_photo_v2(user, photo))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -9795,7 +9989,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_members_set_profile_v2(user, new_email=new_email, new_external_id=new_external_id, new_given_name=new_given_name, new_surname=new_surname, new_persistent_id=new_persistent_id, new_is_directory_restricted=new_is_directory_restricted)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_members_set_profile_v2(user, new_email=new_email, new_external_id=new_external_id, new_given_name=new_given_name, new_surname=new_surname, new_persistent_id=new_persistent_id, new_is_directory_restricted=new_is_directory_restricted))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -9832,7 +10027,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_members_suspend(user, wipe_data=wipe_data)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_members_suspend(user, wipe_data=wipe_data))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -9867,7 +10063,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_members_unsuspend(user)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_members_unsuspend(user))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -9904,7 +10101,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_namespaces_list(limit=limit)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_namespaces_list(limit=limit))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -9939,7 +10137,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_namespaces_list_continue(cursor)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_namespaces_list_continue(cursor))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -9974,7 +10173,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_properties_template_add(name, description, fields)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_properties_template_add(name, description, fields))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -10009,7 +10209,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_properties_template_get(template_id)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_properties_template_get(template_id))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -10035,7 +10236,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_properties_template_list()
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_properties_template_list())
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -10082,7 +10284,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_properties_template_update(template_id, name=name, description=description, add_fields=add_fields)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_properties_template_update(template_id, name=name, description=description, add_fields=add_fields))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -10120,7 +10323,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_reports_get_activity(start_date=start_date, end_date=end_date)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_reports_get_activity(start_date=start_date, end_date=end_date))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -10158,7 +10362,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_reports_get_devices(start_date=start_date, end_date=end_date)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_reports_get_devices(start_date=start_date, end_date=end_date))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -10196,7 +10401,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_reports_get_membership(start_date=start_date, end_date=end_date)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_reports_get_membership(start_date=start_date, end_date=end_date))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -10234,7 +10440,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_reports_get_storage(start_date=start_date, end_date=end_date)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_reports_get_storage(start_date=start_date, end_date=end_date))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -10275,7 +10482,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_sharing_allowlist_add(domains=domains, emails=emails)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_sharing_allowlist_add(domains=domains, emails=emails))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -10308,7 +10516,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_sharing_allowlist_list(limit=limit)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_sharing_allowlist_list(limit=limit))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -10343,7 +10552,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_sharing_allowlist_list_continue(cursor)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_sharing_allowlist_list_continue(cursor))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -10384,7 +10594,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_sharing_allowlist_remove(domains=domains, emails=emails)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_sharing_allowlist_remove(domains=domains, emails=emails))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -10414,7 +10625,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_folder_activate(team_folder_id)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_folder_activate(team_folder_id))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -10448,7 +10660,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_folder_archive(team_folder_id, force_async_off=force_async_off)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_folder_archive(team_folder_id, force_async_off=force_async_off))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -10482,7 +10695,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_folder_archive_check(async_job_id)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_folder_archive_check(async_job_id))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -10521,7 +10735,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_folder_create(name, sync_setting=sync_setting)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_folder_create(name, sync_setting=sync_setting))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -10551,7 +10766,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_folder_get_info(team_folder_ids)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_folder_get_info(team_folder_ids))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -10583,7 +10799,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_folder_list(limit=limit)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_folder_list(limit=limit))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -10618,7 +10835,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_folder_list_continue(cursor)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_folder_list_continue(cursor))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -10649,7 +10867,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_folder_permanently_delete(team_folder_id)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_folder_permanently_delete(team_folder_id))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -10684,7 +10903,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_folder_rename(team_folder_id, name)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_folder_rename(team_folder_id, name))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -10726,7 +10946,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_folder_update_sync_settings(team_folder_id, sync_setting=sync_setting, content_sync_settings=content_sync_settings)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_folder_update_sync_settings(team_folder_id, sync_setting=sync_setting, content_sync_settings=content_sync_settings))
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
@@ -10752,7 +10973,8 @@ class DropboxDataSource:
         """
         client = await self._get_team_client()
         try:
-            response = client.team_token_get_authenticated_admin()
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: client.team_token_get_authenticated_admin())
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))

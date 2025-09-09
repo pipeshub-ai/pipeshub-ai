@@ -489,7 +489,8 @@ class DropboxSDKMethodGenerator:
         
         method_body = f"""        client = {client_ref}
         try:
-            response = {method_call}
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: {method_call})
             return DropboxResponse(success=True, data=response)
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))"""
@@ -509,7 +510,7 @@ class DropboxSDKMethodGenerator:
         
         class_code = f'''from typing import Dict, List, Optional, Tuple, Union, BinaryIO
 from typing import Dict, List, Optional, Union
-
+import asyncio
 from dropbox import Dropbox, DropboxTeam
 from dropbox.files import ( # type: ignore
     ListRevisionsMode,

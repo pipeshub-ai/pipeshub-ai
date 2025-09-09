@@ -40,13 +40,13 @@ class DropboxRESTClientViaToken:
         self.is_team = is_team
         self.dropbox_client = None
 
-    async def create_client(self) -> Dropbox: # type: ignore[valid-type]
+    def create_client(self) -> Dropbox: # type: ignore[valid-type]
         # `timeout` is supported by SDK constructor
         if self.is_team:
-            dropbox_client = DropboxTeam(oauth2_access_token=self.access_token, timeout=self.timeout) # type: ignore[valid-type]
+            self.dropbox_client = DropboxTeam(oauth2_access_token=self.access_token, timeout=self.timeout) # type: ignore[valid-type]
         else:
-            dropbox_client = Dropbox(oauth2_access_token=self.access_token, timeout=self.timeout) # type: ignore[valid-type]
-        return dropbox_client
+            self.dropbox_client = Dropbox(oauth2_access_token=self.access_token, timeout=self.timeout) # type: ignore[valid-type]
+        return self.dropbox_client
 
     def get_dropbox_client(self) -> Dropbox: # type: ignore[valid-type]
         if self.dropbox_client is None:
@@ -77,25 +77,20 @@ class DropboxRESTClientWithAppKeySecret:
         self.token = token
         self.dropbox_client = None
 
-    async def create_client(self) -> Dropbox:# type: ignore[valid-type]
+    def create_client(self) -> Dropbox:# type: ignore[valid-type]
         if self.is_team:
-            try:
-                dropbox_client = DropboxTeam(
+                self.dropbox_client = DropboxTeam(
                 oauth2_access_token=self.token,
                 app_key=self.app_key,
                 app_secret=self.app_secret,
                 timeout=self.timeout,
             )
-                self.dropbox_client = dropbox_client
-            except Exception as e:
-                raise e
         else:
-            try:
-                dropbox_client = Dropbox(oauth2_access_token=self.token, app_key=self.app_key, app_secret=self.app_secret, timeout=self.timeout)
-                self.dropbox_client = dropbox_client
-            except Exception as e:
-                raise e
-        return dropbox_client
+                self.dropbox_client = Dropbox(oauth2_access_token=self.token,
+                                        app_key=self.app_key,
+                                        app_secret=self.app_secret,
+                                        timeout=self.timeout)
+        return self.dropbox_client
 
     def get_dropbox_client(self) -> Dropbox: # type: ignore[valid-type]
         if self.dropbox_client is None:
@@ -118,7 +113,7 @@ class DropboxTokenConfig:
     base_url: str = "https://api.dropboxapi.com"   # not used by SDK, for parity only
     ssl: bool = True
 
-    async def create_client(self, is_team: bool = False) -> DropboxRESTClientViaToken:
+    def create_client(self, is_team: bool = False) -> DropboxRESTClientViaToken:
         """Create a Dropbox client."""
         return DropboxRESTClientViaToken(self.token, timeout=self.timeout, is_team=is_team)
 
@@ -144,9 +139,9 @@ class DropboxAppKeySecretConfig:
     base_url: str = "https://api.dropboxapi.com"   # not used by SDK
     ssl: bool = True
 
-    async def create_client(self, is_team: bool = False) -> DropboxRESTClientWithAppKeySecret:
+    def create_client(self, is_team: bool = False) -> DropboxRESTClientWithAppKeySecret:
         """Create a Dropbox client."""
-        token = await self._fetch_token()
+        token = self._fetch_token()
         if token is None:
             raise Exception("Unable to fetch token")
 
@@ -158,7 +153,7 @@ class DropboxAppKeySecretConfig:
             is_team=is_team,
         )
 
-    async def _fetch_token(self) -> str:
+    def _fetch_token(self) -> str:
         """Fetch a token."""
         credentials = base64.b64encode(f"{self.app_key}:{self.app_secret}".encode()).decode()
         request = HTTPRequest(
@@ -171,7 +166,7 @@ class DropboxAppKeySecretConfig:
             body={"grant_type": "client_credentials"},
         )
         http_client = HTTPClient(token="")
-        response = await http_client.execute(request = request)
+        response = http_client.execute(request)
         return response.json()["access_token"]
 
     def to_dict(self) -> dict:
@@ -201,7 +196,7 @@ class DropboxClient(IClient):
         is_team: bool = False,
     ) -> "DropboxClient":
         """Build DropboxClient using one of the config dataclasses."""
-        client=await config.create_client(is_team=is_team)
+        client=config.create_client(is_team=is_team)
         return cls(client=client)
 
     @classmethod
