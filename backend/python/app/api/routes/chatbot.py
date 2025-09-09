@@ -1,6 +1,5 @@
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
-from app.utils.chat_helpers import get_flattened_results, get_message_content
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
