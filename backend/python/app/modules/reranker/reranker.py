@@ -3,6 +3,8 @@ from typing import Any, Dict, List, Optional
 import torch
 from sentence_transformers import CrossEncoder
 
+from app.models.blocks import BlockType
+
 
 class RerankerService:
     """Service for reranking retrieval results"""
@@ -44,21 +46,28 @@ class RerankerService:
         if not documents:
             return []
 
-        # Create document-query pairs for scoring
-        doc_query_pairs = [(query, doc.get("content", "")) for doc in documents]
+                # Create document-query pairs for scoring
+        doc_query_pairs = [(query, doc.get("content", "")) for doc in documents if doc.get("content") and doc.get("block_type") != BlockType.IMAGE.value ]
 
         # Get relevance scores
         scores = self.model.predict(doc_query_pairs)
 
-        # Add scores to documents
-        for i, doc in enumerate(documents):
-            doc["reranker_score"] = float(scores[i])
-            # If there was a previous score, we can combine them
-            if "score" in doc:
-                # Weighted combination of retriever and reranker scores
-                doc["final_score"] = 0.3 * doc["score"] + 0.7 * doc["reranker_score"]
+        # Add scores to documents, but only for non-IMAGE blocks
+        score_index = 0
+        for doc in documents:
+            if doc.get("block_type") != BlockType.IMAGE.value and doc.get("content"):
+                doc["reranker_score"] = float(scores[score_index])
+                # If there was a previous score, we can combine them
+                if "score" in doc:
+                    # Weighted combination of retriever and reranker scores
+                    doc["final_score"] = 0.3 * doc["score"] + 0.7 * doc["reranker_score"]
+                else:
+                    doc["final_score"] = doc["reranker_score"]
+                score_index += 1
             else:
-                doc["final_score"] = doc["reranker_score"]
+                # For IMAGE blocks, set default scores
+                doc["reranker_score"] = 0.0
+                doc["final_score"] = doc.get("score", 0.0)
 
         # Sort by final score
         reranked_docs = sorted(

@@ -1,9 +1,9 @@
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
+from app.utils.chat_helpers import get_flattened_results, get_message_content
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from jinja2 import Template
 from langchain.chat_models.base import BaseChatModel
 from pydantic import BaseModel
 
@@ -11,10 +11,11 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import AccountType, CollectionNames
 from app.config.constants.service import config_node_constants
 from app.containers.query import QueryAppContainer
-from app.modules.qna.prompt_templates import qna_prompt
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_arango import ArangoService
 from app.modules.retrieval.retrieval_service import RetrievalService
+from app.modules.transformers.blob_storage import BlobStorage
+from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
 from app.utils.aimodels import get_generator_model
 from app.utils.citations import process_citations
 from app.utils.query_decompose import QueryDecompositionExpansionService
@@ -24,7 +25,6 @@ from app.utils.query_transform import (
 from app.utils.streaming import create_sse_event, stream_llm_response
 
 router = APIRouter()
-
 
 # Pydantic models
 class ChatQuery(BaseModel):
@@ -51,18 +51,15 @@ async def get_arango_service(request: Request) -> ArangoService:
     arango_service = await container.arango_service()
     return arango_service
 
-
 async def get_config_service(request: Request) -> ConfigurationService:
     container: QueryAppContainer = request.app.container
     config_service = container.config_service()
     return config_service
 
-
 async def get_reranker_service(request: Request) -> RerankerService:
     container: QueryAppContainer = request.app.container
     reranker_service = container.reranker_service()
     return reranker_service
-
 
 def get_model_config_for_mode(chat_mode: str) -> Dict[str, Any]:
     """Get model configuration based on chat mode and user selection"""
@@ -132,7 +129,7 @@ async def get_model_config(config_service: ConfigurationService, model_key: str)
     # If user specified a model, try to find it
     return llm_configs
 
-async def get_llm_for_chat(config_service: ConfigurationService, model_key: str = None, model_name: str = None, chat_mode: str = "standard") -> BaseChatModel:
+async def get_llm_for_chat(config_service: ConfigurationService, model_key: str = None, model_name: str = None, chat_mode: str = "standard") -> Tuple[BaseChatModel, dict]:
     """Get LLM instance based on user selection or fallback to default"""
     try:
         llm_config = await get_model_config(config_service, model_key)
@@ -145,7 +142,7 @@ async def get_llm_for_chat(config_service: ConfigurationService, model_key: str 
             model_names = [name.strip() for name in model_string.split(",") if name.strip()]
             if (llm_config.get("modelKey") == model_key and model_name in model_names):
                 model_provider = llm_config.get("provider")
-                return get_generator_model(model_provider, llm_config, model_name)
+                return get_generator_model(model_provider, llm_config, model_name),llm_config
 
         # If user specified only provider, find first matching model
         if model_key:
@@ -153,7 +150,7 @@ async def get_llm_for_chat(config_service: ConfigurationService, model_key: str 
             model_names = [name.strip() for name in model_string.split(",") if name.strip()]
             default_model_name = model_names[0]
             model_provider = llm_config.get("provider")
-            return get_generator_model(model_provider, llm_config, default_model_name)
+            return get_generator_model(model_provider, llm_config, default_model_name),llm_config
 
         # Fallback to first available model
         if isinstance(llm_config, list):
@@ -162,11 +159,10 @@ async def get_llm_for_chat(config_service: ConfigurationService, model_key: str 
         model_names = [name.strip() for name in model_string.split(",") if name.strip()]
         default_model_name = model_names[0]
         model_provider = llm_config.get("provider")
-        return get_generator_model(model_provider, llm_config, default_model_name)
-
+        llm = get_generator_model(model_provider, llm_config, default_model_name)
+        return llm, llm_config
     except Exception as e:
             raise ValueError(f"Failed to initialize LLM: {str(e)}")
-
 
 @router.post("/chat/stream")
 @inject
@@ -187,17 +183,17 @@ async def askAIStream(
             yield create_sse_event("status", {"status": "started", "message": "Starting AI processing..."})
 
             # Get LLM based on user selection or fallback to default
-            llm = await get_llm_for_chat(
+            llm, config = await get_llm_for_chat(
                 config_service,
                 query_info.modelKey,
                 query_info.modelName,
                 query_info.chatMode
             )
+            is_multimodal_llm = config.get("isMultimodal")
 
             if llm is None:
                 yield create_sse_event("error", {"error": "Failed to initialize LLM service"})
                 return
-
             # Send LLM initialized event
             yield create_sse_event("status", {"status": "llm_ready", "message": "LLM service initialized"})
 
@@ -255,16 +251,12 @@ async def askAIStream(
                     user_id=user_id,
                     limit=query_info.limit,
                     filter_groups=query_info.filters,
-                    arango_service=arango_service,
                 )
-
             yield create_sse_event("search_complete", {"results_count": len(result.get("searchResults", []))})
 
             # Flatten and deduplicate results
             yield create_sse_event("status", {"status": "deduplicating", "message": "Deduplicating search results..."})
 
-            flattened_results = []
-            seen_ids = set()
             result_set = result.get("searchResults", [])
             status_code = result.get("status_code", 500)
             if status_code in [202, 500, 503]:
@@ -277,23 +269,23 @@ async def askAIStream(
                     "message": result.get("message", "No results found")
                 })
                 return
-
-            for result in result_set:
-                result_id = result["metadata"].get("_id")
-                if result_id not in seen_ids:
-                    seen_ids.add(result_id)
-                    flattened_results.append(result)
-
+            blob_store = BlobStorage(logger=logger, config_service=config_service, arango_service=arango_service)
+            virtual_record_id_to_result = {}
+            flattened_results = []
+            flattened_results = await get_flattened_results(result_set, blob_store, org_id, is_multimodal_llm,virtual_record_id_to_result)
             yield create_sse_event("results_ready", {"total_results": len(flattened_results)})
 
             # Re-rank results based on mode
             if len(flattened_results) > 1 and not query_info.quickMode and query_info.chatMode != "quick":
                 yield create_sse_event("status", {"status": "reranking", "message": "Reranking results for better relevance..."})
+                # final_results = flattened_results
                 final_results = await reranker_service.rerank(
-                    query=query_info.query,
-                    documents=flattened_results,
-                    top_k=query_info.limit,
-                )
+                        query=query_info.query,
+                        documents=flattened_results,
+                        top_k=query_info.limit,
+                    )
+                for i,r in enumerate(final_results):
+                    r["chunk_index"] = i+1
             else:
                 final_results = flattened_results
 
@@ -329,13 +321,6 @@ async def askAIStream(
             mode_config = get_model_config_for_mode(query_info.chatMode)
 
             # Prepare prompt with mode-specific system message
-            template = Template(qna_prompt)
-            rendered_form = template.render(
-                user_data=user_data,
-                query=query_info.query,
-                rephrased_queries=[],
-                chunks=final_results,
-            )
 
             messages = [
                 {"role": "system", "content": mode_config["system_prompt"]}
@@ -348,7 +333,9 @@ async def askAIStream(
                 elif conversation.get("role") == "bot_response":
                     messages.append({"role": "assistant", "content": conversation.get("content")})
 
-            messages.append({"role": "user", "content": rendered_form})
+            content = get_message_content(final_results, virtual_record_id_to_result, user_data, query_info.query)
+            messages.append({"role": "user", "content": content})
+
 
             yield create_sse_event("status", {"status": "generating", "message": "Generating AI response..."})
 
@@ -373,7 +360,6 @@ async def askAIStream(
         }
     )
 
-
 @router.post("/chat")
 @inject
 async def askAI(
@@ -391,12 +377,13 @@ async def askAI(
         logger = container.logger()
 
         # Get LLM based on user selection or fallback to default
-        llm = await get_llm_for_chat(
+        llm,config = await get_llm_for_chat(
             config_service,
             query_info.modelKey,
             query_info.modelName,
             query_info.chatMode
         )
+        is_multimodal_llm = config.get("isMultimodal")
 
         if llm is None:
             raise HTTPException(
@@ -453,7 +440,6 @@ async def askAI(
 
         # Flatten and deduplicate results based on document ID or other unique identifier
         flattened_results = []
-        seen_ids = set()
         search_results = result.get("searchResults", [])
         status_code = result.get("status_code", 500)
 
@@ -468,11 +454,10 @@ async def askAI(
                 }
             )
 
-        for result in search_results:
-            result_id = result["metadata"].get("_id")
-            if result_id not in seen_ids:
-                seen_ids.add(result_id)
-                flattened_results.append(result)
+        blob_store = BlobStorage(logger=logger, config_service=config_service, arango_service=arango_service)
+        virtual_record_id_to_result = {}
+        flattened_results = []
+        flattened_results = await get_flattened_results(search_results, blob_store, org_id, is_multimodal_llm,virtual_record_id_to_result)
 
         # Re-rank the combined results with the original query for better relevance
         if len(flattened_results) > 1 and not query_info.quickMode and query_info.chatMode != "quick":
@@ -481,6 +466,8 @@ async def askAI(
                 documents=flattened_results,
                 top_k=query_info.limit,
             )
+            for i,r in enumerate(final_results):
+                    r["chunk_index"] = i+1
         else:
             final_results = flattened_results
 
@@ -513,14 +500,6 @@ async def askAI(
         else:
             user_data = ""
 
-        template = Template(qna_prompt)
-        rendered_form = template.render(
-            user_data=user_data,
-            query=query_info.query,
-            rephrased_queries=[],  # This keeps all query results for reference
-            chunks=final_results,
-        )
-
         # Get mode-specific configuration
         mode_config = get_model_config_for_mode(query_info.chatMode)
 
@@ -542,8 +521,10 @@ async def askAI(
                     {"role": "assistant", "content": conversation.get("content")}
                 )
 
+        content = get_message_content(final_results, virtual_record_id_to_result, user_data, query_info.query)
+        messages.append({"role": "user", "content": content})
+
         # Add current query with context
-        messages.append({"role": "user", "content": rendered_form})
         # Make async LLM call
         response = await llm.ainvoke(messages)
         # Process citations and return response
