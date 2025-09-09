@@ -8,6 +8,7 @@ from app.config.configuration_service import ConfigurationService
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
+from app.connectors.core.interfaces.connector.apps import App, AppGroup
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.models.entities import Record
 
@@ -18,10 +19,14 @@ class BaseConnector(ABC):
     data_entities_processor: DataSourceEntitiesProcessor
     arango_service: BaseArangoService
     config_service: ConfigurationService
-    def __init__(self, logger, data_entities_processor: DataSourceEntitiesProcessor,
+
+    app: App
+
+    def __init__(self, app: App, logger, data_entities_processor: DataSourceEntitiesProcessor,
         arango_service: BaseArangoService, config_service: ConfigurationService) -> None:
         self.logger = logger
         self.data_entities_processor = data_entities_processor
+        self.app = app
         self.arango_service = arango_service
         self.config_service = config_service
 
@@ -40,11 +45,6 @@ class BaseConnector(ABC):
     @abstractmethod
     def stream_record(self, record: Record) -> StreamingResponse:
         NotImplementedError("This method is not supported by the subclass")
-
-    @abstractmethod
-    def download_record(self, record: Record) -> Optional[str]:
-        NotImplementedError("This method is not supported by the subclass")
-
 
     @abstractmethod
     def run_sync(self) -> None:
@@ -66,3 +66,15 @@ class BaseConnector(ABC):
     @abstractmethod
     async def create_connector(cls, logger, arango_service: BaseArangoService, config_service: ConfigurationService) -> "BaseConnector":
         NotImplementedError("This method should be implemented by the subclass")
+
+    def get_app(self) -> App:
+        return self.app
+
+    def get_app_group(self) -> AppGroup:
+        return self.app.get_app_group()
+
+    def get_app_name(self) -> str:
+        return self.app.get_app_name()
+
+    def get_app_group_name(self) -> str:
+        return self.app.get_app_group_name()
