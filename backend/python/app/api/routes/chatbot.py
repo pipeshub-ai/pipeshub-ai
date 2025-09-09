@@ -1,5 +1,6 @@
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
+from app.utils.chat_helpers import get_flattened_results, get_message_content
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -13,6 +14,8 @@ from app.containers.query import QueryAppContainer
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_arango import ArangoService
 from app.modules.retrieval.retrieval_service import RetrievalService
+from app.modules.transformers.blob_storage import BlobStorage
+from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
 from app.modules.transformers.blob_storage import BlobStorage
 from app.utils.aimodels import get_generator_model
 from app.utils.chat_helpers import get_flattened_results, get_message_content
@@ -466,6 +469,8 @@ async def askAI(
                 documents=flattened_results,
                 top_k=query_info.limit,
             )
+            for i,r in enumerate(final_results):
+                    r["chunk_index"] = i+1
         else:
             final_results = flattened_results
 

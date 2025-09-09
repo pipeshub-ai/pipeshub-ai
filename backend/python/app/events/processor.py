@@ -22,6 +22,81 @@ from app.modules.transformers.transformer import TransformContext
 from app.utils.llm import get_llm
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
+def convert_record_dict_to_record(record_dict: dict) -> Record:
+
+    # Map the database fields to Record model fields
+    record = Record(
+        id=record_dict.get("_key"),
+        org_id=record_dict.get("orgId"),
+        record_name=record_dict.get("recordName"),
+        record_type=RecordType(record_dict.get("recordType", "FILE")),
+        record_status=RecordStatus(record_dict.get("indexingStatus", "NOT_STARTED")),
+        external_record_id=record_dict.get("externalRecordId"),
+        version=record_dict.get("version", 1),
+        origin=record_dict.get("origin"),
+        summary_document_id=record_dict.get("summaryDocumentId"),
+        created_at=record_dict.get("createdAtTimestamp"),
+        updated_at=record_dict.get("updatedAtTimestamp"),
+        source_created_at=record_dict.get("sourceCreatedAtTimestamp"),
+        source_updated_at=record_dict.get("sourceLastModifiedTimestamp"),
+        weburl=record_dict.get("webUrl"),
+        mime_type=record_dict.get("mimeType"),
+        external_revision_id=record_dict.get("externalRevisionId"),
+        connector_name = record_dict.get("connectorName"),
+    )
+
+    return record
+
+
+def convert_record_dict_to_record(record_dict: dict) -> Record:
+
+    # Map the database fields to Record model fields
+    conn_name_value = record_dict.get("connectorName")
+    try:
+        connector_name = (
+            Connectors(conn_name_value)
+            if conn_name_value is not None
+            else Connectors.KNOWLEDGE_BASE
+        )
+    except ValueError:
+        # Fallback to KB if an unexpected value is present
+        connector_name = Connectors.KNOWLEDGE_BASE
+
+    origin_value = record_dict.get("origin", OriginTypes.UPLOAD.value)
+    try:
+        origin = OriginTypes(origin_value)
+    except ValueError:
+        origin = OriginTypes.UPLOAD
+
+    mime_value = record_dict.get("mimeType")
+    mime_type = None
+    if mime_value is not None:
+        try:
+            mime_type = MimeTypes(mime_value)
+        except ValueError:
+            mime_type = None
+
+    record = Record(
+        id=record_dict.get("_key"),
+        org_id=record_dict.get("orgId"),
+        record_name=record_dict.get("recordName"),
+        record_type=RecordType(record_dict.get("recordType", "FILE")),
+        record_status=RecordStatus(record_dict.get("indexingStatus", "NOT_STARTED")),
+        external_record_id=record_dict.get("externalRecordId"),
+        version=record_dict.get("version", 1),
+        origin=origin,
+        summary_document_id=record_dict.get("summaryDocumentId"),
+        created_at=record_dict.get("createdAtTimestamp"),
+        updated_at=record_dict.get("updatedAtTimestamp"),
+        source_created_at=record_dict.get("sourceCreatedAtTimestamp"),
+        source_updated_at=record_dict.get("sourceLastModifiedTimestamp"),
+        weburl=record_dict.get("webUrl"),
+        mime_type=mime_type,
+        external_revision_id=record_dict.get("externalRevisionId"),
+        connector_name=connector_name,
+    )
+
+    return record
 
 def convert_record_dict_to_record(record_dict: dict) -> Record:
 
