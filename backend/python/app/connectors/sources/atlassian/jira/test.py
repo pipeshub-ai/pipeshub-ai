@@ -72,8 +72,7 @@ async def oauth_callback(request: Request) -> RedirectResponse:
 async def get_issue(org_id: str, issue_id: str) -> Response:
     arango_service = await app.connector.arango_service()
     record = await arango_service.get_record_by_id(issue_id)
-    jira_client = await app.connector.stream_record(record)
-    issue = await jira_client.stream_record(issue_id)
+    return await app.connector.stream_record(record)
     return Response(content=issue, media_type="text/plain")
 
 app.include_router(router)
