@@ -37,9 +37,17 @@ class HTTPClient(IClient):
         request_kwargs = {"params": request.query_params, "headers": headers, **kwargs}
 
         if isinstance(request.body, dict):
-            request_kwargs["json"] = request.body
+            # Check if Content-Type indicates form data
+            content_type = headers.get("Content-Type", "").lower()
+            if "application/x-www-form-urlencoded" in content_type:
+                # Send as form data
+                request_kwargs["data"] = request.body
+            else:
+                # Send as JSON (default behavior)
+                request_kwargs["json"] = request.body
         elif isinstance(request.body, bytes):
             request_kwargs["data"] = request.body
+
         async with session.request(request.method, url, **request_kwargs) as response:
             response_bytes = await response.read()
             return HTTPResponse(response_bytes, response)

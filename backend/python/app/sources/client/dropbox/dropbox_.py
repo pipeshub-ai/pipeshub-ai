@@ -1,7 +1,10 @@
+import base64
 import json
 import logging
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional, Union
+
+from app.sources.client.http.http_request import HTTPRequest
 
 try:
     from dropbox import Dropbox, DropboxTeam  # type: ignore
@@ -10,6 +13,7 @@ except ImportError:
 
 from app.config.configuration_service import ConfigurationService
 from app.services.graph_db.interface.graph_db import IGraphService
+from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.iclient import IClient
 
 
@@ -30,18 +34,24 @@ class DropboxResponse:
 
 class DropboxRESTClientViaToken:
     """Dropbox client via short/long‑lived OAuth2 access token."""
-    def __init__(self, access_token: str, timeout: Optional[float] = None) -> None:
+    def __init__(self, access_token: str, timeout: Optional[float] = None, is_team: bool = False) -> None:
         self.access_token = access_token
         self.timeout = timeout
+        self.is_team = is_team
+        self.dropbox_client = None
 
-    def create_client(self) -> Dropbox: # type: ignore[valid-type]
+    async def create_client(self) -> Dropbox: # type: ignore[valid-type]
         # `timeout` is supported by SDK constructor
-        return Dropbox(oauth2_access_token=self.access_token, timeout=self.timeout) # type: ignore[valid-type]
+        if self.is_team:
+            dropbox_client = DropboxTeam(oauth2_access_token=self.access_token, timeout=self.timeout) # type: ignore[valid-type]
+        else:
+            dropbox_client = Dropbox(oauth2_access_token=self.access_token, timeout=self.timeout) # type: ignore[valid-type]
+        return dropbox_client
 
-    def create_team_client(self) -> DropboxTeam: # type: ignore[valid-type]
-        """Create team client for business operations."""
-        return DropboxTeam(oauth2_access_token=self.access_token, timeout=self.timeout) # type: ignore[valid-type]
-
+    def get_dropbox_client(self) -> Dropbox: # type: ignore[valid-type]
+        if self.dropbox_client is None:
+            raise RuntimeError("Client not initialized. Call create_client() first.")
+        return self.dropbox_client
 
 class DropboxRESTClientWithAppKeySecret:
     """
@@ -56,26 +66,41 @@ class DropboxRESTClientWithAppKeySecret:
         self,
         app_key: str,
         app_secret: str,
+        token: str,
         timeout: Optional[float] = None,
+        is_team: bool = False,
     ) -> None:
         self.app_key = app_key
         self.app_secret = app_secret
         self.timeout = timeout
+        self.is_team = is_team
+        self.token = token
+        self.dropbox_client = None
 
-    def create_client(self) -> Dropbox:# type: ignore[valid-type]
-        return Dropbox(# type: ignore[valid-type]
-            app_key=self.app_key,
-            app_secret=self.app_secret,
-            timeout=self.timeout,
-        )
+    async def create_client(self) -> Dropbox:# type: ignore[valid-type]
+        if self.is_team:
+            try:
+                dropbox_client = DropboxTeam(
+                oauth2_access_token=self.token,
+                app_key=self.app_key,
+                app_secret=self.app_secret,
+                timeout=self.timeout,
+            )
+                self.dropbox_client = dropbox_client
+            except Exception as e:
+                raise e
+        else:
+            try:
+                dropbox_client = Dropbox(oauth2_access_token=self.token, app_key=self.app_key, app_secret=self.app_secret, timeout=self.timeout)
+                self.dropbox_client = dropbox_client
+            except Exception as e:
+                raise e
+        return dropbox_client
 
-    def create_team_client(self) -> DropboxTeam: # type: ignore[valid-type]
-        """Create team client for business operations."""
-        return DropboxTeam(
-            app_key=self.app_key,
-            app_secret=self.app_secret,
-            timeout=self.timeout,
-        )
+    def get_dropbox_client(self) -> Dropbox: # type: ignore[valid-type]
+        if self.dropbox_client is None:
+            raise RuntimeError("Client not initialized. Call create_client() first.")
+        return self.dropbox_client
 
 @dataclass
 class DropboxTokenConfig:
@@ -88,13 +113,14 @@ class DropboxTokenConfig:
         base_url: Present for API parity with Slack config; ignored by Dropbox SDK
         ssl: Unused; kept for interface parity
     """
-    access_token: str
+    token: str
     timeout: Optional[float] = None
     base_url: str = "https://api.dropboxapi.com"   # not used by SDK, for parity only
     ssl: bool = True
 
-    def create_client(self) -> DropboxRESTClientViaToken:
-        return DropboxRESTClientViaToken(self.access_token, timeout=self.timeout)
+    async def create_client(self, is_team: bool = False) -> DropboxRESTClientViaToken:
+        """Create a Dropbox client."""
+        return DropboxRESTClientViaToken(self.token, timeout=self.timeout, is_team=is_team)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -118,12 +144,35 @@ class DropboxAppKeySecretConfig:
     base_url: str = "https://api.dropboxapi.com"   # not used by SDK
     ssl: bool = True
 
-    def create_client(self) -> DropboxRESTClientWithAppKeySecret:
+    async def create_client(self, is_team: bool = False) -> DropboxRESTClientWithAppKeySecret:
+        """Create a Dropbox client."""
+        token = await self._fetch_token()
+        if token is None:
+            raise Exception("Unable to fetch token")
+
         return DropboxRESTClientWithAppKeySecret(
-            self.app_key,
-            self.app_secret,
+            app_key=self.app_key,
+            app_secret=self.app_secret,
+            token=token,
             timeout=self.timeout,
+            is_team=is_team,
         )
+
+    async def _fetch_token(self) -> str:
+        """Fetch a token."""
+        credentials = base64.b64encode(f"{self.app_key}:{self.app_secret}".encode()).decode()
+        request = HTTPRequest(
+            method="POST",
+            url="https://api.dropboxapi.com/oauth2/token",
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Authorization": f"Basic {credentials}"
+            },
+            body={"grant_type": "client_credentials"},
+        )
+        http_client = HTTPClient(token="")
+        response = await http_client.execute(request = request)
+        return response.json()["access_token"]
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -138,7 +187,7 @@ class DropboxClient(IClient):
     def __init__(
         self,
         client: Union[DropboxRESTClientViaToken, DropboxRESTClientWithAppKeySecret],
-    ) -> None:
+        ) -> None:
         self.client = client
 
     def get_client(self) -> Union[DropboxRESTClientViaToken, DropboxRESTClientWithAppKeySecret]:
@@ -146,16 +195,14 @@ class DropboxClient(IClient):
         return self.client
 
     @classmethod
-    def build_with_config(
+    async def build_with_config(
         cls,
         config: Union[DropboxTokenConfig, DropboxAppKeySecretConfig],
         is_team: bool = False,
     ) -> "DropboxClient":
         """Build DropboxClient using one of the config dataclasses."""
-        if is_team:
-            return cls(config.create_team_client())
-        else:
-            return cls(config.create_client())
+        client=await config.create_client(is_team=is_team)
+        return cls(client=client)
 
     @classmethod
     async def build_from_services(
@@ -163,8 +210,9 @@ class DropboxClient(IClient):
         logger : logging.Logger,
         config_service: ConfigurationService,
         arango_service: IGraphService,
+        is_team: bool = False,
     ) -> "DropboxClient":
         """
         Build DropboxClient using your configuration service & org/user context.
         """
-        return cls(client=DropboxRESTClientViaToken(access_token=""))
+        ...
