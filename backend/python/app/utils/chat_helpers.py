@@ -153,6 +153,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
     point_id_to_blockIndex_mappings = {}
 
     # Store point_id_to_blockIndex mappings separately for old type results
+    # This mapping is used to convert point_id from search results to block index
     point_id_to_blockIndex_mappings = {}
 
     for result in old_type_results:
@@ -334,7 +335,7 @@ async def create_record_from_vector_metadata(metadata: Dict[str, Any], org_id: s
         payload_filter = await vector_db_service.filter_collection(must={
             "virtualRecordId": virtual_record_id,
         })
-
+        
 # Scroll through all points with the filter
         points = []
 
