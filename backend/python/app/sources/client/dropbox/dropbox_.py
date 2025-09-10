@@ -113,7 +113,7 @@ class DropboxTokenConfig:
     base_url: str = "https://api.dropboxapi.com"   # not used by SDK, for parity only
     ssl: bool = True
 
-    def create_client(self, is_team: bool = False) -> DropboxRESTClientViaToken:
+    async def create_client(self, is_team: bool = False) -> DropboxRESTClientViaToken:
         """Create a Dropbox client."""
         return DropboxRESTClientViaToken(self.token, timeout=self.timeout, is_team=is_team)
 
@@ -139,12 +139,9 @@ class DropboxAppKeySecretConfig:
     base_url: str = "https://api.dropboxapi.com"   # not used by SDK
     ssl: bool = True
 
-    def create_client(self, is_team: bool = False) -> DropboxRESTClientWithAppKeySecret:
+    async def create_client(self, is_team: bool = False) -> DropboxRESTClientWithAppKeySecret:
         """Create a Dropbox client."""
-        token = self._fetch_token()
-        if token is None:
-            raise Exception("Unable to fetch token")
-
+        token = await self._fetch_token()
         return DropboxRESTClientWithAppKeySecret(
             app_key=self.app_key,
             app_secret=self.app_secret,
@@ -153,7 +150,7 @@ class DropboxAppKeySecretConfig:
             is_team=is_team,
         )
 
-    def _fetch_token(self) -> str:
+    async def _fetch_token(self) -> str:
         """Fetch a token."""
         credentials = base64.b64encode(f"{self.app_key}:{self.app_secret}".encode()).decode()
         request = HTTPRequest(
@@ -166,7 +163,7 @@ class DropboxAppKeySecretConfig:
             body={"grant_type": "client_credentials"},
         )
         http_client = HTTPClient(token="")
-        response = http_client.execute(request)
+        response = await http_client.execute(request)
         return response.json()["access_token"]
 
     def to_dict(self) -> dict:
@@ -196,7 +193,7 @@ class DropboxClient(IClient):
         is_team: bool = False,
     ) -> "DropboxClient":
         """Build DropboxClient using one of the config dataclasses."""
-        client=config.create_client(is_team=is_team)
+        client = await config.create_client(is_team=is_team)
         return cls(client=client)
 
     @classmethod
