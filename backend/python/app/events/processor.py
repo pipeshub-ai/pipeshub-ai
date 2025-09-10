@@ -1290,8 +1290,8 @@ class Processor:
                     # Use the parser's read_stream method directly
                     csv_result = parser.read_stream(csv_stream)
 
-                    self.logger.debug(
-                        f"Successfully processed CSV with {encoding} encoding"
+                    self.logger.info(
+                        f"✅ Successfully parsed CSV with {encoding} encoding. Rows: {len(csv_result):,}"
                     )
                     break
                 except UnicodeDecodeError:

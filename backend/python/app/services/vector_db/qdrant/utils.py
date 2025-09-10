@@ -31,7 +31,7 @@ class QdrantUtils:
                     if filtered_list:
                         conditions.append(
                             FieldCondition(
-                                key=key,
+                                key=f"metadata.{key}",
                                 match=MatchAny(any=filtered_list)
                             )
                         )
@@ -39,7 +39,7 @@ class QdrantUtils:
                 elif QdrantUtils._is_valid_value(value):
                     conditions.append(
                         FieldCondition(
-                            key=key,
+                            key=f"metadata.{key}",
                             match=MatchValue(value=value)
                         )
                     )

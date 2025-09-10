@@ -71,13 +71,18 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
             adjacent_chunks[virtual_record_id].append(index+1)
         elif block_type == BlockType.IMAGE.value:
             data = block.get("data")
-            image_uri = data.get("uri") if isinstance(data, dict) else (data if isinstance(data, str) else None)
-            if image_uri:
-                result["content"] = image_uri
+            if data:
+                if is_multimodal_llm:
+                    image_uri = data.get("uri")
+                    if image_uri:
+                        result["content"] = image_uri
+                    else:
+                        continue
+            
+                adjacent_chunks[virtual_record_id].append(index-1)
+                adjacent_chunks[virtual_record_id].append(index+1)
             else:
-                result["content"] = ""
-            adjacent_chunks[virtual_record_id].append(index-1)
-            adjacent_chunks[virtual_record_id].append(index+1)
+                continue
         elif block_type == BlockType.TABLE_ROW.value:
             block_group_index = block.get("parent_index")
             block_group = block_groups[block_group_index]
@@ -151,6 +156,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                     chunk_index += 1
 
     # Store point_id_to_blockIndex mappings separately for old type results
+    # This mapping is used to convert point_id from search results to block index
     point_id_to_blockIndex_mappings = {}
 
     for result in old_type_results:
@@ -326,7 +332,7 @@ async def create_record_from_vector_metadata(metadata: Dict[str, Any], org_id: s
         payload_filter = await vector_db_service.filter_collection(must={
             "virtualRecordId": virtual_record_id,
         })
-
+        
 # Scroll through all points with the filter
         points = []
 
@@ -336,6 +342,7 @@ async def create_record_from_vector_metadata(metadata: Dict[str, Any], org_id: s
                 limit=100000,
             )
 
+        
         points.extend(result[0])
 
         point_id_to_blockIndex = {}
@@ -359,10 +366,10 @@ async def create_record_from_vector_metadata(metadata: Dict[str, Any], org_id: s
                 "page_content": payload.get("page_content")
                 })
 
-                record["block_containers"] = {
-                    "blocks": blocks,
-                    "block_groups": []
-                }
+        record["block_containers"] = {
+            "blocks": blocks,
+            "block_groups": []
+        }
 
         return record,point_id_to_blockIndex
     except Exception as e:
@@ -450,14 +457,20 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
             chunk_index = result.get("chunk_index")
             block_type = result.get("block_type")
             if block_type == BlockType.IMAGE.value:
-                content.append({
-                    "type": "text",
-                    "text": f"* Chunk Index: {chunk_index}\n* Chunk Type: {block_type}\n* Chunk Content:"
-                })
-                content.append({
-                    "type": "image_url",
-                    "image_url": {"url": result.get("content")}
-                })
+                if result.get("content").startswith("data:image/"):
+                    content.append({
+                        "type": "text",
+                        "text": f"* Chunk Index: {chunk_index}\n* Chunk Type: {block_type}\n* Chunk Content:"
+                    })
+                    content.append({
+                        "type": "image_url",
+                        "image_url": {"url": result.get("content")}
+                    })
+                else:
+                    content.append({
+                        "type": "text",
+                        "text": f"* Chunk Index: {chunk_index}\n* Chunk Type: image_description\n* Chunk Content: {result.get('content')}"
+                    })
             elif block_type == BlockType.TABLE_ROW.value or block_type == GroupType.TABLE.value:
                 content.append({
                     "type": "text",
