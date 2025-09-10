@@ -88,7 +88,10 @@ class DocumentExtraction(Transformer):
                     })
             elif block.type.value == "table_row":
                 if block.data:
-                    table_row_text = block.data.get("row_natural_language_text")
+                    if isinstance(block.data, dict):
+                        table_row_text = block.data.get("row_natural_language_text")
+                    else:
+                        table_row_text = str(block.data)
                     content.append({
                         "type": "text",
                         "text": table_row_text if table_row_text else ""

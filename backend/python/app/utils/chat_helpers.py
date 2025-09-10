@@ -206,9 +206,17 @@ def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[s
             data = block.get("data")
             if data:
                 if block_type == GroupType.TABLE.value:
-                    block_text = data.get("table_markdown","")
+                    # Handle both dict and string data types
+                    if isinstance(data, dict):
+                        block_text = data.get("table_markdown","")
+                    else:
+                        block_text = str(data)
                 elif block_type == BlockType.TABLE_ROW.value:
-                    block_text = data.get("row_natural_language_text","")
+                    # Handle both dict and string data types
+                    if isinstance(data, dict):
+                        block_text = data.get("row_natural_language_text","")
+                    else:
+                        block_text = str(data)
                 elif block_type == BlockType.TEXT.value:
                     block_text = data
                 elif block_type == BlockType.IMAGE.value:
@@ -392,7 +400,7 @@ def create_block_from_metadata(metadata: Dict[str, Any],page_content: str) -> Di
         if extension == "docx":
             data = page_content
         else:
-            data = metadata.get("blockText")
+            data = metadata.get("blockText",page_content)
 
         block_type = metadata.get("blockType","text")
         # Create the Block structure
@@ -477,6 +485,11 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
                     "text": f"* Chunk Index: {chunk_index}\n* Chunk Type: table\n* Chunk Content: {result.get('content')}"
                 })
             elif block_type == BlockType.TEXT.value:
+                content.append({
+                    "type": "text",
+                    "text": f"* Chunk Index: {chunk_index}\n* Chunk Type: {block_type}\n* Chunk Content: {result.get('content')}"
+                })
+            else:
                 content.append({
                     "type": "text",
                     "text": f"* Chunk Index: {chunk_index}\n* Chunk Type: {block_type}\n* Chunk Content: {result.get('content')}"
