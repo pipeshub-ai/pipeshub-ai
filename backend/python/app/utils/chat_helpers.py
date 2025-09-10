@@ -504,6 +504,11 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
                     "type": "text",
                     "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}"
                 })
+            else:
+                content.append({
+                    "type": "text",
+                    "text": f"* Chunk Index: {chunk_index}\n* Chunk Type: {block_type}\n* Chunk Content: {result.get('content')}"
+                })
         else:
             continue
 
