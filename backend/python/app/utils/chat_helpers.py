@@ -78,7 +78,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                         result["content"] = image_uri
                     else:
                         continue
-            
+
                 adjacent_chunks[virtual_record_id].append(index-1)
                 adjacent_chunks[virtual_record_id].append(index+1)
             else:
@@ -332,7 +332,7 @@ async def create_record_from_vector_metadata(metadata: Dict[str, Any], org_id: s
         payload_filter = await vector_db_service.filter_collection(must={
             "virtualRecordId": virtual_record_id,
         })
-        
+
 # Scroll through all points with the filter
         points = []
 
@@ -342,7 +342,7 @@ async def create_record_from_vector_metadata(metadata: Dict[str, Any], org_id: s
                 limit=100000,
             )
 
-        
+
         points.extend(result[0])
 
         point_id_to_blockIndex = {}

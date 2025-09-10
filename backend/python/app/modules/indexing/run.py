@@ -626,6 +626,10 @@ class IndexingPipeline:
                     "No record ID provided for deletion", record_id=record_id
                 )
 
+            if not virtual_record_id:
+                self.logger.info(f"No virtual record ID provided for deletion, skipping embedding deletion for record {record_id}")
+                return
+
             self.logger.info(f"🔍 Checking other records with virtual_record_id {virtual_record_id}")
 
             # Get other records with same virtual_record_id
@@ -647,7 +651,7 @@ class IndexingPipeline:
 
             try:
                 filter_dict = await self.vector_db_service.filter_collection(
-                    must={"metadata.virtualRecordId": virtual_record_id}
+                    must={"virtualRecordId": virtual_record_id}
                 )
 
                 result = await self.vector_db_service.scroll(

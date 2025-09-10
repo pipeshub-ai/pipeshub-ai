@@ -297,7 +297,11 @@ class CSVParser:
 
         blocks = []
         children = []
-        batch_size = 20  # Define a suitable batch size
+
+        # Determine optimal batch size based on file size
+        batch_size = 50
+
+
 
         # Create batches
         batches = []
@@ -305,20 +309,27 @@ class CSVParser:
             batch = csv_result[i : i + batch_size]
             batches.append((i, batch))  # Store start index and batch data
 
-        # Process all batches in parallel using asyncio.gather
-        batch_tasks = []
-        for start_idx, batch in batches:
-            task = self.get_rows_text(llm, batch)
-            batch_tasks.append((start_idx, batch, task))
+        # Process batches with controlled concurrency to avoid overwhelming the system
 
-        # Wait for all batches to complete in parallel
-        task_results = await asyncio.gather(*[task for _, _, task in batch_tasks])
-
-        # Combine results with their metadata
+        max_concurrent_batches = min(10, len(batches))  # Limit concurrent batches
         batch_results = []
-        for i, (start_idx, batch, _) in enumerate(batch_tasks):
-            row_texts = task_results[i]
-            batch_results.append((start_idx, batch, row_texts))
+
+        for i in range(0, len(batches), max_concurrent_batches):
+            current_batches = batches[i:i + max_concurrent_batches]
+
+            # Process current batch group
+            batch_tasks = []
+            for start_idx, batch in current_batches:
+                task = self.get_rows_text(llm, batch)
+                batch_tasks.append((start_idx, batch, task))
+
+            # Wait for current batch group to complete
+            task_results = await asyncio.gather(*[task for _, _, task in batch_tasks])
+
+            # Combine results with their metadata
+            for j, (start_idx, batch, _) in enumerate(batch_tasks):
+                row_texts = task_results[j]
+                batch_results.append((start_idx, batch, row_texts))
 
         # Process results and create blocks
         for start_idx, batch, row_texts in batch_results:
