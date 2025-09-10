@@ -152,6 +152,9 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
     # This mapping is used to convert point_id from search results to block index
     point_id_to_blockIndex_mappings = {}
 
+    # Store point_id_to_blockIndex mappings separately for old type results
+    point_id_to_blockIndex_mappings = {}
+    
     for result in old_type_results:
         virtual_record_id = result.get("metadata",{}).get("virtualRecordId")
         meta = result.get("metadata",{})
