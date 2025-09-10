@@ -5,7 +5,6 @@ import { Logger } from '../../../libs/services/logger.service';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { CrawlingJobData } from '../schema/interface';
 import { Job } from 'bullmq';
-import { ConnectorType } from '../schema/enums';
 
 const logger = Logger.getInstance({ service: 'CrawlingManagerController' });
 
@@ -13,12 +12,12 @@ export const scheduleCrawlingJob =
   (crawlingService: CrawlingSchedulerService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     const { scheduleConfig, priority, maxRetries } = req.body;
-    const { connectorType } = req.params as { connectorType: ConnectorType };
+    const { connector } = req.params as { connector: string };
     const { userId, orgId } = req.user as { userId: string; orgId: string };
 
     try {
       logger.info('Scheduling crawling job', {
-        connectorType,
+        connector,
         orgId,
         userId,
         scheduleType: scheduleConfig.scheduleType,
@@ -26,7 +25,7 @@ export const scheduleCrawlingJob =
       });
 
       const job: Job<CrawlingJobData> = await crawlingService.scheduleJob(
-        connectorType,
+        connector,
         scheduleConfig,
         orgId,
         userId,
@@ -38,7 +37,7 @@ export const scheduleCrawlingJob =
 
       logger.info('Crawling job scheduled successfully', {
         jobId: job.id,
-        connectorType,
+        connector,
         orgId,
         userId,
       });
@@ -48,7 +47,7 @@ export const scheduleCrawlingJob =
         message: 'Crawling job scheduled successfully',
         data: {
           jobId: job.id,
-          connectorType,
+          connector,
           scheduleConfig,
           scheduledAt: new Date(),
         },
@@ -56,7 +55,7 @@ export const scheduleCrawlingJob =
     } catch (error) {
       logger.error('Failed to schedule crawling job', {
         error: error instanceof Error ? error.message : 'Unknown error',
-        connectorType: req.params.connectorType,
+        connector: req.params.connector,
         orgId,
         userId,
       });
@@ -67,19 +66,19 @@ export const scheduleCrawlingJob =
 export const getCrawlingJobStatus =
   (crawlingService: CrawlingSchedulerService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    const { connectorType } = req.params;
+    const { connector } = req.params as { connector: string };
     const { orgId } = req.user as { orgId: string };
 
     try {
       const jobStatus = await crawlingService.getJobStatus(
-        connectorType as ConnectorType,
+        connector,
         orgId,
       );
 
       if (!jobStatus) {
         res.status(HTTP_STATUS.NOT_FOUND).json({
           success: false,
-          message: 'No scheduled job found for this connector type',
+          message: 'No scheduled job found for this connector',
           data: null,
         });
         return;
@@ -93,7 +92,7 @@ export const getCrawlingJobStatus =
     } catch (error) {
       logger.error('Failed to get job status', {
         error: error instanceof Error ? error.message : 'Unknown error',
-        connectorType: req.params.connectorType,
+        connector: req.params.connector,
         orgId,
       });
       next(error);
@@ -103,14 +102,14 @@ export const getCrawlingJobStatus =
 export const removeCrawlingJob =
   (crawlingService: CrawlingSchedulerService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    const { connectorType } = req.params;
+    const { connector } = req.params as { connector: string };
     const { orgId } = req.user as { orgId: string };
 
     try {
-      await crawlingService.removeJob(connectorType as ConnectorType, orgId);
+      await crawlingService.removeJob(connector, orgId);
 
       logger.info('Crawling job removed successfully', {
-        connectorType,
+        connector,
         orgId,
       });
 
@@ -121,7 +120,7 @@ export const removeCrawlingJob =
     } catch (error) {
       logger.error('Failed to remove crawling job', {
         error: error instanceof Error ? error.message : 'Unknown error',
-        connectorType: req.params.connectorType,
+        connector: req.params.connector,
         orgId,
       });
       next(error);
@@ -176,14 +175,14 @@ export const removeAllCrawlingJob =
 export const pauseCrawlingJob =
   (crawlingService: CrawlingSchedulerService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    const { connectorType } = req.params;
+    const { connector } = req.params as { connector: string };
     const { orgId } = req.user as { orgId: string };
 
     try {
-      await crawlingService.pauseJob(connectorType as ConnectorType, orgId);
+      await crawlingService.pauseJob(connector, orgId);
 
       logger.info('Crawling job paused successfully', {
-        connectorType,
+        connector,
         orgId,
       });
 
@@ -191,7 +190,7 @@ export const pauseCrawlingJob =
         success: true,
         message: 'Crawling job paused successfully',
         data: {
-          connectorType,
+          connector,
           orgId,
           pausedAt: new Date(),
         },
@@ -199,7 +198,7 @@ export const pauseCrawlingJob =
     } catch (error) {
       logger.error('Failed to pause crawling job', {
         error: error instanceof Error ? error.message : 'Unknown error',
-        connectorType: req.params.connectorType,
+        connector: req.params.connector,
         orgId,
       });
       next(error);
@@ -209,14 +208,14 @@ export const pauseCrawlingJob =
 export const resumeCrawlingJob =
   (crawlingService: CrawlingSchedulerService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    const { connectorType } = req.params;
+    const { connector } = req.params as { connector: string };
     const { orgId } = req.user as { orgId: string };
 
     try {
-      await crawlingService.resumeJob(connectorType as ConnectorType, orgId);
+      await crawlingService.resumeJob(connector, orgId);
 
       logger.info('Crawling job resumed successfully', {
-        connectorType,
+        connector,
         orgId,
       });
 
@@ -224,7 +223,7 @@ export const resumeCrawlingJob =
         success: true,
         message: 'Crawling job resumed successfully',
         data: {
-          connectorType,
+          connector,
           orgId,
           resumedAt: new Date(),
         },
@@ -232,7 +231,7 @@ export const resumeCrawlingJob =
     } catch (error) {
       logger.error('Failed to resume crawling job', {
         error: error instanceof Error ? error.message : 'Unknown error',
-        connectorType: req.params.connectorType,
+        connector: req.params.connector,
         orgId,
       });
       next(error);

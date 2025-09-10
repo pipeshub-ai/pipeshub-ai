@@ -7,12 +7,11 @@ import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { ConfigurationManagerConfig } from '../../configuration_manager/config/config';
 import { CrawlingWorkerService } from '../services/crawling_worker';
-import { GoogleWorkspaceCrawlingService } from '../services/connectors/google_workspace';
-import { SlackCrawlingService } from '../services/connectors/slack';
-import { S3CrawlingService } from '../services/connectors/s3';
 import { CrawlingTaskFactory } from '../services/task/crawling_task_service_factory';
 import { CrawlingSchedulerService } from '../services/crawling_service';
 import { RedisConfig } from '../../../libs/types/redis.types';
+import { ConnectorsCrawlingService } from '../services/connectors/connectors';
+import { SyncEventProducer } from '../../knowledge_base/services/sync_events.service';
 
 const loggerConfig = {
   service: 'Crawling Manager Container',
@@ -73,6 +72,15 @@ export class CrawlingManagerContainer {
         .bind<KeyValueStoreService>('KeyValueStoreService')
         .toConstantValue(keyValueStoreService);
 
+      const syncEventsService = new SyncEventProducer(
+        appConfig.kafka,
+        container.get('Logger'),
+      );
+      await syncEventsService.start();
+      container
+        .bind<SyncEventProducer>('SyncEventProducer')
+        .toConstantValue(syncEventsService);
+
       logger.info('Starting crawling worker service...');
       const crawlingWorkerService = container.get<CrawlingWorkerService>(
         CrawlingWorkerService,
@@ -109,6 +117,10 @@ export class CrawlingManagerContainer {
           ? this.instance.get<RedisService>('RedisService')
           : null;
 
+        const syncEventsService = this.instance.isBound('SyncEventProducer')
+          ? this.instance.get<SyncEventProducer>('SyncEventProducer')
+          : null;
+          
         if (redisService && redisService.isConnected()) {
           await redisService.disconnect();
         }
@@ -128,6 +140,11 @@ export class CrawlingManagerContainer {
         if (keyValueStoreService && keyValueStoreService.isConnected()) {
           await keyValueStoreService.disconnect();
           this.logger.info('KeyValueStoreService disconnected successfully');
+        }
+
+        if (syncEventsService && syncEventsService.isConnected()) {
+          await syncEventsService.disconnect();
+          this.logger.info('SyncEventProducer disconnected successfully');
         }
 
         this.logger.info(
@@ -155,19 +172,10 @@ export function setupCrawlingDependencies(
   container.bind<RedisConfig>('RedisConfig').toConstantValue(redisConfig);
 
   // Bind crawling connector services
-  container
-    .bind<GoogleWorkspaceCrawlingService>(GoogleWorkspaceCrawlingService)
-    .to(GoogleWorkspaceCrawlingService)
-    .inSingletonScope();
 
   container
-    .bind<SlackCrawlingService>(SlackCrawlingService)
-    .to(SlackCrawlingService)
-    .inSingletonScope();
-
-  container
-    .bind<S3CrawlingService>(S3CrawlingService)
-    .to(S3CrawlingService)
+    .bind<ConnectorsCrawlingService>(ConnectorsCrawlingService)
+    .to(ConnectorsCrawlingService)
     .inSingletonScope();
 
   // Bind task factory

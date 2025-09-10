@@ -55,6 +55,7 @@ import {
   getSharePointCredentials,
   setSharePointCredentials,
   setOneDriveCredentials,
+  getConnectorConfig,
 } from '../controller/cm_controller';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
@@ -284,6 +285,19 @@ export function createConfigurationManagerRouter(container: Container): Router {
         throw new NotFoundError('User not found');
       }
       return setSharePointCredentials(keyValueStoreService)(req, res, next);
+    },
+  );
+
+  // Generic internal connector config fetch: /internal/connectors/:connector/config
+  router.get(
+    '/internal/connectors/:connector/config',
+    authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
+    metricsMiddleware(container),
+    (req: AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
+      if (!req.tokenPayload) {
+        throw new NotFoundError('User not found');
+      }
+      return getConnectorConfig(keyValueStoreService)(req, res, next);
     },
   );
 

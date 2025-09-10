@@ -71,10 +71,12 @@ from app.modules.parsers.google_files.google_sheets_parser import GoogleSheetsPa
 from app.modules.parsers.google_files.google_slides_parser import GoogleSlidesParser
 from app.utils.llm import get_llm
 from app.utils.logger import create_logger
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 logger = create_logger("connector_service")
 
 router = APIRouter()
+
 
 class ReindexFailedRequest(BaseModel):
     connector: str  # GOOGLE_DRIVE, GOOGLE_MAIL, KNOWLEDGE_BASE
@@ -2048,3 +2050,289 @@ async def get_connector_stats_endpoint(
         return {"success": True, "data": result["data"]}
     else:
         raise HTTPException(status_code=500, detail=result["message"])
+
+
+@router.get("/api/v1/connectors/config/{app_name}")
+async def get_connector_config(
+    app_name: str,
+    request: Request,
+    arango_service: BaseArangoService = Depends(get_arango_service)
+) -> Dict[str, Any]:
+    """
+    Retrieve connector configuration from etcd only.
+
+    Args:
+        app_name: Name of the connector
+        request: FastAPI request object
+        arango_service: Injected ArangoService dependency
+
+    Returns:
+        Dict containing success status and connector configuration
+
+    Raises:
+        HTTPException: 404 if connector config not found
+    """
+    container = request.app.container
+    logger = container.logger()
+    logger.info(f"Getting connector config for {app_name}")
+
+    result: Optional[Dict[str, Any]] = await arango_service.get_app_by_name(app_name)
+    if not result:
+        raise HTTPException(status_code=404, detail=f"Connector config not found for {app_name}")
+
+    # Load config from etcd
+    try:
+        config_service = container.config_service()
+        config_key: str = f"/services/connectors/{app_name.lower()}/config"
+        config: Optional[Dict[str, Any]] = await config_service.get_config(config_key)
+    except Exception as e:
+        logger.error(f"Failed to load config from etcd for {app_name}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to load config from etcd for {app_name}")
+
+    # If no config in etcd, return empty config
+    if not config:
+        config = {
+            "auth": {"values": {}, "customValues": {}},
+            "sync": {"values": {}, "customValues": {}},
+            "filters": {"values": {}, "customValues": {}}
+        }
+
+    response_dict: Dict[str, Any] = {
+        "name": app_name,
+        "appGroupId": result["appGroupId"],
+        "appGroup": result["appGroup"],
+        "authType": result["authType"],
+        "supportsRealtime": result["supportsRealtime"],
+        "config": config,
+        "isActive": result["isActive"],
+        "isConfigured": result["isConfigured"]
+    }
+
+    return {"success": True, "config": response_dict}
+
+
+@router.get("/api/v1/connectors")
+async def get_connectors(
+    request: Request,
+) -> Dict[str, Any]:
+    """
+    Retrieve all available connectors.
+
+    Args:
+        request: FastAPI request object
+
+    Returns:
+        Dict containing success status and list of connectors
+
+    Raises:
+        HTTPException: 404 if no connectors found
+    """
+    connector_registry = request.app.state.connector_registry
+    result: Optional[List[Dict[str, Any]]] = await connector_registry.get_all_connectors()
+
+    if result:
+        return {"success": True, "connectors": result}
+    else:
+        raise HTTPException(status_code=404, detail="No connectors found")
+
+
+@router.get("/api/v1/connectors/schema/{app_name}")
+async def get_connector_schema(
+    app_name: str,
+    request: Request,
+    arango_service: BaseArangoService = Depends(get_arango_service)
+) -> Dict[str, Any]:
+    """
+    Retrieve connector schema from database config.
+
+    Args:
+        app_name: Name of the connector
+        request: FastAPI request object
+        arango_service: Injected ArangoService dependency
+
+    Returns:
+        Dict containing success status and connector schema
+
+    Raises:
+        HTTPException: 404 if connector not found
+    """
+    container = request.app.container
+    logger = container.logger()
+    logger.info(f"Getting connector schema for {app_name}")
+
+    result: Optional[Dict[str, Any]] = await arango_service.get_app_by_name(app_name)
+    if not result:
+        raise HTTPException(status_code=404, detail=f"Connector {app_name} not found")
+
+    # Return the config object as schema
+    schema = result.get("config", {})
+
+    return {"success": True, "schema": schema}
+
+
+@router.put("/api/v1/connectors/config/{app_name}")
+async def update_connector_config(
+    app_name: str,
+    request: Request,
+    arango_service: BaseArangoService = Depends(get_arango_service),
+) -> Dict[str, Any]:
+    """
+    Update connector configuration including authentication, sync, and filter settings.
+
+    Args:
+        app_name: Name of the connector application
+        request: FastAPI request object
+        arango_service: Injected ArangoService dependency
+
+    Returns:
+        Dict containing success status and updated configuration
+
+    Raises:
+        HTTPException: 400 if invalid JSON, 404 if connector config not found
+    """
+    container = request.app.container
+    logger = container.logger()
+    connector_registry = request.app.state.connector_registry
+    try:
+        body_dict: Dict[str, Any] = await request.json()
+    except Exception as e:
+        logger.error(f"Failed to parse request body for {app_name}: {e}")
+        raise HTTPException(status_code=400, detail="Invalid JSON in request body")
+
+    try:
+        config_service = container.config_service()
+        config_key: str = f"/services/connectors/{app_name.lower()}/config"
+        await config_service.set_config(config_key, body_dict)
+        logger.info(f"Config stored in etcd for {app_name}")
+        updates = {
+            "isConfigured": True,
+            "updatedAtTimestamp": get_epoch_timestamp_in_ms()
+        }
+        await connector_registry.update_connector(app_name, updates)
+        logger.info(f"Connector updated in database for {app_name}")
+        return {"success": True, "config": body_dict}
+    except Exception as e:
+        logger.error(f"Failed to store config in etcd for {app_name}: {e}")
+        raise HTTPException(
+                status_code=500,
+                detail=f"Internal error updating connector config for {app_name}"
+        )
+
+
+@router.post("/api/v1/connectors/toggle/{app_name}")
+async def toggle_connector(
+    app_name: str,
+    request: Request,
+    arango_service: BaseArangoService = Depends(get_arango_service),
+) -> Dict[str, Any]:
+    """
+    Toggle connector active status and trigger sync events.
+
+    Args:
+        app_name: Name of the connector to toggle
+        request: FastAPI request object
+        arango_service: Injected ArangoService dependency
+
+    Returns:
+        Dict containing success status and message
+
+    Raises:
+        HTTPException: 404 if org/connector not found, 500 for internal errors
+    """
+    container = request.app.container
+    logger = container.logger()
+    producer = container.messaging_producer
+
+    user_info: Dict[str, Optional[str]] = {
+        "orgId": request.state.user.get("orgId"),
+        "userId": request.state.user.get("userId"),
+    }
+
+    logger.info(f"Toggling connector {app_name}")
+    logger.debug(f"User info: {user_info}")
+
+    try:
+        # Fetch organization data
+        org = await arango_service.get_document(user_info["orgId"], CollectionNames.ORGS.value)
+        if not org:
+            raise HTTPException(status_code=404, detail="No organizations found")
+
+        # Fetch and validate app
+        app = await arango_service.get_app_by_name(app_name)
+        if not app:
+            raise HTTPException(status_code=404, detail=f"Connector {app_name} not found")
+
+        current_status: bool = app["isActive"]
+
+        # Update connector status in database
+        try:
+            logger.info(f"🚀 Updating node by key: {app_name}")
+
+            node_updates: Dict[str, bool] = {"isActive": not current_status}
+            query: str = """
+            FOR node IN @@collection
+                FILTER node.name == @name
+                UPDATE node WITH @node_updates IN @@collection
+                RETURN NEW
+            """
+
+            db = arango_service.db
+            cursor = db.aql.execute(
+                query,
+                bind_vars={
+                    "name": app_name,
+                    "node_updates": node_updates,
+                    "@collection": CollectionNames.APPS.value
+                }
+            )
+
+            result_list: List[Dict[str, Any]] = list(cursor)
+            updated_node: Optional[Dict[str, Any]] = result_list[0] if result_list else None
+
+            if not updated_node:
+                logger.warning(f"⚠️ No node found by key: {app_name}")
+                raise HTTPException(status_code=404, detail=f"Connector {app_name} not found")
+
+            logger.info(f"✅ Successfully updated node by key: {app_name}")
+            new_status: bool = updated_node["isActive"]
+
+        except HTTPException:
+            # Re-raise HTTP exceptions to preserve status codes
+            raise
+        except Exception as e:
+            logger.error(f"❌ Failed to update node by key {app_name}: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to update connector {app_name}")
+
+        # Prepare event messaging
+        event_type: str = "app_enabled" if new_status else "app_disabled"
+
+        # Determine credentials routes based on account type
+        credentials_route: str = f"api/v1/configurationManager/internal/connectors/{app_name.lower()}/config"
+
+        # Build message payload
+        payload: Dict[str, Any] = {
+            "orgId": user_info["orgId"],
+            "appGroup": app["appGroup"],
+            "appGroupId": app["appGroupId"],
+            "credentialsRoute": credentials_route,
+            "apps": [app_name],
+            "syncAction": "immediate",
+        }
+
+        message: Dict[str, Any] = {
+            'eventType': event_type,
+            'payload': payload,
+            'timestamp': get_epoch_timestamp_in_ms()
+        }
+
+        # Send message to sync-events topic
+        await producer.send_message(topic='sync-events', message=message)
+
+        return {"success": True, "message": f"Connector {app_name} toggled successfully"}
+
+    except HTTPException:
+        # Re-raise HTTP exceptions to preserve status codes and messages
+        raise
+    except Exception as e:
+        logger.error(f"Failed to toggle connector {app_name}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to toggle connector {app_name}")

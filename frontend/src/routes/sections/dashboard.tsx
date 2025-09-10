@@ -47,6 +47,11 @@ const AtlassianPage = lazy(() => import('src/pages/dashboard/account/connectors/
 const OneDrivePage = lazy(() => import('src/pages/dashboard/account/connectors/onedrive'));
 const SharepointPage = lazy(() => import('src/pages/dashboard/account/connectors/sharepoint'));
 
+// Generic connector management (parameterized by name)
+const GenericConnectorManagementPage = lazy(
+  () => import('src/pages/dashboard/account/connectors/[connectorName]')
+);
+
 const SamlSsoConfigPage = lazy(() => import('src/pages/dashboard/account/saml-sso-config'));
 
 // knowledge-base
@@ -326,25 +331,29 @@ export const dashboardRoutes = [
                         index: true,
                       },
                       {
-                        path: 'googleWorkspace',
-                        element: CONFIG.auth.skip ? (
-                          <GoogleWorkspaceBusinessPage />
-                        ) : (
-                          <BusinessAdminOnlyRoute component={GoogleWorkspaceBusinessPage} />
-                        ),
+                        path: ':connectorName',
+                        element: <BusinessAdminOnlyRoute component={GenericConnectorManagementPage} />,
                       },
-                      {
-                        path: 'atlassian',
-                        element: <BusinessAdminOnlyRoute component={AtlassianPage} />,
-                      },
-                      {
-                        path: 'onedrive',
-                        element: <BusinessAdminOnlyRoute component={OneDrivePage} />,
-                      },
-                      {
-                        path: 'sharepointOnline',
-                        element: <BusinessAdminOnlyRoute component={SharepointPage} />,
-                      },
+                      // {
+                      //   path: 'googleWorkspace',
+                      //   element: CONFIG.auth.skip ? (
+                      //     <GoogleWorkspaceBusinessPage />
+                      //   ) : (
+                      //     <BusinessAdminOnlyRoute component={GoogleWorkspaceBusinessPage} />
+                      //   ),
+                      // },
+                      // {
+                      //   path: 'atlassian',
+                      //   element: <BusinessAdminOnlyRoute component={AtlassianPage} />,
+                      // },
+                      // {
+                      //   path: 'onedrive',
+                      //   element: <BusinessAdminOnlyRoute component={OneDrivePage} />,
+                      // },
+                      // {
+                      //   path: 'sharepoint',
+                      //   element: <BusinessAdminOnlyRoute component={SharepointPage} />,
+                      // },
                     ],
                   },
                   {
@@ -438,6 +447,11 @@ export const dashboardRoutes = [
                           <IndividualOnlyRoute component={ConnectorSettings} />
                         ),
                         index: true,
+                      },
+                      // Parameterized connector management page
+                      {
+                        path: ':connectorName',
+                        element: <IndividualOnlyRoute component={GenericConnectorManagementPage} />,
                       },
                       {
                         path: 'googleWorkspace',
