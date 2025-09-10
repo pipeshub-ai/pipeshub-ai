@@ -671,9 +671,9 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
   };
 
   // Handle download document
-  const handleDownload = async (externalRecordId: string, recordName: string,origin: string) => {
+  const handleDownload = async (externalRecordId: string, recordName: string, origin: string) => {
     try {
-      await KnowledgeBaseAPI.handleDownloadDocument(externalRecordId, recordName,origin);
+      await KnowledgeBaseAPI.handleDownloadDocument(externalRecordId, recordName, origin);
       setSnackbar({
         open: true,
         message: 'Download started successfully',
@@ -1054,8 +1054,13 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
         // Get file extension for dynamic tooltips
         const fileExt = params.row.fileRecord?.extension || '';
         const recordPermission = params.row.permission;
-        const canReindex = recordPermission?.role === 'OWNER' || recordPermission?.role === 'WRITER' || recordPermission?.role === 'READER';
+        const canReindex =
+          recordPermission?.role === 'OWNER' ||
+          recordPermission?.role === 'WRITER' ||
+          recordPermission?.role === 'READER';
         const canModify = recordPermission?.role === 'OWNER' || recordPermission?.role === 'WRITER';
+        const canDownload =
+          params.row.recordType === 'FILE';
         // Get descriptive action based on file type
         const getDownloadLabel = () => {
           if (fileExt.toLowerCase().includes('pdf')) return 'Download PDF';
@@ -1079,12 +1084,23 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
                 }
               },
             },
-            {
-              label: getDownloadLabel(),
-              icon: downloadIcon,
-              color: theme.palette.primary.main,
-              onClick: () => handleDownload(params.row.origin === ORIGIN.UPLOAD ? params.row.externalRecordId! : params.row.id, params.row.recordName,params.row.origin),
-            },
+            ...(canDownload
+              ? [
+                  {
+                    label: getDownloadLabel(),
+                    icon: downloadIcon,
+                    color: theme.palette.primary.main,
+                    onClick: () =>
+                      handleDownload(
+                        params.row.origin === ORIGIN.UPLOAD
+                          ? params.row.externalRecordId!
+                          : params.row.id,
+                        params.row.recordName,
+                        params.row.origin
+                      ),
+                  },
+                ]
+              : []),
             // Only show reindex options for OWNER and WRITER of this specific record
             ...(canReindex &&
             (params.row.indexingStatus === 'FAILED' || params.row.indexingStatus === 'NOT_STARTED')
