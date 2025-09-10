@@ -19,9 +19,10 @@ class GoogleFormsDataSource:
         """
         self.client = client
 
-    def forms_create(
+    async def forms_create(
         self,
-        unpublished: Optional[bool] = None
+        unpublished: Optional[bool] = None,
+        **kwargs
     ) -> Dict[str, Any]:
         """Google Forms API: Create a new form using the title given in the provided form message in the request. *Important:* Only the form.info.title and form.info.document_title fields are copied to the new form. All other fields including the form description, items and settings are disallowed. To create a new form and add items, you must first call forms.create to create an empty form with a title and (optional) document title, and then call forms.update to add the items.
 
@@ -33,7 +34,7 @@ class GoogleFormsDataSource:
         Returns:
             Dict[str, Any]: API response
         """
-        kwargs = {}
+        kwargs = kwargs or {}
         if unpublished is not None:
             kwargs['unpublished'] = unpublished
 
@@ -45,7 +46,7 @@ class GoogleFormsDataSource:
             request = self.client.forms().create(**kwargs) # type: ignore
         return request.execute()
 
-    def forms_get(
+    async def forms_get(
         self,
         formId: str
     ) -> Dict[str, Any]:
@@ -66,9 +67,10 @@ class GoogleFormsDataSource:
         request = self.client.forms().get(**kwargs) # type: ignore
         return request.execute()
 
-    def forms_batch_update(
+    async def forms_batch_update(
         self,
-        formId: str
+        formId: str,
+        **kwargs
     ) -> Dict[str, Any]:
         """Google Forms API: Change the form with a batch of updates.
 
@@ -80,7 +82,7 @@ class GoogleFormsDataSource:
         Returns:
             Dict[str, Any]: API response
         """
-        kwargs = {}
+        kwargs = kwargs or {}
         if formId is not None:
             kwargs['formId'] = formId
 
@@ -92,9 +94,10 @@ class GoogleFormsDataSource:
             request = self.client.forms().batchUpdate(**kwargs) # type: ignore
         return request.execute()
 
-    def forms_set_publish_settings(
+    async def forms_set_publish_settings(
         self,
-        formId: str
+        formId: str,
+        **kwargs
     ) -> Dict[str, Any]:
         """Google Forms API: Updates the publish settings of a form. Legacy forms aren't supported because they don't have the `publish_settings` field.
 
@@ -106,7 +109,7 @@ class GoogleFormsDataSource:
         Returns:
             Dict[str, Any]: API response
         """
-        kwargs = {}
+        kwargs = kwargs or {}
         if formId is not None:
             kwargs['formId'] = formId
 
@@ -118,10 +121,11 @@ class GoogleFormsDataSource:
             request = self.client.forms().setPublishSettings(**kwargs) # type: ignore
         return request.execute()
 
-    def forms_responses_get(
+    async def forms_responses_get(
         self,
         formId: str,
-        responseId: str
+        responseId: str,
+        **kwargs
     ) -> Dict[str, Any]:
         """Google Forms API: Get one response from the form.
 
@@ -134,7 +138,7 @@ class GoogleFormsDataSource:
         Returns:
             Dict[str, Any]: API response
         """
-        kwargs = {}
+        kwargs = kwargs or {}
         if formId is not None:
             kwargs['formId'] = formId
         if responseId is not None:
@@ -143,12 +147,13 @@ class GoogleFormsDataSource:
         request = self.client.forms_responses().get(**kwargs) # type: ignore
         return request.execute()
 
-    def forms_responses_list(
+    async def forms_responses_list(
         self,
         formId: str,
         filter: Optional[str] = None,
         pageSize: Optional[int] = None,
-        pageToken: Optional[str] = None
+        pageToken: Optional[str] = None,
+        **kwargs
     ) -> Dict[str, Any]:
         """Google Forms API: List a form's responses.
 
@@ -163,7 +168,7 @@ class GoogleFormsDataSource:
         Returns:
             Dict[str, Any]: API response
         """
-        kwargs = {}
+        kwargs = kwargs or {}
         if formId is not None:
             kwargs['formId'] = formId
         if filter is not None:
@@ -176,9 +181,10 @@ class GoogleFormsDataSource:
         request = self.client.forms_responses().list(**kwargs) # type: ignore
         return request.execute()
 
-    def forms_watches_create(
+    async def forms_watches_create(
         self,
-        formId: str
+        formId: str,
+        **kwargs
     ) -> Dict[str, Any]:
         """Google Forms API: Create a new watch. If a watch ID is provided, it must be unused. For each invoking project, the per form limit is one watch per Watch.EventType. A watch expires seven days after it is created (see Watch.expire_time).
 
@@ -190,7 +196,7 @@ class GoogleFormsDataSource:
         Returns:
             Dict[str, Any]: API response
         """
-        kwargs = {}
+        kwargs = kwargs or {}
         if formId is not None:
             kwargs['formId'] = formId
 
@@ -202,9 +208,10 @@ class GoogleFormsDataSource:
             request = self.client.forms_watches().create(**kwargs) # type: ignore
         return request.execute()
 
-    def forms_watches_list(
+    async def forms_watches_list(
         self,
-        formId: str
+        formId: str,
+        **kwargs
     ) -> Dict[str, Any]:
         """Google Forms API: Return a list of the watches owned by the invoking project. The maximum number of watches is two: For each invoker, the limit is one for each event type per form.
 
@@ -216,17 +223,18 @@ class GoogleFormsDataSource:
         Returns:
             Dict[str, Any]: API response
         """
-        kwargs = {}
+        kwargs = kwargs or {}
         if formId is not None:
             kwargs['formId'] = formId
 
         request = self.client.forms_watches().list(**kwargs) # type: ignore
         return request.execute()
 
-    def forms_watches_renew(
+    async def forms_watches_renew(
         self,
         formId: str,
-        watchId: str
+        watchId: str,
+        **kwargs
     ) -> Dict[str, Any]:
         """Google Forms API: Renew an existing watch for seven days. The state of the watch after renewal is `ACTIVE`, and the `expire_time` is seven days from the renewal. Renewing a watch in an error state (e.g. `SUSPENDED`) succeeds if the error is no longer present, but fail otherwise. After a watch has expired, RenewWatch returns `NOT_FOUND`.
 
@@ -239,7 +247,7 @@ class GoogleFormsDataSource:
         Returns:
             Dict[str, Any]: API response
         """
-        kwargs = {}
+        kwargs = kwargs or {}
         if formId is not None:
             kwargs['formId'] = formId
         if watchId is not None:
@@ -253,10 +261,11 @@ class GoogleFormsDataSource:
             request = self.client.forms_watches().renew(**kwargs) # type: ignore
         return request.execute()
 
-    def forms_watches_delete(
+    async def forms_watches_delete(
         self,
         formId: str,
-        watchId: str
+        watchId: str,
+        **kwargs
     ) -> Dict[str, Any]:
         """Google Forms API: Delete a watch.
 
@@ -269,7 +278,7 @@ class GoogleFormsDataSource:
         Returns:
             Dict[str, Any]: API response
         """
-        kwargs = {}
+        kwargs = kwargs or {}
         if formId is not None:
             kwargs['formId'] = formId
         if watchId is not None:
@@ -278,6 +287,6 @@ class GoogleFormsDataSource:
         request = self.client.forms_watches().delete(**kwargs) # type: ignore
         return request.execute()
 
-    def get_client(self) -> object:
+    async def get_client(self) -> object:
         """Get the underlying Google API client."""
         return self.client

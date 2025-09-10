@@ -104,7 +104,6 @@ class ConfluenceRESTClientViaToken(HTTPClient):
                 break
             spaces_url = f"{base_url}{next_url}"
 
-        print(spaces)
         tasks = [self._get_space_permission(space["id"]) for space in spaces]
         all_permissions = await asyncio.gather(*tasks)
         for space, permissions in zip(spaces, all_permissions):

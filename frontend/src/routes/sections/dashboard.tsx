@@ -11,12 +11,12 @@ import { LoadingScreen } from 'src/components/loading-screen';
 
 import { AuthGuard } from 'src/auth/guard';
 import { useAuthContext } from 'src/auth/hooks';
-
 // ----------------------------------------------------------------------
 
 // Overview
 const ChatBotPage = lazy(() => import('src/pages/dashboard/qna/chatbot'));
 const AgentPage = lazy(() => import('src/pages/dashboard/qna/agent'));
+const AgentBuilderPage = lazy(() => import('src/pages/dashboard/qna/agent-builder'));
 const AgentChatPage = lazy(() => import('src/sections/qna/agents/agent-chat'));
 // Accountdetails
 const CompanyProfile = lazy(() => import('src/pages/dashboard/account/company-profile'));
@@ -194,11 +194,11 @@ export const dashboardRoutes = [
       { element: <ChatBotPage key="home" />, index: true },
       { path: ':conversationId', element: <ChatBotPage key="conversation" /> },
       { path: 'agents', element: <AgentPage key="agent" /> },
+      { path: 'agents/new', element: <AgentBuilderPage key="agent-builder" /> },
       { path: 'agents/:agentKey', element: <AgentChatPage key="agent-chat" /> },
-      {
-        path: 'agents/:agentKey/conversations/:conversationId',
-        element: <AgentChatPage key="agent-conversation" />,
-      },
+      { path: 'agents/:agentKey/edit', element: <AgentBuilderPage key="agent-edit" /> },
+      { path: 'agents/:agentKey/flow', element: <AgentBuilderPage key="flow-agent-edit" /> },
+      { path: 'agents/:agentKey/conversations/:conversationId', element: <AgentChatPage key="agent-conversation" /> },
       { path: 'record/:recordId', element: <RecordDetails /> },
       {
         path: 'account',
@@ -351,7 +351,7 @@ export const dashboardRoutes = [
                         element: <BusinessAdminOnlyRoute component={OneDrivePage} />,
                       },
                       {
-                        path: 'sharepoint',
+                        path: 'sharepointOnline',
                         element: <BusinessAdminOnlyRoute component={SharepointPage} />,
                       },
                     ],
@@ -474,7 +474,7 @@ export const dashboardRoutes = [
                         element: <IndividualOnlyRoute component={OneDrivePage} />,
                       },
                       {
-                        path: 'sharepoint',
+                        path: 'sharepointOnline',
                         element: <IndividualOnlyRoute component={SharepointPage} />,
                       },
                     ],

@@ -142,7 +142,7 @@ const getConnectorColor = (connector: string): string => {
       return '#6264A7'; // Microsoft Teams purple
     case 'ONEDRIVE':
       return '#0078D4'; // OneDrive blue
-    case 'SHAREPOINT':
+    case 'SHAREPOINT ONLINE':
       return '#0078D4'; // SharePoint blue
     case 'OUTLOOK':
       return '#0078D4'; // Outlook blue

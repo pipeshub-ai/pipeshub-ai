@@ -81,6 +81,7 @@
     "@tiptap/starter-kit": "^2.6.5",
     "@types/prop-types": "^15.7.14",
     "@wojtekmaj/react-hooks": "^1.21.0",
+    "@xyflow/react": "^12.8.3",
     "apexcharts": "^3.52.0",
     "autosuggest-highlight": "^3.3.4",
     "aws-amplify": "^6.5.1",

@@ -41,7 +41,7 @@ import databaseIcon from '@iconify-icons/mdi/database';
 import cogIcon from '@iconify-icons/mdi/cog';
 import sparklesIcon from '@iconify-icons/mdi/auto-awesome';
 import type { AgentTemplate } from 'src/types/agent';
-import { TEMPLATE_CATEGORIES } from '../utils/agent-utils';
+import { TEMPLATE_CATEGORIES } from '../utils/agent';
 import {createScrollableContainerStyle} from '../../chatbot/utils/styles/scrollbar';
 
 interface TemplateSelectorProps {

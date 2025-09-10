@@ -34,10 +34,10 @@ class Connectors(Enum):
     GOOGLE_CALENDAR = "CALENDAR"
 
     ONEDRIVE = "ONEDRIVE"
-    SHAREPOINT_ONLINE = "SHAREPOINT_ONLINE"
+    SHAREPOINT_ONLINE = "SHAREPOINT ONLINE"
     OUTLOOK = "OUTLOOK"
-    OUTLOOK_CALENDAR = "OUTLOOK_CALENDAR"
-    MICROSOFT_TEAMS = "MICROSOFT_TEAMS"
+    OUTLOOK_CALENDAR = "OUTLOOK CALENDAR"
+    MICROSOFT_TEAMS = "MICROSOFT TEAMS"
 
     NOTION = "NOTION"
     SLACK = "SLACK"
@@ -71,6 +71,7 @@ class CollectionNames(Enum):
     PERMISSIONS_TO_KNOWLEDGE_BASE = "permissionsToKnowledgeBase"
     BELONGS_TO_KB = "belongsToKB"
     PERMISSIONS_TO_KB = "permissionsToKB"
+    PERMISSION = "permission"
 
     # Drive related
     DRIVES = "drives"
@@ -95,6 +96,7 @@ class CollectionNames(Enum):
     ANYONE = "anyone"
     ANYONE_WITH_LINK = "anyoneWithLink"
     BELONGS_TO = "belongsTo"
+    TEAMS = "teams"
 
     # Departments
     DEPARTMENTS = "departments"
@@ -138,6 +140,11 @@ class CollectionNames(Enum):
     AGENT_TEMPLATES = "agentTemplates"
     AGENT_INSTANCES = "agentInstances"
     TEMPLATE_ACCESS = "templateAccess"
+    AGENT_ACCESS = "agentAccess"
+
+class QdrantCollectionNames(Enum):
+    RECORDS = "records"
+
 
 class ExtensionTypes(Enum):
     PDF = "pdf"
@@ -160,6 +167,7 @@ class MimeTypes(Enum):
     GOOGLE_DOCS = "application/vnd.google-apps.document"
     GOOGLE_SHEETS = "application/vnd.google-apps.spreadsheet"
     GOOGLE_DRIVE_FOLDER = "application/vnd.google-apps.folder"
+    FOLDER = "text/directory"
     DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     DOC = "application/msword"
     PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
@@ -195,6 +203,8 @@ class RecordTypes(Enum):
     WEBPAGE_COMMENT = "WEBPAGE_COMMENT"
     NOTION_DATABASE = "NOTION_DATABASE"
     NOTION_PAGE = "NOTION_PAGE"
+    SHAREPOINT_LIST = "SHAREPOINT_LIST"
+    SHAREPOINT_PAGE = "SHAREPOINT_PAGE"
 
 class RecordRelations(Enum):
     PARENT_CHILD = "PARENT_CHILD"

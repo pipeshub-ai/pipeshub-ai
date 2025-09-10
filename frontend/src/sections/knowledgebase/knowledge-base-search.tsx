@@ -6,7 +6,7 @@ import axios from 'src/utils/axios';
 
 import { CONFIG } from 'src/config-global';
 
-import { searchKnowledgeBase } from './utils';
+import { KnowledgeBaseAPI } from './services/api';
 import KnowledgeSearch from './knowledge-search';
 import { ORIGIN } from './constants/knowledge-search';
 import KnowledgeSearchSideBar from './knowledge-search-sidebar';
@@ -179,7 +179,7 @@ export default function KnowledgeBaseSearch() {
     setHasSearched(true);
 
     try {
-      const data = await searchKnowledgeBase(searchQuery, topK, filters);
+      const data = await KnowledgeBaseAPI.searchKnowledgeBases(searchQuery, topK, filters);
 
       // Extract search results from the response
       const results = data.searchResults || [];

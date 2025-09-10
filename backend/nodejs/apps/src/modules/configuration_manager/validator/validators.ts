@@ -286,8 +286,17 @@ export const microsoftConnectorCredentialsSchema = z.object({
   }),
 });
 
+export const sharepointCredentialsSchema = z.object({
+  body: z.object({
+    clientId: z.string().min(1, { message: 'Client ID is required' }),
+    clientSecret: z.string().min(1, { message: 'Client Secret is required' }),
+    tenantId: z.string().min(1, { message: 'Tenant ID is required' }),
+    sharepointDomain: z.string().min(1, { message: 'SharePoint Domain is required' }),
+    hasAdminConsent: z.boolean().optional(),
+  }),
+});
+
 export const onedriveCredentialsSchema = microsoftConnectorCredentialsSchema;
-export const sharepointCredentialsSchema = microsoftConnectorCredentialsSchema;
 
 
 

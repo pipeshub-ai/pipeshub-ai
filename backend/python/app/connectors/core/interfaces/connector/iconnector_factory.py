@@ -1,10 +1,10 @@
 from abc import ABC, abstractmethod
 from typing import List
 
-from app.connectors.core.interfaces.connector.iconnector_config import ConnectorConfig
-from app.connectors.core.interfaces.connector.iconnector_service import (
-    IConnectorService,
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
 )
+from app.connectors.core.interfaces.connector.iconnector_config import ConnectorConfig
 from app.connectors.enums.enums import ConnectorType
 
 
@@ -12,7 +12,7 @@ class IConnectorFactory(ABC):
     """Base interface for connector factories"""
 
     @abstractmethod
-    def create_connector(self, connector_type: ConnectorType, config: ConnectorConfig) -> IConnectorService:
+    def create_connector(self, connector_type: ConnectorType, config: ConnectorConfig) -> BaseConnector:
         """Create a connector instance"""
         pass
 

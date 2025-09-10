@@ -93,12 +93,13 @@ const oAuthConfigSchema = z.object({
   enableRealTimeUpdates: z.union([z.boolean(), z.string()]).optional(),
   topicName: z.string().optional(),
   hasAdminConsent: z.boolean().optional(),
+  sharepointDomain: z.string().optional(),
 });
 
 const oAuthValidationSchema = z.object({
   body: oAuthConfigSchema,
   query: z.object({
-    service: z.enum(['googleWorkspace', 'atlassian', 'onedrive', 'sharepoint']), // Enum validation
+    service: z.enum(['googleWorkspace', 'atlassian', 'onedrive', 'sharepointOnline']), // Enum validation
   }),
   params: z.object({}),
   headers: z.object({}),
@@ -107,7 +108,7 @@ const oAuthValidationSchema = z.object({
 const ServiceValidationSchema = z.object({
   body: z.object({}),
   query: z.object({
-    service: z.enum(['googleWorkspace', 'atlassian', 'onedrive', 'sharepoint']), // Enum validation
+    service: z.enum(['googleWorkspace', 'atlassian', 'onedrive', 'sharepointOnline']), // Enum validation
   }),
   params: z.object({}),
   headers: z.object({}),
@@ -328,7 +329,7 @@ export function createConnectorRouter(container: Container) {
         const configGetters = {
           [ConnectorId.ATLASSIAN]: getAtlassianOauthConfig,
           [ConnectorId.ONEDRIVE]: getOneDriveConfig,
-          [ConnectorId.SHAREPOINT]: getSharePointConfig,
+          [ConnectorId.SHAREPOINT_ONLINE]: getSharePointConfig,
         };
 
         
@@ -451,9 +452,8 @@ export function createConnectorRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
-        let service = req.query.service;
+        let service = typeof req.query.service === 'string' ? req.query.service.toLowerCase() : '';
         let response;
-        console.log('req.body', req.body);
         if (service === ConnectorId.ATLASSIAN.toLowerCase()) {
           response = await setAtlassianOauthConfig(
             req,
@@ -472,7 +472,7 @@ export function createConnectorRouter(container: Container) {
             config.cmBackend,
           );
         }
-        else if (service === ConnectorId.SHAREPOINT.toLowerCase()) {
+        else if (service === ConnectorId.SHAREPOINT_ONLINE.toLowerCase()) {
           response = await setSharePointConfig(
             req,
             config.cmBackend,
@@ -627,8 +627,8 @@ export function createConnectorRouter(container: Container) {
           apps = ["onedrive"];
           credentialsRoute = `${config.cmBackend}/${ONE_DRIVE_INTERNAL_CONFIG_PATH}`;
         }
-        else if (connector.name === ConnectorIdToNameMap[ConnectorId.SHAREPOINT]) {
-          apps = ["sharepoint"];
+        else if (connector.name === ConnectorIdToNameMap[ConnectorId.SHAREPOINT_ONLINE]) {
+          apps = ["sharepointOnline"];
           credentialsRoute = `${config.cmBackend}/${SHAREPOINT_INTERNAL_CONFIG_PATH}`;
         }
         else if (connector.name === ConnectorIdToNameMap[ConnectorId.ATLASSIAN]) {

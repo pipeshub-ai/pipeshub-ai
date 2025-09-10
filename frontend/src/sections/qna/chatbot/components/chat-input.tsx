@@ -53,14 +53,14 @@ export type ChatInputProps = {
 // Define chat modes locally in the frontend
 const CHAT_MODES: ChatMode[] = [
   {
-    id: 'standard',
-    name: 'Standard',
-    description: 'Balanced responses with moderate creativity',
-  },
-  {
     id: 'quick',
     name: 'Quick',
     description: 'Quick responses with minimal context',
+  },
+  {
+    id: 'standard',
+    name: 'Standard',
+    description: 'Balanced responses with moderate creativity',
   },
 ];
 

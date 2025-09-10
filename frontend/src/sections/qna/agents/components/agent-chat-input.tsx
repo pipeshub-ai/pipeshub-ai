@@ -39,8 +39,8 @@ import {
   Tab,
   Collapse,
 } from '@mui/material';
-import { KnowledgeBase } from '../services/agent-api-service';
-import { APPS } from '../utils/agent-utils';
+import { KnowledgeBase } from '../services/api';
+import { APPS } from '../utils/agent';
 
 export interface Model {
   provider: string;

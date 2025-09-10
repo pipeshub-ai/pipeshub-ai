@@ -13,6 +13,7 @@ import emailIcon from '@iconify-icons/mdi/email-outline';
 import { useLocation, useNavigate } from 'react-router-dom';
 import filterMenuIcon from '@iconify-icons/mdi/filter-menu';
 import googleDriveIcon from '@iconify-icons/mdi/google-drive';
+import sharepointIcon from '@iconify-icons/mdi/microsoft-sharepoint';
 import filterRemoveIcon from '@iconify-icons/mdi/filter-remove';
 import timerOffIcon from '@iconify-icons/mdi/timer-off-outline';
 import filterVariantIcon from '@iconify-icons/mdi/filter-variant';
@@ -484,6 +485,7 @@ export default function KnowledgeBaseSideBar({
       GMAIL: gmailIcon,
       DRIVE: googleDriveIcon,
       ONEDRIVE: onedriveIcon,
+      "SHAREPOINT ONLINE": sharepointIcon,
     }),
     []
   );

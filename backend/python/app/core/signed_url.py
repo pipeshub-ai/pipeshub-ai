@@ -73,7 +73,7 @@ class SignedUrlHandler:
         if self.signed_url_config.expiration_minutes <= 0:
             raise ValueError("Expiration minutes must be positive")
 
-    async def create_signed_url(
+    async def get_signed_url(
         self,
         record_id: str,
         org_id: str,

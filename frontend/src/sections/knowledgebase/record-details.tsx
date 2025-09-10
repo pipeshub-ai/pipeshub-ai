@@ -65,7 +65,7 @@ import ReactMarkdown from 'react-markdown';
 import { CONFIG } from 'src/config-global';
 import { useUsers } from 'src/context/UserContext';
 
-import { fetchRecordDetails } from './utils';
+import { KnowledgeBaseAPI } from './services/api';
 import RecordSalesAgent from './ask-me-anything';
 import RecordDocumentViewer from './show-documents';
 import EditRecordDialog from './edit-record-dialog';
@@ -176,7 +176,7 @@ export default function RecordDetails() {
     const fetchData = async () => {
       try {
         if (!recordId) return;
-        const data = await fetchRecordDetails(recordId);
+        const data = await KnowledgeBaseAPI.getRecordDetails(recordId);
         setRecordData(data);
         if (data.record.origin === 'CONNECTOR') {
           setIsRecordConnector(true);
@@ -199,7 +199,7 @@ export default function RecordDetails() {
     setLoading(true);
     try {
       if (!recordId) return;
-      const data = await fetchRecordDetails(recordId);
+      const data = await KnowledgeBaseAPI.getRecordDetails(recordId);
       setRecordData(data);
     } catch (error) {
       console.error('Error refreshing record data:', error);

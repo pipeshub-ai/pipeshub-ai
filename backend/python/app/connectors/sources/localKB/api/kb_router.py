@@ -21,6 +21,7 @@ from app.connectors.sources.localKB.api.models import (
     ListKnowledgeBaseResponse,
     ListPermissionsResponse,
     ListRecordsResponse,
+    RemovePermissionRequest,
     RemovePermissionResponse,
     SuccessResponse,
     UpdateFolderRequest,
@@ -43,6 +44,12 @@ HTTP_MAX_STATUS = 600
 HTTP_INTERNAL_SERVER_ERROR = 500
 
 kb_router = APIRouter(prefix="/api/v1/kb", tags=["Knowledge Base"])
+
+def _parse_comma_separated_str(value: Optional[str]) -> Optional[List[str]]:
+    """Parses a comma-separated string into a list of strings, filtering out empty items."""
+    if not value:
+        return None
+    return [item.strip() for item in value.split(',') if item.strip()]
 
 @kb_router.post(
     "/",
@@ -97,19 +104,22 @@ async def list_user_knowledge_bases(
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(20, ge=1, le=100, description="Items per page"),
     search: Optional[str] = Query(None, description="Search by KB name"),
-    permissions: Optional[List[str]] = Query(None, description="Filter by permission roles"),
+    permissions: Optional[str] = Query(None, description="Filter by permission roles"),
     sort_by: str = Query("name", description="Sort field"),
     sort_order: str = Query("asc", description="Sort order (asc/desc)"),
     kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
 ) -> Union[ListKnowledgeBaseResponse, Dict[str, Any]]:
     try:
+        # Parse comma-separated string into list
+        parsed_permissions = [item.strip() for item in permissions.split(',') if item.strip()] if permissions else None
+
         result = await kb_service.list_user_knowledge_bases(
             user_id=user_id,
             org_id=org_id,
             page=page,
             limit=limit,
             search=search,
-            permissions=permissions,
+            permissions=parsed_permissions,
             sort_by=sort_by,
             sort_order=sort_order
         )
@@ -164,7 +174,7 @@ async def get_knowledge_base(
             detail=f"Unexpected error: {str(e)}"
         )
 
-@kb_router.patch(
+@kb_router.put(
     "/{kb_id}/user/{user_id}",
     response_model=SuccessResponse,
     responses={
@@ -518,7 +528,7 @@ async def get_folder_contents(
         )
 
 
-@kb_router.patch(
+@kb_router.put(
     "/{kb_id}/folder/{folder_id}/user/{user_id}",
     response_model=SuccessResponse,
     responses={403: {"model": ErrorResponse}}
@@ -752,7 +762,8 @@ async def create_kb_permissions(
         result = await kb_service.create_kb_permissions(
             kb_id=kb_id,
             requester_id=req.requesterId,
-            users=req.users,
+            user_ids=req.userIds,
+            team_ids=req.teamIds,
             role=req.role,
         )
         if not result or result.get("success") is False:
@@ -774,7 +785,7 @@ async def create_kb_permissions(
         )
 
 
-@kb_router.patch(
+@kb_router.put(
     "/{kb_id}/permissions",
     response_model=UpdatePermissionResponse,
     responses={403: {"model": ErrorResponse}}
@@ -790,7 +801,8 @@ async def update_kb_permission(
         result = await kb_service.update_kb_permission(
             kb_id=kb_id,
             requester_id=req.requesterId,
-            user_id=req.userId,
+            user_ids=req.userIds,
+            team_ids=req.teamIds,
             new_role=req.role,
         )
         if not result or result.get("success") is False:
@@ -813,22 +825,25 @@ async def update_kb_permission(
 
 
 @kb_router.delete(
-    "/{kb_id}/requester/{requester_id}/user/{user_id}/permissions",
+    "/{kb_id}/permissions",
     response_model=RemovePermissionResponse,
     responses={403: {"model": ErrorResponse}}
 )
 @inject
 async def remove_kb_permission(
     kb_id: str,
-    requester_id: str,
-    user_id: str,
+    req: RemovePermissionRequest,
     kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
 ) -> Union[RemovePermissionResponse, Dict[str, Any]]:
+    """
+    Remove permissions for users and teams from a knowledge base
+    """
     try:
         result = await kb_service.remove_kb_permission(
             kb_id=kb_id,
-            requester_id=requester_id,
-            user_id=user_id,
+            requester_id=req.requesterId,
+            user_ids=req.userIds,
+            team_ids=req.teamIds,
         )
         if not result or result.get("success") is False:
             error_code = int(result.get("code", HTTP_INTERNAL_SERVER_ERROR))
@@ -1054,11 +1069,11 @@ async def list_all_records(
     page: int = 1,
     limit: int = 20,
     search: Optional[str] = None,
-    record_types: Optional[List[str]] = Query(None, description="Comma-separated list of record types"),
-    origins: Optional[List[str]] = Query(None, description="Comma-separated list of origins"),
-    connectors: Optional[List[str]] = Query(None, description="Comma-separated list of connectors"),
-    indexing_status: Optional[List[str]] = Query(None, description="Comma-separated list of indexing statuses"),
-    permissions: Optional[List[str]] = Query(None, description="Comma-separated list of permissions"),
+    record_types: Optional[str] = Query(None, description="Comma-separated list of record types"),
+    origins: Optional[str] = Query(None, description="Comma-separated list of origins"),
+    connectors: Optional[str] = Query(None, description="Comma-separated list of connectors"),
+    indexing_status: Optional[str] = Query(None, description="Comma-separated list of indexing statuses"),
+    permissions: Optional[str] = Query(None, description="Comma-separated list of permissions"),
     date_from: Optional[int] = None,
     date_to: Optional[int] = None,
     sort_by: str = "createdAtTimestamp",
@@ -1066,17 +1081,25 @@ async def list_all_records(
     source: str = "all",
     kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
 ) -> Dict[str, Any]:
+
+    # Parse comma-separated strings into lists
+    parsed_record_types = _parse_comma_separated_str(record_types)
+    parsed_origins = _parse_comma_separated_str(origins)
+    parsed_connectors = _parse_comma_separated_str(connectors)
+    parsed_indexing_status = _parse_comma_separated_str(indexing_status)
+    parsed_permissions = _parse_comma_separated_str(permissions)
+
     return await kb_service.list_all_records(
         user_id=user_id,
         org_id=org_id,
         page=page,
         limit=limit,
         search=search,
-        record_types=record_types,
-        origins=origins,
-        connectors=connectors,
-        indexing_status=indexing_status,
-        permissions=permissions,
+        record_types=parsed_record_types,
+        origins=parsed_origins,
+        connectors=parsed_connectors,
+        indexing_status=parsed_indexing_status,
+        permissions=parsed_permissions,
         date_from=date_from,
         date_to=date_to,
         sort_by=sort_by,

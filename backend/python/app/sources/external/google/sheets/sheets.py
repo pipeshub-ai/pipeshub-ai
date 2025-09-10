@@ -19,7 +19,7 @@ class GoogleSheetsDataSource:
         """
         self.client = client
 
-    def spreadsheets_create(self) -> Dict[str, Any]:
+    async def spreadsheets_create(self) -> Dict[str, Any]:
         """Google Sheets API: Creates a spreadsheet, returning the newly created spreadsheet.
 
         HTTP POST v4/spreadsheets
@@ -38,7 +38,7 @@ class GoogleSheetsDataSource:
             request = self.client.spreadsheets().create(**kwargs) # type: ignore
         return request.execute()
 
-    def spreadsheets_get(
+    async def spreadsheets_get(
         self,
         spreadsheetId: str,
         ranges: Optional[str] = None,
@@ -71,7 +71,7 @@ class GoogleSheetsDataSource:
         request = self.client.spreadsheets().get(**kwargs) # type: ignore
         return request.execute()
 
-    def spreadsheets_get_by_data_filter(
+    async def spreadsheets_get_by_data_filter(
         self,
         spreadsheetId: str
     ) -> Dict[str, Any]:
@@ -97,7 +97,7 @@ class GoogleSheetsDataSource:
             request = self.client.spreadsheets().getByDataFilter(**kwargs) # type: ignore
         return request.execute()
 
-    def spreadsheets_batch_update(
+    async def spreadsheets_batch_update(
         self,
         spreadsheetId: str
     ) -> Dict[str, Any]:
@@ -123,7 +123,7 @@ class GoogleSheetsDataSource:
             request = self.client.spreadsheets().batchUpdate(**kwargs) # type: ignore
         return request.execute()
 
-    def spreadsheets_values_get(
+    async def spreadsheets_values_get(
         self,
         spreadsheetId: str,
         range: str,
@@ -160,7 +160,7 @@ class GoogleSheetsDataSource:
         request = self.client.spreadsheets_values().get(**kwargs) # type: ignore
         return request.execute()
 
-    def spreadsheets_values_update(
+    async def spreadsheets_values_update(
         self,
         spreadsheetId: str,
         range: str,
@@ -206,7 +206,7 @@ class GoogleSheetsDataSource:
             request = self.client.spreadsheets_values().update(**kwargs) # type: ignore
         return request.execute()
 
-    def spreadsheets_values_append(
+    async def spreadsheets_values_append(
         self,
         spreadsheetId: str,
         range: str,
@@ -256,7 +256,7 @@ class GoogleSheetsDataSource:
             request = self.client.spreadsheets_values().append(**kwargs) # type: ignore
         return request.execute()
 
-    def spreadsheets_values_clear(
+    async def spreadsheets_values_clear(
         self,
         spreadsheetId: str,
         range: str
@@ -286,7 +286,7 @@ class GoogleSheetsDataSource:
             request = self.client.spreadsheets_values().clear(**kwargs) # type: ignore
         return request.execute()
 
-    def spreadsheets_values_batch_get(
+    async def spreadsheets_values_batch_get(
         self,
         spreadsheetId: str,
         ranges: Optional[str] = None,
@@ -323,7 +323,7 @@ class GoogleSheetsDataSource:
         request = self.client.spreadsheets_values().batchGet(**kwargs) # type: ignore
         return request.execute()
 
-    def spreadsheets_values_batch_update(
+    async def spreadsheets_values_batch_update(
         self,
         spreadsheetId: str
     ) -> Dict[str, Any]:
@@ -349,7 +349,7 @@ class GoogleSheetsDataSource:
             request = self.client.spreadsheets_values().batchUpdate(**kwargs) # type: ignore
         return request.execute()
 
-    def spreadsheets_values_batch_clear(
+    async def spreadsheets_values_batch_clear(
         self,
         spreadsheetId: str
     ) -> Dict[str, Any]:
@@ -375,7 +375,7 @@ class GoogleSheetsDataSource:
             request = self.client.spreadsheets_values().batchClear(**kwargs) # type: ignore
         return request.execute()
 
-    def spreadsheets_values_batch_get_by_data_filter(
+    async def spreadsheets_values_batch_get_by_data_filter(
         self,
         spreadsheetId: str
     ) -> Dict[str, Any]:
@@ -401,7 +401,7 @@ class GoogleSheetsDataSource:
             request = self.client.spreadsheets_values().batchGetByDataFilter(**kwargs) # type: ignore
         return request.execute()
 
-    def spreadsheets_values_batch_update_by_data_filter(
+    async def spreadsheets_values_batch_update_by_data_filter(
         self,
         spreadsheetId: str
     ) -> Dict[str, Any]:
@@ -427,7 +427,7 @@ class GoogleSheetsDataSource:
             request = self.client.spreadsheets_values().batchUpdateByDataFilter(**kwargs) # type: ignore
         return request.execute()
 
-    def spreadsheets_values_batch_clear_by_data_filter(
+    async def spreadsheets_values_batch_clear_by_data_filter(
         self,
         spreadsheetId: str
     ) -> Dict[str, Any]:
@@ -453,7 +453,7 @@ class GoogleSheetsDataSource:
             request = self.client.spreadsheets_values().batchClearByDataFilter(**kwargs) # type: ignore
         return request.execute()
 
-    def spreadsheets_developer_metadata_get(
+    async def spreadsheets_developer_metadata_get(
         self,
         spreadsheetId: str,
         metadataId: int
@@ -478,7 +478,7 @@ class GoogleSheetsDataSource:
         request = self.client.spreadsheets_developerMetadata().get(**kwargs) # type: ignore
         return request.execute()
 
-    def spreadsheets_developer_metadata_search(
+    async def spreadsheets_developer_metadata_search(
         self,
         spreadsheetId: str
     ) -> Dict[str, Any]:
@@ -504,7 +504,7 @@ class GoogleSheetsDataSource:
             request = self.client.spreadsheets_developerMetadata().search(**kwargs) # type: ignore
         return request.execute()
 
-    def spreadsheets_sheets_copy_to(
+    async def spreadsheets_sheets_copy_to(
         self,
         spreadsheetId: str,
         sheetId: int
@@ -534,6 +534,6 @@ class GoogleSheetsDataSource:
             request = self.client.spreadsheets_sheets().copyTo(**kwargs) # type: ignore
         return request.execute()
 
-    def get_client(self) -> object:
+    async def get_client(self) -> object:
         """Get the underlying Google API client."""
         return self.client

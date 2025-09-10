@@ -36,6 +36,10 @@ export const resyncConnectorSchema = z.object({
   }),
 });
 
+export const getConnectorStatsSchema = z.object({
+  params: z.object({ connector: z.string().min(1) }),
+});
+
 export const uploadRecordsSchema = z.object({
   body: z
     .object({
@@ -654,9 +658,15 @@ export const createFolderSchema = z.object({
 
 export const kbPermissionSchema = z.object({
   body: z.object({
-    users: z.array(z.string()).min(1, 'At least one user ID is required'),
+    userIds: z.array(z.string()).optional(),
+    teamIds: z.array(z.string()).optional(),
     role: z.enum(['OWNER', 'WRITER', 'READER', 'COMMENTER']),
-  }),
+  }).refine((data) => (data.userIds && data.userIds.length > 0) || (data.teamIds && data.teamIds.length > 0),
+    {
+      message: 'At least one user or team ID is required',
+      path: ['userIds'],
+    },
+  ),
   params: z.object({
     kbId: z.string().uuid(),
   }),
@@ -684,16 +694,20 @@ export const getPermissionsSchema = z.object({
 export const updatePermissionsSchema = z.object({
   body: z.object({
     role: z.enum(['OWNER', 'WRITER', 'READER', 'COMMENTER']),
+    userIds: z.array(z.string()).optional(),
+    teamIds: z.array(z.string()).optional(),
   }),
   params: z.object({
     kbId: z.string().uuid(),
-    userId: z.string(),
   }),
 });
 
 export const deletePermissionsSchema = z.object({
+  body: z.object({
+    userIds: z.array(z.string()).optional(),
+    teamIds: z.array(z.string()).optional(),
+  }),
   params: z.object({
     kbId: z.string().uuid(),
-    userId: z.string(),
   }),
 });
