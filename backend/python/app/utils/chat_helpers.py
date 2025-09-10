@@ -335,7 +335,7 @@ async def create_record_from_vector_metadata(metadata: Dict[str, Any], org_id: s
         payload_filter = await vector_db_service.filter_collection(must={
             "virtualRecordId": virtual_record_id,
         })
-        
+
 # Scroll through all points with the filter
         points = []
 
