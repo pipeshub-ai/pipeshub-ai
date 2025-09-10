@@ -150,6 +150,9 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                     })
                     chunk_index += 1
 
+    # Store point_id_to_blockIndex mappings separately for old type results
+    point_id_to_blockIndex_mappings = {}
+    
     for result in old_type_results:
         virtual_record_id = result.get("metadata",{}).get("virtualRecordId")
         meta = result.get("metadata",{})
@@ -157,8 +160,10 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         if virtual_record_id not in virtual_record_id_to_result:
             record,point_id_to_blockIndex = await create_record_from_vector_metadata(meta,org_id,virtual_record_id,blob_store)
             virtual_record_id_to_result[virtual_record_id] = record
+            point_id_to_blockIndex_mappings[virtual_record_id] = point_id_to_blockIndex
 
         point_id = meta.get("point_id")
+        point_id_to_blockIndex = point_id_to_blockIndex_mappings[virtual_record_id]
         index = point_id_to_blockIndex[point_id]
         chunk_id = f"{virtual_record_id}-{index}"
         if chunk_id in seen_chunks:
