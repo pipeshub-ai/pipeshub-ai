@@ -166,7 +166,7 @@
     "eslint-plugin-unused-imports": "^3.2.0",
     "prettier": "^3.3.3",
     "typescript": "^5.5.4",
-    "vite": "^6.2.3",
+    "vite": "^6.3.6",
     "vite-plugin-checker": "^0.7.2"
   }
 }
