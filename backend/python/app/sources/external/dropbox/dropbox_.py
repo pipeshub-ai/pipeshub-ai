@@ -3879,7 +3879,7 @@ class DropboxDataSource:
 
     async def files_upload(
         self,
-        f: str,
+        f: bytes,
         path: str,
         mode: str = WriteMode('add', None),
         autorename: str = False,
@@ -3889,14 +3889,14 @@ class DropboxDataSource:
         strict_conflict: str = False,
         content_hash: Optional[str] = None
     ) -> DropboxResponse:
-        """Create a new file with the contents provided in the request. Do not use
+        """Create a new file with the contents provided in the request. You can use ;)
 
         API Endpoint: /2/files/upload
         Namespace: files
         Client type: user
 
         Args:
-            f (str, required): Parameter for files_upload
+            f (bytes, required): Parameter for files_upload
             path (str, required): Parameter for files_upload
             mode (str, optional): Parameter for files_upload
             autorename (str, optional): Parameter for files_upload
