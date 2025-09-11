@@ -152,10 +152,6 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
     # This mapping is used to convert point_id from search results to block index
     point_id_to_blockIndex_mappings = {}
 
-    # Store point_id_to_blockIndex mappings separately for old type results
-    # This mapping is used to convert point_id from search results to block index
-    point_id_to_blockIndex_mappings = {}
-
     for result in old_type_results:
         virtual_record_id = result.get("metadata",{}).get("virtualRecordId")
         meta = result.get("metadata",{})
@@ -466,7 +462,7 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
                 "type": "text",
                 "text": rendered_form
             })
-
+        
         result_id = f"{virtual_record_id}_{result.get('block_index')}"
         if result_id not in seen_blocks:
             seen_blocks.add(result_id)
@@ -507,7 +503,7 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
             else:
                 content.append({
                     "type": "text",
-                    "text": f"* Chunk Index: {chunk_index}\n* Chunk Type: {block_type}\n* Chunk Content: {result.get('content')}"
+                    "text": f"* Block Number: {chunk_index}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}"
                 })
         else:
             continue

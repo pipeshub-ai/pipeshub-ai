@@ -337,7 +337,7 @@ async def askAIStream(
 
 
             yield create_sse_event("status", {"status": "generating", "message": "Generating AI response..."})
-
+            
             # Stream LLM response with real-time answer updates
             async for stream_event in stream_llm_response(llm, messages, final_results,citation_to_index):
                 event_type = stream_event["event"]
@@ -464,10 +464,10 @@ async def askAI(
                 documents=flattened_results,
                 top_k=query_info.limit,
             )
-            for i,r in enumerate(final_results):
-                    r["chunk_index"] = i+1
         else:
             final_results = flattened_results
+        
+
 
         final_results = sorted(final_results, key=lambda x: (x['virtual_record_id'], x['block_index']))
 
