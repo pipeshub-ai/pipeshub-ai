@@ -283,11 +283,11 @@ async def askAIStream(
                         documents=flattened_results,
                         top_k=query_info.limit,
                     )
-                for i,r in enumerate(final_results):
-                    r["chunk_index"] = i+1
+                
             else:
                 final_results = flattened_results
-
+            
+            final_results = sorted(final_results, key=lambda x: (x['virtual_record_id'], x['block_index']))
             # Prepare user context
             if send_user_info:
                 yield create_sse_event("status", {"status": "preparing_context", "message": "Preparing user context..."})
@@ -337,7 +337,7 @@ async def askAIStream(
 
 
             yield create_sse_event("status", {"status": "generating", "message": "Generating AI response..."})
-
+            
             # Stream LLM response with real-time answer updates
             async for stream_event in stream_llm_response(llm, messages, final_results):
                 event_type = stream_event["event"]
@@ -465,10 +465,10 @@ async def askAI(
                 documents=flattened_results,
                 top_k=query_info.limit,
             )
-            for i,r in enumerate(final_results):
-                    r["chunk_index"] = i+1
         else:
             final_results = flattened_results
+        
+        final_results = sorted(final_results, key=lambda x: (x['virtual_record_id'], x['block_index']))
 
         # Prepare the template with the final results
         if send_user_info:

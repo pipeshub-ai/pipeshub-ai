@@ -20,7 +20,6 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
 
     flattened_results = []
     seen_chunks = set()
-    chunk_index = 1
     adjacent_chunks = {}
     new_type_results = []
     old_type_results = []
@@ -120,8 +119,6 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                     child_block_index = child.get("block_index")
                     seen_chunks.add(f"{virtual_record_id}-{child_block_index}")
 
-        result["chunk_index"] = chunk_index
-        chunk_index += 1
         result["virtual_record_id"] = virtual_record_id
         if "block_index" not in result:
             result["block_index"] = index
@@ -148,12 +145,10 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                         "content": block_text,
                         "block_type": block_type,
                         "metadata": enhanced_metadata,
-                        "chunk_index": chunk_index,
                         "virtual_record_id": virtual_record_id,
                         "block_index": index,
                         "citationType": "vectordb|document",
                     })
-                    chunk_index += 1
 
     # Store point_id_to_blockIndex mappings separately for old type results
     # This mapping is used to convert point_id from search results to block index
@@ -184,8 +179,6 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         block = blocks[index]
         block_type = block.get("type")
         result["block_type"] = block_type
-        result["chunk_index"] = chunk_index
-        chunk_index += 1
         result["virtual_record_id"] = virtual_record_id
         result["block_index"] = index
         enhanced_metadata = get_enhanced_metadata(record,block,meta)
@@ -294,16 +287,16 @@ async def get_blocks(meta: Dict[str, Any],virtual_record_id: str,virtual_record_
 async def create_record_from_vector_metadata(metadata: Dict[str, Any], org_id: str, virtual_record_id: str,blob_store: BlobStorage) -> Tuple[Dict[str, Any], Dict[str, int]]:
     try:
         summary = metadata.get("summary", "")
-        categories = [metadata.get("category", "")]
+        categories = [metadata.get("categories", "")]
         topics = metadata.get("topics", "")
-        sub_category_level_1 = metadata.get("subcategories", {}).get("level1", "")
-        sub_category_level_2 = metadata.get("subcategories", {}).get("level2", "")
-        sub_category_level_3 = metadata.get("subcategories", {}).get("level3", "")
+        sub_category_level_1 = metadata.get("subcategoryLevel1","")
+        sub_category_level_2 = metadata.get("subcategoryLevel2","")
+        sub_category_level_3 = metadata.get("subcategoryLevel3","")
         languages = metadata.get("languages", "")
         departments = metadata.get("departments", "")
         semantic_metadata = {
             "summary": summary,
-            "categories": categories,
+            "categories": [categories],
             "topics": topics,
             "sub_category_level_1": sub_category_level_1,
             "sub_category_level_2": sub_category_level_2,
@@ -432,43 +425,54 @@ def checkForLargeTable(markdown: str) -> bool:
 
 def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_id_to_result: Dict[str, Any], user_data: str, query: str) -> str:
     content = []
-    task_instructions = qna_prompt_instructions_1
-    content.append({
-                "type": "text",
-                "text": task_instructions
-            })
-
-    sorted_flattened_results = sorted(flattened_results, key=lambda x: (x['virtual_record_id'], x['block_index']))
-    seen_virtual_record_ids = set()
-    seen_blocks = set()
-    for result in sorted_flattened_results:
-        virtual_record_id = result.get("virtual_record_id")
-        if virtual_record_id not in seen_virtual_record_ids:
-            seen_virtual_record_ids.add(virtual_record_id)
-            record = virtual_record_id_to_result[virtual_record_id]  # Unpack the tuple
-            semantic_metadata = record.get("semantic_metadata")
-            template = Template(qna_prompt_context)
-            rendered_form = template.render(
+   
+    template = Template(qna_prompt_instructions_1)
+    rendered_form = template.render(
                 user_data=user_data,
                 query=query,
                 rephrased_queries=[],
-                semantic_metadata=semantic_metadata,
                 )
-            content.append({
+    
+    content.append({
                 "type": "text",
                 "text": rendered_form
             })
 
+    seen_virtual_record_ids = set()
+    seen_blocks = set()
+    for i,result in enumerate(flattened_results):
+        virtual_record_id = result.get("virtual_record_id")
+        if virtual_record_id not in seen_virtual_record_ids:
+            if i > 0:
+                content.append({
+                    "type": "text",
+                    "text": "</record>"
+                })
+            seen_virtual_record_ids.add(virtual_record_id)
+            record = virtual_record_id_to_result[virtual_record_id]  
+            semantic_metadata = record.get("semantic_metadata")
+            
+            template = Template(qna_prompt_context)
+            rendered_form = template.render(
+                record_id=record.get("id","Not available"),
+                record_name=record.get("record_name","Not available"),
+                semantic_metadata=semantic_metadata,
+            )
+            content.append({
+                "type": "text",
+                "text": rendered_form
+            })
+        
         result_id = f"{virtual_record_id}_{result.get('block_index')}"
         if result_id not in seen_blocks:
             seen_blocks.add(result_id)
-            chunk_index = result.get("chunk_index")
+            chunk_index = i+1
             block_type = result.get("block_type")
             if block_type == BlockType.IMAGE.value:
                 if result.get("content").startswith("data:image/"):
                     content.append({
                         "type": "text",
-                        "text": f"* Chunk Index: {chunk_index}\n* Chunk Type: {block_type}\n* Chunk Content:"
+                        "text": f"* Block Number: {chunk_index}\n* Block Type: {block_type}\n* Block Content:"
                     })
                     content.append({
                         "type": "image_url",
@@ -477,29 +481,29 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
                 else:
                     content.append({
                         "type": "text",
-                        "text": f"* Chunk Index: {chunk_index}\n* Chunk Type: image_description\n* Chunk Content: {result.get('content')}"
+                        "text": f"* Block Number: {chunk_index}\n* Block Type: image_description\n* Block Content: {result.get('content')}"
                     })
             elif block_type == BlockType.TABLE_ROW.value or block_type == GroupType.TABLE.value:
                 content.append({
                     "type": "text",
-                    "text": f"* Chunk Index: {chunk_index}\n* Chunk Type: table\n* Chunk Content: {result.get('content')}"
+                    "text": f"* Block Number: {chunk_index}\n* Block Type: table\n* Block Content: {result.get('content')}"
                 })
             elif block_type == BlockType.TEXT.value:
                 content.append({
                     "type": "text",
-                    "text": f"* Chunk Index: {chunk_index}\n* Chunk Type: {block_type}\n* Chunk Content: {result.get('content')}"
+                    "text": f"* Block Number: {chunk_index}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}"
                 })
             else:
                 content.append({
                     "type": "text",
-                    "text": f"* Chunk Index: {chunk_index}\n* Chunk Type: {block_type}\n* Chunk Content: {result.get('content')}"
+                    "text": f"* Block Number: {chunk_index}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}"
                 })
         else:
             continue
 
     content.append({
         "type": "text",
-        "text": f"</context>\n\n{qna_prompt_instructions_2}"
+        "text": f"</record>\n</context>\n\n{qna_prompt_instructions_2}"
     })
 
     return content
