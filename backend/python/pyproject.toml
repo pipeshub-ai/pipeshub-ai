@@ -42,7 +42,7 @@ dependencies = [
     "langchain-anthropic==0.3.17",
     "langchain-aws==0.2.18",
     "langchain-cohere==0.4.4",
-    "langchain-community==0.3.18",
+    "langchain-community==0.3.27",
     "langchain-experimental==0.3.4",
     "langchain-fireworks==0.3.0",
     "langchain-google-genai==2.1.8",
