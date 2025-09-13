@@ -1,3 +1,4 @@
+import asyncio
 import csv
 import json
 import os
@@ -5,13 +6,27 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TextIO, Union
 
+from langchain.chat_models.base import BaseChatModel
 from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
 )
 
-from app.modules.parsers.excel.prompt_template import row_text_prompt
+from app.models.blocks import (
+    Block,
+    BlockContainerIndex,
+    BlockGroup,
+    BlocksContainer,
+    BlockType,
+    DataFormat,
+    GroupType,
+    TableMetadata,
+)
+from app.modules.parsers.excel.prompt_template import (
+    row_text_prompt,
+    table_summary_prompt,
+)
 
 
 class CSVParser:
@@ -30,6 +45,8 @@ class CSVParser:
         self.delimiter = delimiter
         self.quotechar = quotechar
         self.encoding = encoding
+        self.table_summary_prompt = table_summary_prompt
+
 
         # Configure retry parameters
         self.max_retries = 3
@@ -93,6 +110,48 @@ class CSVParser:
             raise ValueError("CSV file is empty or has no valid rows")
 
         return data
+
+    def to_markdown(self, data: List[Dict[str, Any]]) -> str:
+        """
+        Convert CSV data to markdown table format.
+        Args:
+            data: List of dictionaries from read_stream() method
+        Returns:
+            String containing markdown formatted table
+        """
+        if not data:
+            return ""
+
+        # Get headers from the first row
+        headers = list(data[0].keys())
+
+        # Start building the markdown table
+        markdown_lines = []
+
+        # Add header row
+        header_row = "| " + " | ".join(str(header) for header in headers) + " |"
+        markdown_lines.append(header_row)
+
+        # Add separator row
+        separator_row = "|" + "|".join(" --- " for _ in headers) + "|"
+        markdown_lines.append(separator_row)
+
+        # Add data rows
+        for row in data:
+            # Handle None values and convert to string, escape pipe characters
+            formatted_values = []
+            for header in headers:
+                value = row.get(header, "")
+                if value is None:
+                    value = ""
+                # Escape pipe characters and convert to string
+                value_str = str(value).replace("|", "\\|")
+                formatted_values.append(value_str)
+
+            data_row = "| " + " | ".join(formatted_values) + " |"
+            markdown_lines.append(data_row)
+
+        return "\n".join(markdown_lines)
 
     def write_file(self, file_path: str | Path, data: List[Dict[str, Any]]) -> None:
         """
@@ -166,6 +225,27 @@ class CSVParser:
         """Wrapper for LLM calls with retry logic"""
         return await llm.ainvoke(messages)
 
+    async def get_table_summary(self, llm, rows: List[Dict[str, Any]]) -> str:
+        """Get table summary from LLM"""
+        try:
+            headers = list(rows[0].keys())
+            sample_data = [
+                {
+                    key: (value.isoformat() if isinstance(value, datetime) else value)
+                    for key, value in row.items()
+                }
+                for row in rows[:3]
+            ]
+            messages = self.table_summary_prompt.format_messages(
+                sample_data=json.dumps(sample_data, indent=2),headers=headers
+            )
+            response = await self._call_llm(llm, messages)
+            if '</think>' in response.content:
+                response.content = response.content.split('</think>')[-1]
+            return response.content
+        except Exception:
+            raise
+
     async def get_rows_text(
         self, llm, rows: List[Dict[str, Any]], batch_size: int = 10
     ) -> List[str]:
@@ -212,7 +292,85 @@ class CSVParser:
                     processed_texts.append(content)
 
         return processed_texts
+    #  recordName, recordId, version, source, orgId, csv_binary, virtual_record_id
+    async def get_blocks_from_csv_result(self, csv_result: List[Dict[str, Any]], recordId: str, orgId: str, recordName: str, version: str, origin: str, llm: BaseChatModel) -> BlocksContainer:
 
+        blocks = []
+        children = []
+
+        # Determine optimal batch size based on file size
+        batch_size = 50
+
+
+
+        # Create batches
+        batches = []
+        for i in range(0, len(csv_result), batch_size):
+            batch = csv_result[i : i + batch_size]
+            batches.append((i, batch))  # Store start index and batch data
+
+        # Process batches with controlled concurrency to avoid overwhelming the system
+
+        max_concurrent_batches = min(10, len(batches))  # Limit concurrent batches
+        batch_results = []
+
+        for i in range(0, len(batches), max_concurrent_batches):
+            current_batches = batches[i:i + max_concurrent_batches]
+
+            # Process current batch group
+            batch_tasks = []
+            for start_idx, batch in current_batches:
+                task = self.get_rows_text(llm, batch)
+                batch_tasks.append((start_idx, batch, task))
+
+            # Wait for current batch group to complete
+            task_results = await asyncio.gather(*[task for _, _, task in batch_tasks])
+
+            # Combine results with their metadata
+            for j, (start_idx, batch, _) in enumerate(batch_tasks):
+                row_texts = task_results[j]
+                batch_results.append((start_idx, batch, row_texts))
+
+        # Process results and create blocks
+        for start_idx, batch, row_texts in batch_results:
+            for idx, (row, row_text) in enumerate(
+                    zip(batch, row_texts), start=start_idx
+                ):
+                # row_entry = {"number": idx, "content": row, "type": "row"}
+                blocks.append(
+                    Block(
+                        index=idx,
+                        type=BlockType.TABLE_ROW,
+                        format=DataFormat.JSON,
+                        data={
+                            "row_natural_language_text": row_text,
+                            "row_number": idx+1,
+                            "row":json.dumps(row)
+                        },
+                        parent_index=0,
+                    )
+                    )
+                children.append(BlockContainerIndex(block_index=idx))
+
+        csv_markdown = self.to_markdown(csv_result)
+        table_summary = await self.get_table_summary(llm, csv_result)
+        blockGroup = BlockGroup(
+            index=0,
+            type=GroupType.TABLE,
+            format=DataFormat.JSON,
+            table_metadata=TableMetadata(
+                num_of_rows=len(csv_result),
+                num_of_cols=len(csv_result[0]),
+            ),
+            data={
+                "table_summary": table_summary,
+                "column_headers": list(csv_result[0].keys()),
+                "table_markdown": csv_markdown,
+            },
+            children=children,
+        )
+        blocks_container = BlocksContainer(blocks=blocks, block_groups=[blockGroup])
+        return blocks_container
 
 def main() -> None:
     """Test the CSV parser functionality"""

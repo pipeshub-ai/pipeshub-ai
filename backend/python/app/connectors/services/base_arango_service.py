@@ -80,6 +80,7 @@ NODE_COLLECTIONS = [
     (CollectionNames.TICKETS.value, ticket_record_schema),
     (CollectionNames.SYNC_POINTS.value, None),
     (CollectionNames.TEAMS.value, team_schema),
+    (CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value, None)
 
 ]
 

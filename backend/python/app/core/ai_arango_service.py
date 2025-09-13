@@ -426,7 +426,7 @@ class ArangoService:
 
         except Exception as e:
             self.logger.error(
-                "❌ Failed to find duplicate files: %s",
+                "Failed to find duplicate files: %s",
                 str(e)
             )
             if transaction:

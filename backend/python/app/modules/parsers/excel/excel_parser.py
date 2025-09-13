@@ -1,3 +1,4 @@
+import asyncio
 import io
 import json
 from datetime import datetime
@@ -567,13 +568,28 @@ class ExcelParser:
             # Get table summary
             table_summary = await self.get_table_summary(table)
 
-            # Process rows in batches of 20
+            # Process rows in batches of 20 in parallel
             processed_rows = []
             batch_size = 20
 
+            # Create batches
+            batches = []
             for i in range(0, len(table["data"]), batch_size):
                 batch = table["data"][i : i + batch_size]
-                row_texts = await self.get_rows_text(batch, table_summary)
+                batches.append((i, batch))  # Store start index and batch data
+
+            # Process all batches in parallel using asyncio.gather
+            batch_tasks = []
+            for start_idx, batch in batches:
+                task = self.get_rows_text(batch, table_summary)
+                batch_tasks.append((start_idx, batch, task))
+
+            # Wait for all batches to complete in parallel
+            task_results = await asyncio.gather(*[task for _, _, task in batch_tasks])
+
+            # Combine results with their metadata and process
+            for i, (start_idx, batch, _) in enumerate(batch_tasks):
+                row_texts = task_results[i]
 
                 # Add processed rows to results
                 for row, row_text in zip(batch, row_texts):

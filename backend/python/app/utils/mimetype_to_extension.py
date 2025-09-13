@@ -8,7 +8,7 @@ mime_to_extension = {
     "text/plain": "txt",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
     "application/msword": "doc",
-    "application/vnd.ms-excel": "xls",
+    "application/vnd.ms-excel": "csv",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
     "application/vnd.ms-powerpoint": "ppt",
     "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
@@ -40,4 +40,10 @@ mime_to_extension = {
     "application/vnd.oasis.opendocument.presentation": "odp",
     "application/x-python-code": "py",
     "application/x-java-archive": "jar",
+    "text/csv": "csv",
+    "application/csv": "csv",
 }
+
+
+def get_extension_from_mimetype(mime_type) -> str | None:
+    return mime_to_extension.get(mime_type)

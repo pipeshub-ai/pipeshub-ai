@@ -1,4 +1,4 @@
-from typing import Dict, Optional, Union
+from typing import Dict, List, Optional, Union
 
 from qdrant_client import AsyncQdrantClient, QdrantClient  # type: ignore
 from qdrant_client.http.models import (  # type: ignore
@@ -8,6 +8,8 @@ from qdrant_client.http.models import (  # type: ignore
     KeywordIndexType,
     Modifier,
     OptimizersConfigDiff,
+    PointStruct,
+    QueryRequest,
     ScalarQuantization,
     ScalarQuantizationConfig,
     ScalarType,
@@ -169,8 +171,8 @@ class QdrantService(IVectorDBService):
 
     async def create_collection(
         self,
+        embedding_size: int=1024,
         collection_name: str = VECTOR_DB_COLLECTION_NAME,
-        embedding_size: int = 1024,
         sparse_idf: bool = False,
         vectors_config: Optional[dict] = None,
         sparse_vectors_config: Optional[dict] = None,
@@ -229,8 +231,8 @@ class QdrantService(IVectorDBService):
             field_schema = KeywordIndexParams(
                 type=KeywordIndexType.KEYWORD,
             )
-        # TODO: Add handling for Async client
-        await self.client.create_payload_index(collection_name, field_name, field_schema, index_type)
+        self.client.create_payload_index(collection_name, field_name, field_schema)
+        logger.info(f"✅ Created index {field_name} on collection {collection_name}")
 
     async def filter_collection(
         self,
@@ -345,3 +347,34 @@ class QdrantService(IVectorDBService):
         if self.client is None:
             raise RuntimeError("Client not connected. Call connect() first.")
         return self.client.scroll(collection_name, scroll_filter, limit)
+
+    def overwrite_payload(
+        self,
+        collection_name: str,
+        payload: dict,
+        points: Filter,
+    ) -> None:
+        """Overwrite a payload"""
+        if self.client is None:
+            raise RuntimeError("Client not connected. Call connect() first.")
+        self.client.overwrite_payload(collection_name, payload, points)
+
+    def query_nearest_points(
+        self,
+        collection_name: str,
+        requests: List[QueryRequest],
+    ) -> List[List[PointStruct]]:
+        """Query batch points"""
+        if self.client is None:
+            raise RuntimeError("Client not connected. Call connect() first.")
+        return self.client.query_batch_points(collection_name, requests)
+
+    def upsert_points(
+        self,
+        collection_name: str,
+        points: List[PointStruct],
+    ) -> None:
+        """Upsert points"""
+        if self.client is None:
+            raise RuntimeError("Client not connected. Call connect() first.")
+        self.client.upsert(collection_name, points)
