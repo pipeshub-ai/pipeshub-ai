@@ -439,7 +439,6 @@ async def askAI(
             )
 
         # Flatten and deduplicate results based on document ID or other unique identifier
-        flattened_results = []
         search_results = result.get("searchResults", [])
         status_code = result.get("status_code", 500)
 

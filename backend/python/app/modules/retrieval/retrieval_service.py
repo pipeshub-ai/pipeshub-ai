@@ -480,10 +480,13 @@ class RetrievalService:
             collection_name=self.collection_name,
             requests=query_requests,
         )
-
+        seen_points = set()
         for r in search_results:
                 points = r.points
                 for point in points:
+                    if point.id in seen_points:
+                        continue
+                    seen_points.add(point.id)
                     metadata=point.payload.get("metadata", {})
                     metadata.update({"point_id": point.id})
                     doc = Document(
