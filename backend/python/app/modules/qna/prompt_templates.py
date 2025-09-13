@@ -143,15 +143,6 @@ qna_prompt_context = """
       - Record blocks (sorted):
 """
 
-
-      #   {% for block in chunk.blocks %}
-      #   * Chunk Index: {{ block.chunk_index }}
-      #   * Chunk Type : {{ block.block_type }}
-      #   * Chunk Content: {{ block.content }}
-      #   {% endfor %}
-
-
-
 qna_prompt_instructions_2 = """
 <instructions>
   NOTE:
@@ -168,13 +159,13 @@ qna_prompt_instructions_2 = """
   - Include every key point that addresses the question directly
   - Generate answer in fully valid markdown format with proper headings and formatting and ensure citations generated doesn't break the markdown format
   - Do not summarize or omit important details
-  - For each block provide the citations only **relevant indexes** in below format.
+  - For each block provide the citations only **relevant numbers** in below format.
       - **Do not list excessive citations for the same point. Include only the top 4-5 most relevant block citations per answer.**
       - Use these assigned citation numbers in the answer output.
       - **CRITICAL: IF THE ANSWER IS DERIVED FROM BLOCKS, YOU MUST INCLUDE CITATION NUMBERS IN THE ANSWER TEXT. NO EXCEPTIONS.**
       - If a block influences the answer, it MUST be cited in the answer using its assigned number.
   2. Citation Format:
-  - Use square brackets to refer to assigned citation numbers: like [1], [3]
+  - Use square brackets to refer to assigned citation numbers: like [R1-1], [R2-3]
   - There must be exactly one citation number inside each pair of square brackets. DO NOT CLUB MULTIPLE citations like [1, 2]
   - Ensure the assigned numbers map to actual block numbers in the final output using the `blockNumbers` mapping
   - **When a code block ends, the closing line with ``` MUST stand alone. Put any citation (e.g. [3]) on the *next* line, never on the same line as the fence in the code block.**
@@ -215,11 +206,11 @@ qna_prompt_instructions_2 = """
   For context:
   Output JSON Format:
     {
-      "answer": "Security policies are regularly reviewed and updated. [2][5]",
-      "reason": "Derived from block index 2 and 5, which explicitly mention internal security review timelines.",
+      "answer": "Security policies are regularly reviewed and updated. [R1-2][R2-5]",
+      "reason": "Derived from block number R1-2 and R2-5, which explicitly mention internal security review timelines.",
       "confidence": "High",
       "answerMatchType": "Derived From Blocks",
-      "blockNumbers": [2, 5]
+      "blockNumbers": [R1-2, R2-5]
     }
 </example>
 ***Your entire response/output is going to consist of a single JSON, and you will NOT wrap it within JSON md markers***

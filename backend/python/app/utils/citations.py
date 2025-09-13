@@ -1,7 +1,7 @@
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 
 @dataclass
@@ -59,58 +59,60 @@ def fix_json_string(json_str) -> str:
 
 
 
-def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[str, Any]]) -> tuple[str, List[Dict[str, Any]]]:
+def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[str, Any]], citation_to_index: Dict[str, int]) -> Tuple[str, List[Dict[str, Any]]]:
     """
     Normalize citation numbers in answer text to be sequential (1,2,3...)
     and create corresponding citation chunks with correct mapping
     """
     # Extract all citation numbers from the answer text
-    citation_pattern = r'\[(\d+)\]'
+    citation_pattern = r'\[R(\d+)-(\d+)\]'
     matches = re.findall(citation_pattern, answer_text)
 
     if not matches:
         return answer_text, []
 
-    # Get unique citation numbers in order of appearance
+    # Convert tuples to string format that matches citation_to_index keys
+    # Assuming citation_to_index uses format like "R1-2" as keys
     unique_citations = []
     seen = set()
-    for match in matches:
-        citation_num = int(match)
-        if citation_num not in seen:
-            unique_citations.append(citation_num)
-            seen.add(citation_num)
 
-    # Create mapping from old citation numbers to new sequential numbers
+    for match in matches:
+        citation_key = f"R{match[0]}-{match[1]}"  # Convert tuple to string format
+        if citation_key not in seen:
+            unique_citations.append(citation_key)
+            seen.add(citation_key)
+
+    # Create mapping from old citation keys to new sequential numbers
     citation_mapping = {}
     new_citations = []
 
-
-    for i, old_citation_num in enumerate(unique_citations):
+    for i, old_citation_key in enumerate(unique_citations):
         new_citation_num = i + 1
-        citation_mapping[old_citation_num] = new_citation_num
+        citation_mapping[old_citation_key] = new_citation_num
 
         # Get the corresponding chunk from final_results
-        chunk_index = old_citation_num - 1  # Convert to 0-based index
-        if 0 <= chunk_index < len(final_results):
-            doc = final_results[chunk_index]
-            new_citations.append({
-                "content": doc.get("content", ""),
-                "chunkIndex": new_citation_num,  # Use new sequential number
-                "metadata": doc.get("metadata", {}),
-                "citationType": "vectordb|document",
-            })
+        if old_citation_key in citation_to_index:
+            chunk_index = citation_to_index[old_citation_key]
+            if 0 <= chunk_index < len(final_results):
+                doc = final_results[chunk_index]
+                new_citations.append({
+                    "content": doc.get("content", ""),
+                    "chunkIndex": new_citation_num,  # Use new sequential number
+                    "metadata": doc.get("metadata", {}),
+                    "citationType": "vectordb|document",
+                })
 
     # Replace citation numbers in answer text
-    normalized_answer = re.sub(
-    citation_pattern,
-    lambda m: f"[{citation_mapping[int(m.group(1))]}]" if int(m.group(1)) in citation_mapping else "",
-    answer_text
-    )
+    def replace_citation(match) -> str:
+        old_key = f"R{match.group(1)}-{match.group(2)}"
+        return f"[{citation_mapping[old_key]}]" if old_key in citation_mapping else ""
+
+    normalized_answer = re.sub(citation_pattern, replace_citation, answer_text)
 
     return normalized_answer, new_citations
 
 
-def process_citations(llm_response, documents: List[Dict[str, Any]]) -> Dict[str, Any]:
+def process_citations(llm_response, documents: List[Dict[str, Any]],citation_to_index: Dict[str, int]) -> Dict[str, Any]:
     """
     Process the LLM response and extract citations from relevant documents with normalization.
     """
@@ -171,12 +173,12 @@ def process_citations(llm_response, documents: List[Dict[str, Any]]) -> Dict[str
 
         # Normalize citations in the answer if it exists
         if "answer" in result:
-            normalized_answer, citations = normalize_citations_and_chunks(result["answer"], documents)
+            normalized_answer, citations = normalize_citations_and_chunks(result["answer"], documents,citation_to_index)
             result["answer"] = normalized_answer
             result["citations"] = citations
         else:
             # Fallback for cases where answer is not in a structured format
-            normalized_answer, citations = normalize_citations_and_chunks(str(response_data), documents)
+            normalized_answer, citations = normalize_citations_and_chunks(str(response_data), documents,citation_to_index)
             result = {
                 "answer": normalized_answer,
                 "citations": citations

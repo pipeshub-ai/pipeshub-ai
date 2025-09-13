@@ -71,6 +71,7 @@ async def stream_llm_response(
     llm,
     messages,
     final_results,
+    citation_to_index,
     target_words_per_chunk: int = 5,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
@@ -130,7 +131,7 @@ async def stream_llm_response(
                             continue
 
                         normalized, cites = normalize_citations_and_chunks(
-                            current_raw, final_results
+                            current_raw, final_results,citation_to_index
                         )
 
                         chunk_text = normalized[prev_norm_len:]
@@ -148,7 +149,7 @@ async def stream_llm_response(
         try:
             parsed = json.loads(escape_ctl(full_json_buf))
             final_answer = parsed.get("answer", answer_buf)
-            normalized, c = normalize_citations_and_chunks(final_answer, final_results)
+            normalized, c = normalize_citations_and_chunks(final_answer, final_results,citation_to_index)
             yield {
                 "event": "complete",
                 "data": {
@@ -159,7 +160,7 @@ async def stream_llm_response(
                 },
             }
         except Exception:
-            normalized, c = normalize_citations_and_chunks(answer_buf, final_results)
+            normalized, c = normalize_citations_and_chunks(answer_buf, final_results,citation_to_index)
             yield {
                 "event": "complete",
                 "data": {

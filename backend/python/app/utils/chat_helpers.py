@@ -86,7 +86,6 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
             block_group_index = block.get("parent_index")
             block_group = block_groups[block_group_index]
             table_data = block_group.get("data",{})
-            table_markdown = table_data.get("table_markdown","")
             row_text = block.get("data",{}).get("row_natural_language_text","")
             table_summary = table_data.get("table_summary","")
             result["content"] = f"table_summary: {table_summary}\n\nrow_text: {row_text}"
@@ -124,7 +123,6 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
             result["block_index"] = index
         enhanced_metadata = get_enhanced_metadata(record,block,meta)
         result["metadata"] = enhanced_metadata
-
         flattened_results.append(result)
 
     for virtual_record_id,adjacent_chunks_list in adjacent_chunks.items():
@@ -423,16 +421,16 @@ def checkForLargeTable(markdown: str) -> bool:
     return len(words) > MAX_WORDS_IN_TABLE_THRESHOLD
 
 
-def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_id_to_result: Dict[str, Any], user_data: str, query: str) -> str:
+def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_id_to_result: Dict[str, Any], user_data: str, query: str,citation_to_index: Dict[str, int]) -> str:
     content = []
-   
+
     template = Template(qna_prompt_instructions_1)
     rendered_form = template.render(
                 user_data=user_data,
                 query=query,
                 rephrased_queries=[],
                 )
-    
+
     content.append({
                 "type": "text",
                 "text": rendered_form
@@ -440,6 +438,7 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
 
     seen_virtual_record_ids = set()
     seen_blocks = set()
+    record_number = 1
     for i,result in enumerate(flattened_results):
         virtual_record_id = result.get("virtual_record_id")
         if virtual_record_id not in seen_virtual_record_ids:
@@ -448,10 +447,11 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
                     "type": "text",
                     "text": "</record>"
                 })
+                record_number = record_number + 1
             seen_virtual_record_ids.add(virtual_record_id)
-            record = virtual_record_id_to_result[virtual_record_id]  
+            record = virtual_record_id_to_result[virtual_record_id]
             semantic_metadata = record.get("semantic_metadata")
-            
+
             template = Template(qna_prompt_context)
             rendered_form = template.render(
                 record_id=record.get("id","Not available"),
@@ -462,17 +462,19 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
                 "type": "text",
                 "text": rendered_form
             })
-        
+
         result_id = f"{virtual_record_id}_{result.get('block_index')}"
         if result_id not in seen_blocks:
             seen_blocks.add(result_id)
-            chunk_index = i+1
             block_type = result.get("block_type")
+            block_index = result.get("block_index")
+            block_number = f"R{record_number}-{block_index}"
+            citation_to_index[block_number] = i
             if block_type == BlockType.IMAGE.value:
                 if result.get("content").startswith("data:image/"):
                     content.append({
                         "type": "text",
-                        "text": f"* Block Number: {chunk_index}\n* Block Type: {block_type}\n* Block Content:"
+                        "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content:"
                     })
                     content.append({
                         "type": "image_url",
@@ -481,22 +483,22 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
                 else:
                     content.append({
                         "type": "text",
-                        "text": f"* Block Number: {chunk_index}\n* Block Type: image_description\n* Block Content: {result.get('content')}"
+                        "text": f"* Block Number: {block_number}\n* Block Type: image_description\n* Block Content: {result.get('content')}"
                     })
             elif block_type == BlockType.TABLE_ROW.value or block_type == GroupType.TABLE.value:
                 content.append({
                     "type": "text",
-                    "text": f"* Block Number: {chunk_index}\n* Block Type: table\n* Block Content: {result.get('content')}"
+                    "text": f"* Block Number: {block_number}\n* Block Type: table\n* Block Content: {result.get('content')}"
                 })
             elif block_type == BlockType.TEXT.value:
                 content.append({
                     "type": "text",
-                    "text": f"* Block Number: {chunk_index}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}"
+                    "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}"
                 })
             else:
                 content.append({
                     "type": "text",
-                    "text": f"* Block Number: {chunk_index}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}"
+                    "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}"
                 })
         else:
             continue
