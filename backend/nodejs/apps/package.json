@@ -47,7 +47,7 @@
   "dependencies": {
     "@azure/msal-node": "^2.16.2",
     "@azure/storage-blob": "^12.25.0",
-    "@node-saml/passport-saml": "^5.0.1",
+    "@node-saml/passport-saml": "^5.1.0",
     "@qdrant/js-client-rest": "^1.14.1",
     "@slack/bolt": "^4.4.0",
     "@tryfabric/mack": "^1.2.1",
