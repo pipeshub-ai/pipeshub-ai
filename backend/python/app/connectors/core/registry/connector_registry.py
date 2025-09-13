@@ -3,7 +3,6 @@ connector registry service.
 """
 
 import hashlib
-import time
 from enum import Enum
 from inspect import isclass
 from typing import Any, Callable, Dict, List, Optional, Type
@@ -39,7 +38,8 @@ def Connector(
     name: str,
     app_group: str,
     auth_type: str,
-    supports_realtime: bool = False,
+    app_description: str = "",
+    app_categories: List[str] = [],
     config: Optional[Dict[str, Any]] = None
 ) -> Callable[[Type], Type]:
     """
@@ -49,7 +49,6 @@ def Connector(
         name: Name of the application (e.g., "Google Drive", "Gmail")
         app_group: Group the app belongs to (e.g., "Google Workspace")
         auth_type: Authentication type (e.g., "oauth", "api_token")
-        supports_realtime: Whether connector supports real-time updates
         config: Complete configuration schema for the connector
     """
     def decorator(cls) -> Type:
@@ -58,7 +57,8 @@ def Connector(
             "name": name,
             "appGroup": app_group,
             "authType": auth_type,
-            "supportsRealtime": supports_realtime,
+            "appDescription": app_description,
+            "appCategories": app_categories,
             "config": config or {}
         }
 
@@ -163,10 +163,16 @@ class ConnectorRegistry:
             doc = await arango_service.get_app_by_name(app_name)
 
             if doc:
+                config = doc.get('config', {})
                 return {
                     'isActive': doc.get('isActive', False),
                     'isConfigured': doc.get('isConfigured', False),
                     'appGroupId': doc.get('appGroupId'),
+                    'appDescription': doc.get('appDescription', ''),
+                    'appCategories': doc.get('appCategories', []),
+                    'supportsRealtime': config.get('supportsRealtime', False),
+                    'supportsSync': config.get('supportsSync', False),
+                    'iconPath': config.get('iconPath', '/assets/icons/connectors/default.svg'),
                     'createdAtTimestamp': doc.get('createdAtTimestamp'),
                     'updatedAtTimestamp': doc.get('updatedAtTimestamp'),
                 }
@@ -178,6 +184,11 @@ class ConnectorRegistry:
         return {
             'isActive': False,
             'isConfigured': False,
+            'appDescription': '',
+            'appCategories': [],
+            'supportsRealtime': False,
+            'supportsSync': False,
+            'iconPath': '/assets/icons/connectors/default.svg',
             'createdAtTimestamp': None,
             'updatedAtTimestamp': None,
             'config': {}
@@ -208,16 +219,19 @@ class ConnectorRegistry:
                 'type': metadata.get('type', app_name.upper().replace(' ', '_')),
                 'appGroup': metadata['appGroup'],
                 'appGroupId': app_group_id,
+                'appCategories': metadata.get('appCategories', []),
+                'appDescription': metadata.get('appDescription', ''),
                 'authType': metadata['authType'],
                 'config': metadata.get('config', {}),
-                'supportsRealtime': metadata['supportsRealtime'],
                 'isActive': False,  # Always start as inactive
                 'isConfigured': False,
                 'createdAtTimestamp': get_epoch_timestamp_in_ms(),
                 'updatedAtTimestamp': get_epoch_timestamp_in_ms()
             }
 
-            await arango_service.batch_upsert_nodes([doc], self.collection_name)
+            app_doc = await arango_service.batch_upsert_nodes([doc], self.collection_name)
+            if not app_doc:
+                raise Exception(f"Failed to create app {app_name} in database")
 
             edge_data = {
                 "_from": f"{CollectionNames.ORGS.value}/{org_id}",
@@ -225,10 +239,13 @@ class ConnectorRegistry:
                 "createdAtTimestamp": get_epoch_timestamp_in_ms(),
             }
 
-            await arango_service.batch_create_edges(
+            edge_doc = await arango_service.batch_create_edges(
                 [edge_data],
                 CollectionNames.ORG_APP_RELATION.value,
             )
+            if not edge_doc:
+                raise Exception(f"Failed to create edge for {app_name} in database")
+
             self.logger.info(f"Created database entry for {app_name}")
             return True
 
@@ -338,22 +355,27 @@ class ConnectorRegistry:
         connectors = []
         for app_name, metadata in self._connectors.items():
             db_status = await self._get_db_status(app_name)
+
             connector_info = {
                 'name': app_name,
                 'appGroup': metadata['appGroup'],
                 'authType': metadata['authType'],
-                'supportsRealtime': metadata['supportsRealtime'],
+                'appDescription': db_status.get('appDescription', ''),
+                'appCategories': db_status.get('appCategories', []),
+                'iconPath': db_status.get('iconPath', '/assets/icons/connectors/default.svg'),
+                'supportsRealtime': db_status.get('config', {}).get('supportsRealtime', False),
+                'supportsSync': db_status.get('config', {}).get('supportsSync', False),
                 **db_status
             }
             connectors.append(connector_info)
         return connectors
 
-    async def get_enabled_connectors(self) -> List[Dict[str, Any]]:
+    async def get_active_connector(self) -> List[Dict[str, Any]]:
         """Get all enabled connectors (isActive = true)."""
         all_connectors = await self.get_all_connectors()
         return [connector for connector in all_connectors if connector.get('isActive', False)]
 
-    async def get_disabled_connectors(self) -> List[Dict[str, Any]]:
+    async def get_inactive_connector(self) -> List[Dict[str, Any]]:
         """Get all disabled connectors (isActive = false)."""
         all_connectors = await self.get_all_connectors()
         return [connector for connector in all_connectors if not connector.get('isActive', False)]
@@ -419,106 +441,6 @@ class ConnectorRegistry:
             'recordType': RecordType.values(),
             'origin': Origin.values(),
             'permissions': Permissions.values()
-        }
-
-    def _calculate_scheduled_times(self, scheduled_config: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Calculate startTime, nextTime, and endTime for scheduled sync configuration.
-        This matches the frontend logic for consistency.
-
-        Args:
-            scheduled_config: Scheduled sync configuration from frontend
-
-        Returns:
-            Updated config with calculated epoch times
-        """
-        if not scheduled_config.get('enabled', False):
-            return scheduled_config
-
-        # Get start time from different possible sources
-        start_time_ms = 0
-
-        # Check if we already have startTime (epoch milliseconds from frontend)
-        if 'startTime' in scheduled_config and scheduled_config['startTime']:
-            start_time_ms = scheduled_config['startTime']
-            # Convert to milliseconds if it's in seconds (legacy support)
-            if start_time_ms < 1e10:
-                start_time_ms = start_time_ms * 1000
-        # Check for startTimeEpoch (alternative naming)
-        elif 'startTimeEpoch' in scheduled_config and scheduled_config['startTimeEpoch']:
-            start_time_ms = scheduled_config['startTimeEpoch']
-            # Convert to milliseconds if it's in seconds
-            if start_time_ms < 1e10:
-                start_time_ms = start_time_ms * 1000
-        # Legacy: Try to calculate from separate date and time strings
-        elif 'startDate' in scheduled_config and 'startTime' in scheduled_config:
-            start_date = scheduled_config.get('startDate', '')
-            start_time_str = scheduled_config.get('startTime', '')
-
-            if start_date and start_time_str:
-                try:
-                    from datetime import datetime
-                    dt = datetime.fromisoformat(f"{start_date}T{start_time_str}")
-                    start_time_ms = int(dt.timestamp() * 1000)  # Convert to milliseconds
-                except (ValueError, TypeError) as e:
-                    self.logger.warning(f"Failed to parse legacy date/time format: {e}")
-                    return scheduled_config
-
-        if start_time_ms == 0:
-            self.logger.warning("No valid start time found in scheduled config")
-            return scheduled_config
-
-        # Get other configuration values
-        interval_minutes = scheduled_config.get('intervalMinutes', 60)
-        max_repetitions = scheduled_config.get('maxRepetitions', 0)
-        is_recurring = scheduled_config.get('isRecurring', True)
-
-        # Validate minimum interval
-        if interval_minutes < 5:
-            self.logger.warning(f"Interval {interval_minutes} minutes is below minimum of 5 minutes")
-            interval_minutes = 5
-
-        # Calculate times in milliseconds
-        interval_ms = interval_minutes * 60 * 1000
-        current_time_ms = int(time.time() * 1000)  # Current time in milliseconds
-
-        # Calculate next execution time
-        next_time_ms = start_time_ms
-        if start_time_ms <= current_time_ms and is_recurring:
-            # If start time is in the past and it's recurring, calculate next execution
-            time_passed_ms = current_time_ms - start_time_ms
-            intervals_passed = time_passed_ms // interval_ms
-            next_time_ms = start_time_ms + ((intervals_passed + 1) * interval_ms)
-
-        # Calculate end time and adjust repetitions
-        if is_recurring:
-            if max_repetitions > 0:
-                # Finite repetitions
-                end_time_ms = start_time_ms + (max_repetitions * interval_ms)
-            else:
-                # Infinite repetitions
-                end_time_ms = 0  # 0 means no end time
-                max_repetitions = 0
-        else:
-            # One-time execution
-            end_time_ms = start_time_ms
-            max_repetitions = 1
-
-        # Calculate current repetition count if sync has already started
-        repetition_count = 0
-        if current_time_ms >= start_time_ms and is_recurring and max_repetitions > 0:
-            time_passed_ms = current_time_ms - start_time_ms
-            repetition_count = min(time_passed_ms // interval_ms, max_repetitions)
-
-        return {
-            **scheduled_config,
-            'startTime': start_time_ms,  # Store in milliseconds
-            'nextTime': next_time_ms,    # Store in milliseconds
-            'endTime': end_time_ms,      # Store in milliseconds
-            'maxRepetitions': max_repetitions,
-            'repetitionCount': repetition_count,
-            'isRecurring': is_recurring,
-            'intervalMinutes': interval_minutes,  # Ensure validated interval is saved
         }
 
     async def update_connector(self, app_name: str, updates: Dict[str, Any]) -> bool:

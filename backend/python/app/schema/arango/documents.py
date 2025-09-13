@@ -97,6 +97,8 @@ app_schema = {
             "type": {"type": "string"},
             "appGroup": {"type": "string"},
             "appGroupId": {"type": "string"},
+            "appDescription": {"type": "string"},
+            "appCategories": {"type": "array", "items": {"type": "string"}},
             "authType": {"type": "string"},
             "config": {
                 "type": "object",
@@ -110,18 +112,6 @@ app_schema = {
                             },
                             "displayRedirectUri": {"type": "boolean", "default": True},
                             "redirectUri": {"type": "string"},
-                            "documentationLinks": {
-                                "type": "array",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "title": {"type": "string"},
-                                        "url": {"type": "string"},
-                                        "type": {"type": "string", "enum": ["setup", "api", "connector"]}
-                                    },
-                                    "required": ["title", "url", "type"]
-                                }
-                            },
                             "schema": {
                                 "type": "object",
                                 "properties": {
@@ -139,7 +129,7 @@ app_schema = {
                                                     "enum": ["TEXT", "PASSWORD", "EMAIL", "URL", "TEXTAREA", "SELECT", "MULTISELECT", "CHECKBOX", "NUMBER", "FILE"]
                                                 },
                                                 "required": {"type": "boolean", "default": False},
-                                                "defaultValue": {"type": "string"},
+                                                "defaultValue": {},
                                                 "options": {
                                                     "type": "array",
                                                     "items": {"type": "string"}
@@ -200,6 +190,47 @@ app_schema = {
                             "customValues": {
                                 "type": "object",
                                 "additionalProperties": True
+                            },
+                            "conditionalDisplay": {
+                                "type": "object",
+                                "properties": {
+                                    "redirectUri": {
+                                        "type": "object",
+                                        "properties": {
+                                            "showWhen": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "field": {"type": "string"},
+                                                    "operator": {
+                                                        "type": "string",
+                                                        "enum": ["equals", "not_equals", "contains", "not_contains", "greater_than", "less_than", "is_empty", "is_not_empty"]
+                                                    },
+                                                    "value": {}
+                                                },
+                                                "required": ["field", "operator"]
+                                            }
+                                        },
+                                        "required": ["showWhen"]
+                                    }
+                                },
+                                "additionalProperties": {
+                                    "type": "object",
+                                    "properties": {
+                                        "showWhen": {
+                                            "type": "object",
+                                            "properties": {
+                                                "field": {"type": "string"},
+                                                "operator": {
+                                                    "type": "string",
+                                                    "enum": ["equals", "not_equals", "contains", "not_contains", "greater_than", "less_than", "is_empty", "is_not_empty"]
+                                                },
+                                                "value": {}
+                                            },
+                                            "required": ["field", "operator"]
+                                        }
+                                    },
+                                    "required": ["showWhen"]
+                                }
                             }
                         },
                         "required": ["type", "schema"]
@@ -338,6 +369,10 @@ app_schema = {
                                 "type": "object",
                                 "additionalProperties": True
                             },
+                            "endpoints": {
+                                "type": "object",
+                                "additionalProperties": True
+                            },
                             "customFields": {
                                 "type": "array",
                                 "items": {
@@ -365,6 +400,40 @@ app_schema = {
                                 "additionalProperties": True
                             }
                         }
+                    },
+                    "credentials": {
+                        "type": "object",
+                        "properties": {
+                            "access_token": {"type": ["string", "null"]},
+                            "refresh_token": {"type": ["string", "null"]},
+                            "token_type": {"type": ["string", "null"]},
+                            "expires_in": {"type": ["number", "null"]},
+                            "scope": {"type": ["string", "null"]},
+                            "created_at": {"type": ["string", "null"]}
+                        },
+                        "additionalProperties": True
+                    },
+                    "oauth": {
+                        "type": "object",
+                        "properties": {
+                            "state": {"type": ["string", "null"]}
+                        },
+                        "additionalProperties": True
+                    },
+                    "iconPath": {"type": "string"},
+                    "supportsRealtime": {"type": "boolean", "default": False},
+                    "supportsSync": {"type": "boolean", "default": False},
+                    "documentationLinks": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "title": {"type": "string"},
+                                "url": {"type": "string"},
+                                "type": {"type": "string", "enum": ["setup", "api", "connector"]}
+                            },
+                            "required": ["title", "url", "type"]
+                        }
                     }
                 },
                 "required": ["auth", "sync"],
@@ -372,7 +441,6 @@ app_schema = {
             },
             "isActive": {"type": "boolean", "default": True},
             "isConfigured": {"type": "boolean", "default": False},
-            "supportsRealtime": {"type": "boolean", "default": False},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
         },

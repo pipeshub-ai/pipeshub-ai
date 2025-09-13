@@ -15,6 +15,7 @@ import {
   FormHelperText,
   InputAdornment,
   IconButton,
+  Button,
 } from '@mui/material';
 import { Iconify } from 'src/components/iconify';
 import { useTheme, alpha } from '@mui/material/styles';
@@ -29,6 +30,63 @@ interface BaseFieldProps {
   disabled?: boolean;
 }
 
+const getBaseFieldStyles = (theme: any) => ({
+  '& .MuiOutlinedInput-root': {
+    borderRadius: 1.5,
+    backgroundColor: alpha(theme.palette.background.paper, 0.8),
+    '&:hover .MuiOutlinedInput-notchedOutline': {
+      borderColor: theme.palette.primary.main,
+    },
+    '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+      borderWidth: 1.5,
+    },
+  },
+  '& .MuiInputLabel-root': {
+    fontSize: '0.8125rem',
+    fontWeight: 500,
+    '&.Mui-focused': {
+      fontSize: '0.8125rem',
+    },
+  },
+  '& .MuiOutlinedInput-input': {
+    fontSize: '0.8125rem',
+    padding: '12px 14px',
+    fontWeight: 400,
+  },
+  '& .MuiFormHelperText-root': {
+    fontSize: '0.75rem',
+    fontWeight: 400,
+    marginTop: 0.5,
+    marginLeft: 1,
+  },
+});
+
+const FieldDescription: React.FC<{ description: string; error?: string; marginLeft?: number }> = ({ 
+  description, 
+  error, 
+  marginLeft = 0.5 
+}) => {
+  if (!description || error) return null;
+  
+  return (
+    <Typography 
+      variant="caption" 
+      color="text.secondary" 
+      sx={{ 
+        display: 'block', 
+        mt: 0.5, 
+        ml: marginLeft,
+        fontSize: '0.75rem',
+        lineHeight: 1.4,
+        fontWeight: 400,
+        opacity: 0.85,
+      }}
+    >
+      {description}
+    </Typography>
+  );
+};
+
 export const TextFieldRenderer: React.FC<BaseFieldProps> = ({
   field,
   value,
@@ -40,56 +98,43 @@ export const TextFieldRenderer: React.FC<BaseFieldProps> = ({
   const [showPassword, setShowPassword] = React.useState(false);
 
   return (
-    <TextField
-      fullWidth
-      label={field.displayName}
-      placeholder={field.placeholder}
-      type={field.isSecret ? (showPassword ? 'text' : 'password') : 'text'}
-      value={value || ''}
-      onChange={(e) => onChange(e.target.value)}
-      required={field.required}
-      error={!!error}
-      helperText={error}
-      disabled={disabled}
-      variant="outlined"
-      size="small"
-      InputProps={{
-        endAdornment: field.isSecret ? (
-          <InputAdornment position="end">
-            <IconButton
-              onClick={() => setShowPassword(!showPassword)}
-              edge="end"
-              size="small"
-              sx={{
-                color: theme.palette.text.secondary,
-                '&:hover': {
-                  backgroundColor: alpha(theme.palette.text.secondary, 0.08),
-                },
-              }}
-            >
-              <Iconify icon={showPassword ? eyeOffIcon : eyeIcon} width={18} height={18} />
-            </IconButton>
-          </InputAdornment>
-        ) : undefined,
-      }}
-      sx={{
-        '& .MuiOutlinedInput-root': {
-          borderRadius: 1,
-          '&:hover .MuiOutlinedInput-notchedOutline': {
-            borderColor: theme.palette.primary.main,
-          },
-        },
-        '& .MuiInputLabel-root': {
-          fontSize: '0.875rem',
-        },
-        '& .MuiOutlinedInput-input': {
-          fontSize: '0.875rem',
-        },
-        '& .MuiFormHelperText-root': {
-          fontSize: '0.75rem',
-        },
-      }}
-    />
+    <Box>
+      <TextField
+        fullWidth
+        label={field.displayName}
+        placeholder={field.placeholder}
+        type={field.isSecret ? (showPassword ? 'text' : 'password') : 'text'}
+        value={value || ''}
+        onChange={(e) => onChange(e.target.value)}
+        required={field.required}
+        error={!!error}
+        helperText={error}
+        disabled={disabled}
+        variant="outlined"
+        size="small"
+        InputProps={{
+          endAdornment: field.isSecret ? (
+            <InputAdornment position="end">
+              <IconButton
+                onClick={() => setShowPassword(!showPassword)}
+                edge="end"
+                size="small"
+                sx={{
+                  color: theme.palette.text.secondary,
+                  '&:hover': {
+                    backgroundColor: alpha(theme.palette.text.secondary, 0.08),
+                  },
+                }}
+              >
+                <Iconify icon={showPassword ? eyeOffIcon : eyeIcon} width={16} height={16} />
+              </IconButton>
+            </InputAdornment>
+          ) : undefined,
+        }}
+        sx={getBaseFieldStyles(theme)}
+      />
+      <FieldDescription description={field.description} error={error} />
+    </Box>
   );
 };
 
@@ -104,56 +149,43 @@ export const PasswordFieldRenderer: React.FC<BaseFieldProps> = ({
   const [showPassword, setShowPassword] = React.useState(false);
 
   return (
-    <TextField
-      fullWidth
-      label={field.displayName}
-      placeholder={field.placeholder}
-      type={showPassword ? 'text' : 'password'}
-      value={value || ''}
-      onChange={(e) => onChange(e.target.value)}
-      required={field.required}
-      error={!!error}
-      helperText={error}
-      disabled={disabled}
-      variant="outlined"
-      size="small"
-      InputProps={{
-        endAdornment: field.isSecret ? (
-          <InputAdornment position="end">
-            <IconButton
-              onClick={() => setShowPassword(!showPassword)}
-              edge="end"
-              size="small"
-              sx={{
-                color: theme.palette.text.secondary,
-                '&:hover': {
-                  backgroundColor: alpha(theme.palette.text.secondary, 0.08),
-                },
-              }}
-            >
-              <Iconify icon={showPassword ? eyeOffIcon : eyeIcon} width={18} height={18} />
-            </IconButton>
-          </InputAdornment>
-        ) : undefined,
-      }}
-      sx={{
-        '& .MuiOutlinedInput-root': {
-          borderRadius: 1,
-          '&:hover .MuiOutlinedInput-notchedOutline': {
-            borderColor: theme.palette.primary.main,
-          },
-        },
-        '& .MuiInputLabel-root': {
-          fontSize: '0.875rem',
-        },
-        '& .MuiOutlinedInput-input': {
-          fontSize: '0.875rem',
-        },
-        '& .MuiFormHelperText-root': {
-          fontSize: '0.75rem',
-        },
-      }}
-    />
+    <Box>
+      <TextField
+        fullWidth
+        label={field.displayName}
+        placeholder={field.placeholder}
+        type={showPassword ? 'text' : 'password'}
+        value={value || ''}
+        onChange={(e) => onChange(e.target.value)}
+        required={field.required}
+        error={!!error}
+        helperText={error}
+        disabled={disabled}
+        variant="outlined"
+        size="small"
+        InputProps={{
+          endAdornment: (
+            <InputAdornment position="end">
+              <IconButton
+                onClick={() => setShowPassword(!showPassword)}
+                edge="end"
+                size="small"
+                sx={{
+                  color: theme.palette.text.secondary,
+                  '&:hover': {
+                    backgroundColor: alpha(theme.palette.text.secondary, 0.08),
+                  },
+                }}
+              >
+                <Iconify icon={showPassword ? eyeOffIcon : eyeIcon} width={16} height={16} />
+              </IconButton>
+            </InputAdornment>
+          ),
+        }}
+        sx={getBaseFieldStyles(theme)}
+      />
+      <FieldDescription description={field.description} error={error} />
+    </Box>
   );
 };
 
@@ -167,37 +199,24 @@ export const EmailFieldRenderer: React.FC<BaseFieldProps> = ({
   const theme = useTheme();
 
   return (
-    <TextField
-      fullWidth
-      label={field.displayName}
-      placeholder={field.placeholder}
-      type="email"
-      value={value || ''}
-      onChange={(e) => onChange(e.target.value)}
-      required={field.required}
-      error={!!error}
-      helperText={error}
-      disabled={disabled}
-      variant="outlined"
-      size="small"
-      sx={{
-        '& .MuiOutlinedInput-root': {
-          borderRadius: 1,
-          '&:hover .MuiOutlinedInput-notchedOutline': {
-            borderColor: theme.palette.primary.main,
-          },
-        },
-        '& .MuiInputLabel-root': {
-          fontSize: '0.875rem',
-        },
-        '& .MuiOutlinedInput-input': {
-          fontSize: '0.875rem',
-        },
-        '& .MuiFormHelperText-root': {
-          fontSize: '0.75rem',
-        },
-      }}
-    />
+    <Box>
+      <TextField
+        fullWidth
+        label={field.displayName}
+        placeholder={field.placeholder}
+        type="email"
+        value={value || ''}
+        onChange={(e) => onChange(e.target.value)}
+        required={field.required}
+        error={!!error}
+        helperText={error}
+        disabled={disabled}
+        variant="outlined"
+        size="small"
+        sx={getBaseFieldStyles(theme)}
+      />
+      <FieldDescription description={field.description} error={error} />
+    </Box>
   );
 };
 
@@ -211,37 +230,24 @@ export const UrlFieldRenderer: React.FC<BaseFieldProps> = ({
   const theme = useTheme();
 
   return (
-    <TextField
-      fullWidth
-      label={field.displayName}
-      placeholder={field.placeholder}
-      type="url"
-      value={value || ''}
-      onChange={(e) => onChange(e.target.value)}
-      required={field.required}
-      error={!!error}
-      helperText={error}
-      disabled={disabled}
-      variant="outlined"
-      size="small"
-      sx={{
-        '& .MuiOutlinedInput-root': {
-          borderRadius: 1,
-          '&:hover .MuiOutlinedInput-notchedOutline': {
-            borderColor: theme.palette.primary.main,
-          },
-        },
-        '& .MuiInputLabel-root': {
-          fontSize: '0.875rem',
-        },
-        '& .MuiOutlinedInput-input': {
-          fontSize: '0.875rem',
-        },
-        '& .MuiFormHelperText-root': {
-          fontSize: '0.75rem',
-        },
-      }}
-    />
+    <Box>
+      <TextField
+        fullWidth
+        label={field.displayName}
+        placeholder={field.placeholder}
+        type="url"
+        value={value || ''}
+        onChange={(e) => onChange(e.target.value)}
+        required={field.required}
+        error={!!error}
+        helperText={error}
+        disabled={disabled}
+        variant="outlined"
+        size="small"
+        sx={getBaseFieldStyles(theme)}
+      />
+      <FieldDescription description={field.description} error={error} />
+    </Box>
   );
 };
 
@@ -255,38 +261,31 @@ export const TextareaFieldRenderer: React.FC<BaseFieldProps> = ({
   const theme = useTheme();
 
   return (
-    <TextField
-      fullWidth
-      label={field.displayName}
-      placeholder={field.placeholder}
-      multiline
-      rows={4}
-      value={value || ''}
-      onChange={(e) => onChange(e.target.value)}
-      required={field.required}
-      error={!!error}
-      helperText={error}
-      disabled={disabled}
-      variant="outlined"
-      size="small"
-      sx={{
-        '& .MuiOutlinedInput-root': {
-          borderRadius: 1,
-          '&:hover .MuiOutlinedInput-notchedOutline': {
-            borderColor: theme.palette.primary.main,
+    <Box>
+      <TextField
+        fullWidth
+        label={field.displayName}
+        placeholder={field.placeholder}
+        multiline
+        rows={3}
+        value={value || ''}
+        onChange={(e) => onChange(e.target.value)}
+        required={field.required}
+        error={!!error}
+        helperText={error}
+        disabled={disabled}
+        variant="outlined"
+        size="small"
+        sx={{
+          ...getBaseFieldStyles(theme),
+          '& .MuiOutlinedInput-input': {
+            ...getBaseFieldStyles(theme)['& .MuiOutlinedInput-input'],
+            padding: '12px 14px',
           },
-        },
-        '& .MuiInputLabel-root': {
-          fontSize: '0.875rem',
-        },
-        '& .MuiOutlinedInput-input': {
-          fontSize: '0.875rem',
-        },
-        '& .MuiFormHelperText-root': {
-          fontSize: '0.75rem',
-        },
-      }}
-    />
+        }}
+      />
+      <FieldDescription description={field.description} error={error} />
+    </Box>
   );
 };
 
@@ -300,31 +299,40 @@ export const SelectFieldRenderer: React.FC<BaseFieldProps> = ({
   const theme = useTheme();
 
   return (
-    <FormControl fullWidth size="small" error={!!error}>
-      <InputLabel sx={{ fontSize: '0.875rem' }}>{field.displayName}</InputLabel>
-      <Select
-        value={value || ''}
-        onChange={(e) => onChange(e.target.value)}
-        label={field.displayName}
-        disabled={disabled}
-        sx={{
-          borderRadius: 1,
-          '&:hover .MuiOutlinedInput-notchedOutline': {
-            borderColor: theme.palette.primary.main,
-          },
-          '& .MuiSelect-select': {
-            fontSize: '0.875rem',
-          },
-        }}
-      >
-        {field.options?.map((option: string) => (
-          <MenuItem key={option} value={option} sx={{ fontSize: '0.875rem' }}>
-            {option}
-          </MenuItem>
-        ))}
-      </Select>
-      {error && <FormHelperText sx={{ fontSize: '0.75rem' }}>{error}</FormHelperText>}
-    </FormControl>
+    <Box>
+      <FormControl fullWidth size="small" error={!!error}>
+        <InputLabel sx={{ fontSize: '0.8125rem', fontWeight: 500 }}>{field.displayName}</InputLabel>
+        <Select
+          value={value || ''}
+          onChange={(e) => onChange(e.target.value)}
+          label={field.displayName}
+          disabled={disabled}
+          sx={{
+            borderRadius: 1.5,
+            backgroundColor: alpha(theme.palette.background.paper, 0.8),
+            '&:hover .MuiOutlinedInput-notchedOutline': {
+              borderColor: theme.palette.primary.main,
+            },
+            '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+              borderWidth: 1.5,
+            },
+            '& .MuiSelect-select': {
+              fontSize: '0.8125rem',
+              padding: '12px 14px',
+              fontWeight: 400,
+            },
+          }}
+        >
+          {field.options?.map((option: string) => (
+            <MenuItem key={option} value={option} sx={{ fontSize: '0.8125rem' }}>
+              {option}
+            </MenuItem>
+          ))}
+        </Select>
+        {error && <FormHelperText sx={{ fontSize: '0.75rem', mt: 0.5, ml: 1 }}>{error}</FormHelperText>}
+      </FormControl>
+      <FieldDescription description={field.description} error={error} />
+    </Box>
   );
 };
 
@@ -343,56 +351,54 @@ export const MultiSelectFieldRenderer: React.FC<BaseFieldProps> = ({
   };
 
   return (
-    <Autocomplete
-      multiple
-      options={field.options || []}
-      value={selectedValues}
-      onChange={handleChange}
-      disabled={disabled}
-      size="small"
-      renderTags={(val, getTagProps) =>
-        val.map((option, index) => (
-          <Chip
+    <Box>
+      <Autocomplete
+        multiple
+        options={field.options || []}
+        value={selectedValues}
+        onChange={handleChange}
+        disabled={disabled}
+        size="small"
+        renderTags={(val, getTagProps) =>
+          val.map((option, index) => (
+            <Chip
+              variant="outlined"
+              label={option}
+              size="small"
+              {...getTagProps({ index })}
+              key={option}
+              sx={{
+                fontSize: '0.75rem',
+                height: 22,
+                borderRadius: 1,
+                '& .MuiChip-label': {
+                  px: 0.75,
+                },
+              }}
+            />
+          ))
+        }
+        renderInput={(params) => (
+          <TextField
+            {...params}
+            label={field.displayName}
+            placeholder={field.placeholder}
+            error={!!error}
+            helperText={error}
             variant="outlined"
-            label={option}
-            size="small"
-            {...getTagProps({ index })}
-            key={option}
             sx={{
-              fontSize: '0.75rem',
-              height: 24,
+              ...getBaseFieldStyles(theme),
+              '& .MuiOutlinedInput-input': {
+                fontSize: '0.8125rem',
+                padding: '10px 12px !important',
+                fontWeight: 400,
+              },
             }}
           />
-        ))
-      }
-      renderInput={(params) => (
-        <TextField
-          {...params}
-          label={field.displayName}
-          placeholder={field.placeholder}
-          error={!!error}
-          helperText={error}
-          variant="outlined"
-          sx={{
-            '& .MuiOutlinedInput-root': {
-              borderRadius: 1,
-              '&:hover .MuiOutlinedInput-notchedOutline': {
-                borderColor: theme.palette.primary.main,
-              },
-            },
-            '& .MuiInputLabel-root': {
-              fontSize: '0.875rem',
-            },
-            '& .MuiOutlinedInput-input': {
-              fontSize: '0.875rem',
-            },
-            '& .MuiFormHelperText-root': {
-              fontSize: '0.75rem',
-            },
-          }}
-        />
-      )}
-    />
+        )}
+      />
+      <FieldDescription description={field.description} error={error} />
+    </Box>
   );
 };
 
@@ -402,18 +408,41 @@ export const CheckboxFieldRenderer: React.FC<BaseFieldProps> = ({
   onChange,
   error,
   disabled,
-}) => (
-  <FormControlLabel
-    control={
-      <Checkbox
-        checked={!!value}
-        onChange={(e) => onChange(e.target.checked)}
-        disabled={disabled}
+}) => {
+  const theme = useTheme();
+
+  return (
+    <Box>
+      <FormControlLabel
+        control={
+          <Checkbox
+            checked={!!value}
+            onChange={(e) => onChange(e.target.checked)}
+            disabled={disabled}
+            size="small"
+            sx={{
+              '& .MuiSvgIcon-root': {
+                fontSize: '1.125rem',
+              },
+            }}
+          />
+        }
+        label={
+          <Typography variant="body2" sx={{ fontSize: '0.8125rem', fontWeight: 500 }}>
+            {field.displayName}
+          </Typography>
+        }
+        sx={{ mb: error ? 0.5 : 0 }}
       />
-    }
-    label={field.displayName}
-  />
-);
+      {error && (
+        <FormHelperText error sx={{ mt: 0, ml: 4, fontSize: '0.75rem' }}>
+          {error}
+        </FormHelperText>
+      )}
+      <FieldDescription description={field.description} error={error} marginLeft={4.25} />
+    </Box>
+  );
+};
 
 export const NumberFieldRenderer: React.FC<BaseFieldProps> = ({
   field,
@@ -425,41 +454,28 @@ export const NumberFieldRenderer: React.FC<BaseFieldProps> = ({
   const theme = useTheme();
 
   return (
-    <TextField
-      fullWidth
-      label={field.displayName}
-      placeholder={field.placeholder}
-      type="number"
-      value={value || ''}
-      onChange={(e) => onChange(e.target.value)}
-      required={field.required}
-      error={!!error}
-      helperText={error}
-      disabled={disabled}
-      variant="outlined"
-      size="small"
-      inputProps={{
-        min: field.validation?.minLength,
-        max: field.validation?.maxLength,
-      }}
-      sx={{
-        '& .MuiOutlinedInput-root': {
-          borderRadius: 1,
-          '&:hover .MuiOutlinedInput-notchedOutline': {
-            borderColor: theme.palette.primary.main,
-          },
-        },
-        '& .MuiInputLabel-root': {
-          fontSize: '0.875rem',
-        },
-        '& .MuiOutlinedInput-input': {
-          fontSize: '0.875rem',
-        },
-        '& .MuiFormHelperText-root': {
-          fontSize: '0.75rem',
-        },
-      }}
-    />
+    <Box>
+      <TextField
+        fullWidth
+        label={field.displayName}
+        placeholder={field.placeholder}
+        type="number"
+        value={value || ''}
+        onChange={(e) => onChange(e.target.value)}
+        required={field.required}
+        error={!!error}
+        helperText={error}
+        disabled={disabled}
+        variant="outlined"
+        size="small"
+        inputProps={{
+          min: field.validation?.minLength,
+          max: field.validation?.maxLength,
+        }}
+        sx={getBaseFieldStyles(theme)}
+      />
+      <FieldDescription description={field.description} error={error} />
+    </Box>
   );
 };
 
@@ -473,39 +489,26 @@ export const DateFieldRenderer: React.FC<BaseFieldProps> = ({
   const theme = useTheme();
 
   return (
-    <TextField
-      fullWidth
-      label={field.displayName}
-      type="date"
-      value={value || ''}
-      onChange={(e) => onChange(e.target.value)}
-      required={field.required}
-      error={!!error}
-      helperText={error}
-      disabled={disabled}
-      variant="outlined"
-      size="small"
-      InputLabelProps={{
-        shrink: true,
-      }}
-      sx={{
-        '& .MuiOutlinedInput-root': {
-          borderRadius: 1,
-          '&:hover .MuiOutlinedInput-notchedOutline': {
-            borderColor: theme.palette.primary.main,
-          },
-        },
-        '& .MuiInputLabel-root': {
-          fontSize: '0.875rem',
-        },
-        '& .MuiOutlinedInput-input': {
-          fontSize: '0.875rem',
-        },
-        '& .MuiFormHelperText-root': {
-          fontSize: '0.75rem',
-        },
-      }}
-    />
+    <Box>
+      <TextField
+        fullWidth
+        label={field.displayName}
+        type="date"
+        value={value || ''}
+        onChange={(e) => onChange(e.target.value)}
+        required={field.required}
+        error={!!error}
+        helperText={error}
+        disabled={disabled}
+        variant="outlined"
+        size="small"
+        InputLabelProps={{
+          shrink: true,
+        }}
+        sx={getBaseFieldStyles(theme)}
+      />
+      <FieldDescription description={field.description} error={error} />
+    </Box>
   );
 };
 
@@ -529,10 +532,11 @@ export const DateRangeFieldRenderer: React.FC<BaseFieldProps> = ({
 
   return (
     <Box>
-      <Typography variant="body2" sx={{ mb: 1.5, fontWeight: 500, fontSize: '0.875rem' }}>
+      <Typography variant="body2" sx={{ mb: 1.5, fontWeight: 600, fontSize: '0.8125rem' }}>
         {field.displayName}
+        {field.required && <span style={{ color: 'red', marginLeft: 4 }}>*</span>}
       </Typography>
-      <Box sx={{ display: 'flex', gap: 2 }}>
+      <Box sx={{ display: 'flex', gap: 1.5 }}>
         <TextField
           label="Start Date"
           type="date"
@@ -548,18 +552,7 @@ export const DateRangeFieldRenderer: React.FC<BaseFieldProps> = ({
           }}
           sx={{
             flex: 1,
-            '& .MuiOutlinedInput-root': {
-              borderRadius: 1,
-              '&:hover .MuiOutlinedInput-notchedOutline': {
-                borderColor: theme.palette.primary.main,
-              },
-            },
-            '& .MuiInputLabel-root': {
-              fontSize: '0.875rem',
-            },
-            '& .MuiOutlinedInput-input': {
-              fontSize: '0.875rem',
-            },
+            ...getBaseFieldStyles(theme),
           }}
         />
         <TextField
@@ -577,26 +570,16 @@ export const DateRangeFieldRenderer: React.FC<BaseFieldProps> = ({
           }}
           sx={{
             flex: 1,
-            '& .MuiOutlinedInput-root': {
-              borderRadius: 1,
-              '&:hover .MuiOutlinedInput-notchedOutline': {
-                borderColor: theme.palette.primary.main,
-              },
-            },
-            '& .MuiInputLabel-root': {
-              fontSize: '0.875rem',
-            },
-            '& .MuiOutlinedInput-input': {
-              fontSize: '0.875rem',
-            },
+            ...getBaseFieldStyles(theme),
           }}
         />
       </Box>
       {error && (
-        <FormHelperText error sx={{ mt: 1, fontSize: '0.75rem' }}>
+        <FormHelperText error sx={{ mt: 0.5, ml: 1, fontSize: '0.75rem' }}>
           {error}
         </FormHelperText>
       )}
+      <FieldDescription description={field.description} error={error} />
     </Box>
   );
 };
@@ -607,30 +590,39 @@ export const BooleanFieldRenderer: React.FC<BaseFieldProps> = ({
   onChange,
   error,
   disabled,
-}) => (
-  <FormControl fullWidth error={!!error}>
-    <FormControlLabel
-      control={
-        <Checkbox
-          checked={!!value}
-          onChange={(e) => onChange(e.target.checked)}
-          disabled={disabled}
-          sx={{
-            '& .MuiSvgIcon-root': {
-              fontSize: '1.25rem',
-            },
-          }}
+}) => {
+  const theme = useTheme();
+
+  return (
+    <Box>
+      <FormControl fullWidth error={!!error}>
+        <FormControlLabel
+          control={
+            <Checkbox
+              checked={!!value}
+              onChange={(e) => onChange(e.target.checked)}
+              disabled={disabled}
+              size="small"
+              sx={{
+                '& .MuiSvgIcon-root': {
+                  fontSize: '1.125rem',
+                },
+              }}
+            />
+          }
+          label={
+            <Typography variant="body2" sx={{ fontSize: '0.8125rem', fontWeight: 500 }}>
+              {field.displayName}
+            </Typography>
+          }
+          sx={{ mb: error ? 0.5 : 0 }}
         />
-      }
-      label={
-        <Typography variant="body2" sx={{ fontSize: '0.875rem' }}>
-          {field.displayName}
-        </Typography>
-      }
-    />
-    {error && <FormHelperText sx={{ fontSize: '0.75rem' }}>{error}</FormHelperText>}
-  </FormControl>
-);
+        {error && <FormHelperText sx={{ fontSize: '0.75rem', ml: 4 }}>{error}</FormHelperText>}
+      </FormControl>
+      <FieldDescription description={field.description} error={error} marginLeft={4.25} />
+    </Box>
+  );
+};
 
 export const TagsFieldRenderer: React.FC<BaseFieldProps> = ({
   field,
@@ -676,26 +668,12 @@ export const TagsFieldRenderer: React.FC<BaseFieldProps> = ({
         variant="outlined"
         size="small"
         sx={{
-          mb: 1.5,
-          '& .MuiOutlinedInput-root': {
-            borderRadius: 1,
-            '&:hover .MuiOutlinedInput-notchedOutline': {
-              borderColor: theme.palette.primary.main,
-            },
-          },
-          '& .MuiInputLabel-root': {
-            fontSize: '0.875rem',
-          },
-          '& .MuiOutlinedInput-input': {
-            fontSize: '0.875rem',
-          },
-          '& .MuiFormHelperText-root': {
-            fontSize: '0.75rem',
-          },
+          mb: tags.length > 0 ? 1.5 : 0,
+          ...getBaseFieldStyles(theme),
         }}
       />
       {tags.length > 0 && (
-        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mb: 1 }}>
           {tags.map((tag, index) => (
             <Chip
               key={index}
@@ -705,15 +683,20 @@ export const TagsFieldRenderer: React.FC<BaseFieldProps> = ({
               variant="outlined"
               sx={{
                 fontSize: '0.75rem',
-                height: 24,
+                height: 22,
+                borderRadius: 1,
+                '& .MuiChip-label': {
+                  px: 0.75,
+                },
                 '& .MuiChip-deleteIcon': {
-                  fontSize: '1rem',
+                  fontSize: '0.875rem',
                 },
               }}
             />
           ))}
         </Box>
       )}
+      <FieldDescription description={field.description} error={error} />
     </Box>
   );
 };
@@ -756,39 +739,171 @@ export const JsonFieldRenderer: React.FC<BaseFieldProps> = ({
   };
 
   return (
-    <TextField
-      fullWidth
-      label={field.displayName}
-      placeholder={field.placeholder || 'Enter valid JSON'}
-      multiline
-      rows={6}
-      value={jsonString}
-      onChange={(e) => handleChange(e.target.value)}
-      required={field.required}
-      error={!!error || !!jsonError}
-      helperText={error || jsonError}
-      disabled={disabled}
-      variant="outlined"
-      size="small"
-      sx={{
-        '& .MuiOutlinedInput-root': {
-          borderRadius: 1,
-          '&:hover .MuiOutlinedInput-notchedOutline': {
-            borderColor: theme.palette.primary.main,
+    <Box>
+      <TextField
+        fullWidth
+        label={field.displayName}
+        placeholder={field.placeholder || 'Enter valid JSON'}
+        multiline
+        rows={4}
+        value={jsonString}
+        onChange={(e) => handleChange(e.target.value)}
+        required={field.required}
+        error={!!error || !!jsonError}
+        helperText={error || jsonError}
+        disabled={disabled}
+        variant="outlined"
+        size="small"
+        sx={{
+          ...getBaseFieldStyles(theme),
+          '& .MuiOutlinedInput-input': {
+            fontSize: '0.8125rem',
+            fontFamily: 'Monaco, Consolas, "Roboto Mono", monospace',
+            padding: '12px 14px',
+            lineHeight: 1.5,
           },
-        },
-        '& .MuiInputLabel-root': {
-          fontSize: '0.875rem',
-        },
-        '& .MuiOutlinedInput-input': {
-          fontSize: '0.875rem',
-          fontFamily: 'monospace',
-        },
-        '& .MuiFormHelperText-root': {
-          fontSize: '0.75rem',
-        },
-      }}
-    />
+        }}
+      />
+      <FieldDescription description={field.description} error={error || jsonError} />
+    </Box>
+  );
+};
+
+export const FileFieldRenderer: React.FC<BaseFieldProps> = ({
+  field,
+  value,
+  onChange,
+  error,
+  disabled,
+}) => {
+  const theme = useTheme();
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      onChange(file);
+    }
+  };
+
+  const handleButtonClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleRemoveFile = () => {
+    onChange(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  return (
+    <Box>
+      <input
+        type="file"
+        ref={fileInputRef}
+        onChange={handleFileChange}
+        style={{ display: 'none' }}
+        accept={field.validation?.format || '*'}
+        disabled={disabled}
+      />
+      
+      {value ? (
+        <Box
+          sx={{
+            p: 1.5,
+            borderRadius: 1.5,
+            border: `1px solid ${alpha(theme.palette.divider, 0.2)}`,
+            backgroundColor: alpha(theme.palette.background.paper, 0.8),
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 1.5,
+            transition: 'all 0.15s ease-in-out',
+            '&:hover': {
+              borderColor: alpha(theme.palette.primary.main, 0.3),
+            },
+          }}
+        >
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flex: 1 }}>
+            <Box
+              sx={{
+                p: 0.75,
+                borderRadius: 1,
+                backgroundColor: alpha(theme.palette.primary.main, 0.1),
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <Iconify
+                icon="eva:file-outline"
+                width={16}
+                height={16}
+                color={theme.palette.primary.main}
+              />
+            </Box>
+            <Box sx={{ flex: 1, minWidth: 0 }}>
+              <Typography variant="body2" sx={{ fontWeight: 500, fontSize: '0.8125rem', wordBreak: 'break-all' }}>
+                {value.name}
+              </Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.75rem' }}>
+                {(value.size / 1024).toFixed(1)} KB
+              </Typography>
+            </Box>
+          </Box>
+          <IconButton
+            size="small"
+            onClick={handleRemoveFile}
+            disabled={disabled}
+            sx={{
+              color: theme.palette.text.secondary,
+              '&:hover': {
+                backgroundColor: alpha(theme.palette.error.main, 0.08),
+                color: theme.palette.error.main,
+              },
+            }}
+          >
+            <Iconify icon="eva:close-outline" width={16} height={16} />
+          </IconButton>
+        </Box>
+      ) : (
+        <Button
+          variant="outlined"
+          onClick={handleButtonClick}
+          disabled={disabled}
+          fullWidth
+          sx={{
+            height: 48,
+            borderRadius: 1.5,
+            borderStyle: 'dashed',
+            borderColor: alpha(theme.palette.divider, 0.3),
+            backgroundColor: alpha(theme.palette.background.paper, 0.8),
+            '&:hover': {
+              borderStyle: 'solid',
+              borderColor: theme.palette.primary.main,
+              backgroundColor: alpha(theme.palette.primary.main, 0.04),
+            },
+            transition: 'all 0.15s ease-in-out',
+          }}
+        >
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <Iconify icon="eva:upload-outline" width={16} height={16} />
+            <Typography variant="body2" sx={{ fontSize: '0.8125rem', fontWeight: 500 }}>
+              {field.placeholder || 'Click to upload file'}
+            </Typography>
+          </Box>
+        </Button>
+      )}
+      
+      {error && (
+        <FormHelperText error sx={{ mt: 0.5, ml: 1, fontSize: '0.75rem' }}>
+          {error}
+        </FormHelperText>
+      )}
+      
+      <FieldDescription description={field.description} error={error} />
+    </Box>
   );
 };
 
@@ -825,6 +940,8 @@ export const FieldRenderer: React.FC<BaseFieldProps> = (props) => {
       return <TagsFieldRenderer {...props} />;
     case 'JSON':
       return <JsonFieldRenderer {...props} />;
+    case 'FILE':
+      return <FileFieldRenderer {...props} />;
     default:
       return <TextFieldRenderer {...props} />;
   }

@@ -17,12 +17,10 @@ import { Iconify } from 'src/components/iconify';
 import checkCircleIcon from '@iconify-icons/mdi/check-circle';
 import clockCircleIcon from '@iconify-icons/mdi/clock-outline';
 import settingsIcon from '@iconify-icons/mdi/settings';
-import playIcon from '@iconify-icons/mdi/play';
 import plusCircleIcon from '@iconify-icons/mdi/plus-circle';
 import boltIcon from '@iconify-icons/mdi/bolt';
 import { Connector } from '../types/types';
-import { CONNECTOR_IMAGES } from '../utils/images';
-import ConnectorConfigForm from './connector-config-form';
+import ConnectorConfigForm from './connector-config/connector-config-form';
 
 interface ConnectorCardProps {
   connector: Connector;
@@ -34,11 +32,7 @@ const ConnectorCard = ({ connector }: ConnectorCardProps) => {
   const [isConfigFormOpen, setIsConfigFormOpen] = useState(false);
   const isDark = theme.palette.mode === 'dark';
 
-  const getConnectorImage = () => 
-     (
-      CONNECTOR_IMAGES[connector.name as keyof typeof CONNECTOR_IMAGES] ||
-      '/assets/icons/connectors/default.svg'
-    );
+  const connectorImage = connector.iconPath;
   
 
   const isActive = connector.isActive;
@@ -188,14 +182,14 @@ const ConnectorCard = ({ connector }: ConnectorCardProps) => {
             }}
           >
             <img 
-              src={getConnectorImage()} 
+              src={connectorImage} 
               alt={connector.name} 
               width={24} 
               height={24}
               style={{ objectFit: 'contain' }}
               onError={(e) => {
                 const target = e.target as HTMLImageElement;
-                target.src = '/assets/icons/connectors/default.svg';
+                target.src = connector.iconPath || '/assets/icons/connectors/default.svg';
               }}
             />
           </Avatar>

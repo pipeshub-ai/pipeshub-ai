@@ -13,12 +13,18 @@ from app.api.routes.entity import router as entity_router
 from app.config.constants.arangodb import AccountType, Connectors
 from app.connectors.api.router import router
 from app.connectors.core.registry.connector import (
+    ConfluenceConnector as ConfluenceConnectorDecorator,
+)
+from app.connectors.core.registry.connector import (
     GmailConnector,
     GoogleDriveConnector,
     SlackConnector,
 )
 from app.connectors.core.registry.connector import (
     OneDriveConnector as OneDriveConnectorDecorator,
+)
+from app.connectors.core.registry.connector import (
+    SharePointConnector as SharePointConnectorDecorator,
 )
 from app.connectors.core.registry.connector_registry import (
     ConnectorRegistry,
@@ -195,6 +201,8 @@ async def initialize_connector_registry(app_container: ConnectorAppContainer) ->
         registry.register_connector(GoogleDriveConnector)
         registry.register_connector(GmailConnector)
         registry.register_connector(OneDriveConnectorDecorator)
+        registry.register_connector(SharePointConnectorDecorator)
+        registry.register_connector(ConfluenceConnectorDecorator)
 
         logger.info(f"Registered {len(registry._connectors)} connectors")
 
@@ -390,6 +398,12 @@ INCLUDE_PATHS = ["/api/v1/stream/record/", "/api/v1/delete/", "/api/v1/entity/",
 async def authenticate_requests(request: Request, call_next)-> JSONResponse:
     logger = app.container.logger()  # type: ignore
     logger.info(f"Middleware request: {request.url.path}")
+
+    # Check if path should be excluded from authentication (OAuth callbacks)
+    if "/oauth/callback" in request.url.path:
+        # Skip authentication for OAuth callbacks
+        return await call_next(request)
+
     # Apply middleware only to specific paths
     if not any(request.url.path.startswith(path) for path in INCLUDE_PATHS):
         # Skip authentication for other paths

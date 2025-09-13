@@ -113,6 +113,20 @@ interface DocumentationLink {
   type: 'setup' | 'api' | 'connector';
 }
 
+// Conditional display rule interface
+interface ConditionalDisplayRule {
+  field: string;
+  operator: 'equals' | 'not_equals' | 'contains' | 'not_contains' | 'greater_than' | 'less_than' | 'is_empty' | 'is_not_empty';
+  value?: any;
+}
+
+// Conditional display configuration interface
+interface ConditionalDisplayConfig {
+  [key: string]: {
+    showWhen: ConditionalDisplayRule;
+  };
+}
+
 // Webhook configuration interface
 interface WebhookConfig {
   supported?: boolean;
@@ -152,7 +166,7 @@ interface ConnectorAuthConfig {
     | 'CUSTOM';
   displayRedirectUri?: boolean;
   redirectUri?: string;
-  documentationLinks?: DocumentationLink[];
+  conditionalDisplay?: ConditionalDisplayConfig;
   schema: {
     fields: AuthSchemaField[];
   };
@@ -193,10 +207,14 @@ interface ConnectorConfig {
   isActive: boolean;
   isConfigured: boolean;
   supportsRealtime: boolean;
+  appDescription: string;
+  appCategories: string[];
+  iconPath: string;
   config: {
     auth: ConnectorAuthConfig;
     sync: ConnectorSyncConfig;
     filters: ConnectorFiltersConfig;
+    documentationLinks?: DocumentationLink[];
   };
 }
 
@@ -208,9 +226,12 @@ interface Connector {
   appGroup: string;
   appGroupId: string;
   authType: string;
-  isActive?: boolean;
-  isConfigured?: boolean;
-  supportsRealtime?: boolean;
+  appDescription: string;
+  appCategories: string[];
+  iconPath: string;
+  isActive: boolean;
+  isConfigured: boolean;
+  supportsRealtime: boolean;
   createdAtTimestamp: number;
   updatedAtTimestamp: number;
 }
@@ -232,5 +253,7 @@ export type {
   FilterSchemaField,
   FilterCustomField,
   FieldValidation,
-  BaseField
+  BaseField,
+  ConditionalDisplayRule,
+  ConditionalDisplayConfig
 };

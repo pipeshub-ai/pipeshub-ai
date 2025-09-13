@@ -76,24 +76,24 @@ class OneDriveConnector(BaseConnector):
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
 
     async def init(self) -> bool:
-        credentials_config = await self.config_service.get_config(f"/services/connectors/onedrive/config/{self.data_entities_processor.org_id}")
-        if not credentials_config:
-            self.logger.error("OneDrive credentials not found")
+        config = await self.config_service.get_config("/services/connectors/onedrive/config")
+        if not config:
+            self.logger.error("OneDrive config not found")
             return False
 
-        self.config = {"credentials": credentials_config}
-        if not credentials_config:
-            self.logger.error("OneDrive credentials not found")
-            raise ValueError("OneDrive credentials not found")
-
-        tenant_id = credentials_config.get("tenantId")
-        client_id = credentials_config.get("clientId")
-        client_secret = credentials_config.get("clientSecret")
+        self.config = {"credentials": config}
+        if not config:
+            self.logger.error("OneDrive config not found")
+            raise ValueError("OneDrive config not found")
+        auth_config = config.get("auth", {}).get("values", {})
+        tenant_id = auth_config.get("tenantId")
+        client_id = auth_config.get("clientId")
+        client_secret = auth_config.get("clientSecret")
         if not all((tenant_id, client_id, client_secret)):
-            self.logger.error("Incomplete OneDrive credentials. Ensure tenantId, clientId, and clientSecret are configured.")
+            self.logger.error("Incomplete OneDrive config. Ensure tenantId, clientId, and clientSecret are configured.")
             raise ValueError("Incomplete OneDrive credentials. Ensure tenantId, clientId, and clientSecret are configured.")
 
-        has_admin_consent = credentials_config.get("hasAdminConsent", False)
+        has_admin_consent = auth_config.get("hasAdminConsent", False)
         credentials = OneDriveCredentials(
             tenant_id=tenant_id,
             client_id=client_id,

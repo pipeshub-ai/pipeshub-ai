@@ -22,7 +22,7 @@ from fastapi import (
     Request,
     UploadFile,
 )
-from fastapi.responses import StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
@@ -2072,43 +2072,51 @@ async def get_connector_config(
     Raises:
         HTTPException: 404 if connector config not found
     """
-    container = request.app.container
-    logger = container.logger()
-    logger.info(f"Getting connector config for {app_name}")
-
-    result: Optional[Dict[str, Any]] = await arango_service.get_app_by_name(app_name)
-    if not result:
-        raise HTTPException(status_code=404, detail=f"Connector config not found for {app_name}")
-
-    # Load config from etcd
     try:
-        config_service = container.config_service()
-        config_key: str = f"/services/connectors/{app_name.lower()}/config"
-        config: Optional[Dict[str, Any]] = await config_service.get_config(config_key)
-    except Exception as e:
-        logger.error(f"Failed to load config from etcd for {app_name}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to load config from etcd for {app_name}")
+        container = request.app.container
+        logger = container.logger()
+        logger.info(f"Getting connector config for {app_name}")
 
-    # If no config in etcd, return empty config
-    if not config:
-        config = {
-            "auth": {"values": {}, "customValues": {}},
-            "sync": {"values": {}, "customValues": {}},
-            "filters": {"values": {}, "customValues": {}}
+        result: Optional[Dict[str, Any]] = await arango_service.get_app_by_name(app_name)
+        if not result:
+            raise HTTPException(status_code=404, detail=f"Connector config not found for {app_name}")
+
+        # Load config from etcd
+        try:
+            config_service = container.config_service()
+            config_key: str = f"/services/connectors/{app_name.lower()}/config"
+            config: Optional[Dict[str, Any]] = await config_service.get_config(config_key)
+        except Exception as e:
+            logger.error(f"Failed to load config from etcd for {app_name}: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to load config from etcd for {app_name}")
+
+        # If no config in etcd, return empty config
+        if not config:
+            config = {
+                "auth": {},
+                "sync": {},
+                "filters": {}
+            }
+
+        response_dict: Dict[str, Any] = {
+            "name": app_name,
+            "appGroupId": result["appGroupId"],
+            "appGroup": result["appGroup"],
+            "authType": result["authType"],
+            "appDescription": result["appDescription"],
+            "appCategories": result["appCategories"],
+            "supportsRealtime": result["config"]["supportsRealtime"],
+            "supportsSync": result["config"]["supportsSync"],
+            "iconPath": result["config"]["iconPath"],
+            "config": config,
+            "isActive": result["isActive"],
+            "isConfigured": result["isConfigured"]
         }
 
-    response_dict: Dict[str, Any] = {
-        "name": app_name,
-        "appGroupId": result["appGroupId"],
-        "appGroup": result["appGroup"],
-        "authType": result["authType"],
-        "supportsRealtime": result["supportsRealtime"],
-        "config": config,
-        "isActive": result["isActive"],
-        "isConfigured": result["isConfigured"]
-    }
-
-    return {"success": True, "config": response_dict}
+        return {"success": True, "config": response_dict}
+    except Exception as e:
+        logger.error(f"Failed to get connector config for {app_name}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get connector config for {app_name}")
 
 
 @router.get("/api/v1/connectors")
@@ -2135,6 +2143,30 @@ async def get_connectors(
     else:
         raise HTTPException(status_code=404, detail="No connectors found")
 
+@router.get("/api/v1/connectors/active")
+async def get_active_connector(
+    request: Request,
+    arango_service: BaseArangoService = Depends(get_arango_service),
+) -> Dict[str, Any]:
+    """
+    Get active connectors.
+    """
+    connector_registry = request.app.state.connector_registry
+    result: List[Dict[str, Any]] = await connector_registry.get_active_connector()
+    return {"success": True, "connectors": result}
+
+
+@router.get("/api/v1/connectors/inactive")
+async def get_inactive_connector(
+    request: Request,
+    arango_service: BaseArangoService = Depends(get_arango_service),
+) -> Dict[str, Any]:
+    """
+    Get inactive connectors.
+    """
+    connector_registry = request.app.state.connector_registry
+    result: List[Dict[str, Any]] = await connector_registry.get_inactive_connector()
+    return {"success": True, "connectors": result}
 
 @router.get("/api/v1/connectors/schema/{app_name}")
 async def get_connector_schema(
@@ -2169,6 +2201,811 @@ async def get_connector_schema(
 
     return {"success": True, "schema": schema}
 
+
+@router.get("/api/v1/connectors/{app_name}/oauth/authorize")
+async def get_oauth_authorization_url(
+    app_name: str,
+    request: Request,
+    arango_service: BaseArangoService = Depends(get_arango_service),
+) -> Dict[str, Any]:
+    """
+    Get OAuth authorization URL for a connector.
+
+    Args:
+        app_name: Name of the connector
+        request: FastAPI request object
+        arango_service: Injected ArangoService dependency
+
+    Returns:
+        Dict containing authorization URL and state
+    """
+    container = request.app.container
+    logger = container.logger()
+
+    try:
+        # Get connector config
+        connector_config = await arango_service.get_app_by_name(app_name)
+        if not connector_config:
+            raise HTTPException(status_code=404, detail=f"Connector {app_name} not found")
+
+        # Check if it's an OAuth connector
+        if connector_config.get('authType') not in ['OAUTH', 'OAUTH_ADMIN_CONSENT']:
+            raise HTTPException(status_code=400, detail=f"Connector {app_name} does not support OAuth")
+
+        # Get OAuth configuration from etcd
+        config_service = container.config_service()
+        config_key = f"/services/connectors/{app_name.lower()}/config"
+        config = await config_service.get_config(config_key)
+
+        if not config or not config.get('auth'):
+            raise HTTPException(status_code=400, detail=f"OAuth configuration not found for {app_name}")
+
+        auth_config = config['auth']
+
+        # Get OAuth configuration from connector config (not from etcd values)
+        connector_auth_config = connector_config.get('config', {}).get('auth', {})
+        redirect_uri = connector_auth_config.get('redirectUri', '')
+
+        if not redirect_uri:
+            raise HTTPException(status_code=400, detail=f"Redirect URI not configured for {app_name}")
+
+        # Generate state for CSRF protection
+        import secrets
+        state = secrets.token_urlsafe(32)
+
+        # Store state in config for verification during callback
+        if 'oauth' not in config:
+            config['oauth'] = {}
+        config['oauth']['state'] = state
+        await config_service.set_config(config_key, config)
+
+        # Build OAuth URLs based on connector type
+        if app_name.upper() == 'DRIVE':
+            # Google Drive OAuth
+            scope = 'https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.metadata.readonly'
+            authorize_url = 'https://accounts.google.com/o/oauth2/v2/auth'
+            token_url = 'https://oauth2.googleapis.com/token'
+        elif app_name.upper() == 'GMAIL':
+            # Gmail OAuth
+            scope = 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.modify'
+            authorize_url = 'https://accounts.google.com/o/oauth2/v2/auth'
+            token_url = 'https://oauth2.googleapis.com/token'
+        elif app_name.upper() == 'ONEDRIVE':
+            # OneDrive OAuth
+            tenant_id = auth_config.get('tenantId', 'common')
+            scope = 'https://graph.microsoft.com/Files.Read https://graph.microsoft.com/Files.ReadWrite'
+            authorize_url = f'https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/authorize'
+            token_url = f'https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token'
+        else:
+            # Generic OAuth - use configured values
+            scope = auth_config.get('scope', '')
+            authorize_url = auth_config.get('authorizeUrl', '')
+            token_url = auth_config.get('tokenUrl', '')
+
+            if not authorize_url or not token_url:
+                raise HTTPException(status_code=400, detail=f"OAuth URLs not configured for {app_name}")
+
+        # Build authorization URL manually (like the old implementation)
+        from urllib.parse import urlencode
+
+        params = {
+            'client_id': auth_config['clientId'],
+            'redirect_uri': redirect_uri,
+            'response_type': 'code',
+            'scope': scope,
+            'state': state,
+            'access_type': 'offline',
+            'prompt': 'consent'
+        }
+
+        # Add tenant-specific parameters for Microsoft
+        if app_name.upper() == 'ONEDRIVE':
+            params['response_mode'] = 'query'
+            if connector_config.get('authType') == 'OAUTH_ADMIN_CONSENT':
+                params['prompt'] = 'admin_consent'
+
+        auth_url = f"{authorize_url}?{urlencode(params)}"
+
+        return {
+            "success": True,
+            "authorizationUrl": auth_url,
+            "state": state
+        }
+
+    except Exception as e:
+        logger.error(f"Error generating OAuth URL for {app_name}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate OAuth URL: {str(e)}")
+
+
+@router.get("/api/v1/connectors/{app_name}/oauth/callback")
+async def handle_oauth_callback_get(
+    app_name: str,
+    request: Request,
+    code: Optional[str] = Query(None),
+    state: Optional[str] = Query(None),
+    error: Optional[str] = Query(None),
+    arango_service: BaseArangoService = Depends(get_arango_service),
+):
+    """GET callback handler for OAuth redirects.
+    This endpoint processes the OAuth callback and redirects to the frontend with the result.
+    """
+    container = request.app.container
+    logger = container.logger()
+
+    try:
+        # Get connector name for redirect
+        connector_name = app_name.lower()
+        frontend_url = str(request.base_url).replace('8088', '3001').rstrip('/')
+
+        # Check for OAuth errors
+        if error:
+            logger.error(f"OAuth error for {app_name}: {error}")
+            return RedirectResponse(f"{frontend_url}/account/company-settings/settings/connector/{connector_name}?oauth_error={error}")
+
+        if not code or not state:
+            logger.error(f"Missing OAuth parameters for {app_name}")
+            return RedirectResponse(f"{frontend_url}/account/company-settings/settings/connector/{connector_name}?oauth_error=missing_parameters")
+
+        # Process OAuth callback directly here
+        logger.info(f"Processing OAuth callback for {app_name}")
+
+        # Get connector config
+        connector_config = await arango_service.get_app_by_name(app_name)
+        if not connector_config:
+            logger.error(f"Connector {app_name} not found")
+            return RedirectResponse(f"{frontend_url}/account/company-settings/settings/connector/{connector_name}?oauth_error=connector_not_found")
+
+        # Get OAuth configuration
+        config_service = container.config_service()
+        config_key = f"/services/connectors/{app_name.lower()}/config"
+        config = await config_service.get_config(config_key)
+
+        if not config or not config.get('auth'):
+            logger.error(f"OAuth configuration not found for {app_name}")
+            return RedirectResponse(f"{frontend_url}/account/company-settings/settings/connector/{connector_name}?oauth_error=config_not_found")
+
+        auth_config = config['auth']
+
+        # Get OAuth URLs based on connector type
+        if app_name.upper() == 'DRIVE':
+            # Google Drive OAuth
+            scope = 'https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.metadata.readonly'
+            token_url = 'https://oauth2.googleapis.com/token'
+        elif app_name.upper() == 'GMAIL':
+            # Gmail OAuth
+            scope = 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.modify'
+            token_url = 'https://oauth2.googleapis.com/token'
+        elif app_name.upper() == 'ONEDRIVE':
+            # OneDrive OAuth
+            tenant_id = auth_config.get('tenantId', 'common')
+            scope = 'https://graph.microsoft.com/Files.Read https://graph.microsoft.com/Files.ReadWrite'
+            token_url = f'https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token'
+        else:
+            # Generic OAuth - use configured values
+            scope = auth_config.get('scope', '')
+            token_url = auth_config.get('tokenUrl', '')
+
+            if not token_url:
+                return RedirectResponse(f"{frontend_url}/account/company-settings/settings/connector/{connector_name}?oauth_error=token_url_not_configured")
+
+        # Get redirect URI from connector config
+        connector_auth_config = connector_config.get('config', {}).get('auth', {})
+        redirect_uri = connector_auth_config.get('redirectUri', '')
+
+        if not redirect_uri:
+            return RedirectResponse(f"{frontend_url}/account/company-settings/settings/connector/{connector_name}?oauth_error=redirect_uri_not_configured")
+
+        logger.info(f"Using redirect URI for token exchange: {redirect_uri}")
+
+        # Exchange code for token manually
+        import json
+        from datetime import datetime
+
+        import aiohttp
+
+        token_data = {
+            'client_id': auth_config['clientId'],
+            'client_secret': auth_config['clientSecret'],
+            'code': code,
+            'grant_type': 'authorization_code',
+            'redirect_uri': redirect_uri
+        }
+
+        logger.info(f"Exchanging code for token with data: client_id={auth_config['clientId']}, redirect_uri={redirect_uri}, token_url={token_url}")
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(token_url, data=token_data) as response:
+                response_text = await response.text()
+                logger.info(f"Token exchange response status: {response.status}, body: {response_text}")
+
+                if response.status != 200:
+                    return RedirectResponse(f"{frontend_url}/account/company-settings/settings/connector/{connector_name}?oauth_error=token_exchange_failed")
+
+                token_response = json.loads(response_text)
+
+        # Create token object for compatibility
+        from app.connectors.core.base.token_service.oauth_service import OAuthToken
+        token = OAuthToken(
+            access_token=token_response.get('access_token'),
+            refresh_token=token_response.get('refresh_token'),
+            token_type=token_response.get('token_type', 'Bearer'),
+            expires_in=token_response.get('expires_in'),
+            scope=token_response.get('scope', scope),
+            created_at=datetime.now()
+        )
+
+        # Validate token before storing
+        if not token or not token.access_token:
+            logger.error(f"Invalid token received for {app_name}")
+            return RedirectResponse(f"{frontend_url}/account/company-settings/settings/connector/{connector_name}?oauth_error=invalid_token")
+
+        # Store OAuth credentials in the existing config structure
+        try:
+            config['credentials'] = {
+                "access_token": token.access_token,
+                "refresh_token": token.refresh_token,
+                "token_type": token.token_type,
+                "expires_in": token.expires_in,
+                "scope": token.scope,
+                "created_at": token.created_at.isoformat()
+            }
+
+            # Clean up any legacy OAuth state remnants in config
+            if 'oauth' in config and isinstance(config['oauth'], dict) and 'state' in config['oauth']:
+                try:
+                    del config['oauth']['state']
+                except Exception:
+                    pass
+
+            # Save config
+            await config_service.set_config(config_key, config)
+
+            # Verify the save was successful
+            saved_config = await config_service.get_config(config_key)
+            if not saved_config or 'credentials' not in saved_config:
+                raise Exception("Failed to verify token storage")
+
+            logger.info(f"OAuth tokens stored successfully for {app_name}")
+        except Exception as e:
+            logger.error(f"Failed to store OAuth tokens for {app_name}: {str(e)}")
+            return RedirectResponse(f"{frontend_url}/account/company-settings/settings/connector/{connector_name}?oauth_error=token_storage_failed")
+
+        # Redirect to frontend with success
+        return RedirectResponse(f"{frontend_url}/account/company-settings/settings/connector/{connector_name}?oauth_success=true")
+
+    except Exception as e:
+        logger.error(f"Error handling OAuth GET callback for {app_name}: {str(e)}")
+        frontend_url = str(request.base_url).replace('8088', '3001').rstrip('/')
+        connector_name = app_name.lower()
+        return RedirectResponse(f"{frontend_url}/account/company-settings/settings/connector/{connector_name}?oauth_error=server_error")
+
+# @router.post("/api/v1/connectors/{app_name}/oauth/callback")
+async def handle_oauth_callback(
+    app_name: str,
+    request: Request,
+    arango_service: BaseArangoService = Depends(get_arango_service),
+) -> Dict[str, Any]:
+    """
+    Handle OAuth callback and return filter options.
+
+    Args:
+        app_name: Name of the connector
+        request: FastAPI request object
+        arango_service: Injected ArangoService dependency
+
+    Returns:
+        Dict containing filter options and success status
+    """
+    container = request.app.container
+    logger = container.logger()
+
+    try:
+        body = await request.json()
+        code = body.get('code')
+        state = body.get('state')
+
+        if not code or not state:
+            raise HTTPException(status_code=400, detail="Missing code or state parameter")
+
+        # Get connector config
+        connector_config = await arango_service.get_app_by_name(app_name)
+        if not connector_config:
+            raise HTTPException(status_code=404, detail=f"Connector {app_name} not found")
+
+        # Get OAuth configuration
+        config_service = container.config_service()
+        config_key = f"/services/connectors/{app_name.lower()}/config"
+        config = await config_service.get_config(config_key)
+
+        if not config or not config.get('auth'):
+            raise HTTPException(status_code=400, detail=f"OAuth configuration not found for {app_name}")
+        # Note: We do not persist or validate state server-side anymore. The client validates state locally.
+
+        auth_config = config['auth']
+
+        # Get OAuth URLs based on connector type
+        if app_name.upper() == 'DRIVE':
+            # Google Drive OAuth
+            scope = 'https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.metadata.readonly'
+            token_url = 'https://oauth2.googleapis.com/token'
+        elif app_name.upper() == 'GMAIL':
+            # Gmail OAuth
+            scope = 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.modify'
+            token_url = 'https://oauth2.googleapis.com/token'
+        elif app_name.upper() == 'ONEDRIVE':
+            # OneDrive OAuth
+            tenant_id = auth_config.get('tenantId', 'common')
+            scope = 'https://graph.microsoft.com/Files.Read https://graph.microsoft.com/Files.ReadWrite'
+            token_url = f'https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token'
+        else:
+            # Generic OAuth - use configured values
+            scope = auth_config.get('scope', '')
+            token_url = auth_config.get('tokenUrl', '')
+
+            if not token_url:
+                raise HTTPException(status_code=400, detail=f"Token URL not configured for {app_name}")
+
+        # Get redirect URI from connector config - this should match what was used in authorization
+        connector_auth_config = connector_config.get('config', {}).get('auth', {})
+        redirect_uri = connector_auth_config.get('redirectUri', '')
+
+        if not redirect_uri:
+            raise HTTPException(status_code=400, detail=f"Redirect URI not configured for {app_name}")
+
+        logger.info(f"Using redirect URI for token exchange: {redirect_uri}")
+
+        # Exchange code for token manually
+        import json
+        from datetime import datetime
+
+        import aiohttp
+
+        token_data = {
+            'client_id': auth_config['clientId'],
+            'client_secret': auth_config['clientSecret'],
+            'code': code,
+            'grant_type': 'authorization_code',
+            'redirect_uri': redirect_uri
+        }
+
+        logger.info(f"Exchanging code for token with data: client_id={auth_config['clientId']}, redirect_uri={redirect_uri}, token_url={token_url}")
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(token_url, data=token_data) as response:
+                response_text = await response.text()
+                logger.info(f"Token exchange response status: {response.status}, body: {response_text}")
+
+                if response.status != 200:
+                    raise HTTPException(status_code=400, detail=f"Token exchange failed: {response_text}")
+
+                token_response = json.loads(response_text)
+
+        # Create token object for compatibility
+        from app.connectors.core.base.token_service.oauth_service import OAuthToken
+        token = OAuthToken(
+            access_token=token_response.get('access_token'),
+            refresh_token=token_response.get('refresh_token'),
+            token_type=token_response.get('token_type', 'Bearer'),
+            expires_in=token_response.get('expires_in'),
+            scope=token_response.get('scope', scope),
+            created_at=datetime.now()
+        )
+
+        # Store OAuth credentials in the existing config structure
+        if 'credentials' not in config:
+            config['credentials'] = {}
+
+        config['credentials'] = {
+            "access_token": token.access_token,
+            "refresh_token": token.refresh_token,
+            "token_type": token.token_type,
+            "expires_in": token.expires_in,
+            "scope": token.scope,
+            "created_at": token.created_at.isoformat()
+        }
+
+        # Clean up any legacy OAuth state remnants in config
+        if 'oauth' in config and isinstance(config['oauth'], dict) and 'state' in config['oauth']:
+            try:
+                del config['oauth']['state']
+            except Exception:
+                pass
+
+        # Save updated config
+        await config_service.set_config(config_key, config)
+
+        # Get filter options from configured endpoints
+        filter_options = await get_connector_filter_options_from_config(app_name, connector_config, token, config_service)
+
+        return {
+            "success": True,
+            "message": "OAuth authentication successful",
+            "filterOptions": filter_options
+        }
+
+    except Exception as e:
+        logger.error(f"Error handling OAuth callback for {app_name}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to handle OAuth callback: {str(e)}")
+
+
+async def get_connector_filter_options_from_config(app_name: str, connector_config: Dict[str, Any], token_or_credentials: Any, config_service) -> Dict[str, Any]:
+    """
+    Get filter options for a connector based on its configuration by calling dynamic endpoints.
+
+    Args:
+        app_name: Name of the connector
+        connector_config: Connector configuration from database
+        token_or_credentials: OAuth token or other credentials
+        config_service: Configuration service instance
+
+    Returns:
+        Dict containing available filter options
+    """
+    try:
+        # Get filter endpoints from connector config
+        filter_endpoints = connector_config.get('config', {}).get('filters', {}).get('endpoints', {})
+
+        if not filter_endpoints:
+            return {}
+
+        filter_options = {}
+
+        # Dynamically fetch filter options from configured endpoints
+        for filter_type, endpoint in filter_endpoints.items():
+            try:
+                if endpoint == "static":
+                    # Handle static filter types (like fileTypes)
+                    filter_options[filter_type] = await _get_static_filter_options(app_name, filter_type)
+                else:
+                    # Call dynamic API endpoint
+                    options = await _fetch_filter_options_from_api(endpoint, filter_type, token_or_credentials, app_name)
+                    if options:
+                        filter_options[filter_type] = options
+
+            except Exception as e:
+                print(f"Error fetching {filter_type} for {app_name}: {str(e)}")
+                # Fallback to static options for this filter type
+                filter_options[filter_type] = await _get_static_filter_options(app_name, filter_type)
+
+        return filter_options
+
+    except Exception as e:
+        print(f"Error getting filter options for {app_name}: {str(e)}")
+        # Return hardcoded fallback options
+        return await _get_fallback_filter_options(app_name)
+
+
+async def _fetch_filter_options_from_api(endpoint: str, filter_type: str, token_or_credentials: Any, app_name: str) -> List[Dict[str, str]]:
+    """
+    Fetch filter options from a dynamic API endpoint.
+
+    Args:
+        endpoint: API endpoint URL
+        filter_type: Type of filter (labels, folders, channels, etc.)
+        token_or_credentials: OAuth token or other credentials
+        app_name: Name of the connector
+
+    Returns:
+        List of filter options with value and label
+    """
+
+    import aiohttp
+
+    headers = {}
+
+    # Set up authentication headers based on token type
+    if hasattr(token_or_credentials, 'access_token'):
+        # OAuth token
+        headers['Authorization'] = f"Bearer {token_or_credentials.access_token}"
+    elif isinstance(token_or_credentials, dict):
+        # API token or other credentials
+        if 'access_token' in token_or_credentials:
+            headers['Authorization'] = f"Bearer {token_or_credentials['access_token']}"
+        elif 'api_token' in token_or_credentials:
+            headers['Authorization'] = f"Bearer {token_or_credentials['api_token']}"
+        elif 'token' in token_or_credentials:
+            headers['Authorization'] = f"Bearer {token_or_credentials['token']}"
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(endpoint, headers=headers) as response:
+            if response.status == 200:
+                data = await response.json()
+                return _parse_filter_response(data, filter_type, app_name)
+            else:
+                print(f"API call failed for {filter_type}: {response.status}")
+                return []
+    return []
+
+
+def _parse_filter_response(data: Dict[str, Any], filter_type: str, app_name: str) -> List[Dict[str, str]]:
+    """
+    Parse API response to extract filter options.
+
+    Args:
+        data: API response data
+        filter_type: Type of filter being parsed
+        app_name: Name of the connector
+
+    Returns:
+        List of filter options with value and label
+    """
+    options = []
+
+    try:
+        if app_name.upper() == 'GMAIL' and filter_type == 'labels':
+            # Gmail labels API response
+            labels = data.get('labels', [])
+            for label in labels:
+                if label.get('type') == 'user':  # Only user-created labels, not system labels
+                    options.append({
+                        "value": label['id'],
+                        "label": label['name']
+                    })
+
+        elif app_name.upper() == 'DRIVE' and filter_type == 'folders':
+            # Google Drive folders API response
+            files = data.get('files', [])
+            for file in files:
+                options.append({
+                    "value": file['id'],
+                    "label": file['name']
+                })
+
+        elif app_name.upper() == 'ONEDRIVE' and filter_type == 'folders':
+            # OneDrive folders API response
+            items = data.get('value', [])
+            for item in items:
+                if item.get('folder'):
+                    options.append({
+                        "value": item['id'],
+                        "label": item['name']
+                    })
+
+        elif app_name.upper() == 'SLACK' and filter_type == 'channels':
+            # Slack channels API response
+            channels = data.get('channels', [])
+            for channel in channels:
+                if not channel.get('is_archived'):
+                    options.append({
+                        "value": channel['id'],
+                        "label": f"#{channel['name']}"
+                    })
+
+        elif app_name.upper() == 'CONFLUENCE' and filter_type == 'spaces':
+            # Confluence spaces API response
+            spaces = data.get('results', [])
+            for space in spaces:
+                options.append({
+                    "value": space['key'],
+                    "label": space['name']
+                })
+
+    except Exception as e:
+        print(f"Error parsing {filter_type} response for {app_name}: {str(e)}")
+
+    return options
+
+
+async def _get_static_filter_options(app_name: str, filter_type: str) -> List[Dict[str, str]]:
+    """
+    Get static filter options for connectors that don't have dynamic endpoints.
+
+    Args:
+        app_name: Name of the connector
+        filter_type: Type of filter
+
+    Returns:
+        List of static filter options
+    """
+    if filter_type == 'fileTypes':
+        return [
+            {"value": "document", "label": "Documents"},
+            {"value": "spreadsheet", "label": "Spreadsheets"},
+            {"value": "presentation", "label": "Presentations"},
+            {"value": "pdf", "label": "PDFs"},
+            {"value": "image", "label": "Images"},
+            {"value": "video", "label": "Videos"}
+        ]
+    elif filter_type == 'contentTypes':
+        return [
+            {"value": "page", "label": "Pages"},
+            {"value": "blogpost", "label": "Blog Posts"},
+            {"value": "comment", "label": "Comments"},
+            {"value": "attachment", "label": "Attachments"}
+        ]
+
+    return []
+
+
+async def _get_fallback_filter_options(app_name: str) -> Dict[str, List[Dict[str, str]]]:
+    """
+    Get hardcoded fallback filter options when dynamic fetching fails.
+
+    Args:
+        app_name: Name of the connector
+
+    Returns:
+        Dict containing fallback filter options
+    """
+    fallback_options = {
+        'GMAIL': {
+            "labels": [
+                {"value": "INBOX", "label": "Inbox"},
+                {"value": "SENT", "label": "Sent"},
+                {"value": "DRAFT", "label": "Draft"},
+                {"value": "SPAM", "label": "Spam"},
+                {"value": "TRASH", "label": "Trash"}
+            ]
+        },
+        'DRIVE': {
+            "fileTypes": [
+                {"value": "document", "label": "Documents"},
+                {"value": "spreadsheet", "label": "Spreadsheets"},
+                {"value": "presentation", "label": "Presentations"},
+                {"value": "pdf", "label": "PDFs"},
+                {"value": "image", "label": "Images"},
+                {"value": "video", "label": "Videos"}
+            ]
+        },
+        'ONEDRIVE': {
+            "fileTypes": [
+                {"value": "document", "label": "Documents"},
+                {"value": "spreadsheet", "label": "Spreadsheets"},
+                {"value": "presentation", "label": "Presentations"},
+                {"value": "pdf", "label": "PDFs"},
+                {"value": "image", "label": "Images"},
+                {"value": "video", "label": "Videos"}
+            ]
+        },
+        'SLACK': {
+            "channels": [
+                {"value": "general", "label": "#general"},
+                {"value": "random", "label": "#random"}
+            ]
+        },
+        'CONFLUENCE': {
+            "spaces": [
+                {"value": "DEMO", "label": "Demo Space"},
+                {"value": "DOCS", "label": "Documentation"}
+            ]
+        }
+    }
+
+    return fallback_options.get(app_name.upper(), {})
+
+
+@router.get("/api/v1/connectors/{app_name}/filters")
+async def get_connector_filters(
+    app_name: str,
+    request: Request,
+    arango_service: BaseArangoService = Depends(get_arango_service),
+) -> Dict[str, Any]:
+    """
+    Get filter options for a connector based on its authentication type.
+
+    Args:
+        app_name: Name of the connector
+        request: FastAPI request object
+        arango_service: Injected ArangoService dependency
+
+    Returns:
+        Dict containing available filter options
+    """
+    container = request.app.container
+    logger = container.logger()
+
+    try:
+        # Convert app_name to uppercase for database lookup (connectors are stored in uppercase)
+        app_name_upper = app_name.upper()
+
+        # Get connector config
+        connector_config = await arango_service.get_app_by_name(app_name_upper)
+        if not connector_config:
+            raise HTTPException(status_code=404, detail=f"Connector {app_name_upper} not found")
+
+        # Get credentials based on auth type
+        config_service = container.config_service()
+        auth_type = connector_config.get('authType', '').upper()
+        config_key = f"/services/connectors/{app_name.lower()}/config"
+        config = await config_service.get_config(config_key)
+
+        token_or_credentials = None
+
+        if auth_type == 'OAUTH':
+            # Only OAUTH requires user-specific OAuth credentials
+            if not config or not config.get('credentials'):
+                raise HTTPException(status_code=400, detail=f"OAuth credentials not found for {app_name}. Please authenticate first.")
+
+            # Create token object
+            from app.connectors.core.base.token_service.oauth_service import OAuthToken
+            token_or_credentials = OAuthToken.from_dict(config['credentials'])
+
+        elif auth_type == 'OAUTH_ADMIN_CONSENT':
+            # OAUTH_ADMIN_CONSENT doesn't require user tokens, use configured auth values
+            if not config or not config.get('auth'):
+                raise HTTPException(status_code=400, detail=f"Connector configuration not found for {app_name}. Please configure first.")
+            token_or_credentials = config.get('auth', {})
+
+        elif auth_type == 'API_TOKEN':
+            # Get API token from config
+            if not config or not config.get('auth'):
+                raise HTTPException(status_code=400, detail=f"API token configuration not found for {app_name}. Please configure first.")
+            token_or_credentials = config.get('auth', {})
+
+        elif auth_type == 'USERNAME_PASSWORD':
+            # Get username/password from config
+            if not config or not config.get('auth'):
+                raise HTTPException(status_code=400, detail=f"Authentication configuration not found for {app_name}. Please configure first.")
+            token_or_credentials = config.get('auth', {})
+
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported authentication type: {auth_type}")
+
+        # Get filter options from configured endpoints
+        filter_options = await get_connector_filter_options_from_config(app_name, connector_config, token_or_credentials, config_service)
+
+        return {
+            "success": True,
+            "filterOptions": filter_options
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting filter options for {app_name}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get filter options: {str(e)}")
+
+
+@router.post("/api/v1/connectors/{app_name}/filters")
+async def save_connector_filters(
+    app_name: str,
+    request: Request,
+    arango_service: BaseArangoService = Depends(get_arango_service),
+) -> Dict[str, Any]:
+    """
+    Save filter selections for a connector.
+
+    Args:
+        app_name: Name of the connector
+        request: FastAPI request object
+        arango_service: Injected ArangoService dependency
+
+    Returns:
+        Dict containing success status
+    """
+    container = request.app.container
+    logger = container.logger()
+
+    try:
+        body = await request.json()
+        filter_selections = body.get('filters', {})
+
+        if not filter_selections:
+            raise HTTPException(status_code=400, detail="No filter selections provided")
+
+        # Get current config
+        config_service = container.config_service()
+        config_key = f"/services/connectors/{app_name.lower()}/config"
+        config = await config_service.get_config(config_key)
+
+        if not config:
+            config = {}
+
+        # Update filters in config
+        if 'filters' not in config:
+            config['filters'] = {}
+
+        config['filters']['values'] = filter_selections
+
+        # Save updated config
+        await config_service.set_config(config_key, config)
+
+        return {
+            "success": True,
+            "message": "Filter selections saved successfully"
+        }
+
+    except Exception as e:
+        logger.error(f"Error saving filter selections for {app_name}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to save filter selections: {str(e)}")
 
 @router.put("/api/v1/connectors/config/{app_name}")
 async def update_connector_config(
@@ -2263,6 +3100,42 @@ async def toggle_connector(
             raise HTTPException(status_code=404, detail=f"Connector {app_name} not found")
 
         current_status: bool = app["isActive"]
+
+        # If attempting to enable, enforce prerequisites based on auth type
+        try:
+            if not current_status:  # enabling
+                auth_type = (app.get("authType") or "").upper()
+                config_service = container.config_service()
+                config_key = f"/services/connectors/{app_name.lower()}/config"
+                cfg = await config_service.get_config(config_key)
+                # Allow enabling rules:
+                # - OAUTH: require credentials.access_token
+                # - OAUTH_ADMIN_CONSENT: no user token required; must be configured
+                # - Others (API_TOKEN, USERNAME_PASSWORD, etc.): must be configured
+                if auth_type == "OAUTH":
+                    creds = (cfg or {}).get("credentials") if cfg else None
+                    if not creds or not creds.get("access_token"):
+                        raise HTTPException(
+                            status_code=HttpStatusCode.BAD_REQUEST.value,
+                            detail="Connector cannot be enabled until OAuth authentication is completed",
+                        )
+                elif auth_type == "OAUTH_ADMIN_CONSENT":
+                    if not app.get("isConfigured", False):
+                        raise HTTPException(
+                            status_code=HttpStatusCode.BAD_REQUEST.value,
+                            detail="Connector must be configured before enabling",
+                        )
+                else:
+                    if not app.get("isConfigured", False):
+                        raise HTTPException(
+                            status_code=HttpStatusCode.BAD_REQUEST.value,
+                            detail="Connector must be configured before enabling",
+                        )
+        except HTTPException:
+            raise
+        except Exception as prereq_err:
+            logger.error(f"Failed to validate enable preconditions for {app_name}: {prereq_err}")
+            raise HTTPException(status_code=500, detail="Failed to validate connector state")
 
         # Update connector status in database
         try:

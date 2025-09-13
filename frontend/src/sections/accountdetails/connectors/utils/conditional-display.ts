@@ -23,7 +23,7 @@ export const shouldShowElement = (
   formValues: Record<string, any>
 ): boolean => {
   if (!config || !config[elementKey]) {
-    return false;
+    return true; // Show field by default if no conditional rule exists
   }
 
   const rule = config[elementKey].showWhen;

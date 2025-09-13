@@ -529,6 +529,9 @@ const Connectors = () => {
                       backgroundColor: isDark
                         ? alpha(theme.palette.info.main, 0.04)
                         : alpha(theme.palette.info.main, 0.04),
+                      '& .MuiAlert-icon': {
+                        display: 'none',
+                      },
                       '& .MuiAlert-message': {
                         width: '100%',
                       },
@@ -539,23 +542,7 @@ const Connectors = () => {
                         Click any connector to configure settings and start syncing data
                         automatically.
                       </Typography>
-                      <Button
-                        variant="text"
-                        size="small"
-                        endIcon={<Iconify icon={arrowRightIcon} width={14} height={14} />}
-                        sx={{
-                          textTransform: 'none',
-                          fontWeight: 600,
-                          color: isDark ? theme.palette.info.contrastText : theme.palette.info.main,
-                          '&:hover': {
-                            backgroundColor: isDark
-                              ? alpha(theme.palette.info.main, 0.08)
-                              : alpha(theme.palette.info.main, 0.08),
-                          },
-                        }}
-                      >
-                        Learn more
-                      </Button>
+                     
                     </Stack>
                   </Alert>
                 )}

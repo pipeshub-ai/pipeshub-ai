@@ -18,6 +18,7 @@ import PdfHighlighterComp from '../qna/chatbot/components/pdf-highlighter';
 import MarkdownViewer from '../qna/chatbot/components/markdown-highlighter';
 import { createScrollableContainerStyle } from '../qna/chatbot/utils/styles/scrollbar';
 import { getConnectorPublicUrl } from '../accountdetails/account-settings/services/utils/services-configuration-service';
+import { useConnectors } from '../accountdetails/connectors/context';
 
 import type { Filters } from './types/knowledge-base';
 import type { PipesHub, SearchResult, AggregatedDocument } from './types/search-response';
@@ -68,6 +69,10 @@ export default function KnowledgeBaseSearch() {
     kb:[] 
   });
   const scrollableStyles = createScrollableContainerStyle(theme);
+
+  // Get connector data from the hook at parent level for optimal performance
+  const { activeConnectors, inactiveConnectors } = useConnectors();
+  const allConnectors = [...activeConnectors, ...inactiveConnectors];
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [topK, setTopK] = useState<number>(10);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
@@ -700,6 +705,7 @@ export default function KnowledgeBaseSearch() {
             onTopKChange={handleTopKChange}
             onViewCitations={viewCitations}
             recordsMap={recordsMap}
+            allConnectors={allConnectors}
           />
         </Box>
         {(isPdf || isExcel || isTextFile || isHtml || isDocx || isMarkdown) && (
