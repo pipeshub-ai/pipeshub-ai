@@ -17,24 +17,13 @@ import htmlIcon from '@iconify-icons/vscode-icons/file-type-html';
 import jsonIcon from '@iconify-icons/vscode-icons/file-type-json';
 import zipIcon from '@iconify-icons/vscode-icons/file-type-zip';
 import imageIcon from '@iconify-icons/vscode-icons/file-type-image';
-import boxIcon from '@iconify-icons/mdi/box';
-import jiraIcon from '@iconify-icons/mdi/jira';
-import gmailIcon from '@iconify-icons/mdi/gmail';
-import slackIcon from '@iconify-icons/mdi/slack';
-import dropboxIcon from '@iconify-icons/mdi/dropbox';
 import databaseIcon from '@iconify-icons/mdi/database';
-import googleDriveIcon from '@iconify-icons/mdi/google-drive';
-import cloudUploadIcon from '@iconify-icons/mdi/cloud-upload';
-import microsoftTeamsIcon from '@iconify-icons/mdi/microsoft-teams';
-import microsoftOutlookIcon from '@iconify-icons/mdi/microsoft-outlook';
-import microsoftOnedriveIcon from '@iconify-icons/mdi/microsoft-onedrive';
-import microsoftSharepointIcon from '@iconify-icons/mdi/microsoft-sharepoint';
-import confluenceIcon from '@iconify-icons/logos/confluence';
 
 import { Box, Paper, Stack, Button, Collapse, Typography, alpha, useTheme } from '@mui/material';
 
 import type { CustomCitation } from 'src/types/chat-bot';
 import type { Record } from 'src/types/chat-message';
+import { useConnectors } from '../../../accountdetails/connectors/context';
 
 // File type configuration with modern icons
 const FILE_CONFIG = {
@@ -77,22 +66,8 @@ const FILE_CONFIG = {
   viewableExtensions: ['pdf', 'xlsx', 'xls', 'csv', 'docx', 'html', 'txt', 'md', 'ppt', 'pptx'],
 };
 
-const CONNECTOR_ICONS = {
-  DRIVE: googleDriveIcon,
-  GMAIL: gmailIcon,
-  SLACK: slackIcon,
-  JIRA: jiraIcon,
-  TEAMS: microsoftTeamsIcon,
-  ONEDRIVE: microsoftOnedriveIcon,
-  SHAREPOINT: microsoftSharepointIcon,
-  OUTLOOK: microsoftOutlookIcon,
-  DROPBOX: dropboxIcon,
-  BOX: boxIcon,
-  UPLOAD: cloudUploadIcon,
-  CONFLUENCE: confluenceIcon,
-  // Add fallback for unknown connectors
-  DEFAULT: databaseIcon,
-};
+// Default fallback icon for unknown connectors
+const DEFAULT_CONNECTOR_ICON = databaseIcon;
 
 interface FileInfo {
   recordId: string;
@@ -125,36 +100,6 @@ const isDocViewable = (extension: string): boolean => {
   if (!extension) return false;
   console.log(extension, FILE_CONFIG.viewableExtensions);
   return FILE_CONFIG.viewableExtensions.includes(extension?.toLowerCase());
-};
-
-// Get connector color based on connector type
-const getConnectorColor = (connector: string): string => {
-  switch (connector?.toUpperCase()) {
-    case 'DRIVE':
-      return '#4285F4'; // Google Drive blue
-    case 'GMAIL':
-      return '#EA4335'; // Gmail red
-    case 'SLACK':
-      return '#4A154B'; // Slack purple
-    case 'JIRA':
-      return '#0052CC'; // Jira blue
-    case 'TEAMS':
-      return '#6264A7'; // Microsoft Teams purple
-    case 'ONEDRIVE':
-      return '#0078D4'; // OneDrive blue
-    case 'SHAREPOINT ONLINE':
-      return '#0078D4'; // SharePoint blue
-    case 'OUTLOOK':
-      return '#0078D4'; // Outlook blue
-    case 'DROPBOX':
-      return '#0061FE'; // Dropbox blue
-    case 'BOX':
-      return '#0061D5'; // Box blue
-    case 'UPLOAD':
-      return '#1976D2'; // Default blue
-    default:
-      return '#1976D2'; // Default blue
-  }
 };
 
 // Common button styles following the existing pattern
@@ -198,224 +143,247 @@ const FileCard = React.memo(
     onViewDocument,
     onViewCitations,
     onViewRecord,
+    connectorData,
   }: {
     file: FileInfo;
     theme: any;
     onViewDocument: (file: FileInfo) => void;
     onViewCitations: (file: FileInfo) => void;
     onViewRecord: (file: FileInfo) => void;
-  }) => (
-    <Paper
-      elevation={0}
-      sx={{
-        p: 1.25,
-        mb: 0.75,
-        bgcolor:
-          theme.palette.mode === 'dark' ? 'rgba(255, 255, 255, 0.03)' : 'rgba(0, 0, 0, 0.02)',
-        borderRadius: 2,
-        border: '1px solid',
-        borderColor:
-          theme.palette.mode === 'dark' ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.08)',
-        fontFamily:
-          '"Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-        transition: 'all 0.2s ease',
-        cursor: 'pointer',
-        '&:hover': {
-          borderColor:
-            theme.palette.mode === 'dark' ? 'rgba(255, 255, 255, 0.12)' : 'rgba(0, 0, 0, 0.12)',
-          backgroundColor:
-            theme.palette.mode === 'dark' ? 'rgba(255, 255, 255, 0.05)' : 'rgba(0, 0, 0, 0.03)',
-        },
-      }}
-      onClick={() => {
-        if (file.extension) {
-          onViewCitations(file);
-        }
-      }}
-    >
-      <Box
+    connectorData: { [key: string]: { iconPath: string; color?: string } };
+  }) => {
+    // Get connector info from dynamic data
+    const connectorInfo = connectorData[file.connector?.toUpperCase()] || {
+      iconPath: '/assets/icons/connectors/default.svg',
+    };
+    console.log(connectorData);
+
+    return (
+      <Paper
+        elevation={0}
         sx={{
-          pl: 1,
-          borderLeft: `3px solid ${theme.palette.success.main}`,
-          borderRadius: '2px',
+          p: 1.25,
+          mb: 0.75,
+          bgcolor:
+            theme.palette.mode === 'dark' ? 'rgba(255, 255, 255, 0.03)' : 'rgba(0, 0, 0, 0.02)',
+          borderRadius: 2,
+          border: '1px solid',
+          borderColor:
+            theme.palette.mode === 'dark' ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.08)',
+          fontFamily:
+            '"Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+          transition: 'all 0.2s ease',
+          cursor: 'pointer',
+          '&:hover': {
+            borderColor:
+              theme.palette.mode === 'dark' ? 'rgba(255, 255, 255, 0.12)' : 'rgba(0, 0, 0, 0.12)',
+            backgroundColor:
+              theme.palette.mode === 'dark' ? 'rgba(255, 255, 255, 0.05)' : 'rgba(0, 0, 0, 0.03)',
+          },
+        }}
+        onClick={() => {
+          if (file.extension) {
+            onViewCitations(file);
+          }
         }}
       >
-        {/* Main Content Area */}
-        <Stack direction="row" spacing={1.5} alignItems="flex-start">
-          {/* File Icon */}
-          <Box
-            sx={{
-              flexShrink: 0,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              mt: 0.125,
-            }}
-          >
-            <Icon
-              icon={getFileIcon(file.extension)}
-              width={40}
-              height={40}
-              style={{ borderRadius: '4px', color: theme.palette.primary.main }}
-            />
-          </Box>
-
-          {/* File Information - Takes most space */}
-          <Box sx={{ flex: 1, minWidth: 0 }}>
-            <Typography
-              variant="body2"
+        <Box
+          sx={{
+            pl: 1,
+            borderLeft: `3px solid ${theme.palette.success.main}`,
+            borderRadius: '2px',
+          }}
+        >
+          {/* Main Content Area */}
+          <Stack direction="row" spacing={1.5} alignItems="flex-start">
+            {/* File Icon */}
+            <Box
               sx={{
-                fontSize: '13px',
-                fontWeight: 600,
-                color: 'text.primary',
-                mb: 0.5,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-                lineHeight: 1.4,
+                flexShrink: 0,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                mt: 0.125,
               }}
-              title={file.recordName}
             >
-              {file.recordName}
-            </Typography>
+              <Icon
+                icon={getFileIcon(file.extension)}
+                width={40}
+                height={40}
+                style={{ borderRadius: '4px', color: theme.palette.primary.main }}
+              />
+            </Box>
 
-            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+            {/* File Information - Takes most space */}
+            <Box sx={{ flex: 1, minWidth: 0 }}>
+              <Typography
+                variant="body2"
+                sx={{
+                  fontSize: '13px',
+                  fontWeight: 600,
+                  color: 'text.primary',
+                  mb: 0.5,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  lineHeight: 1.4,
+                }}
+                title={file.recordName}
+              >
+                {file.recordName}
+              </Typography>
+
+              <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+                <Typography
+                  variant="caption"
+                  sx={{
+                    color: 'text.secondary',
+                    fontSize: '12px',
+                    fontWeight: 500,
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.3px',
+                  }}
+                >
+                  {file.extension}
+                </Typography>
+
+                {file.citationCount > 1 && (
+                  <>
+                    <Box
+                      sx={{
+                        width: 3,
+                        height: 3,
+                        borderRadius: '50%',
+                        bgcolor: 'text.secondary',
+                        opacity: 0.5,
+                      }}
+                    />
+                    <Typography
+                      variant="caption"
+                      sx={{
+                        color: 'text.secondary',
+                        fontSize: '12px',
+                        fontWeight: 400,
+                      }}
+                    >
+                      {file.citationCount} citations
+                    </Typography>
+                  </>
+                )}
+              </Stack>
+            </Box>
+
+            {/* Connector Icon */}
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexShrink: 0 }}>
+              <img
+                src={connectorInfo.iconPath}
+                alt={file.connector || 'UPLOAD'}
+                width={16}
+                height={16}
+                style={{
+                  objectFit: 'contain',
+                  borderRadius: '2px',
+                }}
+                onError={(e) => {
+                  e.currentTarget.src = '/assets/icons/connectors/default.svg';
+                }}
+              />
               <Typography
                 variant="caption"
                 sx={{
                   color: 'text.secondary',
-                  fontSize: '12px',
+                  fontSize: '11px',
                   fontWeight: 500,
                   textTransform: 'uppercase',
                   letterSpacing: '0.3px',
                 }}
               >
-                {file.extension}
+                {file.connector || 'UPLOAD'}
               </Typography>
+            </Box>
+          </Stack>
 
-              {file.citationCount > 1 && (
-                <>
-                  <Box
-                    sx={{
-                      width: 3,
-                      height: 3,
-                      borderRadius: '50%',
-                      bgcolor: 'text.secondary',
-                      opacity: 0.5,
-                    }}
-                  />
-                  <Typography
-                    variant="caption"
-                    sx={{
-                      color: 'text.secondary',
-                      fontSize: '12px',
-                      fontWeight: 400,
-                    }}
-                  >
-                    {file.citationCount} citations
-                  </Typography>
-                </>
-              )}
-            </Stack>
-          </Box>
-
-          {/* Connector Icon */}
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexShrink: 0 }}>
-            <Icon 
-              icon={file.connector ? CONNECTOR_ICONS[file.connector as keyof typeof CONNECTOR_ICONS] || databaseIcon : databaseIcon} 
-              width={16} 
-              height={16}
-              style={{
-                color: file.connector ? getConnectorColor(file.connector) : theme.palette.text.secondary
-              }}
-            />
-            <Typography 
-              variant="caption" 
-              sx={{ 
-                color: 'text.secondary', 
-                fontSize: '11px', 
-                fontWeight: 500,
-                textTransform: 'uppercase',
-                letterSpacing: '0.3px'
-              }}
-            >
-              {file.connector || 'UPLOAD'}
-            </Typography>
-          </Box>
-        </Stack>
-
-        {/* Action Buttons - Moved below and made responsive */}
-        <Box sx={{ mt: 0.75, display: 'flex', flexWrap: 'wrap', gap: 0.75, justifyContent: 'flex-end' }}>
-          {file.webUrl && (
-            <Button
-              size="small"
-              variant="text"
-              startIcon={<Icon icon={linkIcon} width={14} height={14} />}
-              onClick={(e) => {
-                e.stopPropagation();
-                onViewDocument(file);
-              }}
-              sx={{
-                textTransform: 'none',
-                fontSize: '11px',
-                fontWeight: 500,
-                borderRadius: 1.5,
-                px: 1.25,
-                py: 0.375,
-                minHeight: 26,
-              }}
-            >
-              Open
-            </Button>
-          )}
-
-          {file.extension && isDocViewable(file.extension) && (
-            <Button
-              size="small"
-              variant="text"
-              startIcon={<Icon icon={eyeIcon} width={14} height={14} />}
-              onClick={(e) => {
-                e.stopPropagation();
-                onViewCitations(file);
-              }}
-              sx={{
-                textTransform: 'none',
-                fontSize: '11px',
-                fontWeight: 500,
-                borderRadius: 1.5,
-                px: 1.25,
-                py: 0.375,
-                minHeight: 26,
-              }}
-            >
-              View Citations
-            </Button>
-          )}
-
-          <Button
-            size="small"
-            variant="text"
-            startIcon={<Icon icon={fileDocIcon} width={14} height={14} />}
-            onClick={(e) => {
-              e.stopPropagation();
-              onViewRecord(file);
-            }}
+          {/* Action Buttons - Moved below and made responsive */}
+          <Box
             sx={{
-              textTransform: 'none',
-              fontSize: '11px',
-              fontWeight: 500,
-              borderRadius: 1.5,
-              px: 1.25,
-              py: 0.375,
-              minHeight: 26,
+              mt: 0.75,
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: 0.75,
+              justifyContent: 'flex-end',
             }}
           >
-            Details
-          </Button>
+            {file.webUrl && (
+              <Button
+                size="small"
+                variant="text"
+                startIcon={<Icon icon={linkIcon} width={14} height={14} />}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onViewDocument(file);
+                }}
+                sx={{
+                  textTransform: 'none',
+                  fontSize: '11px',
+                  fontWeight: 500,
+                  borderRadius: 1.5,
+                  px: 1.25,
+                  py: 0.375,
+                  minHeight: 26,
+                }}
+              >
+                Open
+              </Button>
+            )}
+
+            {file.extension && isDocViewable(file.extension) && (
+              <Button
+                size="small"
+                variant="text"
+                startIcon={<Icon icon={eyeIcon} width={14} height={14} />}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onViewCitations(file);
+                }}
+                sx={{
+                  textTransform: 'none',
+                  fontSize: '11px',
+                  fontWeight: 500,
+                  borderRadius: 1.5,
+                  px: 1.25,
+                  py: 0.375,
+                  minHeight: 26,
+                }}
+              >
+                View Citations
+              </Button>
+            )}
+
+            <Button
+              size="small"
+              variant="text"
+              startIcon={<Icon icon={fileDocIcon} width={14} height={14} />}
+              onClick={(e) => {
+                e.stopPropagation();
+                onViewRecord(file);
+              }}
+              sx={{
+                textTransform: 'none',
+                fontSize: '11px',
+                fontWeight: 500,
+                borderRadius: 1.5,
+                px: 1.25,
+                py: 0.375,
+                minHeight: 26,
+              }}
+            >
+              Details
+            </Button>
+          </Box>
         </Box>
-      </Box>
-    </Paper>
-  )
+      </Paper>
+    );
+  }
 );
 
 FileCard.displayName = 'FileCard';
@@ -430,6 +398,28 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
   const theme = useTheme();
   const [isFilesExpanded, setIsFilesExpanded] = useState(false);
   const [isCitationsExpanded, setIsCitationsExpanded] = useState(false);
+
+  // Get connector data from the hook
+  const { activeConnectors } = useConnectors();
+
+  // Create connector data map for easy lookup
+  const connectorData = useMemo(() => {
+    const allConnectors = [...activeConnectors];
+    const data: { [key: string]: { iconPath: string; color?: string } } = {};
+
+    allConnectors.forEach((connector) => {
+      data[connector.name.toUpperCase()] = {
+        iconPath: connector.iconPath || '/assets/icons/connectors/default.svg',
+      };
+    });
+
+    // Add UPLOAD connector for local files
+    data.UPLOAD = {
+      iconPath: '/assets/icons/connectors/kb.svg',
+    };
+
+    return data;
+  }, [activeConnectors]);
 
   // Group citations by recordId to get unique files
   const uniqueFiles = useMemo((): FileInfo[] => {
@@ -470,7 +460,7 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
   const handleViewRecord = useCallback(
     (file: FileInfo) => {
       if (file.extension) {
-      onRecordClick({
+        onRecordClick({
           recordId: file.recordId,
           citations: aggregatedCitations[file.recordId] || [],
         });
@@ -552,6 +542,7 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
                 key={file.recordId}
                 file={file}
                 theme={theme}
+                connectorData={connectorData}
                 onViewDocument={handleViewDocument}
                 onViewCitations={handleViewCitations}
                 onViewRecord={handleViewRecord}

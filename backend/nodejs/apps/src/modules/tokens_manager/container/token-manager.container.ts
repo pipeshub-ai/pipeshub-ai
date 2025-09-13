@@ -8,6 +8,7 @@ import { ConfigurationManagerConfig } from '../../configuration_manager/config/c
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { EntitiesEventProducer } from '../services/entity_event.service';
+import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 
 const loggerConfig = {
   service: 'Token Manager',
@@ -58,6 +59,16 @@ export class TokenManagerContainer {
       container
         .bind<RedisService>('RedisService')
         .toConstantValue(redisService);
+
+      // Initialize KeyValueStoreService for PrometheusService dependency
+      const configurationManagerConfig = container.get<ConfigurationManagerConfig>('ConfigurationManagerConfig');
+      const keyValueStoreService = KeyValueStoreService.getInstance(
+        configurationManagerConfig,
+      );
+      await keyValueStoreService.connect();
+      container
+        .bind<KeyValueStoreService>('KeyValueStoreService')
+        .toConstantValue(keyValueStoreService);
 
       // Initialize Kafka Service
       const tokenEventProducer = new TokenEventProducer(

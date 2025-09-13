@@ -23,10 +23,9 @@ export function createCrawlingManagerRouter(container: Container): Router {
     CrawlingSchedulerService,
   );
   const authMiddleware = container.get<AuthMiddleware>(AuthMiddleware);
-
   // POST /api/v1/crawlingManager/:connectorType/schedule - Schedule a crawling job
   router.post(
-    '/:connectorType/schedule',
+    '/:connector/schedule',
     authMiddleware.authenticate,
     userAdminCheck,
     metricsMiddleware(container),
@@ -36,7 +35,7 @@ export function createCrawlingManagerRouter(container: Container): Router {
 
   // GET /api/v1/crawlingManager/:connectorType/schedule - Get job status for specific connector
   router.get(
-    '/:connectorType/schedule',
+    '/:connector/schedule',
     authMiddleware.authenticate,
     userAdminCheck,
     ValidationMiddleware.validate(ConnectorTypeSchema),
@@ -64,7 +63,7 @@ export function createCrawlingManagerRouter(container: Container): Router {
 
   // DELETE /api/v1/crawlingManager/:connectorType/schedule - Remove specific job
   router.delete(
-    '/:connectorType/schedule',
+    '/:connector/schedule',
     authMiddleware.authenticate,
     userAdminCheck,
     ValidationMiddleware.validate(ConnectorTypeSchema),
@@ -74,7 +73,7 @@ export function createCrawlingManagerRouter(container: Container): Router {
 
   // POST /api/v1/crawlingManager/:connectorType/pause - Pause a specific job
   router.post(
-    '/:connectorType/pause',
+    '/:connector/pause',
     authMiddleware.authenticate,
     userAdminCheck,
     ValidationMiddleware.validate(ConnectorTypeSchema),
@@ -84,7 +83,7 @@ export function createCrawlingManagerRouter(container: Container): Router {
 
   // POST /api/v1/crawlingManager/:connectorType/resume - Resume a specific job
   router.post(
-    '/:connectorType/resume',
+    '/:connector/resume',
     authMiddleware.authenticate,
     userAdminCheck,
     ValidationMiddleware.validate(ConnectorTypeSchema),

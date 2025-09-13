@@ -103,6 +103,7 @@ import jiraIcon from '@iconify-icons/logos/jira';
 import slackIcon from '@iconify-icons/logos/slack-icon';
 import cogOutlineIcon from '@iconify-icons/mdi/cog-outline';
 import calculatorIcon from '@iconify-icons/mdi/calculator';
+import { useConnectors } from '../../../../accountdetails/connectors/context';
 
 // Utility functions
 import { normalizeDisplayName } from '../../utils/agent';
@@ -142,6 +143,10 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
     'Vector Stores': false,
   });
   const [expandedApps, setExpandedApps] = useState<Record<string, boolean>>({});
+
+  // Get connector data from the hook
+  const { activeConnectors } = useConnectors();
+  const allConnectors = [...activeConnectors];
 
   // Filter templates based on search query
   const filteredTemplates = useMemo(() => {
@@ -183,7 +188,8 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
 
   // Get app-level tool nodes (tool-group-* nodes)
   const appToolNodes = useMemo(
-    () => filteredTemplates.filter((t) => t.category === 'tools' && t.type.startsWith('tool-group-')),
+    () =>
+      filteredTemplates.filter((t) => t.category === 'tools' && t.type.startsWith('tool-group-')),
     [filteredTemplates]
   );
 
@@ -219,10 +225,11 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
     [filteredTemplates]
   );
 
-  const individualKBs = useMemo(() => 
-     filteredTemplates.filter(
-      (t) => t.category === 'memory' && t.type.startsWith('kb-') && t.type !== 'kb-group'
-    ),
+  const individualKBs = useMemo(
+    () =>
+      filteredTemplates.filter(
+        (t) => t.category === 'memory' && t.type.startsWith('kb-') && t.type !== 'kb-group'
+      ),
     [filteredTemplates]
   );
 
@@ -256,8 +263,22 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
   ) => {
     // Get the appropriate icon based on the item type
     let itemIcon = template.icon;
+    let isDynamicIcon = false;
+
     if (sectionType === 'apps' && template.defaultConfig?.appName) {
-      itemIcon = getAppMemoryIcon(template.defaultConfig.appName);
+      const appIcon = getAppMemoryIcon(template.defaultConfig.appName);
+      if (appIcon === 'dynamic-icon') {
+        isDynamicIcon = true;
+        // Find the connector for dynamic icon
+        const connector = allConnectors.find(
+          (c) =>
+            c.name.toUpperCase() === template.defaultConfig.appName.toUpperCase() ||
+            c.name === template.defaultConfig.appName
+        );
+        itemIcon = connector?.iconPath || '/assets/icons/connectors/default.svg';
+      } else {
+        itemIcon = appIcon;
+      }
     } else if (sectionType === 'tools' && template.defaultConfig?.appName) {
       itemIcon = getToolIcon(template.type, template.defaultConfig.appName);
     }
@@ -298,16 +319,31 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
         }}
       >
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, width: '100%' }}>
-          <Icon
-            icon={itemIcon}
-            width={isSubItem ? 14 : 16}
-            height={isSubItem ? 14 : 16}
-            style={{ color: alpha(theme.palette.text.secondary, 0.7) }}
-          />
+          {isDynamicIcon ? (
+            <img
+              src={itemIcon}
+              alt={template.label}
+              width={isSubItem ? 16 : 18}
+              height={isSubItem ? 16 : 18}
+              style={{
+                objectFit: 'contain',
+              }}
+              onError={(e) => {
+                e.currentTarget.src = '/assets/icons/connectors/default.svg';
+              }}
+            />
+          ) : (
+            <Icon
+              icon={itemIcon}
+              width={isSubItem ? 16 : 18}
+              height={isSubItem ? 16 : 18}
+              style={{ color: alpha(theme.palette.text.secondary, 0.7) }}
+            />
+          )}
           <Typography
             variant="body2"
             sx={{
-              fontSize: isSubItem ? '0.75rem' : '0.8rem',
+              fontSize: isSubItem ? '0.85rem' : '0.9rem',
               color: theme.palette.text.primary,
               fontWeight: 400,
               flex: 1,
@@ -476,6 +512,17 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
   };
 
   const getAppMemoryIcon = (appName: string) => {
+    // First try to find the connector in our dynamic data
+    const connector = allConnectors.find(
+      (c) => c.name.toUpperCase() === appName.toUpperCase() || c.name === appName
+    );
+
+    if (connector && connector.iconPath) {
+      // Return a placeholder that will be replaced with img tag in renderDraggableItem
+      return 'dynamic-icon';
+    }
+
+    // Fallback to hardcoded icons for backward compatibility
     const iconMap: Record<string, any> = {
       SLACK: slackIcon,
       GMAIL: googleGmailIcon,

@@ -1,30 +1,23 @@
+import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import type { Icon as IconifyIcon } from '@iconify/react';
 
 import { Icon } from '@iconify/react';
 import appIcon from '@iconify-icons/mdi/apps';
 import { useNavigate } from 'react-router-dom';
 import closeIcon from '@iconify-icons/mdi/close';
-import gmailIcon from '@iconify-icons/mdi/gmail';
-import onedriveIcon from '@iconify-icons/mdi/onedrive';
-import sharepointIcon from '@iconify-icons/mdi/microsoft-sharepoint';
 import upIcon from '@iconify-icons/mdi/chevron-up';
 import magnifyIcon from '@iconify-icons/mdi/magnify';
 import leftIcon from '@iconify-icons/mdi/chevron-left';
 import downIcon from '@iconify-icons/mdi/chevron-down';
 import rightIcon from '@iconify-icons/mdi/chevron-right';
-import addIcon from '@iconify-icons/mdi/plus';
-import React, { useRef, useState, useEffect, useCallback } from 'react';
 import viewModuleIcon from '@iconify-icons/mdi/view-module';
 import filterMenuIcon from '@iconify-icons/mdi/filter-menu';
-import googleDriveIcon from '@iconify-icons/mdi/google-drive';
-import cloudUploadIcon from '@iconify-icons/mdi/cloud-upload';
 import filterRemoveIcon from '@iconify-icons/mdi/filter-remove';
 import officeBuildingIcon from '@iconify-icons/mdi/office-building';
 import formatListIcon from '@iconify-icons/mdi/format-list-bulleted';
 import closeCircleIcon from '@iconify-icons/mdi/close-circle-outline';
 import databaseIcon from '@iconify-icons/mdi/database';
 import bookOpenIcon from '@iconify-icons/mdi/book-open-outline';
-import infiniteIcon from '@iconify-icons/mdi/infinity';
 
 import { alpha, styled, useTheme } from '@mui/material/styles';
 import {
@@ -48,14 +41,11 @@ import {
   ListItem,
   ListItemText,
   ListItemIcon,
-  Pagination,
   Skeleton,
-  Divider,
-  ToggleButton,
-  ToggleButtonGroup,
 } from '@mui/material';
 
 import { KnowledgeBaseAPI } from './services/api';
+import {useConnectors } from '../accountdetails/connectors/context';
 
 import type { Modules } from './types/modules';
 import type { Departments } from './types/departments';
@@ -63,14 +53,13 @@ import type { RecordCategories } from './types/record-categories';
 import type { Filters, KnowledgeSearchSideBarProps } from './types/knowledge-base';
 import type { KnowledgeBase } from './types/kb';
 
-// Connector definitions for app sources
-const apps = [
-  { id: 'local', name: 'Local KB', icon: cloudUploadIcon, color: '#34A853' },
-  { id: 'drive', name: 'Google Drive', icon: googleDriveIcon, color: '#4285F4' },
-  { id: 'gmail', name: 'Gmail', icon: gmailIcon, color: '#EA4335' },
-  {id: 'onedrive', name: 'OneDrive', icon: onedriveIcon, color: '#0078D4' },
-  { id: 'sharepointOnline', name: 'SharePoint Online', icon: sharepointIcon, color: '#0078D4' },
-];
+// Local KB definition (hardcoded)
+const localKB = {
+  id: 'local',
+  name: 'KB',
+  iconPath: '/assets/icons/connectors/kb.svg',
+  color: '#34A853'
+};
 
 // Constants
 const drawerWidth = 280;
@@ -458,6 +447,108 @@ const useIntersectionObserver = (callback: () => void) => {
   }, []);
 
   return targetRef;
+};
+
+// App Sources Filter Component with Dynamic Connectors
+const AppSourcesFilter: React.FC<{
+  filters: Filters;
+  onFilterChange: (filterType: keyof Filters, value: string) => void;
+  expanded: boolean;
+  onToggle: () => void;
+}> = ({ filters, onFilterChange, expanded, onToggle }) => {
+  const theme = useTheme();
+  const { activeConnectors, loading: connectorsLoading, error: connectorsError } = useConnectors();
+
+  // Combine local KB with active connectors
+  const allApps = useMemo(() => {
+    const connectorApps = activeConnectors.map(connector => ({
+      id: connector.name.toLowerCase(),
+      name: connector.name,
+      iconPath: connector.iconPath || '/assets/icons/connectors/default.svg',
+    }));
+    
+    return [localKB, ...connectorApps];
+  }, [activeConnectors]);
+
+  const activeAppCount = (filters.app || []).length;
+
+  return (
+    <FilterSection>
+      <FilterHeader expanded={expanded} onClick={onToggle}>
+        <FilterLabel>
+          <Icon
+            icon={appIcon}
+            fontSize="small"
+            style={{
+              color: expanded ? theme.palette.primary.main : alpha(theme.palette.text.primary, 0.7),
+            }}
+          />
+          App Sources
+          {activeAppCount > 0 && <FilterCount badgeContent={activeAppCount} color="primary" />}
+        </FilterLabel>
+        <Icon
+          icon={expanded ? upIcon : downIcon}
+          fontSize="small"
+          style={{ color: alpha(theme.palette.text.primary, 0.7) }}
+        />
+      </FilterHeader>
+
+      <FilterContent in={expanded}>
+        <FormGroup>
+          {connectorsLoading ? (
+            <Box sx={{ display: 'flex', justifyContent: 'center', p: 2 }}>
+              <CircularProgress size={20} />
+            </Box>
+          ) : connectorsError ? (
+            <Box sx={{ display: 'flex', justifyContent: 'center', p: 2 }}>
+              <Typography variant="caption" color="error">
+                Failed to load connectors
+              </Typography>
+            </Box>
+          ) : allApps.length === 0 ? (
+            <Box sx={{ display: 'flex', justifyContent: 'center', p: 2 }}>
+              <Typography variant="caption" color="text.secondary">
+                No app sources available
+              </Typography>
+            </Box>
+          ) : (
+            allApps.map((app) => {
+              const isChecked = (filters.app || []).includes(app.id);
+
+              return (
+                <FormControlLabelStyled
+                  key={app.id}
+                  control={
+                    <FilterCheckbox
+                      checked={isChecked}
+                      onClick={() => onFilterChange('app', app.id)}
+                      size="small"
+                      disableRipple
+                    />
+                  }
+                  label={
+                    <Box sx={{ display: 'flex', alignItems: 'center',ml: 1, gap: 1 }}>
+                      <img
+                        src={app.iconPath}
+                        alt={app.name}
+                        width={16}
+                        height={16}
+                        style={{ objectFit: 'contain' }}
+                        onError={(e) => {
+                          e.currentTarget.src = '/assets/icons/connectors/default.svg';
+                        }}
+                      />
+                      <Typography variant="body2">{app.name}</Typography>
+                    </Box>
+                  }
+                />
+              );
+            })
+          )}
+        </FormGroup>
+      </FilterContent>
+    </FilterSection>
+  );
 };
 
 // Knowledge Base Filter Component
@@ -918,7 +1009,12 @@ export default function KnowledgeSearchSideBar({
       case 'appSpecificRecordType':
         return recordCategories.find((c) => c._id === id)?.name || id;
       case 'app':
-        return apps.find((c) => c.id === id)?.name || id;
+        // Handle local KB and dynamic connectors
+        if (id === 'local') {
+          return localKB.name;
+        }
+        // For connector names, convert from lowercase back to original case
+        return id.charAt(0).toUpperCase() + id.slice(1).toLowerCase();
       case 'kb': {
         // Get KB name from the map, fallback to truncated ID
         const kb = knowledgeBasesMap.get(id);
@@ -1280,24 +1376,11 @@ export default function KnowledgeSearchSideBar({
 
           {renderActiveFilters()}
 
-          <FilterSectionComponent
-            id="apps"
-            icon={appIcon}
-            label="App Sources"
-            filterType="app"
-            items={apps}
-            renderItemLabel={(app) => (
-              <Box sx={{ display: 'flex', alignItems: 'center' }}>
-                <Icon
-                  icon={app.icon}
-                  style={{
-                    marginRight: theme.spacing(1),
-                    color: app.color,
-                  }}
-                />
-                <Typography variant="body2">{app.name}</Typography>
-              </Box>
-            )}
+          <AppSourcesFilter
+            filters={filters}
+            onFilterChange={handleFilterChange}
+            expanded={expandedSections.apps}
+            onToggle={() => toggleSection('apps')}
           />
 
           {/* Knowledge Base Filter */}

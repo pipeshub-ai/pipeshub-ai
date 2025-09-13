@@ -45,6 +45,7 @@ import MarkdownViewer from 'src/sections/qna/chatbot/components/markdown-highlig
 import DocxHighlighterComp from 'src/sections/qna/chatbot/components/docx-highlighter';
 import { StreamingContext } from 'src/sections/qna/chatbot/components/chat-message';
 import { processStreamingContentLegacy } from 'src/sections/qna/chatbot/utils/styles/content-processing';
+import { useConnectors } from 'src/sections/accountdetails/connectors/hooks/use-connectors';
 import AgentApiService, { KnowledgeBase } from './services/api';
 import AgentChatInput from './components/agent-chat-input';
 import AgentChatSidebar from './components/agent-chat-sidebar';
@@ -684,7 +685,7 @@ const AgentChat = () => {
   // Model selection state
   const [selectedModel, setSelectedModel] = useState<Model | null>(availableModels[0]);
   const [selectedChatMode, setSelectedChatMode] = useState<ChatMode | null>(null);
-
+  const { activeConnectors } = useConnectors();
   const navigate = useNavigate();
   const { agentKey, conversationId } = useParams<{ agentKey: string; conversationId: string }>();
   console.log(agentKey, conversationId);
@@ -698,8 +699,7 @@ const AgentChat = () => {
       });
     }
   }, [agentKey]);
-  console.log(agent);
-
+  
   const startMessage = agent?.startMessage || '';
 
   // PDF viewer states
@@ -1837,6 +1837,7 @@ const AgentChat = () => {
               shouldRefresh={shouldRefreshSidebar}
               onRefreshComplete={handleSidebarRefreshComplete}
               agent={agent}
+              activeConnectors={activeConnectors}
             />
           </Box>
         )}
@@ -1887,6 +1888,7 @@ const AgentChat = () => {
               availableModels={availableModels}
               availableKBs={availableKBs}
               agent={agent}
+              activeConnectors={activeConnectors}
             />
           </Box>
 

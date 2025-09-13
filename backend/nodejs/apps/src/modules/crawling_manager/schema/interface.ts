@@ -24,7 +24,7 @@ import {
 import { JobProgress } from 'bullmq';
 
 export interface CrawlingJobData {
-  connectorType: ConnectorType;
+  connector: string;
   scheduleConfig: ICrawlingSchedule;
   orgId: string;
   userId: string;

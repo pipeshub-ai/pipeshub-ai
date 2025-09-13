@@ -8,6 +8,38 @@ export enum EventType {
   ConnectorPublicUrlChangedEvent = 'connectorPublicUrlChanged',
   GmailUpdatesEnabledEvent = 'gmailUpdatesEnabledEvent',
   GmailUpdatesDisabledEvent = 'gmailUpdatesDisabledEvent',
+  AppEnabledEvent = 'appEnabled',
+  AppDisabledEvent = 'appDisabled',
+}
+
+export enum SyncAction {
+  None = 'none',
+  Immediate = 'immediate',
+  Scheduled = 'scheduled',
+}
+
+export interface AppEnabledEvent {
+  orgId: string;
+  appGroup: string;
+  appGroupId: string;
+  credentialsRoute?: string;
+  refreshTokenRoute?: string;
+  apps: string[];
+  syncAction: SyncAction;
+}
+export interface AppDisabledEvent {
+  orgId: string;
+  appGroup: string;
+  appGroupId: string;
+  apps: string[];
+}
+
+export interface SyncConnectorEvent {
+  orgId: string;
+  apps: string[];
+  syncAction: SyncAction;
+  credentialsRoute?: string;
+  refreshTokenRoute?: string;
 }
 
 export interface Event {
@@ -17,7 +49,10 @@ export interface Event {
     | LLMConfiguredEvent
     | ConnectorPublicUrlChangedEvent
     | GmailUpdatesEnabledEvent
-    | GmailUpdatesDisabledEvent;
+    | GmailUpdatesDisabledEvent
+    | AppEnabledEvent
+    | AppDisabledEvent
+    | SyncConnectorEvent;
 }
 
 export interface LLMConfiguredEvent {

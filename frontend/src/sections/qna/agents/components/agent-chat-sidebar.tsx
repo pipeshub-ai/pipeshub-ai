@@ -48,9 +48,11 @@ import ArchivedChatsDialog from 'src/sections/qna/chatbot/components/dialogs/arc
 // import ShareConversationDialog from 'src/sections/qna/chatbot/components/dialogs/share-conversation-dialog';
 import { createScrollableContainerStyle } from 'src/sections/qna/chatbot/utils/styles/scrollbar';
 import DeleteConversationDialog from 'src/sections/qna/chatbot/components/dialogs/delete-conversation-dialog';
+import { Connector } from 'src/sections/accountdetails/connectors/types/types';
 
 interface AgentChatSidebarProps extends ChatSidebarProps {
   agent: Agent | null;
+  activeConnectors: Connector[];
 }
 
 const AgentChatSidebar = ({
@@ -61,6 +63,7 @@ const AgentChatSidebar = ({
   shouldRefresh,
   onRefreshComplete,
   agent,
+  activeConnectors,
 }: AgentChatSidebarProps) => {
   // Use useRef for values that shouldn't trigger re-renders when changed
   const isMounted = useRef(true);

@@ -30,17 +30,13 @@ import {
   InputAdornment,
   Grid,
   Button,
-  Stack,
-  Card,
-  CardContent,
   Badge,
   Autocomplete,
   Tabs,
-  Tab,
-  Collapse,
+  Tab
 } from '@mui/material';
+import { Connector } from 'src/sections/accountdetails/connectors/types/types';
 import { KnowledgeBase } from '../services/api';
-import { APPS } from '../utils/agent';
 
 export interface Model {
   provider: string;
@@ -73,6 +69,7 @@ export type ChatInputProps = {
   availableModels: Model[];
   availableKBs: KnowledgeBase[];
   agent?: any;
+  activeConnectors: Connector[];
 };
 
 // Define chat modes with compact styling
@@ -155,6 +152,7 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
   availableModels,
   availableKBs,
   agent,
+  activeConnectors,
 }) => {
   const [localValue, setLocalValue] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -258,10 +256,10 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
   }, [agent?.apps]);
 
   // All available apps for autocomplete
-  const allAppOptions: AppOption[] = Array.from(APPS).map((app) => ({
-    id: app, // Use app name for API
-    name: app,
-    displayName: normalizeDisplayName(app),
+  const allAppOptions: AppOption[] = activeConnectors.map((app) => ({
+    id: app.name, // Use app name for API
+    name: app.name,
+    displayName: normalizeDisplayName(app.name),
   }));
 
   // Filtered options

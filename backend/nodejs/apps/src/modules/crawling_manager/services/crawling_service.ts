@@ -9,7 +9,6 @@ import {
 import { Logger } from '../../../libs/services/logger.service';
 import { BadRequestError } from '../../../libs/errors/http.errors';
 import { CrawlingScheduleType } from '../schema/enums';
-import { ConnectorType } from '../schema/enums';
 import { inject, injectable } from 'inversify';
 import { RedisConfig } from '../../../libs/types/redis.types';
 import {
@@ -21,7 +20,7 @@ import {
 
 // Interface for storing paused job information
 interface PausedJobInfo {
-  connectorType: ConnectorType;
+  connector: string;
   scheduleConfig: ICrawlingSchedule;
   orgId: string;
   userId: string;
@@ -64,8 +63,8 @@ export class CrawlingSchedulerService {
   /**
    * Creates a consistent job ID based on connector type and org ID
    */
-  private buildJobId(connectorType: ConnectorType, orgId: string): string {
-    return `crawl-${connectorType.toLowerCase().replace(/\s+/g, '-')}-${orgId}`;
+  private buildJobId(connector: string, orgId: string): string {
+    return `crawl-${connector.toLowerCase().replace(/\s+/g, '-')}-${orgId}`;
   }
 
   /**
@@ -120,17 +119,17 @@ export class CrawlingSchedulerService {
    * Schedule a crawling job for a specific connector type
    */
   async scheduleJob(
-    connectorType: ConnectorType,
+    connector: string,
     scheduleConfig: ICrawlingSchedule,
     orgId: string,
     userId: string,
     options: ScheduleJobOptions = {},
   ): Promise<Job<CrawlingJobData>> {
-    const jobId = this.buildJobId(connectorType, orgId);
+    const jobId = this.buildJobId(connector, orgId);
 
     this.logger.info('Scheduling crawling job', {
       jobId,
-      connectorType,
+      connector,
       orgId,
       userId,
       scheduleType: scheduleConfig.scheduleType,
@@ -138,7 +137,7 @@ export class CrawlingSchedulerService {
     });
 
     // Remove any existing job for this connector type and org
-    await this.removeJobInternal(connectorType, orgId);
+    await this.removeJobInternal(connector, orgId);
 
     // Remove from paused jobs if it exists
     this.pausedJobs.delete(jobId);
@@ -150,7 +149,7 @@ export class CrawlingSchedulerService {
     }
 
     const jobData: CrawlingJobData = {
-      connectorType,
+      connector,
       scheduleConfig,
       orgId,
       userId,
@@ -198,7 +197,7 @@ export class CrawlingSchedulerService {
       }
     }
 
-    const jobName = this.buildJobName(connectorType);
+    const jobName = this.buildJobName(connector);
     const job = await this.queue.add(jobName, jobData, jobOptions);
 
     // For repeatable jobs, store the mapping to the repeatable job key
@@ -230,7 +229,7 @@ export class CrawlingSchedulerService {
     this.logger.info('Crawling job scheduled successfully', {
       jobId,
       actualJobId: job.id,
-      connectorType,
+      connector,
       orgId,
       scheduleType: scheduleConfig.scheduleType,
     });
@@ -242,10 +241,10 @@ export class CrawlingSchedulerService {
    * Remove a specific job (internal method with proper repeatable job handling)
    */
   private async removeJobInternal(
-    connectorType: ConnectorType,
+    connector: string,
     orgId: string,
   ): Promise<void> {
-    const jobId = this.buildJobId(connectorType, orgId);
+    const jobId = this.buildJobId(connector, orgId);
 
     try {
       // First, remove any repeatable jobs for this connector/org
@@ -259,7 +258,7 @@ export class CrawlingSchedulerService {
       ] as JobType[]);
       const matchingJobs = allJobs.filter(
         (job) =>
-          job.data.connectorType === connectorType && job.data.orgId === orgId,
+          job.data.connector === connector && job.data.orgId === orgId,
       );
 
       // Remove repeatable jobs that match our connector/org
@@ -274,7 +273,7 @@ export class CrawlingSchedulerService {
         if (jobUsesThisPattern) {
           try {
             await this.queue.removeRepeatable(
-              this.buildJobName(connectorType),
+              this.buildJobName(connector),
               {
                 pattern: repeatableJob.pattern || undefined,
                 tz: repeatableJob.tz || undefined,
@@ -311,7 +310,7 @@ export class CrawlingSchedulerService {
 
       const matchingJobInstances = allJobInstances.filter(
         (job) =>
-          job.data.connectorType === connectorType && job.data.orgId === orgId,
+          job.data.connector === connector && job.data.orgId === orgId,
       );
 
       // Keep only the last 10 jobs, remove the rest
@@ -325,7 +324,7 @@ export class CrawlingSchedulerService {
           await job.remove();
           this.logger.debug('Removed old job instance', {
             jobId: job.id,
-            connectorType,
+            connector,
             orgId,
           });
         } catch (error) {
@@ -341,7 +340,7 @@ export class CrawlingSchedulerService {
     } catch (error) {
       this.logger.warn('Error during job removal', {
         jobId,
-        connectorType,
+        connector,
         orgId,
         error: error instanceof Error ? error.message : 'Unknown error',
       });
@@ -351,23 +350,23 @@ export class CrawlingSchedulerService {
   /**
    * Remove a job (public method)
    */
-  async removeJob(connectorType: ConnectorType, orgId: string): Promise<void> {
-    const jobId = this.buildJobId(connectorType, orgId);
+  async removeJob(connector: string, orgId: string): Promise<void> {
+    const jobId = this.buildJobId(connector, orgId);
 
     this.logger.info('Removing crawling job', {
       jobId,
-      connectorType,
+      connector,
       orgId,
     });
 
-    await this.removeJobInternal(connectorType, orgId);
+    await this.removeJobInternal(connector, orgId);
 
     // Also remove from paused jobs if it exists
     this.pausedJobs.delete(jobId);
 
     this.logger.info('Successfully removed crawling job', {
       jobId,
-      connectorType,
+      connector,
       orgId,
     });
   }
@@ -376,14 +375,14 @@ export class CrawlingSchedulerService {
    * Get job status for a specific connector type
    */
   async getJobStatus(
-    connectorType: ConnectorType,
+    connector: string,
     orgId: string,
   ): Promise<JobStatus | null> {
-    const jobId = this.buildJobId(connectorType, orgId);
+    const jobId = this.buildJobId(connector, orgId);
 
     this.logger.debug('Getting job status', {
       jobId,
-      connectorType,
+      connector,
       orgId,
     });
 
@@ -391,12 +390,12 @@ export class CrawlingSchedulerService {
       // First check if the job is paused
       const pausedJob = this.pausedJobs.get(jobId);
       if (pausedJob) {
-        this.logger.debug('Job is paused', { jobId, connectorType, orgId });
+        this.logger.debug('Job is paused', { jobId, connector, orgId });
         return {
           id: jobId,
-          name: this.buildJobName(connectorType),
+          name: this.buildJobName(connector),
           data: {
-            connectorType,
+            connector,
             scheduleConfig: pausedJob.scheduleConfig,
             orgId,
             userId: pausedJob.userId,
@@ -425,11 +424,11 @@ export class CrawlingSchedulerService {
 
       const matchingJobs = allJobs.filter(
         (job) =>
-          job.data.connectorType === connectorType && job.data.orgId === orgId,
+          job.data.connector === connector && job.data.orgId === orgId,
       );
 
       if (matchingJobs.length === 0) {
-        this.logger.debug('No jobs found', { jobId, connectorType, orgId });
+        this.logger.debug('No jobs found', { jobId, connector, orgId });
         return null;
       }
 
@@ -465,7 +464,7 @@ export class CrawlingSchedulerService {
     } catch (error) {
       this.logger.error('Failed to get job status', {
         jobId,
-        connectorType,
+        connector,
         orgId,
         error: error instanceof Error ? error.message : 'Unknown error',
       });
@@ -492,20 +491,20 @@ export class CrawlingSchedulerService {
       const orgJobs = jobs.filter((job) => job.data.orgId === orgId);
 
       // Group jobs by connector type
-      const jobsByConnector = new Map<ConnectorType, Job<CrawlingJobData>[]>();
+      const jobsByConnector = new Map<string, Job<CrawlingJobData>[]>();
 
       for (const job of orgJobs) {
-        const connectorType = job.data.connectorType;
-        if (!jobsByConnector.has(connectorType)) {
-          jobsByConnector.set(connectorType, []);
+        const connector = job.data.connector;
+        if (!jobsByConnector.has(connector)) {
+          jobsByConnector.set(connector, []);
         }
-        jobsByConnector.get(connectorType)!.push(job);
+        jobsByConnector.get(connector)!.push(job);
       }
 
       const jobStatuses: JobStatus[] = [];
 
       // For each connector type, keep only the last 10 jobs
-      for (const [_connectorType, connectorJobs] of jobsByConnector) {
+      for (const [_connector, connectorJobs] of jobsByConnector) {
         const sortedJobs = connectorJobs.sort(
           (a, b) => (b.timestamp || 0) - (a.timestamp || 0),
         );
@@ -535,9 +534,9 @@ export class CrawlingSchedulerService {
         if (pausedJob.orgId === orgId) {
           jobStatuses.push({
             id: jobId,
-            name: this.buildJobName(pausedJob.connectorType),
+            name: this.buildJobName(pausedJob.connector),
             data: {
-              connectorType: pausedJob.connectorType,
+              connector: pausedJob.connector,
               scheduleConfig: pausedJob.scheduleConfig,
               orgId: pausedJob.orgId,
               userId: pausedJob.userId,
@@ -619,14 +618,14 @@ export class CrawlingSchedulerService {
   /**
    * Pause a job by storing its configuration and removing the active job
    */
-  async pauseJob(connectorType: ConnectorType, orgId: string): Promise<void> {
-    const jobId = this.buildJobId(connectorType, orgId);
+  async pauseJob(connector: string, orgId: string): Promise<void> {
+    const jobId = this.buildJobId(connector, orgId);
 
-    this.logger.info('Pausing job', { jobId, connectorType, orgId });
+    this.logger.info('Pausing job', { jobId, connector, orgId });
 
     try {
       // First, get the current job to store its configuration
-      const currentJobStatus = await this.getJobStatus(connectorType, orgId);
+      const currentJobStatus = await this.getJobStatus(connector, orgId);
 
       if (!currentJobStatus) {
         throw new BadRequestError('No active job found to pause');
@@ -638,7 +637,7 @@ export class CrawlingSchedulerService {
 
       // Store the job configuration for later resume
       const pausedJobInfo: PausedJobInfo = {
-        connectorType,
+        connector,
         scheduleConfig: currentJobStatus.data.scheduleConfig,
         orgId,
         userId: currentJobStatus.data.userId,
@@ -651,11 +650,11 @@ export class CrawlingSchedulerService {
       this.pausedJobs.set(jobId, pausedJobInfo);
 
       // Remove the active job
-      await this.removeJobInternal(connectorType, orgId);
+      await this.removeJobInternal(connector, orgId);
 
       this.logger.info('Job paused successfully', {
         jobId,
-        connectorType,
+        connector,
         orgId,
         pausedAt: pausedJobInfo.pausedAt,
       });
@@ -671,10 +670,10 @@ export class CrawlingSchedulerService {
   /**
    * Resume a paused job using its stored configuration
    */
-  async resumeJob(connectorType: ConnectorType, orgId: string): Promise<void> {
-    const jobId = this.buildJobId(connectorType, orgId);
+  async resumeJob(connector: string, orgId: string): Promise<void> {
+    const jobId = this.buildJobId(connector, orgId);
 
-    this.logger.info('Resuming job', { jobId, connectorType, orgId });
+    this.logger.info('Resuming job', { jobId, connector, orgId });
 
     try {
       // Get the paused job configuration
@@ -686,7 +685,7 @@ export class CrawlingSchedulerService {
 
       // Create a new job with the stored configuration
       await this.scheduleJob(
-        connectorType,
+        connector,
         pausedJobInfo.scheduleConfig,
         orgId,
         pausedJobInfo.userId,
@@ -698,7 +697,7 @@ export class CrawlingSchedulerService {
 
       this.logger.info('Job resumed successfully', {
         jobId,
-        connectorType,
+        connector,
         orgId,
         resumedAt: new Date(),
       });
@@ -780,7 +779,7 @@ export class CrawlingSchedulerService {
         if (matchingJob) {
           try {
             // Get the job name for this connector type
-            const jobName = this.buildJobName(matchingJob.data.connectorType);
+            const jobName = this.buildJobName(matchingJob.data.connector);
 
             // Skip if we already processed this job name
             if (processedJobNames.has(jobName)) continue;
@@ -802,7 +801,7 @@ export class CrawlingSchedulerService {
           } catch (error) {
             this.logger.warn('Failed to remove repeatable job', {
               jobId: repeatableJob.id,
-              jobName: this.buildJobName(matchingJob.data.connectorType),
+              jobName: this.buildJobName(matchingJob.data.connector),
               orgId,
               error: error instanceof Error ? error.message : 'Unknown error',
             });
@@ -905,10 +904,10 @@ export class CrawlingSchedulerService {
    * Get detailed job information for debugging
    */
   async getJobDebugInfo(
-    connectorType: ConnectorType,
+    connector: string,
     orgId: string,
   ): Promise<any> {
-    const customJobId = this.buildJobId(connectorType, orgId);
+    const customJobId = this.buildJobId(connector, orgId);
     const repeatableJobKey = this.repeatableJobMap.get(customJobId);
     const pausedJobInfo = this.pausedJobs.get(customJobId);
 
@@ -926,7 +925,7 @@ export class CrawlingSchedulerService {
     ] as JobType[]);
     const matchingJobs = allJobs.filter(
       (job) =>
-        job.data.connectorType === connectorType && job.data.orgId === orgId,
+        job.data.connector === connector && job.data.orgId === orgId,
     );
 
     return {
@@ -937,12 +936,12 @@ export class CrawlingSchedulerService {
       pausedJobInfo,
       relevantRepeatableJobs,
       matchingJobInstances: matchingJobs.length,
-      connectorType,
+      connector,
       orgId,
     };
   }
 
-  private buildJobName(connectorType: ConnectorType): string {
-    return `crawl-${connectorType.toLowerCase().replace(/\s+/g, '-')}`;
+  private buildJobName(connector: string): string {
+    return `crawl-${connector.toLowerCase().replace(/\s+/g, '-')}`;
   }
 }
