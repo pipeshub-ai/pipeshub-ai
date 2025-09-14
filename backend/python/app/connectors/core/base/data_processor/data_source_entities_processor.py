@@ -306,8 +306,3 @@ class DataSourceEntitiesProcessor:
 
             return [User.from_arango_user(user) for user in users if user is not None]
 
-    async def get_all_active_users_by_app(self) -> List[User]:
-        async with self.data_store_provider.transaction() as tx_store:
-            users = await tx_store.get_users(self.org_id, active=True)
-
-        return [User.from_arango_user(user) for user in users if user is not None]

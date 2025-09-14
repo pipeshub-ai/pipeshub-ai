@@ -89,7 +89,7 @@ class ArangoTransactionStore(TransactionStore):
             }
 
             # Get the configuration for the current record type
-            record_type = type(record)
+            record_type = record.record_type
             if record_type not in record_type_config:
                 self.logger.error(f"❌ Unsupported record type: {record_type}")
                 return
@@ -222,7 +222,6 @@ class ArangoTransactionStore(TransactionStore):
                     "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                     "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                 }
-        print(record_edge, "record_edge")
         await self.arango_service.batch_create_edges(
             [record_edge], collection=CollectionNames.BELONGS_TO.value, transaction=self.txn
         )

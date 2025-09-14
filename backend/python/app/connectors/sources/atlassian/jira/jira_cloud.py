@@ -433,7 +433,6 @@ class JiraConnector(BaseConnector):
 
     async def run_sync(self) -> None:
         users = await self.data_entities_processor.get_all_active_users()
-        # users = await self.data_entities_processor.get_all_active_users_by_app(ConfluenceApp())
         if not users:
             self.logger.info("No users found")
             return
