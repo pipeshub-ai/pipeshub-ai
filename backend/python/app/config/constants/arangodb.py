@@ -57,6 +57,18 @@ class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"
     UPLOAD = "UPLOAD"
 
+class LegacyCollectionNames(Enum):
+    KNOWLEDGE_BASE = "knowledgeBase"
+    PERMISSIONS_TO_KNOWLEDGE_BASE = "permissionsToKnowledgeBase"
+    BELONGS_TO_KNOWLEDGE_BASE = "belongsToKnowledgeBase"
+    BELONGS_TO_KB = "belongsToKB"
+
+class LegacyGraphNames(Enum):
+    FILE_ACCESS_GRAPH = "fileAccessGraph"
+
+class GraphNames(Enum):
+    KNOWLEDGE_GRAPH = "knowledgeGraph"
+
 class CollectionNames(Enum):
     # Records and Record relations
     RECORDS = "records"
@@ -65,13 +77,9 @@ class CollectionNames(Enum):
     SYNC_POINTS = "syncPoints"
 
     # Knowledge base
-    KNOWLEDGE_BASE = "knowledgeBase"
     IS_OF_TYPE = "isOfType"
-    BELONGS_TO_KNOWLEDGE_BASE = "belongsToKnowledgeBase"
-    PERMISSIONS_TO_KNOWLEDGE_BASE = "permissionsToKnowledgeBase"
-    BELONGS_TO_KB = "belongsToKB"
-    PERMISSIONS_TO_KB = "permissionsToKB"
     PERMISSION = "permission"
+    PERMISSIONS_TO_KB = "permissionsToKB"
 
     # Drive related
     DRIVES = "drives"
@@ -79,10 +87,9 @@ class CollectionNames(Enum):
 
     # Record types
     FILES = "files"
-    ATTACHMENTS = "attachments"
     LINKS = "links"
     MAILS = "mails"
-    MESSAGES = "messages"
+    #MESSAGES = "messages"
     WEBPAGES = "webpages"
     TICKETS = "tickets"
 
@@ -90,11 +97,10 @@ class CollectionNames(Enum):
     PEOPLE = "people"
     USERS = "users"
     GROUPS = "groups"
-    USER_GROUPS = "userGroups"
     ORGS = "organizations"
-    DOMAINS = "domains"
+    # DOMAINS = "domains"
     ANYONE = "anyone"
-    ANYONE_WITH_LINK = "anyoneWithLink"
+    # ANYONE_WITH_LINK = "anyoneWithLink"
     BELONGS_TO = "belongsTo"
     TEAMS = "teams"
 
@@ -119,10 +125,6 @@ class CollectionNames(Enum):
     CHANNEL_HISTORY = "channelHistory"
     PAGE_TOKENS = "pageTokens"
 
-    # Graphs
-    FILE_ACCESS_GRAPH = "fileAccessGraph"
-    KNOWLEDGE_GRAPH = "knowledgeGraph"
-
     APPS = "apps"
     ORG_APP_RELATION = "orgAppRelation"
     USER_APP_RELATION = "userAppRelation"
@@ -130,17 +132,15 @@ class CollectionNames(Enum):
 
     BLOCKS = "blocks"
 
-    WEBPAGE_RECORD="webpageRecord"
-    WEBPAGE_COMMENT_RECORD="webpageCommentRecord"
+    # WEBPAGE_RECORD="webpageRecord"
+    # WEBPAGE_COMMENT_RECORD="webpageCommentRecord"
 
-    NOTION_DATABASE_RECORD="notionDatabaseRecord"
+    # NOTION_DATABASE_RECORD="notionDatabaseRecord"
     BELONGS_TO_RECORD_GROUP="belongsToRecordGroup"
 
     # Agent Builder collections
     AGENT_TEMPLATES = "agentTemplates"
     AGENT_INSTANCES = "agentInstances"
-    TEMPLATE_ACCESS = "templateAccess"
-    AGENT_ACCESS = "agentAccess"
 
 class QdrantCollectionNames(Enum):
     RECORDS = "records"

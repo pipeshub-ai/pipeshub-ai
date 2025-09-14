@@ -12,6 +12,7 @@ from app.api.middlewares.auth import authMiddleware
 from app.api.routes.entity import router as entity_router
 from app.config.constants.arangodb import AccountType, Connectors
 from app.connectors.api.router import router
+from app.connectors.core.base.data_store.arango_data_store import ArangoDataStore
 from app.connectors.sources.localKB.api.kb_router import kb_router
 from app.connectors.sources.microsoft.onedrive.connector import (
     OneDriveConnector,
@@ -119,7 +120,8 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
                 if app["name"].lower() == Connectors.ONEDRIVE.value.lower():
                     config_service = app_container.config_service()
                     arango_service = await app_container.arango_service()
-                    onedrive_connector = await OneDriveConnector.create_connector(logger, arango_service, config_service)
+                    data_store_provider = ArangoDataStore(logger, arango_service)
+                    onedrive_connector = await OneDriveConnector.create_connector(logger, data_store_provider, config_service)
                     await onedrive_connector.init()
                     app_container.onedrive_connector.override(providers.Object(onedrive_connector))
                     asyncio.create_task(onedrive_connector.run_sync())
@@ -128,8 +130,9 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
                 if app["name"].lower() == Connectors.SHAREPOINT_ONLINE.value.replace(" ", "").lower():
                     config_service = app_container.config_service()
                     arango_service = await app_container.arango_service()
+                    data_store_provider = ArangoDataStore(logger, arango_service)
 
-                    sharepoint_connector = await SharePointConnector.create_connector(logger, arango_service, config_service)
+                    sharepoint_connector = await SharePointConnector.create_connector(logger, data_store_provider, config_service)
                     await sharepoint_connector.init()
                     app_container.sharepoint_connector.override(providers.Object(sharepoint_connector))
                     asyncio.create_task(sharepoint_connector.run_sync())

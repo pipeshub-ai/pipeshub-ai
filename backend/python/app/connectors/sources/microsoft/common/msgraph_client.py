@@ -16,9 +16,8 @@ from msgraph.generated.models.drive_item import DriveItem
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 from msgraph.generated.users.users_request_builder import UsersRequestBuilder
 
-from app.models.entities import FileRecord
+from app.models.entities import AppUser, AppUserGroup, FileRecord
 from app.models.permission import Permission, PermissionType
-from app.models.users import User, UserGroup
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -101,7 +100,7 @@ class DeltaGetResponse(BaseDeltaFunctionResponse, Parsable):
         writer.write_collection_of_object_values("value", self.value)
 
 class MSGraphClient:
-    def __init__(self, client: GraphServiceClient, logger: Logger, max_requests_per_second: int = 10) -> None:
+    def __init__(self, app_name: str, client: GraphServiceClient, logger: Logger, max_requests_per_second: int = 10) -> None:
         """
         Initializes the OneDriveSync instance with a rate limiter.
 
@@ -111,10 +110,11 @@ class MSGraphClient:
             max_requests_per_second (int): Maximum allowed API requests per second.
         """
         self.client = client
+        self.app_name = app_name
         self.logger = logger
         self.rate_limiter = AsyncLimiter(max_requests_per_second, 1)
 
-    async def get_all_user_groups(self) -> List[UserGroup]:
+    async def get_all_user_groups(self) -> List[AppUserGroup]:
         """
         Retrieves a list of all groups in the organization.
 
@@ -132,10 +132,11 @@ class MSGraphClient:
                     result = await self.client.groups.get_next_page(result.odata_next_link)
                 groups.extend(result.value)
 
-            user_groups: List[UserGroup] = []
+            user_groups: List[AppUserGroup] = []
             for group in groups:
-                user_groups.append(UserGroup(
+                user_groups.append(AppUserGroup(
                     source_user_group_id=group.id,
+                    app_name=self.app_name,
                     name=group.display_name,
                     mail=group.mail,
                     description=group.description,
@@ -181,7 +182,7 @@ class MSGraphClient:
             self.logger.error(f"Error fetching group members for {group_id}: {e}")
             return []
 
-    async def get_all_users(self) -> List[User]:
+    async def get_all_users(self) -> List[AppUser]:
         """
         Retrieves a list of all users in the organization.
 
@@ -211,9 +212,10 @@ class MSGraphClient:
                     users.extend(result.value)
                 self.logger.info(f"Retrieved {len(users)} users.")
 
-            user_list: List[User] = []
+            user_list: List[AppUser] = []
             for user in users:
-                user_list.append(User(
+                user_list.append(AppUser(
+                    app_name=self.app_name,
                     source_user_id=user.id,
                     first_name=user.display_name,
                     last_name=user.surname,
@@ -221,6 +223,7 @@ class MSGraphClient:
                     email=user.mail or user.user_principal_name,
                     is_active=user.account_enabled,
                     title=user.job_title,
+                    source_created_at=user.created_date_time.timestamp() if user.created_date_time else None,
                 ))
 
             return user_list

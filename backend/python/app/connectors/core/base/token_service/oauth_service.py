@@ -12,7 +12,6 @@ from urllib.parse import urlencode
 from aiohttp import ClientSession
 
 from app.config.key_value_store import KeyValueStore
-from app.connectors.services.base_arango_service import BaseArangoService
 
 
 class GrantType(Enum):
@@ -99,10 +98,9 @@ class OAuthToken:
 class OAuthProvider(ABC):
     """Abstract OAuth Provider interface"""
 
-    def __init__(self, config: OAuthConfig, key_value_store: KeyValueStore, base_arango_service: BaseArangoService, credentials_path: str) -> None:
+    def __init__(self, config: OAuthConfig, key_value_store: KeyValueStore, credentials_path: str) -> None:
         self.config = config
         self.key_value_store = key_value_store
-        self.base_arango_service = base_arango_service
         self._session: Optional[ClientSession] = None
         self.credentials_path = credentials_path
         self.token = None

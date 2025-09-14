@@ -16,8 +16,8 @@ from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
+from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.base.token_service.oauth_service import OAuthToken
-from app.connectors.services.base_arango_service import BaseArangoService
 from app.connectors.sources.atlassian.core.apps import JiraApp
 from app.connectors.sources.atlassian.core.oauth import (
     OAUTH_CONFIG_PATH,
@@ -26,6 +26,7 @@ from app.connectors.sources.atlassian.core.oauth import (
     AtlassianScope,
 )
 from app.models.entities import (
+    AppUser,
     Record,
     RecordGroup,
     RecordGroupType,
@@ -33,7 +34,6 @@ from app.models.entities import (
     TicketRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-from app.models.users import User
 
 RESOURCE_URL = "https://api.atlassian.com/oauth/token/accessible-resources"
 BASE_URL = "https://api.atlassian.com/ex/jira"
@@ -297,7 +297,7 @@ class JiraClient:
             for resource in response
         ]
 
-    async def fetch_issues_with_permissions(self, project_key: str, project_id: str, user: User) -> List[Tuple[Record, List[Permission]]]:
+    async def fetch_issues_with_permissions(self, project_key: str, project_id: str, user: AppUser) -> List[Tuple[Record, List[Permission]]]:
         url = f"{BASE_URL}/{self.cloud_id}/rest/api/3/search"
         issues = []
 
@@ -340,7 +340,7 @@ class JiraClient:
                 record_type=RecordType.TICKET,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.JIRA.value,
-                record_group_type=RecordGroupType.JIRA_PROJECT.value,
+                record_group_type=RecordGroupType.JIRA_PROJECT,
                 external_record_group_id=project_id,
                 version=0,
                 mime_type=MimeTypes.PLAIN_TEXT.value,
@@ -382,7 +382,7 @@ class JiraClient:
 
         return record_groups
 
-    async def fetch_users(self) -> List[User]:
+    async def fetch_users(self) -> List[AppUser]:
         url = f"{BASE_URL}/{self.cloud_id}/rest/api/3/users/search"
         users = []
         base_url = f"{BASE_URL}/{self.cloud_id}"
@@ -393,7 +393,7 @@ class JiraClient:
             if not next_url:
                 break
             url = f"{base_url}/{next_url}"
-        return [User(email=user["emailAddress"], org_id=self.org_id) for user in users]
+        return [AppUser(email=user["emailAddress"], org_id=self.org_id, source_user_id=user["accountId"]) for user in users]
 
     async def fetch_issue_content(
         self,
@@ -415,9 +415,8 @@ class JiraClient:
 
 class JiraConnector(BaseConnector):
     def __init__(self, logger: Logger, data_entities_processor: DataSourceEntitiesProcessor,
-                 arango_service: BaseArangoService,
-                 config_service: ConfigurationService) -> None:
-        super().__init__(JiraApp(), logger, data_entities_processor, arango_service, config_service)
+                 data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> None:
+        super().__init__(JiraApp(), logger, data_entities_processor, data_store_provider, config_service)
         self.provider = None
 
     async def init(self) -> None:
@@ -429,7 +428,6 @@ class JiraConnector(BaseConnector):
             redirect_uri=self.config["redirect_uri"],
             scopes=AtlassianScope.get_full_access(),
             key_value_store=self.config_service.store,
-            base_arango_service=self.data_entities_processor.arango_service,
             credentials_path=f"{OAUTH_CREDENTIALS_PATH}/{self.data_entities_processor.org_id}"
         )
 

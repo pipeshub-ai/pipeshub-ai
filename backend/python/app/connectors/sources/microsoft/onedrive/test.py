@@ -6,6 +6,7 @@ from arango import ArangoClient
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
 from app.config.providers.in_memory_store import InMemoryKeyValueStore
+from app.connectors.core.base.data_store.arango_data_store import ArangoDataStore
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.connectors.sources.microsoft.onedrive.connector import (
     OneDriveConnector,
@@ -59,20 +60,18 @@ async def test_run() -> None:
     arango_client = ArangoClient()
     arango_service = BaseArangoService(logger, arango_client, config_service, kafka_service)
     await arango_service.connect()
-
+    data_store_provider = ArangoDataStore(logger, arango_service)
     if user_email:
         await create_test_users(user_email, arango_service)
 
     config = {
-        "credentials": {
-            "tenantId": os.getenv("AZURE_TENANT_ID"),
-            "clientId": os.getenv("AZURE_CLIENT_ID"),
-            "clientSecret": os.getenv("AZURE_CLIENT_SECRET"),
-            "hasAdminConsent": True,
-        }
+        "tenantId": os.getenv("AZURE_TENANT_ID"),
+        "clientId": os.getenv("AZURE_CLIENT_ID"),
+        "clientSecret": os.getenv("AZURE_CLIENT_SECRET"),
+        "hasAdminConsent": True,
     }
-    key_value_store.set_config(f"services/connectors/onedrive/config/{org_id}", config)
-    onedrive_connector = await OneDriveConnector.create_connector(logger, arango_service, config_service)
+    await key_value_store.create_key("/services/connectors/onedrive/config", config)
+    onedrive_connector = await OneDriveConnector.create_connector(logger, data_store_provider, config_service)
     await onedrive_connector.init()
     await onedrive_connector.run_sync()
 
