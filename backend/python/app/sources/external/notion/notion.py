@@ -27,10 +27,10 @@ class NotionDataSource:
 
     def __init__(self, client: NotionClient) -> None:
         """Initialize with NotionClient."""
-        self.http = client.get_client()
-        if self.http is None:
+        self.http_client = client.get_client().get_client()
+        if self.http_client is None:
             raise ValueError('HTTP client is not initialized')
-        self.base_url = self.http.get_base_url()
+        self.base_url = self.http_client.get_base_url()
 
     def get_data_source(self) -> 'NotionDataSource':
         return self
@@ -52,11 +52,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -81,11 +81,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -109,12 +109,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="PATCH",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -137,11 +137,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="DELETE",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -176,11 +176,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -204,12 +204,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="PATCH",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -234,12 +234,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="POST",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -265,11 +265,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -293,12 +293,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="PATCH",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -335,11 +335,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -364,12 +364,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="POST",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -393,12 +393,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="POST",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -421,11 +421,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -449,12 +449,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="PATCH",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -480,12 +480,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="POST",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -516,12 +516,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="PATCH",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -545,11 +545,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -580,12 +580,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="POST",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -610,12 +610,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="POST",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -652,11 +652,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -679,11 +679,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -708,12 +708,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="POST",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -737,12 +737,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="POST",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -766,12 +766,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="POST",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -794,11 +794,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -826,11 +826,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -855,12 +855,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="POST",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -890,11 +890,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -917,11 +917,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -943,11 +943,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -967,11 +967,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -1008,11 +1008,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -1035,11 +1035,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -1062,12 +1062,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="POST",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -1091,12 +1091,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="PUT",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -1120,12 +1120,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="PATCH",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -1148,11 +1148,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="DELETE",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -1189,11 +1189,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -1216,11 +1216,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -1243,12 +1243,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="POST",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -1272,12 +1272,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="PUT",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -1301,12 +1301,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="PATCH",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -1329,11 +1329,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="DELETE",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -1358,11 +1358,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -1386,12 +1386,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="PATCH",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -1414,11 +1414,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -1442,12 +1442,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="POST",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -1472,11 +1472,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -1500,12 +1500,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="PATCH",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -1540,11 +1540,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -1575,12 +1575,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="PATCH",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -1604,11 +1604,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="DELETE",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -1639,12 +1639,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="POST",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -1667,11 +1667,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -1696,11 +1696,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -1724,11 +1724,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -1759,12 +1759,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="PATCH",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -1788,11 +1788,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="DELETE",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -1815,11 +1815,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -1843,12 +1843,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="PATCH",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -1873,11 +1873,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -1901,12 +1901,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="PATCH",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -1929,11 +1929,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -1957,12 +1957,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="PATCH",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -1986,12 +1986,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="POST",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -2014,11 +2014,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -2044,12 +2044,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="POST",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -2073,11 +2073,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -2108,12 +2108,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="PATCH",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -2136,11 +2136,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -2164,12 +2164,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="PATCH",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -2193,12 +2193,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="POST",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -2221,11 +2221,11 @@ class NotionDataSource:
         request = HTTPRequest(
             method="GET",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
@@ -2249,12 +2249,12 @@ class NotionDataSource:
         request = HTTPRequest(
             method="PATCH",
             url=url,
-            headers=self.http.headers,
+            headers=self.http_client.headers,
             query_params={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
-            response = await self.http.execute(request)
+            response = await self.http_client.execute(request)
             return NotionResponse(success=True, data=response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
