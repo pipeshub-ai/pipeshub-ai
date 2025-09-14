@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from logging import Logger
-from typing import TYPE_CHECKING, AsyncContextManager, Dict, List, Optional
+from typing import TYPE_CHECKING, AsyncContextManager, List, Optional
 
 from app.config.constants.arangodb import Connectors
 from app.models.entities import (
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 class DataStoreProvider(ABC):
     logger: Logger
 
-    def __init__(self, logger: Logger):
+    def __init__(self, logger: Logger) -> None:
         self.logger = logger
 
     """Base class for all data store providers"""
@@ -162,17 +162,11 @@ class TransactionStore(BaseDataStore):
     """Abstract transaction-aware data store that operates within a transaction context"""
 
     @abstractmethod
-    async def commit(self):
+    async def commit(self) -> None:
         """Commit the transaction"""
         pass
 
     @abstractmethod
-    async def rollback(self):
+    async def rollback(self) -> None:
         """Rollback the transaction"""
         pass
-
-    @abstractmethod
-    async def batch_create_edges(self, edges: List[Dict], collection: str) -> None:
-        pass
-
-

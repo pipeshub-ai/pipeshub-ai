@@ -37,7 +37,7 @@ write_collections = [
 class ArangoTransactionStore(TransactionStore):
     """ArangoDB transaction-aware data store"""
 
-    def __init__(self, arango_service: BaseArangoService, txn: TransactionDatabase):
+    def __init__(self, arango_service: BaseArangoService, txn: TransactionDatabase) -> None:
         self.arango_service = arango_service
         self.txn = txn
         self.logger = arango_service.logger
@@ -195,11 +195,11 @@ class ArangoTransactionStore(TransactionStore):
     async def batch_upsert_anyone_same_org(self, anyone_same_org: List[AnyoneSameOrg]) -> None:
         return await self.arango_service.batch_upsert_anyone_same_org(anyone_same_org, transaction=self.txn)
 
-    async def commit(self):
+    async def commit(self) -> None:
         """Commit the ArangoDB transaction"""
         self.txn.commit_transaction()
 
-    async def rollback(self):
+    async def rollback(self) -> None:
         """Rollback the ArangoDB transaction"""
         self.txn.abort_transaction()
 
@@ -286,7 +286,7 @@ class ArangoTransactionStore(TransactionStore):
 
 class ArangoDataStore(DataStoreProvider):
     """ArangoDB data store"""
-    def __init__(self, logger: Logger, arango_service: BaseArangoService):
+    def __init__(self, logger: Logger, arango_service: BaseArangoService) -> None:
         self.arango_service = arango_service
 
     @asynccontextmanager
@@ -312,7 +312,7 @@ class ArangoDataStore(DataStoreProvider):
         else:
             await tx_store.commit()
 
-    async def execute_in_transaction(self, func, *args, **kwargs):
+    async def execute_in_transaction(self, func, *args, **kwargs) -> None:
         """Execute function within ArangoDB transaction"""
         async with self.transaction() as tx_store:
             return func(tx_store, *args, **kwargs)
