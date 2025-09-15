@@ -33,7 +33,7 @@ from app.sources.client.microsoft.microsoft import MSGraphClient
 
 
 # Outlook-specific response wrapper
-class OutlookResponse:
+class OutlookCalendarContactsResponse:
     """Standardized Outlook API response wrapper."""
     success: bool
     data: Optional[Dict[str, Any]] = None
@@ -55,7 +55,7 @@ class OutlookResponse:
 # Set up logger
 logger = logging.getLogger(__name__)
 
-class OutlookDataSource:
+class OutlookCalendarContactsDataSource:
     """
     Comprehensive Microsoft Outlook API client with complete Mail, Calendar, and Contacts coverage.
 
@@ -72,7 +72,7 @@ class OutlookDataSource:
     - Extended properties support for custom data
     - Microsoft Graph SDK integration with Outlook-specific optimizations
     - Async snake_case method names for all operations
-    - Standardized OutlookResponse format for all responses
+    - Standardized OutlookCalendarContactsResponse format for all responses
     - Comprehensive error handling and Outlook-specific response processing
 
     EXCLUDED OPERATIONS (modify EXCLUDED_KEYWORDS list to change):
@@ -110,11 +110,11 @@ class OutlookDataSource:
             raise ValueError("Client must be a Microsoft Graph SDK client")
         logger.info("Outlook client initialized with 681 methods")
 
-    def _handle_outlook_response(self, response: object) -> OutlookResponse:
+    def _handle_outlook_response(self, response: object) -> OutlookCalendarContactsResponse:
         """Handle Outlook API response with comprehensive error handling."""
         try:
             if response is None:
-                return OutlookResponse(success=False, error="Empty response from Outlook API")
+                return OutlookCalendarContactsResponse(success=False, error="Empty response from Outlook API")
 
             success = True
             error_msg = None
@@ -136,16 +136,16 @@ class OutlookDataSource:
                 success = False
                 error_msg = f"{response.code}: {response.message}"
 
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=success,
                 data=response,
                 error=error_msg,
             )
         except Exception as e:
             logger.error(f"Error handling Outlook response: {e}")
-            return OutlookResponse(success=False, error=str(e))
+            return OutlookCalendarContactsResponse(success=False, error=str(e))
 
-    def get_data_source(self) -> 'OutlookDataSource':
+    def get_data_source(self) -> 'OutlookCalendarContactsDataSource':
         """Get the underlying Outlook client."""
         return self
 
@@ -166,7 +166,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get mailboxSettings property value.
         Outlook operation: GET /employeeExperience/communities/{community-id}/owners/{user-id}/mailboxSettings
         Operation type: mail
@@ -185,7 +185,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -224,7 +224,7 @@ class OutlookDataSource:
             response = await self.client.employee_experience.communities.by_communitie_id(community_id).owners.by_owner_id(user_id).mailbox_settings.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -243,7 +243,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update property mailboxSettings value..
         Outlook operation: PATCH /employeeExperience/communities/{community-id}/owners/{user-id}/mailboxSettings
         Operation type: mail
@@ -261,7 +261,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -300,7 +300,7 @@ class OutlookDataSource:
             response = await self.client.employee_experience.communities.by_communitie_id(community_id).owners.by_owner_id(user_id).mailbox_settings.patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -319,7 +319,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to messages for groups.
         Outlook operation: POST /groups/{group-id}/team/channels/{channel-id}/messages
         Operation type: mail
@@ -337,7 +337,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -376,7 +376,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).team.channels.by_channel_id(channel_id).messages.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -397,7 +397,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get messages from groups.
         Outlook operation: GET /groups/{group-id}/team/channels/{channel-id}/messages
         Operation type: mail
@@ -417,7 +417,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -456,7 +456,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).team.channels.by_channel_id(channel_id).messages.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -474,7 +474,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to messages for groups.
         Outlook operation: POST /groups/{group-id}/team/primaryChannel/messages
         Operation type: mail
@@ -491,7 +491,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -530,7 +530,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).team.primary_channel.messages.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -550,7 +550,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get messages from groups.
         Outlook operation: GET /groups/{group-id}/team/primaryChannel/messages
         Operation type: mail
@@ -569,7 +569,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -608,7 +608,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).team.primary_channel.messages.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -626,7 +626,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get mailboxSettings property value.
         Outlook operation: GET /invitations/invitedUser/mailboxSettings
         Operation type: mail
@@ -643,7 +643,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -682,7 +682,7 @@ class OutlookDataSource:
             response = await self.client.invitations.invited_user.mailbox_settings.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -699,7 +699,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update property mailboxSettings value..
         Outlook operation: PATCH /invitations/invitedUser/mailboxSettings
         Operation type: mail
@@ -715,7 +715,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -754,7 +754,7 @@ class OutlookDataSource:
             response = await self.client.invitations.invited_user.mailbox_settings.patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -771,7 +771,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create MailFolder.
         Outlook operation: POST /me/mailFolders
         Operation type: mail
@@ -787,7 +787,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -826,7 +826,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -846,7 +846,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """List mailFolders.
         Outlook operation: GET /me/mailFolders
         Operation type: mail
@@ -865,7 +865,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -904,7 +904,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -923,7 +923,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /me/mailFolders/delta()
         Operation type: mail
@@ -941,7 +941,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -980,7 +980,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -998,7 +998,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete mailFolder.
         Outlook operation: DELETE /me/mailFolders/{mailFolder-id}
         Operation type: mail
@@ -1015,7 +1015,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -1054,7 +1054,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -1073,7 +1073,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get mailFolder.
         Outlook operation: GET /me/mailFolders/{mailFolder-id}
         Operation type: mail
@@ -1091,7 +1091,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -1130,7 +1130,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -1148,7 +1148,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update mailSearchFolder.
         Outlook operation: PATCH /me/mailFolders/{mailFolder-id}
         Operation type: mail
@@ -1165,7 +1165,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -1204,7 +1204,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -1222,7 +1222,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create mailSearchFolder.
         Outlook operation: POST /me/mailFolders/{mailFolder-id}/childFolders
         Operation type: mail
@@ -1239,7 +1239,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -1278,7 +1278,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -1299,7 +1299,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """List childFolders.
         Outlook operation: GET /me/mailFolders/{mailFolder-id}/childFolders
         Operation type: mail
@@ -1319,7 +1319,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -1358,7 +1358,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -1378,7 +1378,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /me/mailFolders/{mailFolder-id}/childFolders/delta()
         Operation type: mail
@@ -1397,7 +1397,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -1436,7 +1436,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -1455,7 +1455,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property childFolders for me.
         Outlook operation: DELETE /me/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}
         Operation type: mail
@@ -1473,7 +1473,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -1512,7 +1512,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -1533,7 +1533,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get childFolders from me.
         Outlook operation: GET /me/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}
         Operation type: mail
@@ -1553,7 +1553,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -1592,7 +1592,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -1611,7 +1611,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property childFolders in me.
         Outlook operation: PATCH /me/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}
         Operation type: mail
@@ -1629,7 +1629,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -1668,7 +1668,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -1687,7 +1687,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action copy.
         Outlook operation: POST /me/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/copy
         Operation type: mail
@@ -1705,7 +1705,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -1744,7 +1744,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).copy.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -1763,7 +1763,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to messageRules for me.
         Outlook operation: POST /me/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messageRules
         Operation type: mail
@@ -1781,7 +1781,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -1820,7 +1820,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).message_rules.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -1841,7 +1841,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get messageRules from me.
         Outlook operation: GET /me/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messageRules
         Operation type: mail
@@ -1861,7 +1861,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -1900,7 +1900,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).message_rules.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -1920,7 +1920,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property messageRules for me.
         Outlook operation: DELETE /me/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messageRules/{messageRule-id}
         Operation type: mail
@@ -1939,7 +1939,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -1978,7 +1978,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).message_rules.by_message_rule_id(messageRule_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -1999,7 +1999,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get messageRules from me.
         Outlook operation: GET /me/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messageRules/{messageRule-id}
         Operation type: mail
@@ -2019,7 +2019,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -2058,7 +2058,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).message_rules.by_message_rule_id(messageRule_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -2078,7 +2078,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property messageRules in me.
         Outlook operation: PATCH /me/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messageRules/{messageRule-id}
         Operation type: mail
@@ -2097,7 +2097,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -2136,7 +2136,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).message_rules.by_message_rule_id(messageRule_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -2155,7 +2155,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to messages for me.
         Outlook operation: POST /me/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages
         Operation type: mail
@@ -2173,7 +2173,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -2212,7 +2212,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -2233,7 +2233,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get messages from me.
         Outlook operation: GET /me/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages
         Operation type: mail
@@ -2253,7 +2253,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -2292,7 +2292,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -2314,7 +2314,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /me/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/delta()
         Operation type: mail
@@ -2335,7 +2335,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -2374,7 +2374,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -2394,7 +2394,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property messages for me.
         Outlook operation: DELETE /me/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}
         Operation type: mail
@@ -2413,7 +2413,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -2452,7 +2452,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -2473,7 +2473,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get messages from me.
         Outlook operation: GET /me/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}
         Operation type: mail
@@ -2493,7 +2493,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -2532,7 +2532,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -2552,7 +2552,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property messages in me.
         Outlook operation: PATCH /me/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}
         Operation type: mail
@@ -2571,7 +2571,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -2610,7 +2610,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -2630,7 +2630,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete media content for the navigation property messages in me.
         Outlook operation: DELETE /me/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/$value
         Operation type: mail
@@ -2649,7 +2649,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -2688,7 +2688,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).value.delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -2707,7 +2707,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get media content for the navigation property messages from me.
         Outlook operation: GET /me/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/$value
         Operation type: mail
@@ -2725,7 +2725,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -2764,7 +2764,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).value.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -2784,7 +2784,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update media content for the navigation property messages in me.
         Outlook operation: PUT /me/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/$value
         Operation type: mail
@@ -2803,7 +2803,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -2842,7 +2842,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).value.put(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -2862,7 +2862,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to attachments for me.
         Outlook operation: POST /me/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/attachments
         Operation type: mail
@@ -2881,7 +2881,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -2920,7 +2920,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).attachments.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -2942,7 +2942,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from me.
         Outlook operation: GET /me/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/attachments
         Operation type: mail
@@ -2963,7 +2963,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -3002,7 +3002,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).attachments.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -3022,7 +3022,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createUploadSession.
         Outlook operation: POST /me/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/attachments/createUploadSession
         Operation type: mail
@@ -3041,7 +3041,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -3080,7 +3080,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).attachments.create_upload_session.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -3101,7 +3101,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property attachments for me.
         Outlook operation: DELETE /me/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/attachments/{attachment-id}
         Operation type: mail
@@ -3121,7 +3121,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -3160,7 +3160,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).attachments.by_attachment_id(attachment_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -3182,7 +3182,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from me.
         Outlook operation: GET /me/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/attachments/{attachment-id}
         Operation type: mail
@@ -3203,7 +3203,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -3242,7 +3242,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).attachments.by_attachment_id(attachment_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -3262,7 +3262,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action copy.
         Outlook operation: POST /me/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/copy
         Operation type: mail
@@ -3281,7 +3281,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -3320,7 +3320,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).copy.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -3340,7 +3340,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createForward.
         Outlook operation: POST /me/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/createForward
         Operation type: mail
@@ -3359,7 +3359,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -3398,7 +3398,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).create_forward.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -3418,7 +3418,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createReply.
         Outlook operation: POST /me/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/createReply
         Operation type: mail
@@ -3437,7 +3437,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -3476,7 +3476,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).create_reply.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -3496,7 +3496,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createReplyAll.
         Outlook operation: POST /me/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/createReplyAll
         Operation type: mail
@@ -3515,7 +3515,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -3554,7 +3554,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).create_reply_all.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -3574,7 +3574,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action forward.
         Outlook operation: POST /me/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/forward
         Operation type: mail
@@ -3593,7 +3593,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -3632,7 +3632,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).forward.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -3652,7 +3652,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action move.
         Outlook operation: POST /me/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/move
         Operation type: mail
@@ -3671,7 +3671,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -3710,7 +3710,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).move.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -3729,7 +3729,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /me/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/permanentDelete
         Operation type: mail
@@ -3747,7 +3747,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -3786,7 +3786,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -3806,7 +3806,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action reply.
         Outlook operation: POST /me/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/reply
         Operation type: mail
@@ -3825,7 +3825,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -3864,7 +3864,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).reply.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -3884,7 +3884,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action replyAll.
         Outlook operation: POST /me/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/replyAll
         Operation type: mail
@@ -3903,7 +3903,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -3942,7 +3942,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).reply_all.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -3961,7 +3961,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action send.
         Outlook operation: POST /me/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/send
         Operation type: mail
@@ -3979,7 +3979,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -4018,7 +4018,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).send.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -4037,7 +4037,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action move.
         Outlook operation: POST /me/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/move
         Operation type: mail
@@ -4055,7 +4055,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -4094,7 +4094,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).move.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -4112,7 +4112,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /me/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/permanentDelete
         Operation type: mail
@@ -4129,7 +4129,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -4168,7 +4168,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -4186,7 +4186,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action copy.
         Outlook operation: POST /me/mailFolders/{mailFolder-id}/copy
         Operation type: mail
@@ -4203,7 +4203,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -4242,7 +4242,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).copy.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -4260,7 +4260,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create rule.
         Outlook operation: POST /me/mailFolders/{mailFolder-id}/messageRules
         Operation type: mail
@@ -4277,7 +4277,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -4316,7 +4316,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).message_rules.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -4336,7 +4336,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """List rules.
         Outlook operation: GET /me/mailFolders/{mailFolder-id}/messageRules
         Operation type: mail
@@ -4355,7 +4355,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -4394,7 +4394,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).message_rules.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -4413,7 +4413,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete messageRule.
         Outlook operation: DELETE /me/mailFolders/{mailFolder-id}/messageRules/{messageRule-id}
         Operation type: mail
@@ -4431,7 +4431,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -4470,7 +4470,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).message_rules.by_message_rule_id(messageRule_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -4490,7 +4490,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get rule.
         Outlook operation: GET /me/mailFolders/{mailFolder-id}/messageRules/{messageRule-id}
         Operation type: mail
@@ -4509,7 +4509,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -4548,7 +4548,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).message_rules.by_message_rule_id(messageRule_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -4567,7 +4567,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update rule.
         Outlook operation: PATCH /me/mailFolders/{mailFolder-id}/messageRules/{messageRule-id}
         Operation type: mail
@@ -4585,7 +4585,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -4624,7 +4624,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).message_rules.by_message_rule_id(messageRule_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -4642,7 +4642,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create message in a mailfolder.
         Outlook operation: POST /me/mailFolders/{mailFolder-id}/messages
         Operation type: mail
@@ -4659,7 +4659,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -4698,7 +4698,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).messages.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -4718,7 +4718,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """List messages.
         Outlook operation: GET /me/mailFolders/{mailFolder-id}/messages
         Operation type: mail
@@ -4737,7 +4737,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -4776,7 +4776,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).messages.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -4797,7 +4797,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /me/mailFolders/{mailFolder-id}/messages/delta()
         Operation type: mail
@@ -4817,7 +4817,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -4856,7 +4856,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).messages.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -4875,7 +4875,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property messages for me.
         Outlook operation: DELETE /me/mailFolders/{mailFolder-id}/messages/{message-id}
         Operation type: mail
@@ -4893,7 +4893,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -4932,7 +4932,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -4952,7 +4952,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get messages from me.
         Outlook operation: GET /me/mailFolders/{mailFolder-id}/messages/{message-id}
         Operation type: mail
@@ -4971,7 +4971,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -5010,7 +5010,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -5029,7 +5029,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property messages in me.
         Outlook operation: PATCH /me/mailFolders/{mailFolder-id}/messages/{message-id}
         Operation type: mail
@@ -5047,7 +5047,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -5086,7 +5086,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -5105,7 +5105,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete media content for the navigation property messages in me.
         Outlook operation: DELETE /me/mailFolders/{mailFolder-id}/messages/{message-id}/$value
         Operation type: mail
@@ -5123,7 +5123,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -5162,7 +5162,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).value.delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -5180,7 +5180,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """List messages.
         Outlook operation: GET /me/mailFolders/{mailFolder-id}/messages/{message-id}/$value
         Operation type: mail
@@ -5197,7 +5197,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -5236,7 +5236,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).value.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -5255,7 +5255,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update media content for the navigation property messages in me.
         Outlook operation: PUT /me/mailFolders/{mailFolder-id}/messages/{message-id}/$value
         Operation type: mail
@@ -5273,7 +5273,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -5312,7 +5312,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).value.put(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -5331,7 +5331,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to attachments for me.
         Outlook operation: POST /me/mailFolders/{mailFolder-id}/messages/{message-id}/attachments
         Operation type: mail
@@ -5349,7 +5349,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -5388,7 +5388,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).attachments.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -5409,7 +5409,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from me.
         Outlook operation: GET /me/mailFolders/{mailFolder-id}/messages/{message-id}/attachments
         Operation type: mail
@@ -5429,7 +5429,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -5468,7 +5468,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).attachments.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -5487,7 +5487,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createUploadSession.
         Outlook operation: POST /me/mailFolders/{mailFolder-id}/messages/{message-id}/attachments/createUploadSession
         Operation type: mail
@@ -5505,7 +5505,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -5544,7 +5544,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).attachments.create_upload_session.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -5564,7 +5564,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property attachments for me.
         Outlook operation: DELETE /me/mailFolders/{mailFolder-id}/messages/{message-id}/attachments/{attachment-id}
         Operation type: mail
@@ -5583,7 +5583,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -5622,7 +5622,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).attachments.by_attachment_id(attachment_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -5643,7 +5643,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from me.
         Outlook operation: GET /me/mailFolders/{mailFolder-id}/messages/{message-id}/attachments/{attachment-id}
         Operation type: mail
@@ -5663,7 +5663,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -5702,7 +5702,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).attachments.by_attachment_id(attachment_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -5721,7 +5721,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action copy.
         Outlook operation: POST /me/mailFolders/{mailFolder-id}/messages/{message-id}/copy
         Operation type: mail
@@ -5739,7 +5739,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -5778,7 +5778,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).copy.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -5797,7 +5797,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createForward.
         Outlook operation: POST /me/mailFolders/{mailFolder-id}/messages/{message-id}/createForward
         Operation type: mail
@@ -5815,7 +5815,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -5854,7 +5854,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).create_forward.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -5873,7 +5873,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createReply.
         Outlook operation: POST /me/mailFolders/{mailFolder-id}/messages/{message-id}/createReply
         Operation type: mail
@@ -5891,7 +5891,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -5930,7 +5930,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).create_reply.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -5949,7 +5949,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createReplyAll.
         Outlook operation: POST /me/mailFolders/{mailFolder-id}/messages/{message-id}/createReplyAll
         Operation type: mail
@@ -5967,7 +5967,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -6006,7 +6006,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).create_reply_all.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -6025,7 +6025,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action forward.
         Outlook operation: POST /me/mailFolders/{mailFolder-id}/messages/{message-id}/forward
         Operation type: mail
@@ -6043,7 +6043,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -6082,7 +6082,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).forward.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -6101,7 +6101,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action move.
         Outlook operation: POST /me/mailFolders/{mailFolder-id}/messages/{message-id}/move
         Operation type: mail
@@ -6119,7 +6119,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -6158,7 +6158,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).move.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -6176,7 +6176,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /me/mailFolders/{mailFolder-id}/messages/{message-id}/permanentDelete
         Operation type: mail
@@ -6193,7 +6193,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -6232,7 +6232,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -6251,7 +6251,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action reply.
         Outlook operation: POST /me/mailFolders/{mailFolder-id}/messages/{message-id}/reply
         Operation type: mail
@@ -6269,7 +6269,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -6308,7 +6308,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).reply.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -6327,7 +6327,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action replyAll.
         Outlook operation: POST /me/mailFolders/{mailFolder-id}/messages/{message-id}/replyAll
         Operation type: mail
@@ -6345,7 +6345,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -6384,7 +6384,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).reply_all.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -6402,7 +6402,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action send.
         Outlook operation: POST /me/mailFolders/{mailFolder-id}/messages/{message-id}/send
         Operation type: mail
@@ -6419,7 +6419,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -6458,7 +6458,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).send.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -6476,7 +6476,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action move.
         Outlook operation: POST /me/mailFolders/{mailFolder-id}/move
         Operation type: mail
@@ -6493,7 +6493,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -6532,7 +6532,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).move.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -6549,7 +6549,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /me/mailFolders/{mailFolder-id}/permanentDelete
         Operation type: mail
@@ -6565,7 +6565,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -6604,7 +6604,7 @@ class OutlookDataSource:
             response = await self.client.me.mail_folders.by_mail_folder_id(mailFolder_id).permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -6621,7 +6621,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update user mailbox settings.
         Outlook operation: PATCH /me/mailboxSettings
         Operation type: mail
@@ -6637,7 +6637,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -6676,7 +6676,7 @@ class OutlookDataSource:
             response = await self.client.me.mailbox_settings.patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -6693,7 +6693,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create message.
         Outlook operation: POST /me/messages
         Operation type: mail
@@ -6709,7 +6709,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -6748,7 +6748,7 @@ class OutlookDataSource:
             response = await self.client.me.messages.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -6768,7 +6768,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /me/messages/delta()
         Operation type: mail
@@ -6787,7 +6787,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -6826,7 +6826,7 @@ class OutlookDataSource:
             response = await self.client.me.messages.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -6844,7 +6844,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete eventMessage.
         Outlook operation: DELETE /me/messages/{message-id}
         Operation type: mail
@@ -6861,7 +6861,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -6900,7 +6900,7 @@ class OutlookDataSource:
             response = await self.client.me.messages.by_message_id(message_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -6918,7 +6918,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update message.
         Outlook operation: PATCH /me/messages/{message-id}
         Operation type: mail
@@ -6935,7 +6935,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -6974,7 +6974,7 @@ class OutlookDataSource:
             response = await self.client.me.messages.by_message_id(message_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -6992,7 +6992,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete eventMessage.
         Outlook operation: DELETE /me/messages/{message-id}/$value
         Operation type: mail
@@ -7009,7 +7009,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -7048,7 +7048,7 @@ class OutlookDataSource:
             response = await self.client.me.messages.by_message_id(message_id).value.delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -7066,7 +7066,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update message.
         Outlook operation: PUT /me/messages/{message-id}/$value
         Operation type: mail
@@ -7083,7 +7083,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -7122,7 +7122,7 @@ class OutlookDataSource:
             response = await self.client.me.messages.by_message_id(message_id).value.put(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -7140,7 +7140,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Add attachment.
         Outlook operation: POST /me/messages/{message-id}/attachments
         Operation type: mail
@@ -7157,7 +7157,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -7196,7 +7196,7 @@ class OutlookDataSource:
             response = await self.client.me.messages.by_message_id(message_id).attachments.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -7216,7 +7216,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """List attachments.
         Outlook operation: GET /me/messages/{message-id}/attachments
         Operation type: mail
@@ -7235,7 +7235,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -7274,7 +7274,7 @@ class OutlookDataSource:
             response = await self.client.me.messages.by_message_id(message_id).attachments.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -7292,7 +7292,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createUploadSession.
         Outlook operation: POST /me/messages/{message-id}/attachments/createUploadSession
         Operation type: mail
@@ -7309,7 +7309,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -7348,7 +7348,7 @@ class OutlookDataSource:
             response = await self.client.me.messages.by_message_id(message_id).attachments.create_upload_session.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -7367,7 +7367,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property attachments for me.
         Outlook operation: DELETE /me/messages/{message-id}/attachments/{attachment-id}
         Operation type: mail
@@ -7385,7 +7385,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -7424,7 +7424,7 @@ class OutlookDataSource:
             response = await self.client.me.messages.by_message_id(message_id).attachments.by_attachment_id(attachment_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -7444,7 +7444,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachment.
         Outlook operation: GET /me/messages/{message-id}/attachments/{attachment-id}
         Operation type: mail
@@ -7463,7 +7463,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -7502,7 +7502,7 @@ class OutlookDataSource:
             response = await self.client.me.messages.by_message_id(message_id).attachments.by_attachment_id(attachment_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -7520,7 +7520,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action copy.
         Outlook operation: POST /me/messages/{message-id}/copy
         Operation type: mail
@@ -7537,7 +7537,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -7576,7 +7576,7 @@ class OutlookDataSource:
             response = await self.client.me.messages.by_message_id(message_id).copy.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -7594,7 +7594,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createForward.
         Outlook operation: POST /me/messages/{message-id}/createForward
         Operation type: mail
@@ -7611,7 +7611,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -7650,7 +7650,7 @@ class OutlookDataSource:
             response = await self.client.me.messages.by_message_id(message_id).create_forward.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -7668,7 +7668,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createReply.
         Outlook operation: POST /me/messages/{message-id}/createReply
         Operation type: mail
@@ -7685,7 +7685,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -7724,7 +7724,7 @@ class OutlookDataSource:
             response = await self.client.me.messages.by_message_id(message_id).create_reply.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -7742,7 +7742,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createReplyAll.
         Outlook operation: POST /me/messages/{message-id}/createReplyAll
         Operation type: mail
@@ -7759,7 +7759,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -7798,7 +7798,7 @@ class OutlookDataSource:
             response = await self.client.me.messages.by_message_id(message_id).create_reply_all.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -7816,7 +7816,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action forward.
         Outlook operation: POST /me/messages/{message-id}/forward
         Operation type: mail
@@ -7833,7 +7833,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -7872,7 +7872,7 @@ class OutlookDataSource:
             response = await self.client.me.messages.by_message_id(message_id).forward.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -7890,7 +7890,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action move.
         Outlook operation: POST /me/messages/{message-id}/move
         Operation type: mail
@@ -7907,7 +7907,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -7946,7 +7946,7 @@ class OutlookDataSource:
             response = await self.client.me.messages.by_message_id(message_id).move.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -7963,7 +7963,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /me/messages/{message-id}/permanentDelete
         Operation type: mail
@@ -7979,7 +7979,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -8018,7 +8018,7 @@ class OutlookDataSource:
             response = await self.client.me.messages.by_message_id(message_id).permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -8036,7 +8036,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action reply.
         Outlook operation: POST /me/messages/{message-id}/reply
         Operation type: mail
@@ -8053,7 +8053,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -8092,7 +8092,7 @@ class OutlookDataSource:
             response = await self.client.me.messages.by_message_id(message_id).reply.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -8110,7 +8110,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action replyAll.
         Outlook operation: POST /me/messages/{message-id}/replyAll
         Operation type: mail
@@ -8127,7 +8127,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -8166,7 +8166,7 @@ class OutlookDataSource:
             response = await self.client.me.messages.by_message_id(message_id).reply_all.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -8183,7 +8183,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action send.
         Outlook operation: POST /me/messages/{message-id}/send
         Operation type: mail
@@ -8199,7 +8199,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -8238,7 +8238,7 @@ class OutlookDataSource:
             response = await self.client.me.messages.by_message_id(message_id).send.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -8255,7 +8255,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action setStatusMessage.
         Outlook operation: POST /me/presence/setStatusMessage
         Operation type: mail
@@ -8271,7 +8271,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -8310,7 +8310,7 @@ class OutlookDataSource:
             response = await self.client.me.presence.set_status_message.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -8330,7 +8330,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get mailboxSettings property value.
         Outlook operation: GET /print/shares/{printerShare-id}/allowedUsers/{user-id}/mailboxSettings
         Operation type: mail
@@ -8349,7 +8349,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -8388,7 +8388,7 @@ class OutlookDataSource:
             response = await self.client.print.shares.by_share_id(printerShare_id).allowed_users.by_allowedUser_id(user_id).mailbox_settings.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -8407,7 +8407,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update property mailboxSettings value..
         Outlook operation: PATCH /print/shares/{printerShare-id}/allowedUsers/{user-id}/mailboxSettings
         Operation type: mail
@@ -8425,7 +8425,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -8464,7 +8464,7 @@ class OutlookDataSource:
             response = await self.client.print.shares.by_share_id(printerShare_id).allowed_users.by_allowedUser_id(user_id).mailbox_settings.patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -8484,7 +8484,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get mailboxSettings property value.
         Outlook operation: GET /privacy/subjectRightsRequests/{subjectRightsRequest-id}/approvers/{user-id}/mailboxSettings
         Operation type: mail
@@ -8503,7 +8503,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -8542,7 +8542,7 @@ class OutlookDataSource:
             response = await self.client.privacy.subject_rights_requests.by_subjectRightsRequest_id(subjectRightsRequest_id).approvers.by_approver_id(user_id).mailbox_settings.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -8561,7 +8561,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update property mailboxSettings value..
         Outlook operation: PATCH /privacy/subjectRightsRequests/{subjectRightsRequest-id}/approvers/{user-id}/mailboxSettings
         Operation type: mail
@@ -8579,7 +8579,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -8618,7 +8618,7 @@ class OutlookDataSource:
             response = await self.client.privacy.subject_rights_requests.by_subjectRightsRequest_id(subjectRightsRequest_id).approvers.by_approver_id(user_id).mailbox_settings.patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -8638,7 +8638,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get mailboxSettings property value.
         Outlook operation: GET /privacy/subjectRightsRequests/{subjectRightsRequest-id}/collaborators/{user-id}/mailboxSettings
         Operation type: mail
@@ -8657,7 +8657,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -8696,7 +8696,7 @@ class OutlookDataSource:
             response = await self.client.privacy.subject_rights_requests.by_subjectRightsRequest_id(subjectRightsRequest_id).collaborators.by_collaborator_id(user_id).mailbox_settings.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -8715,7 +8715,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update property mailboxSettings value..
         Outlook operation: PATCH /privacy/subjectRightsRequests/{subjectRightsRequest-id}/collaborators/{user-id}/mailboxSettings
         Operation type: mail
@@ -8733,7 +8733,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -8772,7 +8772,7 @@ class OutlookDataSource:
             response = await self.client.privacy.subject_rights_requests.by_subjectRightsRequest_id(subjectRightsRequest_id).collaborators.by_collaborator_id(user_id).mailbox_settings.patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -8789,7 +8789,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function getMailboxUsageDetail.
         Outlook operation: GET /reports/getMailboxUsageDetail(period='{period}')
         Operation type: mail
@@ -8805,7 +8805,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -8844,7 +8844,7 @@ class OutlookDataSource:
             response = await self.client.reports.get_mailbox_usage_detail(period='{period}').get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -8862,7 +8862,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to mailFolders for users.
         Outlook operation: POST /users/{user-id}/mailFolders
         Operation type: mail
@@ -8879,7 +8879,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -8918,7 +8918,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -8939,7 +8939,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get mailFolders from users.
         Outlook operation: GET /users/{user-id}/mailFolders
         Operation type: mail
@@ -8959,7 +8959,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -8998,7 +8998,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -9018,7 +9018,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /users/{user-id}/mailFolders/delta()
         Operation type: mail
@@ -9037,7 +9037,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -9076,7 +9076,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -9095,7 +9095,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property mailFolders for users.
         Outlook operation: DELETE /users/{user-id}/mailFolders/{mailFolder-id}
         Operation type: mail
@@ -9113,7 +9113,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -9152,7 +9152,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -9173,7 +9173,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get mailFolders from users.
         Outlook operation: GET /users/{user-id}/mailFolders/{mailFolder-id}
         Operation type: mail
@@ -9193,7 +9193,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -9232,7 +9232,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -9251,7 +9251,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property mailFolders in users.
         Outlook operation: PATCH /users/{user-id}/mailFolders/{mailFolder-id}
         Operation type: mail
@@ -9269,7 +9269,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -9308,7 +9308,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -9327,7 +9327,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to childFolders for users.
         Outlook operation: POST /users/{user-id}/mailFolders/{mailFolder-id}/childFolders
         Operation type: mail
@@ -9345,7 +9345,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -9384,7 +9384,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -9406,7 +9406,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get childFolders from users.
         Outlook operation: GET /users/{user-id}/mailFolders/{mailFolder-id}/childFolders
         Operation type: mail
@@ -9427,7 +9427,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -9466,7 +9466,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -9487,7 +9487,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/delta()
         Operation type: mail
@@ -9507,7 +9507,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -9546,7 +9546,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -9566,7 +9566,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property childFolders for users.
         Outlook operation: DELETE /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}
         Operation type: mail
@@ -9585,7 +9585,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -9624,7 +9624,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -9646,7 +9646,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get childFolders from users.
         Outlook operation: GET /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}
         Operation type: mail
@@ -9667,7 +9667,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -9706,7 +9706,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -9726,7 +9726,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property childFolders in users.
         Outlook operation: PATCH /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}
         Operation type: mail
@@ -9745,7 +9745,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -9784,7 +9784,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -9804,7 +9804,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action copy.
         Outlook operation: POST /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/copy
         Operation type: mail
@@ -9823,7 +9823,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -9862,7 +9862,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).copy.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -9882,7 +9882,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to messageRules for users.
         Outlook operation: POST /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messageRules
         Operation type: mail
@@ -9901,7 +9901,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -9940,7 +9940,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).message_rules.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -9962,7 +9962,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get messageRules from users.
         Outlook operation: GET /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messageRules
         Operation type: mail
@@ -9983,7 +9983,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -10022,7 +10022,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).message_rules.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -10043,7 +10043,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property messageRules for users.
         Outlook operation: DELETE /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messageRules/{messageRule-id}
         Operation type: mail
@@ -10063,7 +10063,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -10102,7 +10102,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).message_rules.by_message_rule_id(messageRule_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -10124,7 +10124,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get messageRules from users.
         Outlook operation: GET /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messageRules/{messageRule-id}
         Operation type: mail
@@ -10145,7 +10145,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -10184,7 +10184,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).message_rules.by_message_rule_id(messageRule_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -10205,7 +10205,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property messageRules in users.
         Outlook operation: PATCH /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messageRules/{messageRule-id}
         Operation type: mail
@@ -10225,7 +10225,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -10264,7 +10264,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).message_rules.by_message_rule_id(messageRule_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -10284,7 +10284,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to messages for users.
         Outlook operation: POST /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages
         Operation type: mail
@@ -10303,7 +10303,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -10342,7 +10342,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -10364,7 +10364,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get messages from users.
         Outlook operation: GET /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages
         Operation type: mail
@@ -10385,7 +10385,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -10424,7 +10424,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -10447,7 +10447,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/delta()
         Operation type: mail
@@ -10469,7 +10469,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -10508,7 +10508,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -10529,7 +10529,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property messages for users.
         Outlook operation: DELETE /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}
         Operation type: mail
@@ -10549,7 +10549,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -10588,7 +10588,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -10610,7 +10610,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get messages from users.
         Outlook operation: GET /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}
         Operation type: mail
@@ -10631,7 +10631,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -10670,7 +10670,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -10691,7 +10691,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property messages in users.
         Outlook operation: PATCH /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}
         Operation type: mail
@@ -10711,7 +10711,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -10750,7 +10750,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -10771,7 +10771,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete media content for the navigation property messages in users.
         Outlook operation: DELETE /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/$value
         Operation type: mail
@@ -10791,7 +10791,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -10830,7 +10830,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).value.delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -10850,7 +10850,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get media content for the navigation property messages from users.
         Outlook operation: GET /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/$value
         Operation type: mail
@@ -10869,7 +10869,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -10908,7 +10908,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).value.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -10929,7 +10929,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update media content for the navigation property messages in users.
         Outlook operation: PUT /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/$value
         Operation type: mail
@@ -10949,7 +10949,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -10988,7 +10988,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).value.put(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -11009,7 +11009,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to attachments for users.
         Outlook operation: POST /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/attachments
         Operation type: mail
@@ -11029,7 +11029,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -11068,7 +11068,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).attachments.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -11091,7 +11091,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from users.
         Outlook operation: GET /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/attachments
         Operation type: mail
@@ -11113,7 +11113,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -11152,7 +11152,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).attachments.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -11173,7 +11173,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createUploadSession.
         Outlook operation: POST /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/attachments/createUploadSession
         Operation type: mail
@@ -11193,7 +11193,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -11232,7 +11232,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).attachments.create_upload_session.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -11254,7 +11254,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property attachments for users.
         Outlook operation: DELETE /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/attachments/{attachment-id}
         Operation type: mail
@@ -11275,7 +11275,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -11314,7 +11314,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).attachments.by_attachment_id(attachment_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -11337,7 +11337,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from users.
         Outlook operation: GET /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/attachments/{attachment-id}
         Operation type: mail
@@ -11359,7 +11359,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -11398,7 +11398,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).attachments.by_attachment_id(attachment_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -11419,7 +11419,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action copy.
         Outlook operation: POST /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/copy
         Operation type: mail
@@ -11439,7 +11439,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -11478,7 +11478,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).copy.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -11499,7 +11499,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createForward.
         Outlook operation: POST /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/createForward
         Operation type: mail
@@ -11519,7 +11519,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -11558,7 +11558,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).create_forward.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -11579,7 +11579,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createReply.
         Outlook operation: POST /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/createReply
         Operation type: mail
@@ -11599,7 +11599,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -11638,7 +11638,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).create_reply.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -11659,7 +11659,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createReplyAll.
         Outlook operation: POST /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/createReplyAll
         Operation type: mail
@@ -11679,7 +11679,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -11718,7 +11718,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).create_reply_all.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -11739,7 +11739,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action forward.
         Outlook operation: POST /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/forward
         Operation type: mail
@@ -11759,7 +11759,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -11798,7 +11798,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).forward.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -11819,7 +11819,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action move.
         Outlook operation: POST /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/move
         Operation type: mail
@@ -11839,7 +11839,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -11878,7 +11878,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).move.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -11898,7 +11898,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/permanentDelete
         Operation type: mail
@@ -11917,7 +11917,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -11956,7 +11956,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -11977,7 +11977,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action reply.
         Outlook operation: POST /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/reply
         Operation type: mail
@@ -11997,7 +11997,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -12036,7 +12036,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).reply.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -12057,7 +12057,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action replyAll.
         Outlook operation: POST /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/replyAll
         Operation type: mail
@@ -12077,7 +12077,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -12116,7 +12116,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).reply_all.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -12136,7 +12136,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action send.
         Outlook operation: POST /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/messages/{message-id}/send
         Operation type: mail
@@ -12155,7 +12155,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -12194,7 +12194,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).messages.by_message_id(message_id).send.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -12214,7 +12214,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action move.
         Outlook operation: POST /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/move
         Operation type: mail
@@ -12233,7 +12233,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -12272,7 +12272,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).move.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -12291,7 +12291,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /users/{user-id}/mailFolders/{mailFolder-id}/childFolders/{mailFolder-id1}/permanentDelete
         Operation type: mail
@@ -12309,7 +12309,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -12348,7 +12348,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).child_folders.by_childFolder_id(mailFolder_id1).permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -12367,7 +12367,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action copy.
         Outlook operation: POST /users/{user-id}/mailFolders/{mailFolder-id}/copy
         Operation type: mail
@@ -12385,7 +12385,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -12424,7 +12424,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).copy.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -12443,7 +12443,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to messageRules for users.
         Outlook operation: POST /users/{user-id}/mailFolders/{mailFolder-id}/messageRules
         Operation type: mail
@@ -12461,7 +12461,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -12500,7 +12500,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).message_rules.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -12521,7 +12521,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get messageRules from users.
         Outlook operation: GET /users/{user-id}/mailFolders/{mailFolder-id}/messageRules
         Operation type: mail
@@ -12541,7 +12541,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -12580,7 +12580,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).message_rules.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -12600,7 +12600,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property messageRules for users.
         Outlook operation: DELETE /users/{user-id}/mailFolders/{mailFolder-id}/messageRules/{messageRule-id}
         Operation type: mail
@@ -12619,7 +12619,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -12658,7 +12658,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).message_rules.by_message_rule_id(messageRule_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -12679,7 +12679,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get messageRules from users.
         Outlook operation: GET /users/{user-id}/mailFolders/{mailFolder-id}/messageRules/{messageRule-id}
         Operation type: mail
@@ -12699,7 +12699,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -12738,7 +12738,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).message_rules.by_message_rule_id(messageRule_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -12758,7 +12758,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property messageRules in users.
         Outlook operation: PATCH /users/{user-id}/mailFolders/{mailFolder-id}/messageRules/{messageRule-id}
         Operation type: mail
@@ -12777,7 +12777,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -12816,7 +12816,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).message_rules.by_message_rule_id(messageRule_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -12835,7 +12835,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to messages for users.
         Outlook operation: POST /users/{user-id}/mailFolders/{mailFolder-id}/messages
         Operation type: mail
@@ -12853,7 +12853,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -12892,7 +12892,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).messages.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -12913,7 +12913,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get messages from users.
         Outlook operation: GET /users/{user-id}/mailFolders/{mailFolder-id}/messages
         Operation type: mail
@@ -12933,7 +12933,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -12972,7 +12972,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).messages.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -12994,7 +12994,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /users/{user-id}/mailFolders/{mailFolder-id}/messages/delta()
         Operation type: mail
@@ -13015,7 +13015,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -13054,7 +13054,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).messages.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -13074,7 +13074,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property messages for users.
         Outlook operation: DELETE /users/{user-id}/mailFolders/{mailFolder-id}/messages/{message-id}
         Operation type: mail
@@ -13093,7 +13093,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -13132,7 +13132,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -13153,7 +13153,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get messages from users.
         Outlook operation: GET /users/{user-id}/mailFolders/{mailFolder-id}/messages/{message-id}
         Operation type: mail
@@ -13173,7 +13173,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -13212,7 +13212,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -13232,7 +13232,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property messages in users.
         Outlook operation: PATCH /users/{user-id}/mailFolders/{mailFolder-id}/messages/{message-id}
         Operation type: mail
@@ -13251,7 +13251,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -13290,7 +13290,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -13310,7 +13310,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete media content for the navigation property messages in users.
         Outlook operation: DELETE /users/{user-id}/mailFolders/{mailFolder-id}/messages/{message-id}/$value
         Operation type: mail
@@ -13329,7 +13329,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -13368,7 +13368,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).value.delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -13387,7 +13387,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get media content for the navigation property messages from users.
         Outlook operation: GET /users/{user-id}/mailFolders/{mailFolder-id}/messages/{message-id}/$value
         Operation type: mail
@@ -13405,7 +13405,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -13444,7 +13444,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).value.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -13464,7 +13464,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update media content for the navigation property messages in users.
         Outlook operation: PUT /users/{user-id}/mailFolders/{mailFolder-id}/messages/{message-id}/$value
         Operation type: mail
@@ -13483,7 +13483,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -13522,7 +13522,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).value.put(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -13542,7 +13542,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to attachments for users.
         Outlook operation: POST /users/{user-id}/mailFolders/{mailFolder-id}/messages/{message-id}/attachments
         Operation type: mail
@@ -13561,7 +13561,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -13600,7 +13600,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).attachments.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -13622,7 +13622,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from users.
         Outlook operation: GET /users/{user-id}/mailFolders/{mailFolder-id}/messages/{message-id}/attachments
         Operation type: mail
@@ -13643,7 +13643,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -13682,7 +13682,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).attachments.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -13702,7 +13702,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createUploadSession.
         Outlook operation: POST /users/{user-id}/mailFolders/{mailFolder-id}/messages/{message-id}/attachments/createUploadSession
         Operation type: mail
@@ -13721,7 +13721,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -13760,7 +13760,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).attachments.create_upload_session.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -13781,7 +13781,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property attachments for users.
         Outlook operation: DELETE /users/{user-id}/mailFolders/{mailFolder-id}/messages/{message-id}/attachments/{attachment-id}
         Operation type: mail
@@ -13801,7 +13801,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -13840,7 +13840,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).attachments.by_attachment_id(attachment_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -13862,7 +13862,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from users.
         Outlook operation: GET /users/{user-id}/mailFolders/{mailFolder-id}/messages/{message-id}/attachments/{attachment-id}
         Operation type: mail
@@ -13883,7 +13883,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -13922,7 +13922,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).attachments.by_attachment_id(attachment_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -13942,7 +13942,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action copy.
         Outlook operation: POST /users/{user-id}/mailFolders/{mailFolder-id}/messages/{message-id}/copy
         Operation type: mail
@@ -13961,7 +13961,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -14000,7 +14000,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).copy.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -14020,7 +14020,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createForward.
         Outlook operation: POST /users/{user-id}/mailFolders/{mailFolder-id}/messages/{message-id}/createForward
         Operation type: mail
@@ -14039,7 +14039,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -14078,7 +14078,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).create_forward.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -14098,7 +14098,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createReply.
         Outlook operation: POST /users/{user-id}/mailFolders/{mailFolder-id}/messages/{message-id}/createReply
         Operation type: mail
@@ -14117,7 +14117,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -14156,7 +14156,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).create_reply.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -14176,7 +14176,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createReplyAll.
         Outlook operation: POST /users/{user-id}/mailFolders/{mailFolder-id}/messages/{message-id}/createReplyAll
         Operation type: mail
@@ -14195,7 +14195,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -14234,7 +14234,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).create_reply_all.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -14254,7 +14254,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action forward.
         Outlook operation: POST /users/{user-id}/mailFolders/{mailFolder-id}/messages/{message-id}/forward
         Operation type: mail
@@ -14273,7 +14273,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -14312,7 +14312,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).forward.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -14332,7 +14332,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action move.
         Outlook operation: POST /users/{user-id}/mailFolders/{mailFolder-id}/messages/{message-id}/move
         Operation type: mail
@@ -14351,7 +14351,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -14390,7 +14390,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).move.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -14409,7 +14409,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /users/{user-id}/mailFolders/{mailFolder-id}/messages/{message-id}/permanentDelete
         Operation type: mail
@@ -14427,7 +14427,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -14466,7 +14466,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -14486,7 +14486,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action reply.
         Outlook operation: POST /users/{user-id}/mailFolders/{mailFolder-id}/messages/{message-id}/reply
         Operation type: mail
@@ -14505,7 +14505,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -14544,7 +14544,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).reply.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -14564,7 +14564,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action replyAll.
         Outlook operation: POST /users/{user-id}/mailFolders/{mailFolder-id}/messages/{message-id}/replyAll
         Operation type: mail
@@ -14583,7 +14583,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -14622,7 +14622,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).reply_all.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -14641,7 +14641,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action send.
         Outlook operation: POST /users/{user-id}/mailFolders/{mailFolder-id}/messages/{message-id}/send
         Operation type: mail
@@ -14659,7 +14659,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -14698,7 +14698,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).messages.by_message_id(message_id).send.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -14717,7 +14717,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action move.
         Outlook operation: POST /users/{user-id}/mailFolders/{mailFolder-id}/move
         Operation type: mail
@@ -14735,7 +14735,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -14774,7 +14774,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).move.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -14792,7 +14792,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /users/{user-id}/mailFolders/{mailFolder-id}/permanentDelete
         Operation type: mail
@@ -14809,7 +14809,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -14848,7 +14848,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mail_folders.by_mail_folder_id(mailFolder_id).permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -14867,7 +14867,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get mailboxSettings property value.
         Outlook operation: GET /users/{user-id}/mailboxSettings
         Operation type: mail
@@ -14885,7 +14885,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -14924,7 +14924,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mailbox_settings.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -14942,7 +14942,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update property mailboxSettings value..
         Outlook operation: PATCH /users/{user-id}/mailboxSettings
         Operation type: mail
@@ -14959,7 +14959,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -14998,7 +14998,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).mailbox_settings.patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -15016,7 +15016,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to messages for users.
         Outlook operation: POST /users/{user-id}/messages
         Operation type: mail
@@ -15033,7 +15033,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -15072,7 +15072,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).messages.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -15093,7 +15093,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get messages from users.
         Outlook operation: GET /users/{user-id}/messages
         Operation type: mail
@@ -15113,7 +15113,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -15152,7 +15152,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).messages.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -15173,7 +15173,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /users/{user-id}/messages/delta()
         Operation type: mail
@@ -15193,7 +15193,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -15232,7 +15232,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).messages.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -15251,7 +15251,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property messages for users.
         Outlook operation: DELETE /users/{user-id}/messages/{message-id}
         Operation type: mail
@@ -15269,7 +15269,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -15308,7 +15308,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).messages.by_message_id(message_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -15329,7 +15329,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get messages from users.
         Outlook operation: GET /users/{user-id}/messages/{message-id}
         Operation type: mail
@@ -15349,7 +15349,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -15388,7 +15388,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).messages.by_message_id(message_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -15407,7 +15407,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property messages in users.
         Outlook operation: PATCH /users/{user-id}/messages/{message-id}
         Operation type: mail
@@ -15425,7 +15425,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -15464,7 +15464,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).messages.by_message_id(message_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -15483,7 +15483,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete media content for the navigation property messages in users.
         Outlook operation: DELETE /users/{user-id}/messages/{message-id}/$value
         Operation type: mail
@@ -15501,7 +15501,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -15540,7 +15540,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).messages.by_message_id(message_id).value.delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -15558,7 +15558,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get media content for the navigation property messages from users.
         Outlook operation: GET /users/{user-id}/messages/{message-id}/$value
         Operation type: mail
@@ -15575,7 +15575,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -15614,7 +15614,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).messages.by_message_id(message_id).value.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -15633,7 +15633,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update media content for the navigation property messages in users.
         Outlook operation: PUT /users/{user-id}/messages/{message-id}/$value
         Operation type: mail
@@ -15651,7 +15651,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -15690,7 +15690,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).messages.by_message_id(message_id).value.put(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -15709,7 +15709,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to attachments for users.
         Outlook operation: POST /users/{user-id}/messages/{message-id}/attachments
         Operation type: mail
@@ -15727,7 +15727,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -15766,7 +15766,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).messages.by_message_id(message_id).attachments.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -15787,7 +15787,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from users.
         Outlook operation: GET /users/{user-id}/messages/{message-id}/attachments
         Operation type: mail
@@ -15807,7 +15807,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -15846,7 +15846,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).messages.by_message_id(message_id).attachments.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -15865,7 +15865,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createUploadSession.
         Outlook operation: POST /users/{user-id}/messages/{message-id}/attachments/createUploadSession
         Operation type: mail
@@ -15883,7 +15883,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -15922,7 +15922,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).messages.by_message_id(message_id).attachments.create_upload_session.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -15942,7 +15942,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property attachments for users.
         Outlook operation: DELETE /users/{user-id}/messages/{message-id}/attachments/{attachment-id}
         Operation type: mail
@@ -15961,7 +15961,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -16000,7 +16000,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).messages.by_message_id(message_id).attachments.by_attachment_id(attachment_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -16021,7 +16021,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from users.
         Outlook operation: GET /users/{user-id}/messages/{message-id}/attachments/{attachment-id}
         Operation type: mail
@@ -16041,7 +16041,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -16080,7 +16080,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).messages.by_message_id(message_id).attachments.by_attachment_id(attachment_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -16099,7 +16099,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action copy.
         Outlook operation: POST /users/{user-id}/messages/{message-id}/copy
         Operation type: mail
@@ -16117,7 +16117,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -16156,7 +16156,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).messages.by_message_id(message_id).copy.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -16175,7 +16175,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createForward.
         Outlook operation: POST /users/{user-id}/messages/{message-id}/createForward
         Operation type: mail
@@ -16193,7 +16193,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -16232,7 +16232,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).messages.by_message_id(message_id).create_forward.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -16251,7 +16251,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createReply.
         Outlook operation: POST /users/{user-id}/messages/{message-id}/createReply
         Operation type: mail
@@ -16269,7 +16269,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -16308,7 +16308,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).messages.by_message_id(message_id).create_reply.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -16327,7 +16327,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createReplyAll.
         Outlook operation: POST /users/{user-id}/messages/{message-id}/createReplyAll
         Operation type: mail
@@ -16345,7 +16345,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -16384,7 +16384,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).messages.by_message_id(message_id).create_reply_all.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -16403,7 +16403,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action forward.
         Outlook operation: POST /users/{user-id}/messages/{message-id}/forward
         Operation type: mail
@@ -16421,7 +16421,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -16460,7 +16460,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).messages.by_message_id(message_id).forward.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -16479,7 +16479,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action move.
         Outlook operation: POST /users/{user-id}/messages/{message-id}/move
         Operation type: mail
@@ -16497,7 +16497,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -16536,7 +16536,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).messages.by_message_id(message_id).move.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -16554,7 +16554,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /users/{user-id}/messages/{message-id}/permanentDelete
         Operation type: mail
@@ -16571,7 +16571,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -16610,7 +16610,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).messages.by_message_id(message_id).permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -16629,7 +16629,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action reply.
         Outlook operation: POST /users/{user-id}/messages/{message-id}/reply
         Operation type: mail
@@ -16647,7 +16647,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -16686,7 +16686,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).messages.by_message_id(message_id).reply.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -16705,7 +16705,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action replyAll.
         Outlook operation: POST /users/{user-id}/messages/{message-id}/replyAll
         Operation type: mail
@@ -16723,7 +16723,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -16762,7 +16762,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).messages.by_message_id(message_id).reply_all.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -16780,7 +16780,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action send.
         Outlook operation: POST /users/{user-id}/messages/{message-id}/send
         Operation type: mail
@@ -16797,7 +16797,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -16836,7 +16836,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).messages.by_message_id(message_id).send.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -16854,7 +16854,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action setStatusMessage.
         Outlook operation: POST /users/{user-id}/presence/setStatusMessage
         Operation type: mail
@@ -16871,7 +16871,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -16910,7 +16910,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).presence.set_status_message.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -16931,7 +16931,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendar from groups.
         Outlook operation: GET /groups/{group-id}/calendar
         Operation type: calendar
@@ -16949,7 +16949,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -16988,7 +16988,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).calendar.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -17006,7 +17006,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function allowedCalendarSharingRoles.
         Outlook operation: GET /groups/{group-id}/calendar/allowedCalendarSharingRoles(User='{User}')
         Operation type: calendar
@@ -17023,7 +17023,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -17062,7 +17062,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).calendar.allowed_calendar_sharing_roles(_user='{_user}').get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -17080,7 +17080,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to calendarPermissions for groups.
         Outlook operation: POST /groups/{group-id}/calendar/calendarPermissions
         Operation type: calendar
@@ -17097,7 +17097,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -17136,7 +17136,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).calendar.calendar_permissions.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -17156,7 +17156,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendarPermissions from groups.
         Outlook operation: GET /groups/{group-id}/calendar/calendarPermissions
         Operation type: calendar
@@ -17175,7 +17175,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -17214,7 +17214,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).calendar.calendar_permissions.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -17233,7 +17233,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property calendarPermissions for groups.
         Outlook operation: DELETE /groups/{group-id}/calendar/calendarPermissions/{calendarPermission-id}
         Operation type: calendar
@@ -17251,7 +17251,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -17290,7 +17290,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).calendar.calendar_permissions.by_calendarPermission_id(calendarPermission_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -17310,7 +17310,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendarPermissions from groups.
         Outlook operation: GET /groups/{group-id}/calendar/calendarPermissions/{calendarPermission-id}
         Operation type: calendar
@@ -17329,7 +17329,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -17368,7 +17368,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).calendar.calendar_permissions.by_calendarPermission_id(calendarPermission_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -17387,7 +17387,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property calendarPermissions in groups.
         Outlook operation: PATCH /groups/{group-id}/calendar/calendarPermissions/{calendarPermission-id}
         Operation type: calendar
@@ -17405,7 +17405,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -17444,7 +17444,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).calendar.calendar_permissions.by_calendarPermission_id(calendarPermission_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -17466,7 +17466,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendarView from groups.
         Outlook operation: GET /groups/{group-id}/calendar/calendarView
         Operation type: calendar
@@ -17487,7 +17487,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -17526,7 +17526,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).calendar.calendar_view.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -17548,7 +17548,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /groups/{group-id}/calendar/calendarView/delta()
         Operation type: calendar
@@ -17569,7 +17569,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -17608,7 +17608,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).calendar.calendar_view.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -17626,7 +17626,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to events for groups.
         Outlook operation: POST /groups/{group-id}/calendar/events
         Operation type: calendar
@@ -17643,7 +17643,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -17682,7 +17682,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).calendar.events.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -17702,7 +17702,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get events from groups.
         Outlook operation: GET /groups/{group-id}/calendar/events
         Operation type: calendar
@@ -17721,7 +17721,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -17760,7 +17760,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).calendar.events.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -17782,7 +17782,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /groups/{group-id}/calendar/events/delta()
         Operation type: calendar
@@ -17803,7 +17803,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -17842,7 +17842,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).calendar.events.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -17861,7 +17861,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property events for groups.
         Outlook operation: DELETE /groups/{group-id}/calendar/events/{event-id}
         Operation type: calendar
@@ -17879,7 +17879,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -17918,7 +17918,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).calendar.events.by_event_id(event_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -17938,7 +17938,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get events from groups.
         Outlook operation: GET /groups/{group-id}/calendar/events/{event-id}
         Operation type: calendar
@@ -17957,7 +17957,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -17996,7 +17996,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).calendar.events.by_event_id(event_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -18015,7 +18015,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update event.
         Outlook operation: PATCH /groups/{group-id}/calendar/events/{event-id}
         Operation type: calendar
@@ -18033,7 +18033,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -18072,7 +18072,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).calendar.events.by_event_id(event_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -18091,7 +18091,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action accept.
         Outlook operation: POST /groups/{group-id}/calendar/events/{event-id}/accept
         Operation type: calendar
@@ -18109,7 +18109,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -18148,7 +18148,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).calendar.events.by_event_id(event_id).accept.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -18167,7 +18167,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to attachments for groups.
         Outlook operation: POST /groups/{group-id}/calendar/events/{event-id}/attachments
         Operation type: calendar
@@ -18185,7 +18185,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -18224,7 +18224,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).calendar.events.by_event_id(event_id).attachments.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -18245,7 +18245,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from groups.
         Outlook operation: GET /groups/{group-id}/calendar/events/{event-id}/attachments
         Operation type: calendar
@@ -18265,7 +18265,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -18304,7 +18304,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).calendar.events.by_event_id(event_id).attachments.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -18323,7 +18323,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createUploadSession.
         Outlook operation: POST /groups/{group-id}/calendar/events/{event-id}/attachments/createUploadSession
         Operation type: calendar
@@ -18341,7 +18341,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -18380,7 +18380,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).calendar.events.by_event_id(event_id).attachments.create_upload_session.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -18400,7 +18400,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property attachments for groups.
         Outlook operation: DELETE /groups/{group-id}/calendar/events/{event-id}/attachments/{attachment-id}
         Operation type: calendar
@@ -18419,7 +18419,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -18458,7 +18458,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).calendar.events.by_event_id(event_id).attachments.by_attachment_id(attachment_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -18479,7 +18479,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from groups.
         Outlook operation: GET /groups/{group-id}/calendar/events/{event-id}/attachments/{attachment-id}
         Operation type: calendar
@@ -18499,7 +18499,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -18538,7 +18538,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).calendar.events.by_event_id(event_id).attachments.by_attachment_id(attachment_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -18558,7 +18558,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendar from groups.
         Outlook operation: GET /groups/{group-id}/calendar/events/{event-id}/calendar
         Operation type: calendar
@@ -18577,7 +18577,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -18616,7 +18616,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).calendar.events.by_event_id(event_id).calendar.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -18635,7 +18635,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action cancel.
         Outlook operation: POST /groups/{group-id}/calendar/events/{event-id}/cancel
         Operation type: calendar
@@ -18653,7 +18653,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -18692,7 +18692,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).calendar.events.by_event_id(event_id).cancel.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -18711,7 +18711,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action decline.
         Outlook operation: POST /groups/{group-id}/calendar/events/{event-id}/decline
         Operation type: calendar
@@ -18729,7 +18729,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -18768,7 +18768,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).calendar.events.by_event_id(event_id).decline.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -18786,7 +18786,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action dismissReminder.
         Outlook operation: POST /groups/{group-id}/calendar/events/{event-id}/dismissReminder
         Operation type: calendar
@@ -18803,7 +18803,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -18842,7 +18842,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).calendar.events.by_event_id(event_id).dismiss_reminder.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -18861,7 +18861,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action forward.
         Outlook operation: POST /groups/{group-id}/calendar/events/{event-id}/forward
         Operation type: calendar
@@ -18879,7 +18879,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -18918,7 +18918,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).calendar.events.by_event_id(event_id).forward.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -18941,7 +18941,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get instances from groups.
         Outlook operation: GET /groups/{group-id}/calendar/events/{event-id}/instances
         Operation type: calendar
@@ -18963,7 +18963,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -19002,7 +19002,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).calendar.events.by_event_id(event_id).instances.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -19025,7 +19025,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /groups/{group-id}/calendar/events/{event-id}/instances/delta()
         Operation type: calendar
@@ -19047,7 +19047,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -19086,7 +19086,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).calendar.events.by_event_id(event_id).instances.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -19104,7 +19104,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /groups/{group-id}/calendar/events/{event-id}/permanentDelete
         Operation type: calendar
@@ -19121,7 +19121,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -19160,7 +19160,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).calendar.events.by_event_id(event_id).permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -19179,7 +19179,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action snoozeReminder.
         Outlook operation: POST /groups/{group-id}/calendar/events/{event-id}/snoozeReminder
         Operation type: calendar
@@ -19197,7 +19197,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -19236,7 +19236,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).calendar.events.by_event_id(event_id).snooze_reminder.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -19255,7 +19255,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action tentativelyAccept.
         Outlook operation: POST /groups/{group-id}/calendar/events/{event-id}/tentativelyAccept
         Operation type: calendar
@@ -19273,7 +19273,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -19312,7 +19312,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).calendar.events.by_event_id(event_id).tentatively_accept.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -19330,7 +19330,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action getSchedule.
         Outlook operation: POST /groups/{group-id}/calendar/getSchedule
         Operation type: calendar
@@ -19347,7 +19347,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -19386,7 +19386,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).calendar.get_schedule.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -19403,7 +19403,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /groups/{group-id}/calendar/permanentDelete
         Operation type: calendar
@@ -19419,7 +19419,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -19458,7 +19458,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).calendar.permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -19480,7 +19480,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """List group calendarView.
         Outlook operation: GET /groups/{group-id}/calendarView
         Operation type: calendar
@@ -19501,7 +19501,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -19540,7 +19540,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).calendar_view.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -19562,7 +19562,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /groups/{group-id}/calendarView/delta()
         Operation type: calendar
@@ -19583,7 +19583,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -19622,7 +19622,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).calendar_view.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -19640,7 +19640,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create event.
         Outlook operation: POST /groups/{group-id}/events
         Operation type: calendar
@@ -19657,7 +19657,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -19696,7 +19696,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).events.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -19716,7 +19716,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """List events.
         Outlook operation: GET /groups/{group-id}/events
         Operation type: calendar
@@ -19735,7 +19735,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -19774,7 +19774,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).events.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -19796,7 +19796,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /groups/{group-id}/events/delta()
         Operation type: calendar
@@ -19817,7 +19817,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -19856,7 +19856,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).events.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -19875,7 +19875,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete event.
         Outlook operation: DELETE /groups/{group-id}/events/{event-id}
         Operation type: calendar
@@ -19893,7 +19893,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -19932,7 +19932,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).events.by_event_id(event_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -19952,7 +19952,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get event.
         Outlook operation: GET /groups/{group-id}/events/{event-id}
         Operation type: calendar
@@ -19971,7 +19971,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -20010,7 +20010,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).events.by_event_id(event_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -20029,7 +20029,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property events in groups.
         Outlook operation: PATCH /groups/{group-id}/events/{event-id}
         Operation type: calendar
@@ -20047,7 +20047,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -20086,7 +20086,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).events.by_event_id(event_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -20105,7 +20105,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action accept.
         Outlook operation: POST /groups/{group-id}/events/{event-id}/accept
         Operation type: calendar
@@ -20123,7 +20123,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -20162,7 +20162,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).events.by_event_id(event_id).accept.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -20181,7 +20181,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to attachments for groups.
         Outlook operation: POST /groups/{group-id}/events/{event-id}/attachments
         Operation type: calendar
@@ -20199,7 +20199,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -20238,7 +20238,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).events.by_event_id(event_id).attachments.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -20259,7 +20259,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from groups.
         Outlook operation: GET /groups/{group-id}/events/{event-id}/attachments
         Operation type: calendar
@@ -20279,7 +20279,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -20318,7 +20318,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).events.by_event_id(event_id).attachments.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -20337,7 +20337,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createUploadSession.
         Outlook operation: POST /groups/{group-id}/events/{event-id}/attachments/createUploadSession
         Operation type: calendar
@@ -20355,7 +20355,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -20394,7 +20394,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).events.by_event_id(event_id).attachments.create_upload_session.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -20414,7 +20414,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property attachments for groups.
         Outlook operation: DELETE /groups/{group-id}/events/{event-id}/attachments/{attachment-id}
         Operation type: calendar
@@ -20433,7 +20433,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -20472,7 +20472,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).events.by_event_id(event_id).attachments.by_attachment_id(attachment_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -20493,7 +20493,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from groups.
         Outlook operation: GET /groups/{group-id}/events/{event-id}/attachments/{attachment-id}
         Operation type: calendar
@@ -20513,7 +20513,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -20552,7 +20552,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).events.by_event_id(event_id).attachments.by_attachment_id(attachment_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -20572,7 +20572,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendar from groups.
         Outlook operation: GET /groups/{group-id}/events/{event-id}/calendar
         Operation type: calendar
@@ -20591,7 +20591,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -20630,7 +20630,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).events.by_event_id(event_id).calendar.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -20649,7 +20649,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action cancel.
         Outlook operation: POST /groups/{group-id}/events/{event-id}/cancel
         Operation type: calendar
@@ -20667,7 +20667,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -20706,7 +20706,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).events.by_event_id(event_id).cancel.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -20725,7 +20725,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action decline.
         Outlook operation: POST /groups/{group-id}/events/{event-id}/decline
         Operation type: calendar
@@ -20743,7 +20743,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -20782,7 +20782,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).events.by_event_id(event_id).decline.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -20800,7 +20800,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action dismissReminder.
         Outlook operation: POST /groups/{group-id}/events/{event-id}/dismissReminder
         Operation type: calendar
@@ -20817,7 +20817,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -20856,7 +20856,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).events.by_event_id(event_id).dismiss_reminder.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -20875,7 +20875,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action forward.
         Outlook operation: POST /groups/{group-id}/events/{event-id}/forward
         Operation type: calendar
@@ -20893,7 +20893,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -20932,7 +20932,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).events.by_event_id(event_id).forward.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -20955,7 +20955,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get instances from groups.
         Outlook operation: GET /groups/{group-id}/events/{event-id}/instances
         Operation type: calendar
@@ -20977,7 +20977,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -21016,7 +21016,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).events.by_event_id(event_id).instances.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -21039,7 +21039,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /groups/{group-id}/events/{event-id}/instances/delta()
         Operation type: calendar
@@ -21061,7 +21061,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -21100,7 +21100,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).events.by_event_id(event_id).instances.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -21118,7 +21118,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /groups/{group-id}/events/{event-id}/permanentDelete
         Operation type: calendar
@@ -21135,7 +21135,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -21174,7 +21174,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).events.by_event_id(event_id).permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -21193,7 +21193,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action snoozeReminder.
         Outlook operation: POST /groups/{group-id}/events/{event-id}/snoozeReminder
         Operation type: calendar
@@ -21211,7 +21211,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -21250,7 +21250,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).events.by_event_id(event_id).snooze_reminder.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -21269,7 +21269,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action tentativelyAccept.
         Outlook operation: POST /groups/{group-id}/events/{event-id}/tentativelyAccept
         Operation type: calendar
@@ -21287,7 +21287,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -21326,7 +21326,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).events.by_event_id(event_id).tentatively_accept.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -21344,7 +21344,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendar.
         Outlook operation: GET /me/calendar
         Operation type: calendar
@@ -21361,7 +21361,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -21400,7 +21400,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -21417,7 +21417,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update calendar.
         Outlook operation: PATCH /me/calendar
         Operation type: calendar
@@ -21433,7 +21433,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -21472,7 +21472,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar.patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -21489,7 +21489,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function allowedCalendarSharingRoles.
         Outlook operation: GET /me/calendar/allowedCalendarSharingRoles(User='{User}')
         Operation type: calendar
@@ -21505,7 +21505,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -21544,7 +21544,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar.allowed_calendar_sharing_roles(_user='{_user}').get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -21563,7 +21563,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendarPermissions from me.
         Outlook operation: GET /me/calendar/calendarPermissions
         Operation type: calendar
@@ -21581,7 +21581,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -21620,7 +21620,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar.calendar_permissions.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -21638,7 +21638,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property calendarPermissions for me.
         Outlook operation: DELETE /me/calendar/calendarPermissions/{calendarPermission-id}
         Operation type: calendar
@@ -21655,7 +21655,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -21694,7 +21694,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar.calendar_permissions.by_calendarPermission_id(calendarPermission_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -21713,7 +21713,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendarPermissions from me.
         Outlook operation: GET /me/calendar/calendarPermissions/{calendarPermission-id}
         Operation type: calendar
@@ -21731,7 +21731,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -21770,7 +21770,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar.calendar_permissions.by_calendarPermission_id(calendarPermission_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -21788,7 +21788,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property calendarPermissions in me.
         Outlook operation: PATCH /me/calendar/calendarPermissions/{calendarPermission-id}
         Operation type: calendar
@@ -21805,7 +21805,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -21844,7 +21844,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar.calendar_permissions.by_calendarPermission_id(calendarPermission_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -21865,7 +21865,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """List calendarView.
         Outlook operation: GET /me/calendar/calendarView
         Operation type: calendar
@@ -21885,7 +21885,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -21924,7 +21924,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar.calendar_view.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -21945,7 +21945,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /me/calendar/calendarView/delta()
         Operation type: calendar
@@ -21965,7 +21965,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -22004,7 +22004,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar.calendar_view.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -22021,7 +22021,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to events for me.
         Outlook operation: POST /me/calendar/events
         Operation type: calendar
@@ -22037,7 +22037,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -22076,7 +22076,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar.events.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -22095,7 +22095,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """List events.
         Outlook operation: GET /me/calendar/events
         Operation type: calendar
@@ -22113,7 +22113,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -22152,7 +22152,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar.events.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -22173,7 +22173,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /me/calendar/events/delta()
         Operation type: calendar
@@ -22193,7 +22193,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -22232,7 +22232,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar.events.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -22250,7 +22250,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property events for me.
         Outlook operation: DELETE /me/calendar/events/{event-id}
         Operation type: calendar
@@ -22267,7 +22267,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -22306,7 +22306,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar.events.by_event_id(event_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -22325,7 +22325,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get events from me.
         Outlook operation: GET /me/calendar/events/{event-id}
         Operation type: calendar
@@ -22343,7 +22343,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -22382,7 +22382,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar.events.by_event_id(event_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -22400,7 +22400,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property events in me.
         Outlook operation: PATCH /me/calendar/events/{event-id}
         Operation type: calendar
@@ -22417,7 +22417,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -22456,7 +22456,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar.events.by_event_id(event_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -22474,7 +22474,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action accept.
         Outlook operation: POST /me/calendar/events/{event-id}/accept
         Operation type: calendar
@@ -22491,7 +22491,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -22530,7 +22530,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar.events.by_event_id(event_id).accept.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -22548,7 +22548,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to attachments for me.
         Outlook operation: POST /me/calendar/events/{event-id}/attachments
         Operation type: calendar
@@ -22565,7 +22565,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -22604,7 +22604,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar.events.by_event_id(event_id).attachments.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -22624,7 +22624,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from me.
         Outlook operation: GET /me/calendar/events/{event-id}/attachments
         Operation type: calendar
@@ -22643,7 +22643,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -22682,7 +22682,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar.events.by_event_id(event_id).attachments.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -22700,7 +22700,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createUploadSession.
         Outlook operation: POST /me/calendar/events/{event-id}/attachments/createUploadSession
         Operation type: calendar
@@ -22717,7 +22717,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -22756,7 +22756,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar.events.by_event_id(event_id).attachments.create_upload_session.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -22775,7 +22775,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property attachments for me.
         Outlook operation: DELETE /me/calendar/events/{event-id}/attachments/{attachment-id}
         Operation type: calendar
@@ -22793,7 +22793,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -22832,7 +22832,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar.events.by_event_id(event_id).attachments.by_attachment_id(attachment_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -22852,7 +22852,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from me.
         Outlook operation: GET /me/calendar/events/{event-id}/attachments/{attachment-id}
         Operation type: calendar
@@ -22871,7 +22871,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -22910,7 +22910,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar.events.by_event_id(event_id).attachments.by_attachment_id(attachment_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -22929,7 +22929,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendar from me.
         Outlook operation: GET /me/calendar/events/{event-id}/calendar
         Operation type: calendar
@@ -22947,7 +22947,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -22986,7 +22986,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar.events.by_event_id(event_id).calendar.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -23004,7 +23004,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action cancel.
         Outlook operation: POST /me/calendar/events/{event-id}/cancel
         Operation type: calendar
@@ -23021,7 +23021,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -23060,7 +23060,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar.events.by_event_id(event_id).cancel.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -23078,7 +23078,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action decline.
         Outlook operation: POST /me/calendar/events/{event-id}/decline
         Operation type: calendar
@@ -23095,7 +23095,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -23134,7 +23134,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar.events.by_event_id(event_id).decline.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -23151,7 +23151,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action dismissReminder.
         Outlook operation: POST /me/calendar/events/{event-id}/dismissReminder
         Operation type: calendar
@@ -23167,7 +23167,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -23206,7 +23206,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar.events.by_event_id(event_id).dismiss_reminder.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -23224,7 +23224,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action forward.
         Outlook operation: POST /me/calendar/events/{event-id}/forward
         Operation type: calendar
@@ -23241,7 +23241,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -23280,7 +23280,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar.events.by_event_id(event_id).forward.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -23302,7 +23302,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get instances from me.
         Outlook operation: GET /me/calendar/events/{event-id}/instances
         Operation type: calendar
@@ -23323,7 +23323,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -23362,7 +23362,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar.events.by_event_id(event_id).instances.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -23384,7 +23384,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /me/calendar/events/{event-id}/instances/delta()
         Operation type: calendar
@@ -23405,7 +23405,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -23444,7 +23444,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar.events.by_event_id(event_id).instances.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -23461,7 +23461,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /me/calendar/events/{event-id}/permanentDelete
         Operation type: calendar
@@ -23477,7 +23477,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -23516,7 +23516,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar.events.by_event_id(event_id).permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -23534,7 +23534,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action snoozeReminder.
         Outlook operation: POST /me/calendar/events/{event-id}/snoozeReminder
         Operation type: calendar
@@ -23551,7 +23551,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -23590,7 +23590,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar.events.by_event_id(event_id).snooze_reminder.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -23608,7 +23608,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action tentativelyAccept.
         Outlook operation: POST /me/calendar/events/{event-id}/tentativelyAccept
         Operation type: calendar
@@ -23625,7 +23625,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -23664,7 +23664,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar.events.by_event_id(event_id).tentatively_accept.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -23681,7 +23681,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action getSchedule.
         Outlook operation: POST /me/calendar/getSchedule
         Operation type: calendar
@@ -23697,7 +23697,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -23736,7 +23736,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar.get_schedule.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -23752,7 +23752,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /me/calendar/permanentDelete
         Operation type: calendar
@@ -23767,7 +23767,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -23806,7 +23806,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar.permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -23823,7 +23823,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create CalendarGroup.
         Outlook operation: POST /me/calendarGroups
         Operation type: calendar
@@ -23839,7 +23839,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -23878,7 +23878,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -23897,7 +23897,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """List calendarGroups.
         Outlook operation: GET /me/calendarGroups
         Operation type: calendar
@@ -23915,7 +23915,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -23954,7 +23954,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -23972,7 +23972,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete calendarGroup.
         Outlook operation: DELETE /me/calendarGroups/{calendarGroup-id}
         Operation type: calendar
@@ -23989,7 +23989,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -24028,7 +24028,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -24047,7 +24047,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendarGroup.
         Outlook operation: GET /me/calendarGroups/{calendarGroup-id}
         Operation type: calendar
@@ -24065,7 +24065,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -24104,7 +24104,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -24122,7 +24122,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update calendargroup.
         Outlook operation: PATCH /me/calendarGroups/{calendarGroup-id}
         Operation type: calendar
@@ -24139,7 +24139,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -24178,7 +24178,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -24196,7 +24196,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create Calendar.
         Outlook operation: POST /me/calendarGroups/{calendarGroup-id}/calendars
         Operation type: calendar
@@ -24213,7 +24213,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -24252,7 +24252,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -24272,7 +24272,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """List calendars.
         Outlook operation: GET /me/calendarGroups/{calendarGroup-id}/calendars
         Operation type: calendar
@@ -24291,7 +24291,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -24330,7 +24330,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -24349,7 +24349,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property calendars for me.
         Outlook operation: DELETE /me/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}
         Operation type: calendar
@@ -24367,7 +24367,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -24406,7 +24406,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -24426,7 +24426,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendars from me.
         Outlook operation: GET /me/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}
         Operation type: calendar
@@ -24445,7 +24445,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -24484,7 +24484,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -24503,7 +24503,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property calendars in me.
         Outlook operation: PATCH /me/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}
         Operation type: calendar
@@ -24521,7 +24521,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -24560,7 +24560,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -24579,7 +24579,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function allowedCalendarSharingRoles.
         Outlook operation: GET /me/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/allowedCalendarSharingRoles(User='{User}')
         Operation type: calendar
@@ -24597,7 +24597,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -24636,7 +24636,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).allowed_calendar_sharing_roles(_user='{_user}').get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -24655,7 +24655,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to calendarPermissions for me.
         Outlook operation: POST /me/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/calendarPermissions
         Operation type: calendar
@@ -24673,7 +24673,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -24712,7 +24712,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).calendar_permissions.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -24733,7 +24733,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendarPermissions from me.
         Outlook operation: GET /me/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/calendarPermissions
         Operation type: calendar
@@ -24753,7 +24753,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -24792,7 +24792,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).calendar_permissions.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -24812,7 +24812,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property calendarPermissions for me.
         Outlook operation: DELETE /me/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/calendarPermissions/{calendarPermission-id}
         Operation type: calendar
@@ -24831,7 +24831,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -24870,7 +24870,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).calendar_permissions.by_calendarPermission_id(calendarPermission_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -24891,7 +24891,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendarPermissions from me.
         Outlook operation: GET /me/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/calendarPermissions/{calendarPermission-id}
         Operation type: calendar
@@ -24911,7 +24911,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -24950,7 +24950,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).calendar_permissions.by_calendarPermission_id(calendarPermission_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -24970,7 +24970,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property calendarPermissions in me.
         Outlook operation: PATCH /me/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/calendarPermissions/{calendarPermission-id}
         Operation type: calendar
@@ -24989,7 +24989,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -25028,7 +25028,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).calendar_permissions.by_calendarPermission_id(calendarPermission_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -25051,7 +25051,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendarView from me.
         Outlook operation: GET /me/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/calendarView
         Operation type: calendar
@@ -25073,7 +25073,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -25112,7 +25112,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).calendar_view.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -25135,7 +25135,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /me/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/calendarView/delta()
         Operation type: calendar
@@ -25157,7 +25157,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -25196,7 +25196,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).calendar_view.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -25215,7 +25215,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to events for me.
         Outlook operation: POST /me/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events
         Operation type: calendar
@@ -25233,7 +25233,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -25272,7 +25272,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -25293,7 +25293,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get events from me.
         Outlook operation: GET /me/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events
         Operation type: calendar
@@ -25313,7 +25313,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -25352,7 +25352,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -25375,7 +25375,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /me/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/delta()
         Operation type: calendar
@@ -25397,7 +25397,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -25436,7 +25436,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -25456,7 +25456,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property events for me.
         Outlook operation: DELETE /me/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}
         Operation type: calendar
@@ -25475,7 +25475,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -25514,7 +25514,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -25535,7 +25535,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get events from me.
         Outlook operation: GET /me/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}
         Operation type: calendar
@@ -25555,7 +25555,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -25594,7 +25594,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -25614,7 +25614,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property events in me.
         Outlook operation: PATCH /me/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}
         Operation type: calendar
@@ -25633,7 +25633,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -25672,7 +25672,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -25692,7 +25692,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action accept.
         Outlook operation: POST /me/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}/accept
         Operation type: calendar
@@ -25711,7 +25711,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -25750,7 +25750,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).accept.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -25770,7 +25770,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to attachments for me.
         Outlook operation: POST /me/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}/attachments
         Operation type: calendar
@@ -25789,7 +25789,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -25828,7 +25828,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).attachments.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -25850,7 +25850,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from me.
         Outlook operation: GET /me/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}/attachments
         Operation type: calendar
@@ -25871,7 +25871,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -25910,7 +25910,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).attachments.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -25930,7 +25930,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createUploadSession.
         Outlook operation: POST /me/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}/attachments/createUploadSession
         Operation type: calendar
@@ -25949,7 +25949,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -25988,7 +25988,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).attachments.create_upload_session.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -26009,7 +26009,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property attachments for me.
         Outlook operation: DELETE /me/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}/attachments/{attachment-id}
         Operation type: calendar
@@ -26029,7 +26029,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -26068,7 +26068,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).attachments.by_attachment_id(attachment_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -26090,7 +26090,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from me.
         Outlook operation: GET /me/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}/attachments/{attachment-id}
         Operation type: calendar
@@ -26111,7 +26111,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -26150,7 +26150,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).attachments.by_attachment_id(attachment_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -26171,7 +26171,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendar from me.
         Outlook operation: GET /me/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}/calendar
         Operation type: calendar
@@ -26191,7 +26191,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -26230,7 +26230,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).calendar.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -26250,7 +26250,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action cancel.
         Outlook operation: POST /me/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}/cancel
         Operation type: calendar
@@ -26269,7 +26269,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -26308,7 +26308,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).cancel.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -26328,7 +26328,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action decline.
         Outlook operation: POST /me/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}/decline
         Operation type: calendar
@@ -26347,7 +26347,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -26386,7 +26386,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).decline.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -26405,7 +26405,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action dismissReminder.
         Outlook operation: POST /me/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}/dismissReminder
         Operation type: calendar
@@ -26423,7 +26423,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -26462,7 +26462,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).dismiss_reminder.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -26482,7 +26482,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action forward.
         Outlook operation: POST /me/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}/forward
         Operation type: calendar
@@ -26501,7 +26501,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -26540,7 +26540,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).forward.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -26564,7 +26564,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get instances from me.
         Outlook operation: GET /me/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}/instances
         Operation type: calendar
@@ -26587,7 +26587,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -26626,7 +26626,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).instances.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -26650,7 +26650,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /me/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}/instances/delta()
         Operation type: calendar
@@ -26673,7 +26673,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -26712,7 +26712,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).instances.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -26731,7 +26731,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /me/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}/permanentDelete
         Operation type: calendar
@@ -26749,7 +26749,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -26788,7 +26788,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -26808,7 +26808,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action snoozeReminder.
         Outlook operation: POST /me/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}/snoozeReminder
         Operation type: calendar
@@ -26827,7 +26827,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -26866,7 +26866,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).snooze_reminder.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -26886,7 +26886,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action tentativelyAccept.
         Outlook operation: POST /me/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}/tentativelyAccept
         Operation type: calendar
@@ -26905,7 +26905,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -26944,7 +26944,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).tentatively_accept.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -26963,7 +26963,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action getSchedule.
         Outlook operation: POST /me/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/getSchedule
         Operation type: calendar
@@ -26981,7 +26981,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -27020,7 +27020,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).get_schedule.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -27038,7 +27038,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /me/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/permanentDelete
         Operation type: calendar
@@ -27055,7 +27055,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -27094,7 +27094,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -27115,7 +27115,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """List calendarView.
         Outlook operation: GET /me/calendarView
         Operation type: calendar
@@ -27135,7 +27135,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -27174,7 +27174,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_view.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -27195,7 +27195,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /me/calendarView/delta()
         Operation type: calendar
@@ -27215,7 +27215,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -27254,7 +27254,7 @@ class OutlookDataSource:
             response = await self.client.me.calendar_view.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -27271,7 +27271,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create calendar.
         Outlook operation: POST /me/calendars
         Operation type: calendar
@@ -27287,7 +27287,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -27326,7 +27326,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -27345,7 +27345,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """List calendars.
         Outlook operation: GET /me/calendars
         Operation type: calendar
@@ -27363,7 +27363,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -27402,7 +27402,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -27420,7 +27420,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property calendars for me.
         Outlook operation: DELETE /me/calendars/{calendar-id}
         Operation type: calendar
@@ -27437,7 +27437,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -27476,7 +27476,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.by_calendar_id(calendar_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -27495,7 +27495,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendars from me.
         Outlook operation: GET /me/calendars/{calendar-id}
         Operation type: calendar
@@ -27513,7 +27513,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -27552,7 +27552,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.by_calendar_id(calendar_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -27570,7 +27570,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property calendars in me.
         Outlook operation: PATCH /me/calendars/{calendar-id}
         Operation type: calendar
@@ -27587,7 +27587,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -27626,7 +27626,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.by_calendar_id(calendar_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -27644,7 +27644,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function allowedCalendarSharingRoles.
         Outlook operation: GET /me/calendars/{calendar-id}/allowedCalendarSharingRoles(User='{User}')
         Operation type: calendar
@@ -27661,7 +27661,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -27700,7 +27700,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.by_calendar_id(calendar_id).allowed_calendar_sharing_roles(_user='{_user}').get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -27718,7 +27718,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to calendarPermissions for me.
         Outlook operation: POST /me/calendars/{calendar-id}/calendarPermissions
         Operation type: calendar
@@ -27735,7 +27735,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -27774,7 +27774,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.by_calendar_id(calendar_id).calendar_permissions.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -27794,7 +27794,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendarPermissions from me.
         Outlook operation: GET /me/calendars/{calendar-id}/calendarPermissions
         Operation type: calendar
@@ -27813,7 +27813,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -27852,7 +27852,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.by_calendar_id(calendar_id).calendar_permissions.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -27871,7 +27871,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property calendarPermissions for me.
         Outlook operation: DELETE /me/calendars/{calendar-id}/calendarPermissions/{calendarPermission-id}
         Operation type: calendar
@@ -27889,7 +27889,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -27928,7 +27928,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.by_calendar_id(calendar_id).calendar_permissions.by_calendarPermission_id(calendarPermission_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -27948,7 +27948,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendarPermissions from me.
         Outlook operation: GET /me/calendars/{calendar-id}/calendarPermissions/{calendarPermission-id}
         Operation type: calendar
@@ -27967,7 +27967,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -28006,7 +28006,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.by_calendar_id(calendar_id).calendar_permissions.by_calendarPermission_id(calendarPermission_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -28025,7 +28025,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property calendarPermissions in me.
         Outlook operation: PATCH /me/calendars/{calendar-id}/calendarPermissions/{calendarPermission-id}
         Operation type: calendar
@@ -28043,7 +28043,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -28082,7 +28082,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.by_calendar_id(calendar_id).calendar_permissions.by_calendarPermission_id(calendarPermission_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -28104,7 +28104,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendarView from me.
         Outlook operation: GET /me/calendars/{calendar-id}/calendarView
         Operation type: calendar
@@ -28125,7 +28125,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -28164,7 +28164,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.by_calendar_id(calendar_id).calendar_view.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -28186,7 +28186,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /me/calendars/{calendar-id}/calendarView/delta()
         Operation type: calendar
@@ -28207,7 +28207,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -28246,7 +28246,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.by_calendar_id(calendar_id).calendar_view.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -28264,7 +28264,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create event.
         Outlook operation: POST /me/calendars/{calendar-id}/events
         Operation type: calendar
@@ -28281,7 +28281,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -28320,7 +28320,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.by_calendar_id(calendar_id).events.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -28340,7 +28340,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get events from me.
         Outlook operation: GET /me/calendars/{calendar-id}/events
         Operation type: calendar
@@ -28359,7 +28359,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -28398,7 +28398,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.by_calendar_id(calendar_id).events.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -28420,7 +28420,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /me/calendars/{calendar-id}/events/delta()
         Operation type: calendar
@@ -28441,7 +28441,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -28480,7 +28480,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.by_calendar_id(calendar_id).events.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -28499,7 +28499,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property events for me.
         Outlook operation: DELETE /me/calendars/{calendar-id}/events/{event-id}
         Operation type: calendar
@@ -28517,7 +28517,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -28556,7 +28556,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -28576,7 +28576,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get events from me.
         Outlook operation: GET /me/calendars/{calendar-id}/events/{event-id}
         Operation type: calendar
@@ -28595,7 +28595,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -28634,7 +28634,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -28653,7 +28653,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property events in me.
         Outlook operation: PATCH /me/calendars/{calendar-id}/events/{event-id}
         Operation type: calendar
@@ -28671,7 +28671,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -28710,7 +28710,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -28729,7 +28729,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action accept.
         Outlook operation: POST /me/calendars/{calendar-id}/events/{event-id}/accept
         Operation type: calendar
@@ -28747,7 +28747,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -28786,7 +28786,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).accept.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -28805,7 +28805,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to attachments for me.
         Outlook operation: POST /me/calendars/{calendar-id}/events/{event-id}/attachments
         Operation type: calendar
@@ -28823,7 +28823,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -28862,7 +28862,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).attachments.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -28883,7 +28883,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from me.
         Outlook operation: GET /me/calendars/{calendar-id}/events/{event-id}/attachments
         Operation type: calendar
@@ -28903,7 +28903,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -28942,7 +28942,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).attachments.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -28961,7 +28961,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createUploadSession.
         Outlook operation: POST /me/calendars/{calendar-id}/events/{event-id}/attachments/createUploadSession
         Operation type: calendar
@@ -28979,7 +28979,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -29018,7 +29018,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).attachments.create_upload_session.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -29038,7 +29038,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property attachments for me.
         Outlook operation: DELETE /me/calendars/{calendar-id}/events/{event-id}/attachments/{attachment-id}
         Operation type: calendar
@@ -29057,7 +29057,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -29096,7 +29096,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).attachments.by_attachment_id(attachment_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -29117,7 +29117,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from me.
         Outlook operation: GET /me/calendars/{calendar-id}/events/{event-id}/attachments/{attachment-id}
         Operation type: calendar
@@ -29137,7 +29137,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -29176,7 +29176,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).attachments.by_attachment_id(attachment_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -29196,7 +29196,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendar from me.
         Outlook operation: GET /me/calendars/{calendar-id}/events/{event-id}/calendar
         Operation type: calendar
@@ -29215,7 +29215,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -29254,7 +29254,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).calendar.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -29273,7 +29273,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action cancel.
         Outlook operation: POST /me/calendars/{calendar-id}/events/{event-id}/cancel
         Operation type: calendar
@@ -29291,7 +29291,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -29330,7 +29330,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).cancel.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -29349,7 +29349,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action decline.
         Outlook operation: POST /me/calendars/{calendar-id}/events/{event-id}/decline
         Operation type: calendar
@@ -29367,7 +29367,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -29406,7 +29406,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).decline.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -29424,7 +29424,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action dismissReminder.
         Outlook operation: POST /me/calendars/{calendar-id}/events/{event-id}/dismissReminder
         Operation type: calendar
@@ -29441,7 +29441,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -29480,7 +29480,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).dismiss_reminder.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -29499,7 +29499,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action forward.
         Outlook operation: POST /me/calendars/{calendar-id}/events/{event-id}/forward
         Operation type: calendar
@@ -29517,7 +29517,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -29556,7 +29556,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).forward.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -29579,7 +29579,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get instances from me.
         Outlook operation: GET /me/calendars/{calendar-id}/events/{event-id}/instances
         Operation type: calendar
@@ -29601,7 +29601,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -29640,7 +29640,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).instances.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -29663,7 +29663,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /me/calendars/{calendar-id}/events/{event-id}/instances/delta()
         Operation type: calendar
@@ -29685,7 +29685,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -29724,7 +29724,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).instances.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -29742,7 +29742,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /me/calendars/{calendar-id}/events/{event-id}/permanentDelete
         Operation type: calendar
@@ -29759,7 +29759,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -29798,7 +29798,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -29817,7 +29817,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action snoozeReminder.
         Outlook operation: POST /me/calendars/{calendar-id}/events/{event-id}/snoozeReminder
         Operation type: calendar
@@ -29835,7 +29835,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -29874,7 +29874,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).snooze_reminder.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -29893,7 +29893,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action tentativelyAccept.
         Outlook operation: POST /me/calendars/{calendar-id}/events/{event-id}/tentativelyAccept
         Operation type: calendar
@@ -29911,7 +29911,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -29950,7 +29950,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).tentatively_accept.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -29968,7 +29968,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action getSchedule.
         Outlook operation: POST /me/calendars/{calendar-id}/getSchedule
         Operation type: calendar
@@ -29985,7 +29985,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -30024,7 +30024,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.by_calendar_id(calendar_id).get_schedule.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -30041,7 +30041,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /me/calendars/{calendar-id}/permanentDelete
         Operation type: calendar
@@ -30057,7 +30057,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -30096,7 +30096,7 @@ class OutlookDataSource:
             response = await self.client.me.calendars.by_calendar_id(calendar_id).permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -30115,7 +30115,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """List events.
         Outlook operation: GET /me/events
         Operation type: calendar
@@ -30133,7 +30133,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -30172,7 +30172,7 @@ class OutlookDataSource:
             response = await self.client.me.events.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -30193,7 +30193,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /me/events/delta()
         Operation type: calendar
@@ -30213,7 +30213,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -30252,7 +30252,7 @@ class OutlookDataSource:
             response = await self.client.me.events.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -30270,7 +30270,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete event.
         Outlook operation: DELETE /me/events/{event-id}
         Operation type: calendar
@@ -30287,7 +30287,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -30326,7 +30326,7 @@ class OutlookDataSource:
             response = await self.client.me.events.by_event_id(event_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -30344,7 +30344,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update event.
         Outlook operation: PATCH /me/events/{event-id}
         Operation type: calendar
@@ -30361,7 +30361,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -30400,7 +30400,7 @@ class OutlookDataSource:
             response = await self.client.me.events.by_event_id(event_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -30418,7 +30418,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action accept.
         Outlook operation: POST /me/events/{event-id}/accept
         Operation type: calendar
@@ -30435,7 +30435,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -30474,7 +30474,7 @@ class OutlookDataSource:
             response = await self.client.me.events.by_event_id(event_id).accept.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -30492,7 +30492,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Add attachment.
         Outlook operation: POST /me/events/{event-id}/attachments
         Operation type: calendar
@@ -30509,7 +30509,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -30548,7 +30548,7 @@ class OutlookDataSource:
             response = await self.client.me.events.by_event_id(event_id).attachments.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -30568,7 +30568,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """List attachments.
         Outlook operation: GET /me/events/{event-id}/attachments
         Operation type: calendar
@@ -30587,7 +30587,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -30626,7 +30626,7 @@ class OutlookDataSource:
             response = await self.client.me.events.by_event_id(event_id).attachments.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -30644,7 +30644,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createUploadSession.
         Outlook operation: POST /me/events/{event-id}/attachments/createUploadSession
         Operation type: calendar
@@ -30661,7 +30661,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -30700,7 +30700,7 @@ class OutlookDataSource:
             response = await self.client.me.events.by_event_id(event_id).attachments.create_upload_session.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -30719,7 +30719,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete attachment.
         Outlook operation: DELETE /me/events/{event-id}/attachments/{attachment-id}
         Operation type: calendar
@@ -30737,7 +30737,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -30776,7 +30776,7 @@ class OutlookDataSource:
             response = await self.client.me.events.by_event_id(event_id).attachments.by_attachment_id(attachment_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -30796,7 +30796,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from me.
         Outlook operation: GET /me/events/{event-id}/attachments/{attachment-id}
         Operation type: calendar
@@ -30815,7 +30815,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -30854,7 +30854,7 @@ class OutlookDataSource:
             response = await self.client.me.events.by_event_id(event_id).attachments.by_attachment_id(attachment_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -30873,7 +30873,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendar from me.
         Outlook operation: GET /me/events/{event-id}/calendar
         Operation type: calendar
@@ -30891,7 +30891,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -30930,7 +30930,7 @@ class OutlookDataSource:
             response = await self.client.me.events.by_event_id(event_id).calendar.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -30948,7 +30948,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action cancel.
         Outlook operation: POST /me/events/{event-id}/cancel
         Operation type: calendar
@@ -30965,7 +30965,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -31004,7 +31004,7 @@ class OutlookDataSource:
             response = await self.client.me.events.by_event_id(event_id).cancel.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -31022,7 +31022,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action decline.
         Outlook operation: POST /me/events/{event-id}/decline
         Operation type: calendar
@@ -31039,7 +31039,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -31078,7 +31078,7 @@ class OutlookDataSource:
             response = await self.client.me.events.by_event_id(event_id).decline.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -31095,7 +31095,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action dismissReminder.
         Outlook operation: POST /me/events/{event-id}/dismissReminder
         Operation type: calendar
@@ -31111,7 +31111,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -31150,7 +31150,7 @@ class OutlookDataSource:
             response = await self.client.me.events.by_event_id(event_id).dismiss_reminder.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -31168,7 +31168,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action forward.
         Outlook operation: POST /me/events/{event-id}/forward
         Operation type: calendar
@@ -31185,7 +31185,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -31224,7 +31224,7 @@ class OutlookDataSource:
             response = await self.client.me.events.by_event_id(event_id).forward.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -31246,7 +31246,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """List instances.
         Outlook operation: GET /me/events/{event-id}/instances
         Operation type: calendar
@@ -31267,7 +31267,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -31306,7 +31306,7 @@ class OutlookDataSource:
             response = await self.client.me.events.by_event_id(event_id).instances.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -31328,7 +31328,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /me/events/{event-id}/instances/delta()
         Operation type: calendar
@@ -31349,7 +31349,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -31388,7 +31388,7 @@ class OutlookDataSource:
             response = await self.client.me.events.by_event_id(event_id).instances.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -31405,7 +31405,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /me/events/{event-id}/permanentDelete
         Operation type: calendar
@@ -31421,7 +31421,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -31460,7 +31460,7 @@ class OutlookDataSource:
             response = await self.client.me.events.by_event_id(event_id).permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -31478,7 +31478,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action snoozeReminder.
         Outlook operation: POST /me/events/{event-id}/snoozeReminder
         Operation type: calendar
@@ -31495,7 +31495,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -31534,7 +31534,7 @@ class OutlookDataSource:
             response = await self.client.me.events.by_event_id(event_id).snooze_reminder.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -31552,7 +31552,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action tentativelyAccept.
         Outlook operation: POST /me/events/{event-id}/tentativelyAccept
         Operation type: calendar
@@ -31569,7 +31569,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -31608,7 +31608,7 @@ class OutlookDataSource:
             response = await self.client.me.events.by_event_id(event_id).tentatively_accept.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -31627,7 +31627,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendar from users.
         Outlook operation: GET /users/{user-id}/calendar
         Operation type: calendar
@@ -31645,7 +31645,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -31684,7 +31684,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -31702,7 +31702,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property calendar in users.
         Outlook operation: PATCH /users/{user-id}/calendar
         Operation type: calendar
@@ -31719,7 +31719,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -31758,7 +31758,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar.patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -31776,7 +31776,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function allowedCalendarSharingRoles.
         Outlook operation: GET /users/{user-id}/calendar/allowedCalendarSharingRoles(User='{User}')
         Operation type: calendar
@@ -31793,7 +31793,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -31832,7 +31832,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar.allowed_calendar_sharing_roles(_user='{_user}').get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -31850,7 +31850,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to calendarPermissions for users.
         Outlook operation: POST /users/{user-id}/calendar/calendarPermissions
         Operation type: calendar
@@ -31867,7 +31867,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -31906,7 +31906,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar.calendar_permissions.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -31925,7 +31925,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete calendarPermission.
         Outlook operation: DELETE /users/{user-id}/calendar/calendarPermissions/{calendarPermission-id}
         Operation type: calendar
@@ -31943,7 +31943,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -31982,7 +31982,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar.calendar_permissions.by_calendarPermission_id(calendarPermission_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -32002,7 +32002,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendarPermission.
         Outlook operation: GET /users/{user-id}/calendar/calendarPermissions/{calendarPermission-id}
         Operation type: calendar
@@ -32021,7 +32021,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -32060,7 +32060,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar.calendar_permissions.by_calendarPermission_id(calendarPermission_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -32079,7 +32079,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update calendarPermission.
         Outlook operation: PATCH /users/{user-id}/calendar/calendarPermissions/{calendarPermission-id}
         Operation type: calendar
@@ -32097,7 +32097,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -32136,7 +32136,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar.calendar_permissions.by_calendarPermission_id(calendarPermission_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -32158,7 +32158,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendarView from users.
         Outlook operation: GET /users/{user-id}/calendar/calendarView
         Operation type: calendar
@@ -32179,7 +32179,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -32218,7 +32218,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar.calendar_view.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -32240,7 +32240,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /users/{user-id}/calendar/calendarView/delta()
         Operation type: calendar
@@ -32261,7 +32261,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -32300,7 +32300,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar.calendar_view.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -32318,7 +32318,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to events for users.
         Outlook operation: POST /users/{user-id}/calendar/events
         Operation type: calendar
@@ -32335,7 +32335,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -32374,7 +32374,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar.events.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -32394,7 +32394,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get events from users.
         Outlook operation: GET /users/{user-id}/calendar/events
         Operation type: calendar
@@ -32413,7 +32413,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -32452,7 +32452,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar.events.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -32474,7 +32474,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /users/{user-id}/calendar/events/delta()
         Operation type: calendar
@@ -32495,7 +32495,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -32534,7 +32534,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar.events.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -32553,7 +32553,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property events for users.
         Outlook operation: DELETE /users/{user-id}/calendar/events/{event-id}
         Operation type: calendar
@@ -32571,7 +32571,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -32610,7 +32610,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar.events.by_event_id(event_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -32630,7 +32630,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get events from users.
         Outlook operation: GET /users/{user-id}/calendar/events/{event-id}
         Operation type: calendar
@@ -32649,7 +32649,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -32688,7 +32688,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar.events.by_event_id(event_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -32707,7 +32707,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property events in users.
         Outlook operation: PATCH /users/{user-id}/calendar/events/{event-id}
         Operation type: calendar
@@ -32725,7 +32725,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -32764,7 +32764,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar.events.by_event_id(event_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -32783,7 +32783,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action accept.
         Outlook operation: POST /users/{user-id}/calendar/events/{event-id}/accept
         Operation type: calendar
@@ -32801,7 +32801,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -32840,7 +32840,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar.events.by_event_id(event_id).accept.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -32859,7 +32859,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to attachments for users.
         Outlook operation: POST /users/{user-id}/calendar/events/{event-id}/attachments
         Operation type: calendar
@@ -32877,7 +32877,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -32916,7 +32916,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar.events.by_event_id(event_id).attachments.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -32937,7 +32937,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from users.
         Outlook operation: GET /users/{user-id}/calendar/events/{event-id}/attachments
         Operation type: calendar
@@ -32957,7 +32957,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -32996,7 +32996,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar.events.by_event_id(event_id).attachments.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -33015,7 +33015,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createUploadSession.
         Outlook operation: POST /users/{user-id}/calendar/events/{event-id}/attachments/createUploadSession
         Operation type: calendar
@@ -33033,7 +33033,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -33072,7 +33072,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar.events.by_event_id(event_id).attachments.create_upload_session.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -33092,7 +33092,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property attachments for users.
         Outlook operation: DELETE /users/{user-id}/calendar/events/{event-id}/attachments/{attachment-id}
         Operation type: calendar
@@ -33111,7 +33111,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -33150,7 +33150,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar.events.by_event_id(event_id).attachments.by_attachment_id(attachment_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -33171,7 +33171,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from users.
         Outlook operation: GET /users/{user-id}/calendar/events/{event-id}/attachments/{attachment-id}
         Operation type: calendar
@@ -33191,7 +33191,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -33230,7 +33230,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar.events.by_event_id(event_id).attachments.by_attachment_id(attachment_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -33250,7 +33250,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendar from users.
         Outlook operation: GET /users/{user-id}/calendar/events/{event-id}/calendar
         Operation type: calendar
@@ -33269,7 +33269,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -33308,7 +33308,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar.events.by_event_id(event_id).calendar.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -33327,7 +33327,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action cancel.
         Outlook operation: POST /users/{user-id}/calendar/events/{event-id}/cancel
         Operation type: calendar
@@ -33345,7 +33345,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -33384,7 +33384,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar.events.by_event_id(event_id).cancel.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -33403,7 +33403,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action decline.
         Outlook operation: POST /users/{user-id}/calendar/events/{event-id}/decline
         Operation type: calendar
@@ -33421,7 +33421,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -33460,7 +33460,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar.events.by_event_id(event_id).decline.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -33478,7 +33478,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action dismissReminder.
         Outlook operation: POST /users/{user-id}/calendar/events/{event-id}/dismissReminder
         Operation type: calendar
@@ -33495,7 +33495,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -33534,7 +33534,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar.events.by_event_id(event_id).dismiss_reminder.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -33553,7 +33553,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action forward.
         Outlook operation: POST /users/{user-id}/calendar/events/{event-id}/forward
         Operation type: calendar
@@ -33571,7 +33571,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -33610,7 +33610,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar.events.by_event_id(event_id).forward.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -33633,7 +33633,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get instances from users.
         Outlook operation: GET /users/{user-id}/calendar/events/{event-id}/instances
         Operation type: calendar
@@ -33655,7 +33655,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -33694,7 +33694,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar.events.by_event_id(event_id).instances.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -33717,7 +33717,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /users/{user-id}/calendar/events/{event-id}/instances/delta()
         Operation type: calendar
@@ -33739,7 +33739,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -33778,7 +33778,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar.events.by_event_id(event_id).instances.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -33796,7 +33796,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /users/{user-id}/calendar/events/{event-id}/permanentDelete
         Operation type: calendar
@@ -33813,7 +33813,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -33852,7 +33852,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar.events.by_event_id(event_id).permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -33871,7 +33871,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action snoozeReminder.
         Outlook operation: POST /users/{user-id}/calendar/events/{event-id}/snoozeReminder
         Operation type: calendar
@@ -33889,7 +33889,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -33928,7 +33928,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar.events.by_event_id(event_id).snooze_reminder.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -33947,7 +33947,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action tentativelyAccept.
         Outlook operation: POST /users/{user-id}/calendar/events/{event-id}/tentativelyAccept
         Operation type: calendar
@@ -33965,7 +33965,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -34004,7 +34004,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar.events.by_event_id(event_id).tentatively_accept.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -34022,7 +34022,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action getSchedule.
         Outlook operation: POST /users/{user-id}/calendar/getSchedule
         Operation type: calendar
@@ -34039,7 +34039,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -34078,7 +34078,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar.get_schedule.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -34095,7 +34095,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /users/{user-id}/calendar/permanentDelete
         Operation type: calendar
@@ -34111,7 +34111,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -34150,7 +34150,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar.permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -34168,7 +34168,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to calendarGroups for users.
         Outlook operation: POST /users/{user-id}/calendarGroups
         Operation type: calendar
@@ -34185,7 +34185,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -34224,7 +34224,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -34244,7 +34244,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendarGroups from users.
         Outlook operation: GET /users/{user-id}/calendarGroups
         Operation type: calendar
@@ -34263,7 +34263,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -34302,7 +34302,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -34321,7 +34321,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property calendarGroups for users.
         Outlook operation: DELETE /users/{user-id}/calendarGroups/{calendarGroup-id}
         Operation type: calendar
@@ -34339,7 +34339,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -34378,7 +34378,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -34398,7 +34398,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendarGroups from users.
         Outlook operation: GET /users/{user-id}/calendarGroups/{calendarGroup-id}
         Operation type: calendar
@@ -34417,7 +34417,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -34456,7 +34456,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -34475,7 +34475,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property calendarGroups in users.
         Outlook operation: PATCH /users/{user-id}/calendarGroups/{calendarGroup-id}
         Operation type: calendar
@@ -34493,7 +34493,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -34532,7 +34532,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -34551,7 +34551,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to calendars for users.
         Outlook operation: POST /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars
         Operation type: calendar
@@ -34569,7 +34569,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -34608,7 +34608,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -34629,7 +34629,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendars from users.
         Outlook operation: GET /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars
         Operation type: calendar
@@ -34649,7 +34649,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -34688,7 +34688,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -34708,7 +34708,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property calendars for users.
         Outlook operation: DELETE /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}
         Operation type: calendar
@@ -34727,7 +34727,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -34766,7 +34766,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -34787,7 +34787,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendars from users.
         Outlook operation: GET /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}
         Operation type: calendar
@@ -34807,7 +34807,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -34846,7 +34846,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -34866,7 +34866,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property calendars in users.
         Outlook operation: PATCH /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}
         Operation type: calendar
@@ -34885,7 +34885,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -34924,7 +34924,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -34944,7 +34944,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function allowedCalendarSharingRoles.
         Outlook operation: GET /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/allowedCalendarSharingRoles(User='{User}')
         Operation type: calendar
@@ -34963,7 +34963,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -35002,7 +35002,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).allowed_calendar_sharing_roles(_user='{_user}').get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -35022,7 +35022,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to calendarPermissions for users.
         Outlook operation: POST /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/calendarPermissions
         Operation type: calendar
@@ -35041,7 +35041,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -35080,7 +35080,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).calendar_permissions.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -35102,7 +35102,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendarPermissions from users.
         Outlook operation: GET /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/calendarPermissions
         Operation type: calendar
@@ -35123,7 +35123,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -35162,7 +35162,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).calendar_permissions.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -35183,7 +35183,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property calendarPermissions for users.
         Outlook operation: DELETE /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/calendarPermissions/{calendarPermission-id}
         Operation type: calendar
@@ -35203,7 +35203,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -35242,7 +35242,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).calendar_permissions.by_calendarPermission_id(calendarPermission_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -35264,7 +35264,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendarPermissions from users.
         Outlook operation: GET /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/calendarPermissions/{calendarPermission-id}
         Operation type: calendar
@@ -35285,7 +35285,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -35324,7 +35324,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).calendar_permissions.by_calendarPermission_id(calendarPermission_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -35345,7 +35345,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property calendarPermissions in users.
         Outlook operation: PATCH /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/calendarPermissions/{calendarPermission-id}
         Operation type: calendar
@@ -35365,7 +35365,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -35404,7 +35404,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).calendar_permissions.by_calendarPermission_id(calendarPermission_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -35428,7 +35428,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendarView from users.
         Outlook operation: GET /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/calendarView
         Operation type: calendar
@@ -35451,7 +35451,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -35490,7 +35490,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).calendar_view.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -35514,7 +35514,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/calendarView/delta()
         Operation type: calendar
@@ -35537,7 +35537,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -35576,7 +35576,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).calendar_view.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -35596,7 +35596,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to events for users.
         Outlook operation: POST /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events
         Operation type: calendar
@@ -35615,7 +35615,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -35654,7 +35654,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -35676,7 +35676,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get events from users.
         Outlook operation: GET /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events
         Operation type: calendar
@@ -35697,7 +35697,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -35736,7 +35736,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -35760,7 +35760,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/delta()
         Operation type: calendar
@@ -35783,7 +35783,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -35822,7 +35822,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -35843,7 +35843,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property events for users.
         Outlook operation: DELETE /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}
         Operation type: calendar
@@ -35863,7 +35863,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -35902,7 +35902,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -35924,7 +35924,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get events from users.
         Outlook operation: GET /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}
         Operation type: calendar
@@ -35945,7 +35945,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -35984,7 +35984,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -36005,7 +36005,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property events in users.
         Outlook operation: PATCH /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}
         Operation type: calendar
@@ -36025,7 +36025,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -36064,7 +36064,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -36085,7 +36085,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action accept.
         Outlook operation: POST /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}/accept
         Operation type: calendar
@@ -36105,7 +36105,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -36144,7 +36144,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).accept.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -36165,7 +36165,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to attachments for users.
         Outlook operation: POST /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}/attachments
         Operation type: calendar
@@ -36185,7 +36185,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -36224,7 +36224,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).attachments.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -36247,7 +36247,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from users.
         Outlook operation: GET /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}/attachments
         Operation type: calendar
@@ -36269,7 +36269,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -36308,7 +36308,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).attachments.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -36329,7 +36329,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createUploadSession.
         Outlook operation: POST /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}/attachments/createUploadSession
         Operation type: calendar
@@ -36349,7 +36349,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -36388,7 +36388,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).attachments.create_upload_session.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -36410,7 +36410,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property attachments for users.
         Outlook operation: DELETE /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}/attachments/{attachment-id}
         Operation type: calendar
@@ -36431,7 +36431,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -36470,7 +36470,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).attachments.by_attachment_id(attachment_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -36493,7 +36493,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from users.
         Outlook operation: GET /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}/attachments/{attachment-id}
         Operation type: calendar
@@ -36515,7 +36515,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -36554,7 +36554,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).attachments.by_attachment_id(attachment_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -36576,7 +36576,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendar from users.
         Outlook operation: GET /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}/calendar
         Operation type: calendar
@@ -36597,7 +36597,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -36636,7 +36636,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).calendar.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -36657,7 +36657,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action cancel.
         Outlook operation: POST /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}/cancel
         Operation type: calendar
@@ -36677,7 +36677,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -36716,7 +36716,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).cancel.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -36737,7 +36737,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action decline.
         Outlook operation: POST /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}/decline
         Operation type: calendar
@@ -36757,7 +36757,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -36796,7 +36796,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).decline.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -36816,7 +36816,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action dismissReminder.
         Outlook operation: POST /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}/dismissReminder
         Operation type: calendar
@@ -36835,7 +36835,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -36874,7 +36874,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).dismiss_reminder.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -36895,7 +36895,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action forward.
         Outlook operation: POST /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}/forward
         Operation type: calendar
@@ -36915,7 +36915,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -36954,7 +36954,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).forward.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -36979,7 +36979,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get instances from users.
         Outlook operation: GET /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}/instances
         Operation type: calendar
@@ -37003,7 +37003,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -37042,7 +37042,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).instances.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -37067,7 +37067,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}/instances/delta()
         Operation type: calendar
@@ -37091,7 +37091,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -37130,7 +37130,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).instances.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -37150,7 +37150,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}/permanentDelete
         Operation type: calendar
@@ -37169,7 +37169,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -37208,7 +37208,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -37229,7 +37229,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action snoozeReminder.
         Outlook operation: POST /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}/snoozeReminder
         Operation type: calendar
@@ -37249,7 +37249,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -37288,7 +37288,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).snooze_reminder.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -37309,7 +37309,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action tentativelyAccept.
         Outlook operation: POST /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/events/{event-id}/tentativelyAccept
         Operation type: calendar
@@ -37329,7 +37329,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -37368,7 +37368,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).tentatively_accept.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -37388,7 +37388,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action getSchedule.
         Outlook operation: POST /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/getSchedule
         Operation type: calendar
@@ -37407,7 +37407,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -37446,7 +37446,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).get_schedule.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -37465,7 +37465,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /users/{user-id}/calendarGroups/{calendarGroup-id}/calendars/{calendar-id}/permanentDelete
         Operation type: calendar
@@ -37483,7 +37483,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -37522,7 +37522,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_groups.by_calendarGroup_id(calendarGroup_id).calendars.by_calendar_id(calendar_id).permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -37544,7 +37544,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendarView from users.
         Outlook operation: GET /users/{user-id}/calendarView
         Operation type: calendar
@@ -37565,7 +37565,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -37604,7 +37604,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_view.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -37626,7 +37626,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /users/{user-id}/calendarView/delta()
         Operation type: calendar
@@ -37647,7 +37647,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -37686,7 +37686,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendar_view.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -37704,7 +37704,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to calendars for users.
         Outlook operation: POST /users/{user-id}/calendars
         Operation type: calendar
@@ -37721,7 +37721,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -37760,7 +37760,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -37780,7 +37780,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendars from users.
         Outlook operation: GET /users/{user-id}/calendars
         Operation type: calendar
@@ -37799,7 +37799,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -37838,7 +37838,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -37857,7 +37857,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property calendars for users.
         Outlook operation: DELETE /users/{user-id}/calendars/{calendar-id}
         Operation type: calendar
@@ -37875,7 +37875,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -37914,7 +37914,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.by_calendar_id(calendar_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -37934,7 +37934,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendars from users.
         Outlook operation: GET /users/{user-id}/calendars/{calendar-id}
         Operation type: calendar
@@ -37953,7 +37953,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -37992,7 +37992,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.by_calendar_id(calendar_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -38011,7 +38011,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property calendars in users.
         Outlook operation: PATCH /users/{user-id}/calendars/{calendar-id}
         Operation type: calendar
@@ -38029,7 +38029,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -38068,7 +38068,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.by_calendar_id(calendar_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -38087,7 +38087,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function allowedCalendarSharingRoles.
         Outlook operation: GET /users/{user-id}/calendars/{calendar-id}/allowedCalendarSharingRoles(User='{User}')
         Operation type: calendar
@@ -38105,7 +38105,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -38144,7 +38144,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.by_calendar_id(calendar_id).allowed_calendar_sharing_roles(_user='{_user}').get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -38163,7 +38163,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to calendarPermissions for users.
         Outlook operation: POST /users/{user-id}/calendars/{calendar-id}/calendarPermissions
         Operation type: calendar
@@ -38181,7 +38181,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -38220,7 +38220,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.by_calendar_id(calendar_id).calendar_permissions.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -38241,7 +38241,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendarPermissions from users.
         Outlook operation: GET /users/{user-id}/calendars/{calendar-id}/calendarPermissions
         Operation type: calendar
@@ -38261,7 +38261,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -38300,7 +38300,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.by_calendar_id(calendar_id).calendar_permissions.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -38320,7 +38320,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property calendarPermissions for users.
         Outlook operation: DELETE /users/{user-id}/calendars/{calendar-id}/calendarPermissions/{calendarPermission-id}
         Operation type: calendar
@@ -38339,7 +38339,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -38378,7 +38378,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.by_calendar_id(calendar_id).calendar_permissions.by_calendarPermission_id(calendarPermission_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -38399,7 +38399,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendarPermissions from users.
         Outlook operation: GET /users/{user-id}/calendars/{calendar-id}/calendarPermissions/{calendarPermission-id}
         Operation type: calendar
@@ -38419,7 +38419,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -38458,7 +38458,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.by_calendar_id(calendar_id).calendar_permissions.by_calendarPermission_id(calendarPermission_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -38478,7 +38478,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property calendarPermissions in users.
         Outlook operation: PATCH /users/{user-id}/calendars/{calendar-id}/calendarPermissions/{calendarPermission-id}
         Operation type: calendar
@@ -38497,7 +38497,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -38536,7 +38536,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.by_calendar_id(calendar_id).calendar_permissions.by_calendarPermission_id(calendarPermission_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -38559,7 +38559,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendarView from users.
         Outlook operation: GET /users/{user-id}/calendars/{calendar-id}/calendarView
         Operation type: calendar
@@ -38581,7 +38581,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -38620,7 +38620,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.by_calendar_id(calendar_id).calendar_view.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -38643,7 +38643,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /users/{user-id}/calendars/{calendar-id}/calendarView/delta()
         Operation type: calendar
@@ -38665,7 +38665,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -38704,7 +38704,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.by_calendar_id(calendar_id).calendar_view.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -38723,7 +38723,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to events for users.
         Outlook operation: POST /users/{user-id}/calendars/{calendar-id}/events
         Operation type: calendar
@@ -38741,7 +38741,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -38780,7 +38780,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.by_calendar_id(calendar_id).events.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -38801,7 +38801,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get events from users.
         Outlook operation: GET /users/{user-id}/calendars/{calendar-id}/events
         Operation type: calendar
@@ -38821,7 +38821,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -38860,7 +38860,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.by_calendar_id(calendar_id).events.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -38883,7 +38883,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /users/{user-id}/calendars/{calendar-id}/events/delta()
         Operation type: calendar
@@ -38905,7 +38905,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -38944,7 +38944,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.by_calendar_id(calendar_id).events.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -38964,7 +38964,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property events for users.
         Outlook operation: DELETE /users/{user-id}/calendars/{calendar-id}/events/{event-id}
         Operation type: calendar
@@ -38983,7 +38983,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -39022,7 +39022,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -39043,7 +39043,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get events from users.
         Outlook operation: GET /users/{user-id}/calendars/{calendar-id}/events/{event-id}
         Operation type: calendar
@@ -39063,7 +39063,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -39102,7 +39102,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -39122,7 +39122,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property events in users.
         Outlook operation: PATCH /users/{user-id}/calendars/{calendar-id}/events/{event-id}
         Operation type: calendar
@@ -39141,7 +39141,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -39180,7 +39180,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -39200,7 +39200,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action accept.
         Outlook operation: POST /users/{user-id}/calendars/{calendar-id}/events/{event-id}/accept
         Operation type: calendar
@@ -39219,7 +39219,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -39258,7 +39258,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).accept.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -39278,7 +39278,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to attachments for users.
         Outlook operation: POST /users/{user-id}/calendars/{calendar-id}/events/{event-id}/attachments
         Operation type: calendar
@@ -39297,7 +39297,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -39336,7 +39336,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).attachments.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -39358,7 +39358,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from users.
         Outlook operation: GET /users/{user-id}/calendars/{calendar-id}/events/{event-id}/attachments
         Operation type: calendar
@@ -39379,7 +39379,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -39418,7 +39418,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).attachments.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -39438,7 +39438,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createUploadSession.
         Outlook operation: POST /users/{user-id}/calendars/{calendar-id}/events/{event-id}/attachments/createUploadSession
         Operation type: calendar
@@ -39457,7 +39457,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -39496,7 +39496,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).attachments.create_upload_session.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -39517,7 +39517,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property attachments for users.
         Outlook operation: DELETE /users/{user-id}/calendars/{calendar-id}/events/{event-id}/attachments/{attachment-id}
         Operation type: calendar
@@ -39537,7 +39537,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -39576,7 +39576,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).attachments.by_attachment_id(attachment_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -39598,7 +39598,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from users.
         Outlook operation: GET /users/{user-id}/calendars/{calendar-id}/events/{event-id}/attachments/{attachment-id}
         Operation type: calendar
@@ -39619,7 +39619,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -39658,7 +39658,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).attachments.by_attachment_id(attachment_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -39679,7 +39679,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendar from users.
         Outlook operation: GET /users/{user-id}/calendars/{calendar-id}/events/{event-id}/calendar
         Operation type: calendar
@@ -39699,7 +39699,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -39738,7 +39738,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).calendar.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -39758,7 +39758,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action cancel.
         Outlook operation: POST /users/{user-id}/calendars/{calendar-id}/events/{event-id}/cancel
         Operation type: calendar
@@ -39777,7 +39777,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -39816,7 +39816,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).cancel.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -39836,7 +39836,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action decline.
         Outlook operation: POST /users/{user-id}/calendars/{calendar-id}/events/{event-id}/decline
         Operation type: calendar
@@ -39855,7 +39855,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -39894,7 +39894,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).decline.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -39913,7 +39913,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action dismissReminder.
         Outlook operation: POST /users/{user-id}/calendars/{calendar-id}/events/{event-id}/dismissReminder
         Operation type: calendar
@@ -39931,7 +39931,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -39970,7 +39970,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).dismiss_reminder.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -39990,7 +39990,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action forward.
         Outlook operation: POST /users/{user-id}/calendars/{calendar-id}/events/{event-id}/forward
         Operation type: calendar
@@ -40009,7 +40009,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -40048,7 +40048,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).forward.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -40072,7 +40072,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get instances from users.
         Outlook operation: GET /users/{user-id}/calendars/{calendar-id}/events/{event-id}/instances
         Operation type: calendar
@@ -40095,7 +40095,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -40134,7 +40134,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).instances.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -40158,7 +40158,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /users/{user-id}/calendars/{calendar-id}/events/{event-id}/instances/delta()
         Operation type: calendar
@@ -40181,7 +40181,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -40220,7 +40220,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).instances.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -40239,7 +40239,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /users/{user-id}/calendars/{calendar-id}/events/{event-id}/permanentDelete
         Operation type: calendar
@@ -40257,7 +40257,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -40296,7 +40296,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -40316,7 +40316,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action snoozeReminder.
         Outlook operation: POST /users/{user-id}/calendars/{calendar-id}/events/{event-id}/snoozeReminder
         Operation type: calendar
@@ -40335,7 +40335,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -40374,7 +40374,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).snooze_reminder.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -40394,7 +40394,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action tentativelyAccept.
         Outlook operation: POST /users/{user-id}/calendars/{calendar-id}/events/{event-id}/tentativelyAccept
         Operation type: calendar
@@ -40413,7 +40413,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -40452,7 +40452,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.by_calendar_id(calendar_id).events.by_event_id(event_id).tentatively_accept.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -40471,7 +40471,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action getSchedule.
         Outlook operation: POST /users/{user-id}/calendars/{calendar-id}/getSchedule
         Operation type: calendar
@@ -40489,7 +40489,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -40528,7 +40528,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.by_calendar_id(calendar_id).get_schedule.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -40546,7 +40546,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /users/{user-id}/calendars/{calendar-id}/permanentDelete
         Operation type: calendar
@@ -40563,7 +40563,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -40602,7 +40602,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).calendars.by_calendar_id(calendar_id).permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -40620,7 +40620,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to events for users.
         Outlook operation: POST /users/{user-id}/events
         Operation type: calendar
@@ -40637,7 +40637,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -40676,7 +40676,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).events.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -40696,7 +40696,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get events from users.
         Outlook operation: GET /users/{user-id}/events
         Operation type: calendar
@@ -40715,7 +40715,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -40754,7 +40754,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).events.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -40776,7 +40776,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /users/{user-id}/events/delta()
         Operation type: calendar
@@ -40797,7 +40797,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -40836,7 +40836,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).events.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -40855,7 +40855,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property events for users.
         Outlook operation: DELETE /users/{user-id}/events/{event-id}
         Operation type: calendar
@@ -40873,7 +40873,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -40912,7 +40912,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).events.by_event_id(event_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -40932,7 +40932,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get events from users.
         Outlook operation: GET /users/{user-id}/events/{event-id}
         Operation type: calendar
@@ -40951,7 +40951,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -40990,7 +40990,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).events.by_event_id(event_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -41009,7 +41009,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property events in users.
         Outlook operation: PATCH /users/{user-id}/events/{event-id}
         Operation type: calendar
@@ -41027,7 +41027,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -41066,7 +41066,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).events.by_event_id(event_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -41085,7 +41085,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action accept.
         Outlook operation: POST /users/{user-id}/events/{event-id}/accept
         Operation type: calendar
@@ -41103,7 +41103,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -41142,7 +41142,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).events.by_event_id(event_id).accept.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -41161,7 +41161,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to attachments for users.
         Outlook operation: POST /users/{user-id}/events/{event-id}/attachments
         Operation type: calendar
@@ -41179,7 +41179,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -41218,7 +41218,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).events.by_event_id(event_id).attachments.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -41239,7 +41239,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from users.
         Outlook operation: GET /users/{user-id}/events/{event-id}/attachments
         Operation type: calendar
@@ -41259,7 +41259,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -41298,7 +41298,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).events.by_event_id(event_id).attachments.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -41317,7 +41317,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createUploadSession.
         Outlook operation: POST /users/{user-id}/events/{event-id}/attachments/createUploadSession
         Operation type: calendar
@@ -41335,7 +41335,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -41374,7 +41374,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).events.by_event_id(event_id).attachments.create_upload_session.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -41394,7 +41394,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property attachments for users.
         Outlook operation: DELETE /users/{user-id}/events/{event-id}/attachments/{attachment-id}
         Operation type: calendar
@@ -41413,7 +41413,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -41452,7 +41452,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).events.by_event_id(event_id).attachments.by_attachment_id(attachment_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -41473,7 +41473,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from users.
         Outlook operation: GET /users/{user-id}/events/{event-id}/attachments/{attachment-id}
         Operation type: calendar
@@ -41493,7 +41493,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -41532,7 +41532,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).events.by_event_id(event_id).attachments.by_attachment_id(attachment_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -41552,7 +41552,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get calendar from users.
         Outlook operation: GET /users/{user-id}/events/{event-id}/calendar
         Operation type: calendar
@@ -41571,7 +41571,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -41610,7 +41610,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).events.by_event_id(event_id).calendar.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -41629,7 +41629,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action cancel.
         Outlook operation: POST /users/{user-id}/events/{event-id}/cancel
         Operation type: calendar
@@ -41647,7 +41647,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -41686,7 +41686,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).events.by_event_id(event_id).cancel.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -41705,7 +41705,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action decline.
         Outlook operation: POST /users/{user-id}/events/{event-id}/decline
         Operation type: calendar
@@ -41723,7 +41723,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -41762,7 +41762,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).events.by_event_id(event_id).decline.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -41780,7 +41780,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action dismissReminder.
         Outlook operation: POST /users/{user-id}/events/{event-id}/dismissReminder
         Operation type: calendar
@@ -41797,7 +41797,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -41836,7 +41836,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).events.by_event_id(event_id).dismiss_reminder.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -41855,7 +41855,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action forward.
         Outlook operation: POST /users/{user-id}/events/{event-id}/forward
         Operation type: calendar
@@ -41873,7 +41873,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -41912,7 +41912,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).events.by_event_id(event_id).forward.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -41935,7 +41935,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get instances from users.
         Outlook operation: GET /users/{user-id}/events/{event-id}/instances
         Operation type: calendar
@@ -41957,7 +41957,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -41996,7 +41996,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).events.by_event_id(event_id).instances.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -42019,7 +42019,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /users/{user-id}/events/{event-id}/instances/delta()
         Operation type: calendar
@@ -42041,7 +42041,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -42080,7 +42080,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).events.by_event_id(event_id).instances.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -42098,7 +42098,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /users/{user-id}/events/{event-id}/permanentDelete
         Operation type: calendar
@@ -42115,7 +42115,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -42154,7 +42154,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).events.by_event_id(event_id).permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -42173,7 +42173,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action snoozeReminder.
         Outlook operation: POST /users/{user-id}/events/{event-id}/snoozeReminder
         Operation type: calendar
@@ -42191,7 +42191,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -42230,7 +42230,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).events.by_event_id(event_id).snooze_reminder.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -42249,7 +42249,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action tentativelyAccept.
         Outlook operation: POST /users/{user-id}/events/{event-id}/tentativelyAccept
         Operation type: calendar
@@ -42267,7 +42267,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -42306,7 +42306,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).events.by_event_id(event_id).tentatively_accept.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -42328,7 +42328,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """List orgContacts.
         Outlook operation: GET /contacts
         Operation type: contacts
@@ -42347,7 +42347,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -42386,7 +42386,7 @@ class OutlookDataSource:
             response = await self.client.contacts.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -42405,7 +42405,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /contacts/delta()
         Operation type: contacts
@@ -42423,7 +42423,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -42462,7 +42462,7 @@ class OutlookDataSource:
             response = await self.client.contacts.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -42479,7 +42479,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action validateProperties.
         Outlook operation: POST /contacts/validateProperties
         Operation type: contacts
@@ -42495,7 +42495,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -42534,7 +42534,7 @@ class OutlookDataSource:
             response = await self.client.contacts.validate_properties.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -42553,7 +42553,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get orgContact.
         Outlook operation: GET /contacts/{orgContact-id}
         Operation type: contacts
@@ -42571,7 +42571,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -42610,7 +42610,7 @@ class OutlookDataSource:
             response = await self.client.contacts.by_contact_id(orgContact_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -42628,7 +42628,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action checkMemberObjects.
         Outlook operation: POST /contacts/{orgContact-id}/checkMemberObjects
         Operation type: contacts
@@ -42645,7 +42645,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -42684,7 +42684,7 @@ class OutlookDataSource:
             response = await self.client.contacts.by_contact_id(orgContact_id).check_member_objects.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -42705,7 +42705,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """List directReports.
         Outlook operation: GET /contacts/{orgContact-id}/directReports
         Operation type: contacts
@@ -42725,7 +42725,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -42764,7 +42764,7 @@ class OutlookDataSource:
             response = await self.client.contacts.by_contact_id(orgContact_id).direct_reports.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -42783,7 +42783,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get manager.
         Outlook operation: GET /contacts/{orgContact-id}/manager
         Operation type: contacts
@@ -42801,7 +42801,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -42840,7 +42840,7 @@ class OutlookDataSource:
             response = await self.client.contacts.by_contact_id(orgContact_id).manager.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -42861,7 +42861,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """List memberOf.
         Outlook operation: GET /contacts/{orgContact-id}/memberOf
         Operation type: contacts
@@ -42881,7 +42881,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -42920,7 +42920,7 @@ class OutlookDataSource:
             response = await self.client.contacts.by_contact_id(orgContact_id).member_of.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -42937,7 +42937,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action retryServiceProvisioning.
         Outlook operation: POST /contacts/{orgContact-id}/retryServiceProvisioning
         Operation type: contacts
@@ -42953,7 +42953,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -42992,7 +42992,7 @@ class OutlookDataSource:
             response = await self.client.contacts.by_contact_id(orgContact_id).retry_service_provisioning.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -43012,7 +43012,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get serviceProvisioningErrors property value.
         Outlook operation: GET /contacts/{orgContact-id}/serviceProvisioningErrors
         Operation type: contacts
@@ -43031,7 +43031,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -43070,7 +43070,7 @@ class OutlookDataSource:
             response = await self.client.contacts.by_contact_id(orgContact_id).service_provisioning_errors.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -43091,7 +43091,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """List transitiveMemberOf.
         Outlook operation: GET /contacts/{orgContact-id}/transitiveMemberOf
         Operation type: contacts
@@ -43111,7 +43111,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -43150,7 +43150,7 @@ class OutlookDataSource:
             response = await self.client.contacts.by_contact_id(orgContact_id).transitive_member_of.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -43167,7 +43167,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create ContactFolder.
         Outlook operation: POST /me/contactFolders
         Operation type: contacts
@@ -43183,7 +43183,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -43222,7 +43222,7 @@ class OutlookDataSource:
             response = await self.client.me.contact_folders.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -43241,7 +43241,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """List contactFolders.
         Outlook operation: GET /me/contactFolders
         Operation type: contacts
@@ -43259,7 +43259,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -43298,7 +43298,7 @@ class OutlookDataSource:
             response = await self.client.me.contact_folders.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -43317,7 +43317,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /me/contactFolders/delta()
         Operation type: contacts
@@ -43335,7 +43335,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -43374,7 +43374,7 @@ class OutlookDataSource:
             response = await self.client.me.contact_folders.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -43392,7 +43392,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete contactFolder.
         Outlook operation: DELETE /me/contactFolders/{contactFolder-id}
         Operation type: contacts
@@ -43409,7 +43409,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -43448,7 +43448,7 @@ class OutlookDataSource:
             response = await self.client.me.contact_folders.by_contact_folder_id(contactFolder_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -43467,7 +43467,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get contactFolder.
         Outlook operation: GET /me/contactFolders/{contactFolder-id}
         Operation type: contacts
@@ -43485,7 +43485,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -43524,7 +43524,7 @@ class OutlookDataSource:
             response = await self.client.me.contact_folders.by_contact_folder_id(contactFolder_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -43542,7 +43542,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update contactfolder.
         Outlook operation: PATCH /me/contactFolders/{contactFolder-id}
         Operation type: contacts
@@ -43559,7 +43559,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -43598,7 +43598,7 @@ class OutlookDataSource:
             response = await self.client.me.contact_folders.by_contact_folder_id(contactFolder_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -43616,7 +43616,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create ContactFolder.
         Outlook operation: POST /me/contactFolders/{contactFolder-id}/childFolders
         Operation type: contacts
@@ -43633,7 +43633,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -43672,7 +43672,7 @@ class OutlookDataSource:
             response = await self.client.me.contact_folders.by_contact_folder_id(contactFolder_id).child_folders.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -43692,7 +43692,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """List childFolders.
         Outlook operation: GET /me/contactFolders/{contactFolder-id}/childFolders
         Operation type: contacts
@@ -43711,7 +43711,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -43750,7 +43750,7 @@ class OutlookDataSource:
             response = await self.client.me.contact_folders.by_contact_folder_id(contactFolder_id).child_folders.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -43770,7 +43770,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /me/contactFolders/{contactFolder-id}/childFolders/delta()
         Operation type: contacts
@@ -43789,7 +43789,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -43828,7 +43828,7 @@ class OutlookDataSource:
             response = await self.client.me.contact_folders.by_contact_folder_id(contactFolder_id).child_folders.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -43847,7 +43847,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property childFolders for me.
         Outlook operation: DELETE /me/contactFolders/{contactFolder-id}/childFolders/{contactFolder-id1}
         Operation type: contacts
@@ -43865,7 +43865,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -43904,7 +43904,7 @@ class OutlookDataSource:
             response = await self.client.me.contact_folders.by_contact_folder_id(contactFolder_id).child_folders.by_childFolder_id(contactFolder_id1).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -43924,7 +43924,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get childFolders from me.
         Outlook operation: GET /me/contactFolders/{contactFolder-id}/childFolders/{contactFolder-id1}
         Operation type: contacts
@@ -43943,7 +43943,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -43982,7 +43982,7 @@ class OutlookDataSource:
             response = await self.client.me.contact_folders.by_contact_folder_id(contactFolder_id).child_folders.by_childFolder_id(contactFolder_id1).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -44001,7 +44001,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property childFolders in me.
         Outlook operation: PATCH /me/contactFolders/{contactFolder-id}/childFolders/{contactFolder-id1}
         Operation type: contacts
@@ -44019,7 +44019,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -44058,7 +44058,7 @@ class OutlookDataSource:
             response = await self.client.me.contact_folders.by_contact_folder_id(contactFolder_id).child_folders.by_childFolder_id(contactFolder_id1).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -44077,7 +44077,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to contacts for me.
         Outlook operation: POST /me/contactFolders/{contactFolder-id}/childFolders/{contactFolder-id1}/contacts
         Operation type: contacts
@@ -44095,7 +44095,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -44134,7 +44134,7 @@ class OutlookDataSource:
             response = await self.client.me.contact_folders.by_contact_folder_id(contactFolder_id).child_folders.by_childFolder_id(contactFolder_id1).contacts.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -44155,7 +44155,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get contacts from me.
         Outlook operation: GET /me/contactFolders/{contactFolder-id}/childFolders/{contactFolder-id1}/contacts
         Operation type: contacts
@@ -44175,7 +44175,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -44214,7 +44214,7 @@ class OutlookDataSource:
             response = await self.client.me.contact_folders.by_contact_folder_id(contactFolder_id).child_folders.by_childFolder_id(contactFolder_id1).contacts.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -44235,7 +44235,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /me/contactFolders/{contactFolder-id}/childFolders/{contactFolder-id1}/contacts/delta()
         Operation type: contacts
@@ -44255,7 +44255,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -44294,7 +44294,7 @@ class OutlookDataSource:
             response = await self.client.me.contact_folders.by_contact_folder_id(contactFolder_id).child_folders.by_childFolder_id(contactFolder_id1).contacts.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -44314,7 +44314,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property contacts for me.
         Outlook operation: DELETE /me/contactFolders/{contactFolder-id}/childFolders/{contactFolder-id1}/contacts/{contact-id}
         Operation type: contacts
@@ -44333,7 +44333,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -44372,7 +44372,7 @@ class OutlookDataSource:
             response = await self.client.me.contact_folders.by_contact_folder_id(contactFolder_id).child_folders.by_childFolder_id(contactFolder_id1).contacts.by_contact_id(contact_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -44393,7 +44393,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get contacts from me.
         Outlook operation: GET /me/contactFolders/{contactFolder-id}/childFolders/{contactFolder-id1}/contacts/{contact-id}
         Operation type: contacts
@@ -44413,7 +44413,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -44452,7 +44452,7 @@ class OutlookDataSource:
             response = await self.client.me.contact_folders.by_contact_folder_id(contactFolder_id).child_folders.by_childFolder_id(contactFolder_id1).contacts.by_contact_id(contact_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -44472,7 +44472,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property contacts in me.
         Outlook operation: PATCH /me/contactFolders/{contactFolder-id}/childFolders/{contactFolder-id1}/contacts/{contact-id}
         Operation type: contacts
@@ -44491,7 +44491,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -44530,7 +44530,7 @@ class OutlookDataSource:
             response = await self.client.me.contact_folders.by_contact_folder_id(contactFolder_id).child_folders.by_childFolder_id(contactFolder_id1).contacts.by_contact_id(contact_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -44549,7 +44549,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /me/contactFolders/{contactFolder-id}/childFolders/{contactFolder-id1}/contacts/{contact-id}/permanentDelete
         Operation type: contacts
@@ -44567,7 +44567,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -44606,7 +44606,7 @@ class OutlookDataSource:
             response = await self.client.me.contact_folders.by_contact_folder_id(contactFolder_id).child_folders.by_childFolder_id(contactFolder_id1).contacts.by_contact_id(contact_id).permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -44624,7 +44624,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /me/contactFolders/{contactFolder-id}/childFolders/{contactFolder-id1}/permanentDelete
         Operation type: contacts
@@ -44641,7 +44641,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -44680,7 +44680,7 @@ class OutlookDataSource:
             response = await self.client.me.contact_folders.by_contact_folder_id(contactFolder_id).child_folders.by_childFolder_id(contactFolder_id1).permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -44698,7 +44698,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create contact.
         Outlook operation: POST /me/contactFolders/{contactFolder-id}/contacts
         Operation type: contacts
@@ -44715,7 +44715,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -44754,7 +44754,7 @@ class OutlookDataSource:
             response = await self.client.me.contact_folders.by_contact_folder_id(contactFolder_id).contacts.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -44774,7 +44774,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """List contacts.
         Outlook operation: GET /me/contactFolders/{contactFolder-id}/contacts
         Operation type: contacts
@@ -44793,7 +44793,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -44832,7 +44832,7 @@ class OutlookDataSource:
             response = await self.client.me.contact_folders.by_contact_folder_id(contactFolder_id).contacts.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -44852,7 +44852,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /me/contactFolders/{contactFolder-id}/contacts/delta()
         Operation type: contacts
@@ -44871,7 +44871,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -44910,7 +44910,7 @@ class OutlookDataSource:
             response = await self.client.me.contact_folders.by_contact_folder_id(contactFolder_id).contacts.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -44929,7 +44929,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property contacts for me.
         Outlook operation: DELETE /me/contactFolders/{contactFolder-id}/contacts/{contact-id}
         Operation type: contacts
@@ -44947,7 +44947,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -44986,7 +44986,7 @@ class OutlookDataSource:
             response = await self.client.me.contact_folders.by_contact_folder_id(contactFolder_id).contacts.by_contact_id(contact_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -45006,7 +45006,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get contacts from me.
         Outlook operation: GET /me/contactFolders/{contactFolder-id}/contacts/{contact-id}
         Operation type: contacts
@@ -45025,7 +45025,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -45064,7 +45064,7 @@ class OutlookDataSource:
             response = await self.client.me.contact_folders.by_contact_folder_id(contactFolder_id).contacts.by_contact_id(contact_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -45083,7 +45083,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property contacts in me.
         Outlook operation: PATCH /me/contactFolders/{contactFolder-id}/contacts/{contact-id}
         Operation type: contacts
@@ -45101,7 +45101,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -45140,7 +45140,7 @@ class OutlookDataSource:
             response = await self.client.me.contact_folders.by_contact_folder_id(contactFolder_id).contacts.by_contact_id(contact_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -45158,7 +45158,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /me/contactFolders/{contactFolder-id}/contacts/{contact-id}/permanentDelete
         Operation type: contacts
@@ -45175,7 +45175,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -45214,7 +45214,7 @@ class OutlookDataSource:
             response = await self.client.me.contact_folders.by_contact_folder_id(contactFolder_id).contacts.by_contact_id(contact_id).permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -45231,7 +45231,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /me/contactFolders/{contactFolder-id}/permanentDelete
         Operation type: contacts
@@ -45247,7 +45247,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -45286,7 +45286,7 @@ class OutlookDataSource:
             response = await self.client.me.contact_folders.by_contact_folder_id(contactFolder_id).permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -45303,7 +45303,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create contact.
         Outlook operation: POST /me/contacts
         Operation type: contacts
@@ -45319,7 +45319,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -45358,7 +45358,7 @@ class OutlookDataSource:
             response = await self.client.me.contacts.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -45377,7 +45377,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """List contacts.
         Outlook operation: GET /me/contacts
         Operation type: contacts
@@ -45395,7 +45395,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -45434,7 +45434,7 @@ class OutlookDataSource:
             response = await self.client.me.contacts.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -45453,7 +45453,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /me/contacts/delta()
         Operation type: contacts
@@ -45471,7 +45471,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -45510,7 +45510,7 @@ class OutlookDataSource:
             response = await self.client.me.contacts.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -45528,7 +45528,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete contact.
         Outlook operation: DELETE /me/contacts/{contact-id}
         Operation type: contacts
@@ -45545,7 +45545,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -45584,7 +45584,7 @@ class OutlookDataSource:
             response = await self.client.me.contacts.by_contact_id(contact_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -45603,7 +45603,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get contact.
         Outlook operation: GET /me/contacts/{contact-id}
         Operation type: contacts
@@ -45621,7 +45621,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -45660,7 +45660,7 @@ class OutlookDataSource:
             response = await self.client.me.contacts.by_contact_id(contact_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -45678,7 +45678,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update contact.
         Outlook operation: PATCH /me/contacts/{contact-id}
         Operation type: contacts
@@ -45695,7 +45695,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -45734,7 +45734,7 @@ class OutlookDataSource:
             response = await self.client.me.contacts.by_contact_id(contact_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -45751,7 +45751,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /me/contacts/{contact-id}/permanentDelete
         Operation type: contacts
@@ -45767,7 +45767,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -45806,7 +45806,7 @@ class OutlookDataSource:
             response = await self.client.me.contacts.by_contact_id(contact_id).permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -45824,7 +45824,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to contactFolders for users.
         Outlook operation: POST /users/{user-id}/contactFolders
         Operation type: contacts
@@ -45841,7 +45841,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -45880,7 +45880,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).contact_folders.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -45900,7 +45900,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get contactFolders from users.
         Outlook operation: GET /users/{user-id}/contactFolders
         Operation type: contacts
@@ -45919,7 +45919,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -45958,7 +45958,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).contact_folders.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -45978,7 +45978,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /users/{user-id}/contactFolders/delta()
         Operation type: contacts
@@ -45997,7 +45997,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -46036,7 +46036,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).contact_folders.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -46055,7 +46055,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property contactFolders for users.
         Outlook operation: DELETE /users/{user-id}/contactFolders/{contactFolder-id}
         Operation type: contacts
@@ -46073,7 +46073,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -46112,7 +46112,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).contact_folders.by_contact_folder_id(contactFolder_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -46132,7 +46132,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get contactFolders from users.
         Outlook operation: GET /users/{user-id}/contactFolders/{contactFolder-id}
         Operation type: contacts
@@ -46151,7 +46151,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -46190,7 +46190,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).contact_folders.by_contact_folder_id(contactFolder_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -46209,7 +46209,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property contactFolders in users.
         Outlook operation: PATCH /users/{user-id}/contactFolders/{contactFolder-id}
         Operation type: contacts
@@ -46227,7 +46227,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -46266,7 +46266,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).contact_folders.by_contact_folder_id(contactFolder_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -46285,7 +46285,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to childFolders for users.
         Outlook operation: POST /users/{user-id}/contactFolders/{contactFolder-id}/childFolders
         Operation type: contacts
@@ -46303,7 +46303,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -46342,7 +46342,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).contact_folders.by_contact_folder_id(contactFolder_id).child_folders.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -46363,7 +46363,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get childFolders from users.
         Outlook operation: GET /users/{user-id}/contactFolders/{contactFolder-id}/childFolders
         Operation type: contacts
@@ -46383,7 +46383,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -46422,7 +46422,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).contact_folders.by_contact_folder_id(contactFolder_id).child_folders.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -46443,7 +46443,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /users/{user-id}/contactFolders/{contactFolder-id}/childFolders/delta()
         Operation type: contacts
@@ -46463,7 +46463,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -46502,7 +46502,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).contact_folders.by_contact_folder_id(contactFolder_id).child_folders.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -46522,7 +46522,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property childFolders for users.
         Outlook operation: DELETE /users/{user-id}/contactFolders/{contactFolder-id}/childFolders/{contactFolder-id1}
         Operation type: contacts
@@ -46541,7 +46541,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -46580,7 +46580,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).contact_folders.by_contact_folder_id(contactFolder_id).child_folders.by_childFolder_id(contactFolder_id1).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -46601,7 +46601,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get childFolders from users.
         Outlook operation: GET /users/{user-id}/contactFolders/{contactFolder-id}/childFolders/{contactFolder-id1}
         Operation type: contacts
@@ -46621,7 +46621,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -46660,7 +46660,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).contact_folders.by_contact_folder_id(contactFolder_id).child_folders.by_childFolder_id(contactFolder_id1).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -46680,7 +46680,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property childFolders in users.
         Outlook operation: PATCH /users/{user-id}/contactFolders/{contactFolder-id}/childFolders/{contactFolder-id1}
         Operation type: contacts
@@ -46699,7 +46699,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -46738,7 +46738,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).contact_folders.by_contact_folder_id(contactFolder_id).child_folders.by_childFolder_id(contactFolder_id1).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -46758,7 +46758,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to contacts for users.
         Outlook operation: POST /users/{user-id}/contactFolders/{contactFolder-id}/childFolders/{contactFolder-id1}/contacts
         Operation type: contacts
@@ -46777,7 +46777,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -46816,7 +46816,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).contact_folders.by_contact_folder_id(contactFolder_id).child_folders.by_childFolder_id(contactFolder_id1).contacts.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -46838,7 +46838,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get contacts from users.
         Outlook operation: GET /users/{user-id}/contactFolders/{contactFolder-id}/childFolders/{contactFolder-id1}/contacts
         Operation type: contacts
@@ -46859,7 +46859,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -46898,7 +46898,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).contact_folders.by_contact_folder_id(contactFolder_id).child_folders.by_childFolder_id(contactFolder_id1).contacts.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -46920,7 +46920,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /users/{user-id}/contactFolders/{contactFolder-id}/childFolders/{contactFolder-id1}/contacts/delta()
         Operation type: contacts
@@ -46941,7 +46941,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -46980,7 +46980,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).contact_folders.by_contact_folder_id(contactFolder_id).child_folders.by_childFolder_id(contactFolder_id1).contacts.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -47001,7 +47001,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property contacts for users.
         Outlook operation: DELETE /users/{user-id}/contactFolders/{contactFolder-id}/childFolders/{contactFolder-id1}/contacts/{contact-id}
         Operation type: contacts
@@ -47021,7 +47021,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -47060,7 +47060,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).contact_folders.by_contact_folder_id(contactFolder_id).child_folders.by_childFolder_id(contactFolder_id1).contacts.by_contact_id(contact_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -47082,7 +47082,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get contacts from users.
         Outlook operation: GET /users/{user-id}/contactFolders/{contactFolder-id}/childFolders/{contactFolder-id1}/contacts/{contact-id}
         Operation type: contacts
@@ -47103,7 +47103,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -47142,7 +47142,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).contact_folders.by_contact_folder_id(contactFolder_id).child_folders.by_childFolder_id(contactFolder_id1).contacts.by_contact_id(contact_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -47163,7 +47163,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property contacts in users.
         Outlook operation: PATCH /users/{user-id}/contactFolders/{contactFolder-id}/childFolders/{contactFolder-id1}/contacts/{contact-id}
         Operation type: contacts
@@ -47183,7 +47183,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -47222,7 +47222,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).contact_folders.by_contact_folder_id(contactFolder_id).child_folders.by_childFolder_id(contactFolder_id1).contacts.by_contact_id(contact_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -47242,7 +47242,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /users/{user-id}/contactFolders/{contactFolder-id}/childFolders/{contactFolder-id1}/contacts/{contact-id}/permanentDelete
         Operation type: contacts
@@ -47261,7 +47261,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -47300,7 +47300,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).contact_folders.by_contact_folder_id(contactFolder_id).child_folders.by_childFolder_id(contactFolder_id1).contacts.by_contact_id(contact_id).permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -47319,7 +47319,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /users/{user-id}/contactFolders/{contactFolder-id}/childFolders/{contactFolder-id1}/permanentDelete
         Operation type: contacts
@@ -47337,7 +47337,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -47376,7 +47376,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).contact_folders.by_contact_folder_id(contactFolder_id).child_folders.by_childFolder_id(contactFolder_id1).permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -47395,7 +47395,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to contacts for users.
         Outlook operation: POST /users/{user-id}/contactFolders/{contactFolder-id}/contacts
         Operation type: contacts
@@ -47413,7 +47413,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -47452,7 +47452,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).contact_folders.by_contact_folder_id(contactFolder_id).contacts.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -47473,7 +47473,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get contacts from users.
         Outlook operation: GET /users/{user-id}/contactFolders/{contactFolder-id}/contacts
         Operation type: contacts
@@ -47493,7 +47493,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -47532,7 +47532,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).contact_folders.by_contact_folder_id(contactFolder_id).contacts.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -47553,7 +47553,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /users/{user-id}/contactFolders/{contactFolder-id}/contacts/delta()
         Operation type: contacts
@@ -47573,7 +47573,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -47612,7 +47612,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).contact_folders.by_contact_folder_id(contactFolder_id).contacts.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -47632,7 +47632,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property contacts for users.
         Outlook operation: DELETE /users/{user-id}/contactFolders/{contactFolder-id}/contacts/{contact-id}
         Operation type: contacts
@@ -47651,7 +47651,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -47690,7 +47690,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).contact_folders.by_contact_folder_id(contactFolder_id).contacts.by_contact_id(contact_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -47711,7 +47711,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get contacts from users.
         Outlook operation: GET /users/{user-id}/contactFolders/{contactFolder-id}/contacts/{contact-id}
         Operation type: contacts
@@ -47731,7 +47731,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -47770,7 +47770,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).contact_folders.by_contact_folder_id(contactFolder_id).contacts.by_contact_id(contact_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -47790,7 +47790,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property contacts in users.
         Outlook operation: PATCH /users/{user-id}/contactFolders/{contactFolder-id}/contacts/{contact-id}
         Operation type: contacts
@@ -47809,7 +47809,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -47848,7 +47848,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).contact_folders.by_contact_folder_id(contactFolder_id).contacts.by_contact_id(contact_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -47867,7 +47867,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /users/{user-id}/contactFolders/{contactFolder-id}/contacts/{contact-id}/permanentDelete
         Operation type: contacts
@@ -47885,7 +47885,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -47924,7 +47924,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).contact_folders.by_contact_folder_id(contactFolder_id).contacts.by_contact_id(contact_id).permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -47942,7 +47942,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /users/{user-id}/contactFolders/{contactFolder-id}/permanentDelete
         Operation type: contacts
@@ -47959,7 +47959,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -47998,7 +47998,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).contact_folders.by_contact_folder_id(contactFolder_id).permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -48016,7 +48016,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to contacts for users.
         Outlook operation: POST /users/{user-id}/contacts
         Operation type: contacts
@@ -48033,7 +48033,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -48072,7 +48072,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).contacts.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -48092,7 +48092,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get contacts from users.
         Outlook operation: GET /users/{user-id}/contacts
         Operation type: contacts
@@ -48111,7 +48111,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -48150,7 +48150,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).contacts.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -48170,7 +48170,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function delta.
         Outlook operation: GET /users/{user-id}/contacts/delta()
         Operation type: contacts
@@ -48189,7 +48189,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -48228,7 +48228,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).contacts.delta().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -48247,7 +48247,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property contacts for users.
         Outlook operation: DELETE /users/{user-id}/contacts/{contact-id}
         Operation type: contacts
@@ -48265,7 +48265,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -48304,7 +48304,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).contacts.by_contact_id(contact_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -48324,7 +48324,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get contacts from users.
         Outlook operation: GET /users/{user-id}/contacts/{contact-id}
         Operation type: contacts
@@ -48343,7 +48343,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -48382,7 +48382,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).contacts.by_contact_id(contact_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -48401,7 +48401,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property contacts in users.
         Outlook operation: PATCH /users/{user-id}/contacts/{contact-id}
         Operation type: contacts
@@ -48419,7 +48419,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -48458,7 +48458,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).contacts.by_contact_id(contact_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -48476,7 +48476,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action permanentDelete.
         Outlook operation: POST /users/{user-id}/contacts/{contact-id}/permanentDelete
         Operation type: contacts
@@ -48493,7 +48493,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -48532,7 +48532,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).contacts.by_contact_id(contact_id).permanent_delete.post(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -48555,7 +48555,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to attachments for groups.
         Outlook operation: POST /groups/{group-id}/conversations/{conversation-id}/threads/{conversationThread-id}/posts/{post-id}/attachments
         Operation type: attachments
@@ -48575,7 +48575,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -48614,7 +48614,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).conversations.by_conversation_id(conversation_id).threads.by_thread_id(conversationThread_id).posts.by_post_id(post_id).attachments.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -48637,7 +48637,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from groups.
         Outlook operation: GET /groups/{group-id}/conversations/{conversation-id}/threads/{conversationThread-id}/posts/{post-id}/attachments
         Operation type: attachments
@@ -48659,7 +48659,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -48698,7 +48698,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).conversations.by_conversation_id(conversation_id).threads.by_thread_id(conversationThread_id).posts.by_post_id(post_id).attachments.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -48719,7 +48719,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createUploadSession.
         Outlook operation: POST /groups/{group-id}/conversations/{conversation-id}/threads/{conversationThread-id}/posts/{post-id}/attachments/createUploadSession
         Operation type: attachments
@@ -48739,7 +48739,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -48778,7 +48778,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).conversations.by_conversation_id(conversation_id).threads.by_thread_id(conversationThread_id).posts.by_post_id(post_id).attachments.create_upload_session.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -48800,7 +48800,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property attachments for groups.
         Outlook operation: DELETE /groups/{group-id}/conversations/{conversation-id}/threads/{conversationThread-id}/posts/{post-id}/attachments/{attachment-id}
         Operation type: attachments
@@ -48821,7 +48821,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -48860,7 +48860,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).conversations.by_conversation_id(conversation_id).threads.by_thread_id(conversationThread_id).posts.by_post_id(post_id).attachments.by_attachment_id(attachment_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -48883,7 +48883,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from groups.
         Outlook operation: GET /groups/{group-id}/conversations/{conversation-id}/threads/{conversationThread-id}/posts/{post-id}/attachments/{attachment-id}
         Operation type: attachments
@@ -48905,7 +48905,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -48944,7 +48944,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).conversations.by_conversation_id(conversation_id).threads.by_thread_id(conversationThread_id).posts.by_post_id(post_id).attachments.by_attachment_id(attachment_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -48965,7 +48965,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to attachments for groups.
         Outlook operation: POST /groups/{group-id}/conversations/{conversation-id}/threads/{conversationThread-id}/posts/{post-id}/inReplyTo/attachments
         Operation type: attachments
@@ -48985,7 +48985,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -49024,7 +49024,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).conversations.by_conversation_id(conversation_id).threads.by_thread_id(conversationThread_id).posts.by_post_id(post_id).in_reply_to.attachments.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -49047,7 +49047,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from groups.
         Outlook operation: GET /groups/{group-id}/conversations/{conversation-id}/threads/{conversationThread-id}/posts/{post-id}/inReplyTo/attachments
         Operation type: attachments
@@ -49069,7 +49069,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -49108,7 +49108,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).conversations.by_conversation_id(conversation_id).threads.by_thread_id(conversationThread_id).posts.by_post_id(post_id).in_reply_to.attachments.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -49129,7 +49129,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createUploadSession.
         Outlook operation: POST /groups/{group-id}/conversations/{conversation-id}/threads/{conversationThread-id}/posts/{post-id}/inReplyTo/attachments/createUploadSession
         Operation type: attachments
@@ -49149,7 +49149,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -49188,7 +49188,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).conversations.by_conversation_id(conversation_id).threads.by_thread_id(conversationThread_id).posts.by_post_id(post_id).in_reply_to.attachments.create_upload_session.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -49210,7 +49210,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property attachments for groups.
         Outlook operation: DELETE /groups/{group-id}/conversations/{conversation-id}/threads/{conversationThread-id}/posts/{post-id}/inReplyTo/attachments/{attachment-id}
         Operation type: attachments
@@ -49231,7 +49231,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -49270,7 +49270,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).conversations.by_conversation_id(conversation_id).threads.by_thread_id(conversationThread_id).posts.by_post_id(post_id).in_reply_to.attachments.by_attachment_id(attachment_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -49293,7 +49293,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from groups.
         Outlook operation: GET /groups/{group-id}/conversations/{conversation-id}/threads/{conversationThread-id}/posts/{post-id}/inReplyTo/attachments/{attachment-id}
         Operation type: attachments
@@ -49315,7 +49315,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -49354,7 +49354,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).conversations.by_conversation_id(conversation_id).threads.by_thread_id(conversationThread_id).posts.by_post_id(post_id).in_reply_to.attachments.by_attachment_id(attachment_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -49374,7 +49374,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to attachments for groups.
         Outlook operation: POST /groups/{group-id}/threads/{conversationThread-id}/posts/{post-id}/attachments
         Operation type: attachments
@@ -49393,7 +49393,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -49432,7 +49432,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).threads.by_thread_id(conversationThread_id).posts.by_post_id(post_id).attachments.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -49454,7 +49454,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """List attachments.
         Outlook operation: GET /groups/{group-id}/threads/{conversationThread-id}/posts/{post-id}/attachments
         Operation type: attachments
@@ -49475,7 +49475,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -49514,7 +49514,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).threads.by_thread_id(conversationThread_id).posts.by_post_id(post_id).attachments.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -49534,7 +49534,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createUploadSession.
         Outlook operation: POST /groups/{group-id}/threads/{conversationThread-id}/posts/{post-id}/attachments/createUploadSession
         Operation type: attachments
@@ -49553,7 +49553,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -49592,7 +49592,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).threads.by_thread_id(conversationThread_id).posts.by_post_id(post_id).attachments.create_upload_session.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -49613,7 +49613,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property attachments for groups.
         Outlook operation: DELETE /groups/{group-id}/threads/{conversationThread-id}/posts/{post-id}/attachments/{attachment-id}
         Operation type: attachments
@@ -49633,7 +49633,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -49672,7 +49672,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).threads.by_thread_id(conversationThread_id).posts.by_post_id(post_id).attachments.by_attachment_id(attachment_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -49694,7 +49694,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from groups.
         Outlook operation: GET /groups/{group-id}/threads/{conversationThread-id}/posts/{post-id}/attachments/{attachment-id}
         Operation type: attachments
@@ -49715,7 +49715,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -49754,7 +49754,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).threads.by_thread_id(conversationThread_id).posts.by_post_id(post_id).attachments.by_attachment_id(attachment_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -49774,7 +49774,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to attachments for groups.
         Outlook operation: POST /groups/{group-id}/threads/{conversationThread-id}/posts/{post-id}/inReplyTo/attachments
         Operation type: attachments
@@ -49793,7 +49793,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -49832,7 +49832,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).threads.by_thread_id(conversationThread_id).posts.by_post_id(post_id).in_reply_to.attachments.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -49854,7 +49854,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from groups.
         Outlook operation: GET /groups/{group-id}/threads/{conversationThread-id}/posts/{post-id}/inReplyTo/attachments
         Operation type: attachments
@@ -49875,7 +49875,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -49914,7 +49914,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).threads.by_thread_id(conversationThread_id).posts.by_post_id(post_id).in_reply_to.attachments.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -49934,7 +49934,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke action createUploadSession.
         Outlook operation: POST /groups/{group-id}/threads/{conversationThread-id}/posts/{post-id}/inReplyTo/attachments/createUploadSession
         Operation type: attachments
@@ -49953,7 +49953,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -49992,7 +49992,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).threads.by_thread_id(conversationThread_id).posts.by_post_id(post_id).in_reply_to.attachments.create_upload_session.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -50013,7 +50013,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property attachments for groups.
         Outlook operation: DELETE /groups/{group-id}/threads/{conversationThread-id}/posts/{post-id}/inReplyTo/attachments/{attachment-id}
         Operation type: attachments
@@ -50033,7 +50033,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -50072,7 +50072,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).threads.by_thread_id(conversationThread_id).posts.by_post_id(post_id).in_reply_to.attachments.by_attachment_id(attachment_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -50094,7 +50094,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get attachments from groups.
         Outlook operation: GET /groups/{group-id}/threads/{conversationThread-id}/posts/{post-id}/inReplyTo/attachments/{attachment-id}
         Operation type: attachments
@@ -50115,7 +50115,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -50154,7 +50154,7 @@ class OutlookDataSource:
             response = await self.client.groups.by_group_id(group_id).threads.by_thread_id(conversationThread_id).posts.by_post_id(post_id).in_reply_to.attachments.by_attachment_id(attachment_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -50175,7 +50175,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property extensionProperties in applications.
         Outlook operation: PATCH /applications/{application-id}/extensionProperties/{extensionProperty-id}
         Operation type: extensions
@@ -50193,7 +50193,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -50232,7 +50232,7 @@ class OutlookDataSource:
             response = await self.client.applications.by_application_id(application_id).extension_properties.by_extensionPropertie_id(extensionProperty_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -50252,7 +50252,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get inferenceClassification from me.
         Outlook operation: GET /me/inferenceClassification
         Operation type: rules
@@ -50269,7 +50269,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -50308,7 +50308,7 @@ class OutlookDataSource:
             response = await self.client.me.inference_classification.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -50325,7 +50325,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property inferenceClassification in me.
         Outlook operation: PATCH /me/inferenceClassification
         Operation type: rules
@@ -50341,7 +50341,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -50380,7 +50380,7 @@ class OutlookDataSource:
             response = await self.client.me.inference_classification.patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -50397,7 +50397,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create inferenceClassificationOverride.
         Outlook operation: POST /me/inferenceClassification/overrides
         Operation type: rules
@@ -50413,7 +50413,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -50452,7 +50452,7 @@ class OutlookDataSource:
             response = await self.client.me.inference_classification.overrides.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -50471,7 +50471,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """List overrides.
         Outlook operation: GET /me/inferenceClassification/overrides
         Operation type: rules
@@ -50489,7 +50489,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -50528,7 +50528,7 @@ class OutlookDataSource:
             response = await self.client.me.inference_classification.overrides.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -50546,7 +50546,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete inferenceClassificationOverride.
         Outlook operation: DELETE /me/inferenceClassification/overrides/{inferenceClassificationOverride-id}
         Operation type: rules
@@ -50563,7 +50563,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -50602,7 +50602,7 @@ class OutlookDataSource:
             response = await self.client.me.inference_classification.overrides.by_inference_classification_override_id(inferenceClassificationOverride_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -50621,7 +50621,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get overrides from me.
         Outlook operation: GET /me/inferenceClassification/overrides/{inferenceClassificationOverride-id}
         Operation type: rules
@@ -50639,7 +50639,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -50678,7 +50678,7 @@ class OutlookDataSource:
             response = await self.client.me.inference_classification.overrides.by_inference_classification_override_id(inferenceClassificationOverride_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -50696,7 +50696,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update inferenceclassificationoverride.
         Outlook operation: PATCH /me/inferenceClassification/overrides/{inferenceClassificationOverride-id}
         Operation type: rules
@@ -50713,7 +50713,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -50752,7 +50752,7 @@ class OutlookDataSource:
             response = await self.client.me.inference_classification.overrides.by_inference_classification_override_id(inferenceClassificationOverride_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -50771,7 +50771,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get inferenceClassification from users.
         Outlook operation: GET /users/{user-id}/inferenceClassification
         Operation type: rules
@@ -50789,7 +50789,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -50828,7 +50828,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).inference_classification.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -50846,7 +50846,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property inferenceClassification in users.
         Outlook operation: PATCH /users/{user-id}/inferenceClassification
         Operation type: rules
@@ -50863,7 +50863,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -50902,7 +50902,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).inference_classification.patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -50920,7 +50920,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to overrides for users.
         Outlook operation: POST /users/{user-id}/inferenceClassification/overrides
         Operation type: rules
@@ -50937,7 +50937,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -50976,7 +50976,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).inference_classification.overrides.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -50996,7 +50996,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get overrides from users.
         Outlook operation: GET /users/{user-id}/inferenceClassification/overrides
         Operation type: rules
@@ -51015,7 +51015,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -51054,7 +51054,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).inference_classification.overrides.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -51073,7 +51073,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property overrides for users.
         Outlook operation: DELETE /users/{user-id}/inferenceClassification/overrides/{inferenceClassificationOverride-id}
         Operation type: rules
@@ -51091,7 +51091,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -51130,7 +51130,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).inference_classification.overrides.by_inference_classification_override_id(inferenceClassificationOverride_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -51150,7 +51150,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get overrides from users.
         Outlook operation: GET /users/{user-id}/inferenceClassification/overrides/{inferenceClassificationOverride-id}
         Operation type: rules
@@ -51169,7 +51169,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -51208,7 +51208,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).inference_classification.overrides.by_inference_classification_override_id(inferenceClassificationOverride_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -51227,7 +51227,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property overrides in users.
         Outlook operation: PATCH /users/{user-id}/inferenceClassification/overrides/{inferenceClassificationOverride-id}
         Operation type: rules
@@ -51245,7 +51245,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -51284,7 +51284,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).inference_classification.overrides.by_inference_classification_override_id(inferenceClassificationOverride_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -51303,7 +51303,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create Outlook category.
         Outlook operation: POST /me/outlook/masterCategories
         Operation type: categories
@@ -51319,7 +51319,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -51358,7 +51358,7 @@ class OutlookDataSource:
             response = await self.client.me.outlook.master_categories.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -51377,7 +51377,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """List masterCategories.
         Outlook operation: GET /me/outlook/masterCategories
         Operation type: categories
@@ -51395,7 +51395,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -51434,7 +51434,7 @@ class OutlookDataSource:
             response = await self.client.me.outlook.master_categories.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -51452,7 +51452,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete outlookCategory.
         Outlook operation: DELETE /me/outlook/masterCategories/{outlookCategory-id}
         Operation type: categories
@@ -51469,7 +51469,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -51508,7 +51508,7 @@ class OutlookDataSource:
             response = await self.client.me.outlook.master_categories.by_outlook_category_id(outlookCategory_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -51527,7 +51527,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get Outlook category.
         Outlook operation: GET /me/outlook/masterCategories/{outlookCategory-id}
         Operation type: categories
@@ -51545,7 +51545,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -51584,7 +51584,7 @@ class OutlookDataSource:
             response = await self.client.me.outlook.master_categories.by_outlook_category_id(outlookCategory_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -51602,7 +51602,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update outlookCategory.
         Outlook operation: PATCH /me/outlook/masterCategories/{outlookCategory-id}
         Operation type: categories
@@ -51619,7 +51619,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -51658,7 +51658,7 @@ class OutlookDataSource:
             response = await self.client.me.outlook.master_categories.by_outlook_category_id(outlookCategory_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -51676,7 +51676,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Create new navigation property to masterCategories for users.
         Outlook operation: POST /users/{user-id}/outlook/masterCategories
         Operation type: categories
@@ -51693,7 +51693,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -51732,7 +51732,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).outlook.master_categories.post(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -51752,7 +51752,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get masterCategories from users.
         Outlook operation: GET /users/{user-id}/outlook/masterCategories
         Operation type: categories
@@ -51771,7 +51771,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -51810,7 +51810,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).outlook.master_categories.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -51829,7 +51829,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Delete navigation property masterCategories for users.
         Outlook operation: DELETE /users/{user-id}/outlook/masterCategories/{outlookCategory-id}
         Operation type: categories
@@ -51847,7 +51847,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -51886,7 +51886,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).outlook.master_categories.by_outlook_category_id(outlookCategory_id).delete(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -51906,7 +51906,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get masterCategories from users.
         Outlook operation: GET /users/{user-id}/outlook/masterCategories/{outlookCategory-id}
         Operation type: categories
@@ -51925,7 +51925,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -51964,7 +51964,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).outlook.master_categories.by_outlook_category_id(outlookCategory_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -51983,7 +51983,7 @@ class OutlookDataSource:
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Update the navigation property masterCategories in users.
         Outlook operation: PATCH /users/{user-id}/outlook/masterCategories/{outlookCategory-id}
         Operation type: categories
@@ -52001,7 +52001,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -52040,7 +52040,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).outlook.master_categories.by_outlook_category_id(outlookCategory_id).patch(body=request_body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -52061,7 +52061,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get people from me.
         Outlook operation: GET /me/people/{person-id}
         Operation type: people
@@ -52079,7 +52079,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -52118,7 +52118,7 @@ class OutlookDataSource:
             response = await self.client.me.people.by_person_id(person_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -52138,7 +52138,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get people from users.
         Outlook operation: GET /users/{user-id}/people
         Operation type: people
@@ -52157,7 +52157,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -52196,7 +52196,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).people.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -52216,7 +52216,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get people from users.
         Outlook operation: GET /users/{user-id}/people/{person-id}
         Operation type: people
@@ -52235,7 +52235,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -52274,7 +52274,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).people.by_person_id(person_id).get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -52294,7 +52294,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get outlook from me.
         Outlook operation: GET /me/outlook
         Operation type: general
@@ -52311,7 +52311,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -52350,7 +52350,7 @@ class OutlookDataSource:
             response = await self.client.me.outlook.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -52366,7 +52366,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function supportedLanguages.
         Outlook operation: GET /me/outlook/supportedLanguages()
         Operation type: general
@@ -52381,7 +52381,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -52420,7 +52420,7 @@ class OutlookDataSource:
             response = await self.client.me.outlook.supported_languages().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -52436,7 +52436,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function supportedTimeZones.
         Outlook operation: GET /me/outlook/supportedTimeZones()
         Operation type: general
@@ -52451,7 +52451,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -52490,7 +52490,7 @@ class OutlookDataSource:
             response = await self.client.me.outlook.supported_time_zones().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -52507,7 +52507,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function supportedTimeZones.
         Outlook operation: GET /me/outlook/supportedTimeZones(TimeZoneStandard='{TimeZoneStandard}')
         Operation type: general
@@ -52523,7 +52523,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -52562,7 +52562,7 @@ class OutlookDataSource:
             response = await self.client.me.outlook.supported_time_zones(_time_zone_standard='{_time_zone_standard}').get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -52581,7 +52581,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Get outlook from users.
         Outlook operation: GET /users/{user-id}/outlook
         Operation type: general
@@ -52599,7 +52599,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -52638,7 +52638,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).outlook.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -52655,7 +52655,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function supportedLanguages.
         Outlook operation: GET /users/{user-id}/outlook/supportedLanguages()
         Operation type: general
@@ -52671,7 +52671,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -52710,7 +52710,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).outlook.supported_languages().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -52727,7 +52727,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function supportedTimeZones.
         Outlook operation: GET /users/{user-id}/outlook/supportedTimeZones()
         Operation type: general
@@ -52743,7 +52743,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -52782,7 +52782,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).outlook.supported_time_zones().get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
@@ -52800,7 +52800,7 @@ class OutlookDataSource:
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
-    ) -> OutlookResponse:
+    ) -> OutlookCalendarContactsResponse:
         """Invoke function supportedTimeZones.
         Outlook operation: GET /users/{user-id}/outlook/supportedTimeZones(TimeZoneStandard='{TimeZoneStandard}')
         Operation type: general
@@ -52817,7 +52817,7 @@ class OutlookDataSource:
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
-            OutlookResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         # Build query parameters including OData for Outlook
         try:
@@ -52856,7 +52856,7 @@ class OutlookDataSource:
             response = await self.client.users.by_user_id(user_id).outlook.supported_time_zones(_time_zone_standard='{_time_zone_standard}').get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
-            return OutlookResponse(
+            return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
