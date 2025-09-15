@@ -5,27 +5,27 @@ import logging
 from dataclasses import asdict
 from typing import Any, Dict, List, Mapping, Optional
 
-from kiota_abstractions.base_request_configuration import ( # type: ignore
+from kiota_abstractions.base_request_configuration import (  # type: ignore
     RequestConfiguration,
 )
-from msgraph.generated.users.item.calendars.calendars_request_builder import ( # type: ignore
+from msgraph.generated.users.item.calendars.calendars_request_builder import (  # type: ignore
     CalendarsRequestBuilder,
 )
-from msgraph.generated.users.item.contact_folders.contact_folders_request_builder import ( # type: ignore
+from msgraph.generated.users.item.contact_folders.contact_folders_request_builder import (  # type: ignore
     ContactFoldersRequestBuilder,
 )
-from msgraph.generated.users.item.contacts.contacts_request_builder import ( # type: ignore
-    ContactsRequestBuilder
+from msgraph.generated.users.item.contacts.contacts_request_builder import (  # type: ignore
+    ContactsRequestBuilder,
 )
-from msgraph.generated.users.item.events.events_request_builder import ( # type: ignore
+from msgraph.generated.users.item.events.events_request_builder import (  # type: ignore
     EventsRequestBuilder,
 )
-from msgraph.generated.users.item.mail_folders.mail_folders_request_builder import ( # type: ignore
-    MailFoldersRequestBuilder, 
+from msgraph.generated.users.item.mail_folders.mail_folders_request_builder import (  # type: ignore
+    MailFoldersRequestBuilder,
 )
 
 # Import MS Graph specific query parameter classes for Outlook
-from msgraph.generated.users.item.messages.messages_request_builder import ( # type: ignore
+from msgraph.generated.users.item.messages.messages_request_builder import (  # type: ignore
     MessagesRequestBuilder,
 )
 
@@ -40,7 +40,7 @@ class OutlookResponse:
     error: Optional[str] = None
     message: Optional[str] = None
 
-    def __init__(self, success: bool, data: Optional[Dict[str, Any]] = None, error: Optional[str] = None, message: Optional[str] = None):
+    def __init__(self, success: bool, data: Optional[Dict[str, Any]] = None, error: Optional[str] = None, message: Optional[str] = None) -> None:
         self.success = success
         self.data = data
         self.error = error

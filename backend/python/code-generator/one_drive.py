@@ -679,21 +679,23 @@ def _get_query_param_classes(path: str, method: str) -> Tuple[Optional[str], Opt
     method_lower = method.lower()
     
     # Map paths to their corresponding query parameter classes
-    # TODO: Fix these as we integrate the apis with the platform
+    # Updated with correct nested class names from Microsoft Graph SDK
     if '/me/drive/items' in path_lower and method_lower == 'get':
         return "DrivesRequestBuilder.DrivesRequestBuilderGetQueryParameters", "DrivesRequestBuilder.DrivesRequestBuilderGetRequestConfiguration"
     elif '/me/drive' in path_lower and method_lower == 'get':
-        return "DrivesRequestBuilder.DrivesRequestBuilderGetQueryParameters", "DrivesRequestBuilder.DrivesRequestBuilderGetRequestConfiguration"
+        return "DriveRequestBuilder.DriveRequestBuilderGetQueryParameters", "DriveRequestBuilder.DriveRequestBuilderGetRequestConfiguration"
     elif '/users/{user-id}/drives' in path_lower and method_lower == 'get':
         return "DrivesRequestBuilder.DrivesRequestBuilderGetQueryParameters", "DrivesRequestBuilder.DrivesRequestBuilderGetRequestConfiguration"
     elif '/users/{user-id}/drive' in path_lower and method_lower == 'get':
+        return "DriveRequestBuilder.DriveRequestBuilderGetQueryParameters", "DriveRequestBuilder.DriveRequestBuilderGetRequestConfiguration"
+    elif '/groups/{group-id}/drives' in path_lower and method_lower == 'get':
         return "DrivesRequestBuilder.DrivesRequestBuilderGetQueryParameters", "DrivesRequestBuilder.DrivesRequestBuilderGetRequestConfiguration"
     elif '/groups/{group-id}/drive' in path_lower and method_lower == 'get':
-        return "DrivesRequestBuilder.DriveRequestBuilderGetQueryParameters", "DrivesRequestBuilder.DriveRequestBuilderGetRequestConfiguration"
+        return "DriveRequestBuilder.DriveRequestBuilderGetQueryParameters", "DriveRequestBuilder.DriveRequestBuilderGetRequestConfiguration"
     elif '/sites/{site-id}/drives' in path_lower and method_lower == 'get':
         return "DrivesRequestBuilder.DrivesRequestBuilderGetQueryParameters", "DrivesRequestBuilder.DrivesRequestBuilderGetRequestConfiguration"
     elif '/sites/{site-id}/drive' in path_lower and method_lower == 'get':
-        return "DrivesRequestBuilder.DriveRequestBuilderGetQueryParameters", "DrivesRequestBuilder.DriveRequestBuilderGetRequestConfiguration"
+        return "DriveRequestBuilder.DriveRequestBuilderGetQueryParameters", "DriveRequestBuilder.DriveRequestBuilderGetRequestConfiguration"
     elif '/drives' in path_lower and method_lower == 'get':
         return "DrivesRequestBuilder.DrivesRequestBuilderGetQueryParameters", "DrivesRequestBuilder.DrivesRequestBuilderGetRequestConfiguration"
     else:
@@ -936,7 +938,6 @@ from kiota_abstractions.base_request_configuration import (# type: ignore
 # Import MS Graph specific query parameter classes
 from msgraph.generated.drives.drives_request_builder import DrivesRequestBuilder # type: ignore
 from msgraph.generated.users.item.drives.drives_request_builder import DrivesRequestBuilder as UserDrivesRequestBuilder # type: ignore
-from msgraph.generated.me.drive.drive_request_builder import DriveRequestBuilder # type: ignore
 from msgraph.generated.users.item.drive.drive_request_builder import DriveRequestBuilder as UserDriveRequestBuilder # type: ignore
 from msgraph.generated.groups.item.drive.drive_request_builder import DriveRequestBuilder as GroupDriveRequestBuilder # type: ignore
 from msgraph.generated.sites.item.drives.drives_request_builder import DrivesRequestBuilder as SiteDrivesRequestBuilder # type: ignore

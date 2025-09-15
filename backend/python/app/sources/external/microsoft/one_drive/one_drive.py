@@ -1,3 +1,5 @@
+
+
 import json
 import logging
 from dataclasses import asdict
@@ -10,6 +12,9 @@ from kiota_abstractions.base_request_configuration import (  # type: ignore
 # Import MS Graph specific query parameter classes
 from msgraph.generated.drives.drives_request_builder import (  # type: ignore
     DrivesRequestBuilder,
+)
+from msgraph.generated.users.item.drive.drive_request_builder import (  # type: ignore
+    DriveRequestBuilder,
 )
 
 from app.sources.client.microsoft.microsoft import MSGraphClient
@@ -106,7 +111,7 @@ class OneDriveDataSource:
             raise ValueError("Client must be a Microsoft Graph SDK client")
         logger.info("OneDrive client initialized with 332 methods")
 
-    def _handle_onedrive_response(self, response: object) -> OneDriveResponse:
+    def _handle_onedrive_response(self, response: Any) -> OneDriveResponse:
         """Handle OneDrive API response with comprehensive error handling."""
         try:
             if response is None:
@@ -6770,7 +6775,7 @@ class OneDriveDataSource:
         # Build query parameters including OData for OneDrive
         try:
             # Use typed query parameters
-            query_params = DrivesRequestBuilder.DriveRequestBuilderGetQueryParameters()
+            query_params = DriveRequestBuilder.DriveRequestBuilderGetQueryParameters()
 
             # Set query parameters using typed object properties
             if select:
@@ -6789,7 +6794,7 @@ class OneDriveDataSource:
                 query_params.skip = skip
 
             # Create proper typed request configuration
-            config = DrivesRequestBuilder.DriveRequestBuilderGetRequestConfiguration()
+            config = DriveRequestBuilder.DriveRequestBuilderGetRequestConfiguration()
             config.query_parameters = query_params
 
             if headers:
@@ -6848,7 +6853,7 @@ class OneDriveDataSource:
         # Build query parameters including OData for OneDrive
         try:
             # Use typed query parameters
-            query_params = DrivesRequestBuilder.DriveRequestBuilderGetQueryParameters()
+            query_params = DrivesRequestBuilder.DrivesRequestBuilderGetQueryParameters()
 
             # Set query parameters using typed object properties
             if select:
@@ -6867,7 +6872,7 @@ class OneDriveDataSource:
                 query_params.skip = skip
 
             # Create proper typed request configuration
-            config = DrivesRequestBuilder.DriveRequestBuilderGetRequestConfiguration()
+            config = DrivesRequestBuilder.DrivesRequestBuilderGetRequestConfiguration()
             config.query_parameters = query_params
 
             if headers:
@@ -6926,7 +6931,7 @@ class OneDriveDataSource:
         # Build query parameters including OData for OneDrive
         try:
             # Use typed query parameters
-            query_params = DrivesRequestBuilder.DriveRequestBuilderGetQueryParameters()
+            query_params = DrivesRequestBuilder.DrivesRequestBuilderGetQueryParameters()
 
             # Set query parameters using typed object properties
             if select:
@@ -6945,7 +6950,7 @@ class OneDriveDataSource:
                 query_params.skip = skip
 
             # Create proper typed request configuration
-            config = DrivesRequestBuilder.DriveRequestBuilderGetRequestConfiguration()
+            config = DrivesRequestBuilder.DrivesRequestBuilderGetRequestConfiguration()
             config.query_parameters = query_params
 
             if headers:
@@ -7082,7 +7087,7 @@ class OneDriveDataSource:
         # Build query parameters including OData for OneDrive
         try:
             # Use typed query parameters
-            query_params = DrivesRequestBuilder.DriveRequestBuilderGetQueryParameters()
+            query_params = DriveRequestBuilder.DriveRequestBuilderGetQueryParameters()
 
             # Set query parameters using typed object properties
             if select:
@@ -7101,7 +7106,7 @@ class OneDriveDataSource:
                 query_params.skip = skip
 
             # Create proper typed request configuration
-            config = DrivesRequestBuilder.DriveRequestBuilderGetRequestConfiguration()
+            config = DriveRequestBuilder.DriveRequestBuilderGetRequestConfiguration()
             config.query_parameters = query_params
 
             if headers:
@@ -11328,7 +11333,7 @@ class OneDriveDataSource:
         # Build query parameters including OData for OneDrive
         try:
             # Use typed query parameters
-            query_params = DrivesRequestBuilder.DrivesRequestBuilderGetQueryParameters()
+            query_params = DriveRequestBuilder.DriveRequestBuilderGetQueryParameters()
 
             # Set query parameters using typed object properties
             if select:
@@ -11347,7 +11352,7 @@ class OneDriveDataSource:
                 query_params.skip = skip
 
             # Create proper typed request configuration
-            config = DrivesRequestBuilder.DrivesRequestBuilderGetRequestConfiguration()
+            config = DriveRequestBuilder.DriveRequestBuilderGetRequestConfiguration()
             config.query_parameters = query_params
 
             if headers:
@@ -11404,7 +11409,7 @@ class OneDriveDataSource:
         # Build query parameters including OData for OneDrive
         try:
             # Use typed query parameters
-            query_params = DrivesRequestBuilder.DrivesRequestBuilderGetQueryParameters()
+            query_params = DriveRequestBuilder.DriveRequestBuilderGetQueryParameters()
 
             # Set query parameters using typed object properties
             if select:
@@ -11423,7 +11428,7 @@ class OneDriveDataSource:
                 query_params.skip = skip
 
             # Create proper typed request configuration
-            config = DrivesRequestBuilder.DrivesRequestBuilderGetRequestConfiguration()
+            config = DriveRequestBuilder.DriveRequestBuilderGetRequestConfiguration()
             config.query_parameters = query_params
 
             if headers:
@@ -11480,7 +11485,7 @@ class OneDriveDataSource:
         # Build query parameters including OData for OneDrive
         try:
             # Use typed query parameters
-            query_params = DrivesRequestBuilder.DrivesRequestBuilderGetQueryParameters()
+            query_params = DriveRequestBuilder.DriveRequestBuilderGetQueryParameters()
 
             # Set query parameters using typed object properties
             if select:
@@ -11499,7 +11504,7 @@ class OneDriveDataSource:
                 query_params.skip = skip
 
             # Create proper typed request configuration
-            config = DrivesRequestBuilder.DrivesRequestBuilderGetRequestConfiguration()
+            config = DriveRequestBuilder.DriveRequestBuilderGetRequestConfiguration()
             config.query_parameters = query_params
 
             if headers:
@@ -11930,7 +11935,7 @@ class OneDriveDataSource:
         # Build query parameters including OData for OneDrive
         try:
             # Use typed query parameters
-            query_params = DrivesRequestBuilder.DriveRequestBuilderGetQueryParameters()
+            query_params = DriveRequestBuilder.DriveRequestBuilderGetQueryParameters()
 
             # Set query parameters using typed object properties
             if select:
@@ -11949,7 +11954,7 @@ class OneDriveDataSource:
                 query_params.skip = skip
 
             # Create proper typed request configuration
-            config = DrivesRequestBuilder.DriveRequestBuilderGetRequestConfiguration()
+            config = DriveRequestBuilder.DriveRequestBuilderGetRequestConfiguration()
             config.query_parameters = query_params
 
             if headers:
@@ -15662,7 +15667,7 @@ class OneDriveDataSource:
         # Build query parameters including OData for OneDrive
         try:
             # Use typed query parameters
-            query_params = DrivesRequestBuilder.DrivesRequestBuilderGetQueryParameters()
+            query_params = DriveRequestBuilder.DriveRequestBuilderGetQueryParameters()
 
             # Set query parameters using typed object properties
             if select:
@@ -15681,7 +15686,7 @@ class OneDriveDataSource:
                 query_params.skip = skip
 
             # Create proper typed request configuration
-            config = DrivesRequestBuilder.DrivesRequestBuilderGetRequestConfiguration()
+            config = DriveRequestBuilder.DriveRequestBuilderGetRequestConfiguration()
             config.query_parameters = query_params
 
             if headers:
@@ -26096,6 +26101,4 @@ class OneDriveDataSource:
                 success=False,
                 error=f"OneDrive API call failed: {str(e)}",
             )
-
-
 

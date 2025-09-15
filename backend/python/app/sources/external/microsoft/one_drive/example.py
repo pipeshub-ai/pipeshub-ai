@@ -35,6 +35,11 @@ async def main():
     print(response.success)
 
 
+    response: OneDriveResponse = await one_drive_data_source.users_get_drives(user_id=user_id_or_upn, drive_id="xyz")
+    print(response.data)
+    print(response.error)
+    print(response.success)
+
 
 if __name__ == "__main__":
     asyncio.run(main())

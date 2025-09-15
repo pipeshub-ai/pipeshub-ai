@@ -1043,7 +1043,7 @@ class OutlookResponse:
     error: Optional[str] = None
     message: Optional[str] = None
 
-    def __init__(self, success: bool, data: Optional[Dict[str, Any]] = None, error: Optional[str] = None, message: Optional[str] = None):
+    def __init__(self, success: bool, data: Optional[Dict[str, Any]] = None, error: Optional[str] = None, message: Optional[str] = None) -> None:
         self.success = success
         self.data = data
         self.error = error
@@ -1113,7 +1113,7 @@ class {class_name}:
             raise ValueError("Client must be a Microsoft Graph SDK client")
         logger.info("Outlook client initialized with {len(ops)} methods")
 
-    def _handle_outlook_response(self, response: Any) -> OutlookResponse:
+    def _handle_outlook_response(self, response: object) -> OutlookResponse:
         \"\"\"Handle Outlook API response with comprehensive error handling.\"\"\"
         try:
             if response is None:
