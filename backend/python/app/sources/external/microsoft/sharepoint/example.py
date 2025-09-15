@@ -23,12 +23,12 @@ async def main():
     print("Getting sites...")
     print("****************************")
     user_id_or_upn = "x"
-    response: SharePointResponse = await sharepoint_data_source.sites_get_all_sites(user_id=user_id_or_upn)
+    response: SharePointResponse = await sharepoint_data_source.sites_get_all_sites()
     print(response.data)
     print(response.error)
     print(response.success)
 
-    response: SharePointResponse = await sharepoint_data_source.sites_get_all_sites(user_id=user_id_or_upn, select=["id"]) # not working on select filter
+    response: SharePointResponse = await sharepoint_data_source.sites_get_all_sites(select=["id"]) # not working on select filter
     print(response.data)
     print(response.error)
     print(response.success)
