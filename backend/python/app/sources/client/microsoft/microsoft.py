@@ -1,19 +1,24 @@
 from dataclasses import asdict, dataclass
-from typing import Any, List, Literal, Optional
+from enum import Enum
+from typing import Any, List, Optional
 
 from app.config.configuration_service import ConfigurationService
-from enum import Enum
+
 try:
+    from azure.identity import (  #type: ignore
+        InteractiveBrowserCredential,
+    )
     from azure.identity.aio import ClientSecretCredential  #type: ignore
-    from msgraph import GraphServiceClient  #type: ignore
-    from azure.identity import DeviceCodeCredential  #type: ignore
-    from azure.identity import InteractiveBrowserCredential  #type: ignore
-    from kiota_authentication_azure.azure_identity_authentication_provider import AzureIdentityAuthenticationProvider  #type: ignore
+    from kiota_authentication_azure.azure_identity_authentication_provider import (  #type: ignore
+        AzureIdentityAuthenticationProvider,
+    )
     from kiota_http.httpx_request_adapter import HttpxRequestAdapter  #type: ignore
+    from msgraph import GraphServiceClient  #type: ignore
 except ImportError:
     raise ImportError("azure-identity is not installed. Please install it with `pip install azure-identity`")
 
 from app.sources.client.iclient import IClient
+
 
 class GraphMode(str, Enum):
     DELEGATED = "delegated"
@@ -161,7 +166,7 @@ class MSGraphClient(IClient):
 
     def __init__(
         self,
-        client: MSGraphClientViaUsernamePassword | MSGraphClientWithClientIdSecret | MSGraphClientWithCertificatePath, 
+        client: MSGraphClientViaUsernamePassword | MSGraphClientWithClientIdSecret | MSGraphClientWithCertificatePath,
         mode: GraphMode = GraphMode.APP) -> None:
         """Initialize with a Microsoft Graph client object"""
         self.client = client
