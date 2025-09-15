@@ -22,7 +22,7 @@ async def main():
     print("one_drive_data_source:", one_drive_data_source)
     print("Getting drive...")
     print("****************************")
-    user_id_or_upn = "AdeleV@4ff470.onmicrosoft.com"
+    user_id_or_upn = "your_user_id_or_upn"
     response: OneDriveResponse = await one_drive_data_source.users_list_drives(user_id=user_id_or_upn)
     print(response.data)
     print(response.error)

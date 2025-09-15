@@ -923,7 +923,7 @@ def build_onedrive_class_code(ops: Sequence[OneDriveOperation]) -> str:
     class_name = "OneDriveDataSource"
     response_class = "OneDriveResponse"
 
-    header = f"""# ruff: noqa: BLE001, D417, E501, ANN003, PGH003, PLR0912, C901, PLR0913, G004, TRY400, TRY003, EM101, D100, INP001, PLR0915, D401
+    header = f"""
 
 import json
 import logging
