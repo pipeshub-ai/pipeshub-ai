@@ -207,8 +207,20 @@ class ConnectorRegistry:
         """
         try:
             arango_service = await self._get_arango_service()
-            org = await arango_service.get_all_documents(CollectionNames.ORGS.value)
-            org_id = org[0]["_key"]
+            orgs = await arango_service.get_all_documents(CollectionNames.ORGS.value)
+
+            if not orgs or not isinstance(orgs, list):
+                self.logger.warning(
+                    f"No organizations found in DB; skipping app creation for {app_name}"
+                )
+                return False
+
+            org_id = orgs[0].get("_key")
+            if not org_id:
+                self.logger.warning(
+                    f"First organization document missing _key; skipping app creation for {app_name}"
+                )
+                return False
 
             # for having same app group id for same app group
             app_group_id = str(hashlib.sha256(metadata['appGroup'].encode()).hexdigest())

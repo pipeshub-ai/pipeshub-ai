@@ -45,6 +45,7 @@ from app.containers.connector import (
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.connectors.core.base.token_service.startup_service import startup_service
 
 container = ConnectorAppContainer.init("connector_service")
 
@@ -66,6 +67,11 @@ async def get_initialized_container() -> ConnectorAppContainer:
             ]
         )
         setattr(get_initialized_container, "_initialized", True)
+        # Start token refresh service at app startup
+        try:
+            await startup_service.initialize(container.key_value_store(), await container.arango_service())
+        except Exception as e:
+            container.logger().warning(f"Startup token refresh service failed to initialize: {e}")
     return container
 
 
@@ -329,6 +335,12 @@ async def shutdown_container_resources(container: ConnectorAppContainer) -> None
 
         # Stop messaging producer
         await stop_messaging_producer(container)
+
+        # Stop startup services (token refresh)
+        try:
+            await startup_service.shutdown()
+        except Exception as e:
+            logger.warning(f"Error shutting down startup services: {e}")
 
         logger.info("✅ All container resources shut down successfully")
 

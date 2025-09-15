@@ -24,6 +24,7 @@ interface ConnectorActionsSidebarProps {
   onConfigure: () => void;
   onRefresh: () => void;
   onToggle: (enabled: boolean) => void;
+  hideAuthenticate?: boolean;
 }
 
 const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
@@ -34,6 +35,7 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
   onConfigure,
   onRefresh,
   onToggle,
+  hideAuthenticate,
 }) => {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
@@ -42,7 +44,12 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
   const isActive = connector.isActive || false;
   const authType = (connector.authType || '').toUpperCase();
   const isOauth = authType === 'OAUTH';
-  const canEnable = isActive ? true : (isOauth ? isAuthenticated : isConfigured);
+  // If authenticate is hidden (admin consent or business service-account flow), enabling should rely on configuration
+  const canEnable = isActive
+    ? true
+    : (isOauth
+        ? (hideAuthenticate ? isConfigured : isAuthenticated)
+        : isConfigured);
 
   return (
     <Stack spacing={1.5}>
@@ -62,7 +69,7 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
         </Typography>
 
         <Stack spacing={1}>
-          {(connector.authType || '').toUpperCase() === 'OAUTH' && (
+          {(connector.authType || '').toUpperCase() === 'OAUTH' && !hideAuthenticate && (
             <Button
               variant="contained"
               fullWidth

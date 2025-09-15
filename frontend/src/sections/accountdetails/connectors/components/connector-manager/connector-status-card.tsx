@@ -17,6 +17,7 @@ interface ConnectorStatusCardProps {
   isAuthenticated: boolean;
   isEnablingWithFilters: boolean;
   onToggle: (enabled: boolean) => void;
+  hideAuthenticate?: boolean;
 }
 
 const ConnectorStatusCard: React.FC<ConnectorStatusCardProps> = ({
@@ -24,6 +25,7 @@ const ConnectorStatusCard: React.FC<ConnectorStatusCardProps> = ({
   isAuthenticated,
   isEnablingWithFilters,
   onToggle,
+  hideAuthenticate,
 }) => {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
@@ -31,14 +33,21 @@ const ConnectorStatusCard: React.FC<ConnectorStatusCardProps> = ({
   const isActive = connector.isActive || false;
   const authType = (connector.authType || '').toUpperCase();
   const isOauth = authType === 'OAUTH';
-  const canEnable = isActive ? true : (isOauth ? isAuthenticated : isConfigured);
+  const canEnable = isActive
+    ? true
+    : (isOauth
+        ? (hideAuthenticate ? isConfigured : isAuthenticated)
+        : isConfigured);
   const enableBlocked = !isActive && !canEnable;
 
   const getTooltipMessage = () => {
     if (!isActive && !canEnable) {
-      return isOauth
-        ? `Authenticate ${connector.name} before enabling`
-        : `${connector.name} needs to be configured before it can be enabled`;
+      if (isOauth) {
+        return hideAuthenticate
+          ? `${connector.name} needs to be configured before it can be enabled`
+          : `Authenticate ${connector.name} before enabling`;
+      }
+      return `${connector.name} needs to be configured before it can be enabled`;
     }
     return '';
   };

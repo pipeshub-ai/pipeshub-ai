@@ -21,6 +21,7 @@ import ConnectorHeader from './connector-header';
 import ConnectorStatusCard from './connector-status-card';
 import ConnectorActionsSidebar from './connector-actions-sidebar';
 import ConnectorLoadingSkeleton from './connector-loading-skeleton';
+import { useAccountType } from 'src/hooks/use-account-type';
 
 interface ConnectorManagerProps {
   showStats?: boolean;
@@ -59,6 +60,8 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({
     setSuccess,
   } = useConnectorManager();
 
+  const { isBusiness } = useAccountType();
+
   // Loading state with skeleton
   if (loading) {
     return <ConnectorLoadingSkeleton showStats={showStats} />;
@@ -81,6 +84,12 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({
   const authType = (connector.authType || '').toUpperCase();
   const isOauth = authType === 'OAUTH';
   const canEnable = isActive ? true : (isOauth ? isAuthenticated : isConfigured);
+
+  // Determine whether to show Authenticate button
+  const isGoogleWorkspace = connector.appGroup === 'Google Workspace';
+  const hideAuthenticate =
+    authType === 'OAUTH_ADMIN_CONSENT' ||
+    (isOauth && isBusiness && isGoogleWorkspace);
 
   return (
     <Container maxWidth="xl" sx={{ py: 2 }}>
@@ -131,6 +140,7 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({
                   isAuthenticated={isAuthenticated}
                   isEnablingWithFilters={isEnablingWithFilters}
                   onToggle={handleToggleConnector}
+                  hideAuthenticate={hideAuthenticate}
                 />
               </Grid>
 
@@ -144,6 +154,7 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({
                   onConfigure={handleConfigureClick}
                   onRefresh={handleRefresh}
                   onToggle={handleToggleConnector}
+                  hideAuthenticate={hideAuthenticate}
                 />
               </Grid>
             </Grid>

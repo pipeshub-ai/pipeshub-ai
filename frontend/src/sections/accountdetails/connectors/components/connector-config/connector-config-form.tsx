@@ -69,7 +69,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
     handleFileChange,
     handleAdminEmailChange,
     validateAdminEmail,
-    isBusinessOAuthValid,
+    isBusinessGoogleOAuthValid,
     fileInputRef,
   } = useConnectorConfig({ connector, onClose, onSuccess });
 

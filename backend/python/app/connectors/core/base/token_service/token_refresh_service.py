@@ -111,9 +111,12 @@ class TokenRefreshService:
             # Create token from stored credentials
             token = OAuthToken.from_dict(credentials)
 
-            # Check if token needs refresh
+            # If token not expired, ensure a scheduled refresh is set and return
             if not token.is_expired:
-                await oauth_provider.close()
+                try:
+                    await self.schedule_token_refresh(connector_name, token)
+                finally:
+                    await oauth_provider.close()
                 return
 
             # Refresh token using OAuth provider
@@ -127,6 +130,9 @@ class TokenRefreshService:
             await self.key_value_store.create_key(config_key, config)
 
             self.logger.info(f"Refreshed token for connector {connector_name}")
+
+            # Schedule next refresh for the new token
+            await self.schedule_token_refresh(connector_name, new_token)
 
         except Exception as e:
             self.logger.error(f"Error refreshing token for {connector_name}: {e}")
@@ -152,7 +158,8 @@ class TokenRefreshService:
             return
 
         # Calculate refresh time (refresh 5 minutes before expiry)
-        refresh_time = token.created_at + timedelta(seconds=token.expires_in - 300)
+        # Refresh 10 minutes before expiry for safety
+        refresh_time = token.created_at + timedelta(seconds=max(0, token.expires_in - 600))
         delay = (refresh_time - datetime.now()).total_seconds()
 
         if delay > 0:

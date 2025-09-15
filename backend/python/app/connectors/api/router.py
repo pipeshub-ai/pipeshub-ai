@@ -2350,14 +2350,30 @@ async def handle_oauth_callback_get(
         connector_name = app_name.lower()
         frontend_url = str(request.base_url).replace('8088', '3001').rstrip('/')
 
+        async def _get_settings_base_path() -> str:
+            """Decide frontend settings base path by org account type.
+            Falls back to individual when unknown.
+            """
+            try:
+                orgs = await arango_service.get_all_documents(CollectionNames.ORGS.value)
+                if isinstance(orgs, list) and len(orgs) > 0:
+                    account_type = str((orgs[0] or {}).get("accountType", "")).lower()
+                    if account_type in ["business", "organization", "enterprise"]:
+                        return "/account/company-settings/settings/connector"
+            except Exception:
+                pass
+            return "/account/individual/settings/connector"
+
+        settings_base_path = await _get_settings_base_path()
+
         # Check for OAuth errors
         if error:
             logger.error(f"OAuth error for {app_name}: {error}")
-            return RedirectResponse(f"{frontend_url}/account/company-settings/settings/connector/{connector_name}?oauth_error={error}")
+            return RedirectResponse(f"{frontend_url}{settings_base_path}/{connector_name}?oauth_error={error}")
 
         if not code or not state:
             logger.error(f"Missing OAuth parameters for {app_name}")
-            return RedirectResponse(f"{frontend_url}/account/company-settings/settings/connector/{connector_name}?oauth_error=missing_parameters")
+            return RedirectResponse(f"{frontend_url}{settings_base_path}/{connector_name}?oauth_error=missing_parameters")
 
         # Process OAuth callback directly here
         logger.info(f"Processing OAuth callback for {app_name}")
@@ -2366,7 +2382,7 @@ async def handle_oauth_callback_get(
         connector_config = await arango_service.get_app_by_name(app_name)
         if not connector_config:
             logger.error(f"Connector {app_name} not found")
-            return RedirectResponse(f"{frontend_url}/account/company-settings/settings/connector/{connector_name}?oauth_error=connector_not_found")
+            return RedirectResponse(f"{frontend_url}{settings_base_path}/{connector_name}?oauth_error=connector_not_found")
 
         # Get OAuth configuration
         config_service = container.config_service()
@@ -2375,7 +2391,7 @@ async def handle_oauth_callback_get(
 
         if not config or not config.get('auth'):
             logger.error(f"OAuth configuration not found for {app_name}")
-            return RedirectResponse(f"{frontend_url}/account/company-settings/settings/connector/{connector_name}?oauth_error=config_not_found")
+            return RedirectResponse(f"{frontend_url}{settings_base_path}/{connector_name}?oauth_error=config_not_found")
 
         auth_config = config['auth']
 
@@ -2387,10 +2403,10 @@ async def handle_oauth_callback_get(
         scopes = connector_auth_config.get('scopes', [])
 
         if not redirect_uri:
-            return RedirectResponse(f"{frontend_url}/account/company-settings/settings/connector/{connector_name}?oauth_error=redirect_uri_not_configured")
+            return RedirectResponse(f"{frontend_url}{settings_base_path}/{connector_name}?oauth_error=redirect_uri_not_configured")
 
         if not authorize_url or not token_url:
-            return RedirectResponse(f"{frontend_url}/account/company-settings/settings/connector/{connector_name}?oauth_error=oauth_urls_not_configured")
+            return RedirectResponse(f"{frontend_url}{settings_base_path}/{connector_name}?oauth_error=oauth_urls_not_configured")
 
         # Create OAuth config using the OAuth service
         from app.connectors.core.base.token_service.oauth_service import (
@@ -2424,7 +2440,7 @@ async def handle_oauth_callback_get(
         # Validate token before storing
         if not token or not token.access_token:
             logger.error(f"Invalid token received for {app_name}")
-            return RedirectResponse(f"{frontend_url}/account/company-settings/settings/connector/{connector_name}?oauth_error=invalid_token")
+            return RedirectResponse(f"{frontend_url}{settings_base_path}/{connector_name}?oauth_error=invalid_token")
 
         # Log masked token details to confirm success without exposing secrets
         try:
@@ -2456,8 +2472,19 @@ async def handle_oauth_callback_get(
         except Exception as cache_err:
             logger.warning(f"Could not refresh config cache for {app_name}: {cache_err}")
 
+        # Schedule token refresh ~10 minutes before expiry
+        try:
+            from app.connectors.core.base.token_service.token_refresh_service import (
+                TokenRefreshService,
+            )
+            refresh_service = TokenRefreshService(container.key_value_store(), arango_service)
+            await refresh_service.schedule_token_refresh(app_name, token)
+            logger.info(f"Scheduled token refresh for {app_name}")
+        except Exception as sched_err:
+            logger.warning(f"Could not schedule token refresh for {app_name}: {sched_err}")
+
         # Log the redirect URL for debugging
-        redirect_url = f"{frontend_url}/account/company-settings/settings/connector/{connector_name}?oauth_success=true"
+        redirect_url = f"{frontend_url}{settings_base_path}/{connector_name}?oauth_success=true"
         logger.info(f"Redirecting to frontend: {redirect_url}")
 
         # Redirect to frontend with success
@@ -2467,7 +2494,13 @@ async def handle_oauth_callback_get(
         logger.error(f"Error handling OAuth GET callback for {app_name}: {str(e)}")
         frontend_url = str(request.base_url).replace('8088', '3001').rstrip('/')
         connector_name = app_name.lower()
-        return RedirectResponse(f"{frontend_url}/account/company-settings/settings/connector/{connector_name}?oauth_error=server_error")
+        try:
+            orgs = await arango_service.get_all_documents(CollectionNames.ORGS.value)
+            account_type = str((orgs[0] or {}).get("accountType", "")).lower() if isinstance(orgs, list) and orgs else ""
+            settings_base_path = "/account/company-settings/settings/connector" if account_type in ["business", "organization", "enterprise"] else "/account/individual/settings/connector"
+        except Exception:
+            settings_base_path = "/account/individual/settings/connector"
+        return RedirectResponse(f"{frontend_url}{settings_base_path}/{connector_name}?oauth_error=server_error")
 
 # @router.post("/api/v1/connectors/{app_name}/oauth/callback")
 async def handle_oauth_callback(
@@ -3110,18 +3143,21 @@ async def toggle_connector(
                 if auth_type == "OAUTH":
                     creds = (cfg or {}).get("credentials") if cfg else None
                     if not creds or not creds.get("access_token"):
+                        logger.error(f"Connector {app_name} cannot be enabled until OAuth authentication is completed")
                         raise HTTPException(
                             status_code=HttpStatusCode.BAD_REQUEST.value,
                             detail="Connector cannot be enabled until OAuth authentication is completed",
                         )
                 elif auth_type == "OAUTH_ADMIN_CONSENT":
                     if not app.get("isConfigured", False):
+                        logger.error(f"Connector {app_name} must be configured before enabling")
                         raise HTTPException(
                             status_code=HttpStatusCode.BAD_REQUEST.value,
                             detail="Connector must be configured before enabling",
                         )
                 else:
                     if not app.get("isConfigured", False):
+                        logger.error(f"Connector {app_name} must be configured before enabling")
                         raise HTTPException(
                             status_code=HttpStatusCode.BAD_REQUEST.value,
                             detail="Connector must be configured before enabling",

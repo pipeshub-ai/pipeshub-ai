@@ -55,14 +55,14 @@ class GoogleAdminService:
         self.admin_directory_service = None
         self.credentials = None
 
-    async def connect_admin(self, org_id: str) -> bool:
+    async def connect_admin(self, org_id: str, app_name: str = "DRIVE") -> bool:
         """Initialize admin service with domain-wide delegation"""
         try:
             SCOPES = GOOGLE_CONNECTOR_ENTERPRISE_SCOPES + GOOGLE_PARSER_SCOPES
 
             try:
                 credentials_json = await self.google_token_handler.get_enterprise_token(
-                    org_id
+                    org_id, app_name
                 )
                 if not credentials_json:
                     raise AdminAuthError(
@@ -788,7 +788,7 @@ class GoogleAdminService:
                 user_key = await self.arango_service.get_entity_id_by_email(user_email)
                 user = await self.arango_service.get_document(user_key, CollectionNames.USERS.value,)
                 if self.credentials is None:
-                    await self.connect_admin(user.get("orgId"))
+                    await self.connect_admin(user.get("orgId"), app_name="DRIVE")
                 user_credentials = self.credentials.with_subject(user_email)
             except Exception as e:
                 raise AdminDelegationError(
@@ -843,7 +843,7 @@ class GoogleAdminService:
                 user_key = await self.arango_service.get_entity_id_by_email(user_email)
                 user = await self.arango_service.get_document(user_key, CollectionNames.USERS.value)
                 if self.credentials is None:
-                    await self.connect_admin(user.get("orgId"))
+                    await self.connect_admin(user.get("orgId"), app_name="GMAIL")
                 user_credentials = self.credentials.with_subject(user_email)
             except Exception as e:
                 raise AdminDelegationError(

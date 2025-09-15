@@ -16,6 +16,7 @@ from app.config.constants.service import (
     TokenScopes,
     config_node_constants,
 )
+from typing import Optional, Dict
 
 
 class CredentialKeys(Enum):
@@ -31,6 +32,33 @@ class GoogleTokenHandler:
         self.service = None
         self.config_service = config_service
         self.arango_service = arango_service
+
+    async def _get_connector_config(self, app_name: str) -> Dict:
+        """Fetch connector config from etcd for the given app."""
+        try:
+            config = await self.config_service.get_config(
+                f"/services/connectors/{app_name.lower()}/config"
+            )
+            return config or {}
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get connector config for {app_name}: {e}")
+            return {}
+
+    async def get_individual_credentials_from_config(self, app_name: str) -> Dict:
+        """Get individual OAuth credentials stored in etcd for the connector."""
+        config = await self._get_connector_config(app_name)
+        creds = config.get("credentials") or {}
+        if not creds:
+            self.logger.info(f"No individual credentials found in config for {app_name}")
+        return creds
+
+    async def get_enterprise_credentials_from_config(self, app_name: str) -> Dict:
+        """Get enterprise/service account credentials stored in etcd for the connector."""
+        config = await self._get_connector_config(app_name)
+        auth = config.get("auth") or {}
+        if not auth:
+            self.logger.info(f"No enterprise credentials found in config for {app_name}")
+        return auth
 
     @retry(
         stop=stop_after_attempt(3),
@@ -133,35 +161,9 @@ class GoogleTokenHandler:
         retry=retry_if_exception_type((aiohttp.ClientError, Exception)),
         reraise=True,
     )
-    async def get_enterprise_token(self, org_id) -> dict:
-        # Prepare payload for credentials API
-        payload = {"orgId": org_id, "scopes": [TokenScopes.FETCH_CONFIG.value]}
-
-        secret_keys = await self.config_service.get_config(
-            config_node_constants.SECRET_KEYS.value
-        )
-        scoped_jwt_secret = secret_keys.get("scopedJwtSecret")
-
-        # Create JWT token
-        jwt_token = jwt.encode(payload, scoped_jwt_secret, algorithm="HS256")
-
-        headers = {"Authorization": f"Bearer {jwt_token}"}
-        endpoints = await self.config_service.get_config(
-            config_node_constants.ENDPOINTS.value
-        )
-        nodejs_endpoint = endpoints.get("cm").get("endpoint", DefaultEndpoints.NODEJS_ENDPOINT.value)
-
-        # Call credentials API
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{nodejs_endpoint}{Routes.BUSINESS_CREDENTIALS.value}",
-                json=payload,
-                headers=headers,
-            ) as response:
-                if response.status != HttpStatusCode.SUCCESS.value:
-                    raise Exception(
-                        f"Failed to fetch credentials: {await response.json()}"
-                    )
-                credentials_json = await response.json()
-
-        return credentials_json
+    async def get_enterprise_token(self, org_id, app_name: str) -> dict:
+        # Read service account JSON from etcd for the specified connector (e.g., DRIVE, GMAIL)
+        # org_id currently not used because credentials are per-connector; kept for API compatibility
+        app_key = (app_name or "").lower()
+        config = await self._get_connector_config(app_key)
+        return config.get("auth", {})
