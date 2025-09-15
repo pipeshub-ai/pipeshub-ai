@@ -21,6 +21,11 @@ from app.connectors.core.registry.connector_builder import (
             "https://developers.google.com/drive/api/quickstart"
         ))
         .with_redirect_uri("http://localhost:8088/api/v1/connectors/DRIVE/oauth/callback", True)
+        .with_oauth_urls(
+            "https://accounts.google.com/o/oauth2/v2/auth",
+            "https://oauth2.googleapis.com/token",
+            ["https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/drive.metadata.readonly"]
+        )
         .add_auth_field(CommonFields.client_id("Google Cloud Console"))
         .add_auth_field(CommonFields.client_secret("Google Cloud Console"))
         .with_webhook_config(True, ["file.created", "file.modified", "file.deleted"])
@@ -210,6 +215,11 @@ class OneDriveConnector:
             "https://developers.google.com/gmail/api/quickstart"
         ))
         .with_redirect_uri("http://localhost:8088/api/v1/connectors/GMAIL/oauth/callback", True)
+        .with_oauth_urls(
+            "https://accounts.google.com/o/oauth2/v2/auth",
+            "https://oauth2.googleapis.com/token",
+            ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.metadata"]
+        )
         .add_auth_field(CommonFields.client_id("Google Cloud Console"))
         .add_auth_field(CommonFields.client_secret("Google Cloud Console"))
         .with_webhook_config(True, ["message.created", "message.modified", "message.deleted"])

@@ -171,6 +171,14 @@ class ConnectorConfigBuilder:
         self.config["auth"]["schema"]["fields"].append(field_config)
         return self
 
+    def with_oauth_urls(self, authorize_url: str, token_url: str, scopes: List[str] = None):
+        """Set OAuth URLs and scopes for OAuth connectors"""
+        self.config["auth"]["authorizeUrl"] = authorize_url
+        self.config["auth"]["tokenUrl"] = token_url
+        if scopes:
+            self.config["auth"]["scopes"] = scopes
+        return self
+
     def with_sync_strategies(self, strategies: List[str], selected: str = "MANUAL"):
         """Configure sync strategies"""
         self.config["sync"]["supportedStrategies"] = strategies

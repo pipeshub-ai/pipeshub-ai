@@ -310,12 +310,17 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
     const oauthSuccess = urlParams.get('oauth_success');
     const oauthError = urlParams.get('oauth_error');
     
+    // Debug logging
+    console.log('OAuth URL params:', { oauthSuccess, oauthError, search: window.location.search });
+    
     // Get connector name from URL path (e.g., /account/company-settings/settings/connector/gmail)
     const pathParts = window.location.pathname.split('/');
     const connectorIndex = pathParts.findIndex(part => part === 'connector');
     const urlConnectorName = connectorIndex !== -1 && connectorIndex + 1 < pathParts.length 
       ? pathParts[connectorIndex + 1] 
       : null;
+
+    console.log('OAuth connector name from URL:', urlConnectorName);
 
     if (oauthSuccess === 'true' && urlConnectorName) {
       // OAuth was successful, refresh the connector data and show filter dialog

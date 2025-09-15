@@ -112,6 +112,12 @@ app_schema = {
                             },
                             "displayRedirectUri": {"type": "boolean", "default": True},
                             "redirectUri": {"type": "string"},
+                            "authorizeUrl": {"type": "string"},
+                            "tokenUrl": {"type": "string"},
+                            "scopes": {
+                                "type": "array",
+                                "items": {"type": "string"}
+                            },
                             "schema": {
                                 "type": "object",
                                 "properties": {

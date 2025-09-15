@@ -2113,6 +2113,12 @@ async def get_connector_config(
             "isConfigured": result["isConfigured"]
         }
 
+        # Debug logging for credentials
+        if config.get('credentials'):
+            logger.info(f"Credentials found in config for {app_name}: {bool(config['credentials'])}")
+        else:
+            logger.info(f"No credentials found in config for {app_name}")
+
         return {"success": True, "config": response_dict}
     except Exception as e:
         logger.error(f"Failed to get connector config for {app_name}: {e}")
@@ -2242,69 +2248,76 @@ async def get_oauth_authorization_url(
 
         auth_config = config['auth']
 
-        # Get OAuth configuration from connector config (not from etcd values)
+        # Get OAuth configuration from connector config
         connector_auth_config = connector_config.get('config', {}).get('auth', {})
         redirect_uri = connector_auth_config.get('redirectUri', '')
+        authorize_url = connector_auth_config.get('authorizeUrl', '')
+        token_url = connector_auth_config.get('tokenUrl', '')
+        scopes = connector_auth_config.get('scopes', [])
 
         if not redirect_uri:
             raise HTTPException(status_code=400, detail=f"Redirect URI not configured for {app_name}")
 
-        # Generate state for CSRF protection
-        import secrets
-        state = secrets.token_urlsafe(32)
+        if not authorize_url or not token_url:
+            raise HTTPException(status_code=400, detail=f"OAuth URLs not configured for {app_name}")
 
-        # Store state in config for verification during callback
-        if 'oauth' not in config:
-            config['oauth'] = {}
-        config['oauth']['state'] = state
-        await config_service.set_config(config_key, config)
+        # Create OAuth config using the OAuth service
+        from app.connectors.core.base.token_service.oauth_service import (
+            OAuthConfig,
+            OAuthProvider,
+        )
 
-        # Build OAuth URLs based on connector type
-        if app_name.upper() == 'DRIVE':
-            # Google Drive OAuth
-            scope = 'https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.metadata.readonly'
-            authorize_url = 'https://accounts.google.com/o/oauth2/v2/auth'
-            token_url = 'https://oauth2.googleapis.com/token'
-        elif app_name.upper() == 'GMAIL':
-            # Gmail OAuth
-            scope = 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.modify'
-            authorize_url = 'https://accounts.google.com/o/oauth2/v2/auth'
-            token_url = 'https://oauth2.googleapis.com/token'
-        elif app_name.upper() == 'ONEDRIVE':
-            # OneDrive OAuth
-            tenant_id = auth_config.get('tenantId', 'common')
-            scope = 'https://graph.microsoft.com/Files.Read https://graph.microsoft.com/Files.ReadWrite'
-            authorize_url = f'https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/authorize'
-            token_url = f'https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token'
-        else:
-            # Generic OAuth - use configured values
-            scope = auth_config.get('scope', '')
-            authorize_url = auth_config.get('authorizeUrl', '')
-            token_url = auth_config.get('tokenUrl', '')
+        oauth_config = OAuthConfig(
+            client_id=auth_config['clientId'],
+            client_secret=auth_config['clientSecret'],
+            redirect_uri=redirect_uri,
+            authorize_url=authorize_url,
+            token_url=token_url,
+            scope=' '.join(scopes) if scopes else ''
+        )
 
-            if not authorize_url or not token_url:
-                raise HTTPException(status_code=400, detail=f"OAuth URLs not configured for {app_name}")
+        # Create OAuth provider and generate authorization URL
+        oauth_provider = OAuthProvider(
+            config=oauth_config,
+            key_value_store=container.key_value_store(),
+            base_arango_service=arango_service,
+            credentials_path=f"/services/connectors/{app_name.lower()}/config"
+        )
 
-        # Build authorization URL manually (like the old implementation)
-        from urllib.parse import urlencode
+        # Generate authorization URL using OAuth provider
+        # Add provider-specific parameters to ensure refresh_token is issued where applicable
+        extra_params = {}
+        if app_name.upper() in ['DRIVE', 'GMAIL']:
+            # Google requires these for refresh_token on repeated consents
+            extra_params.update({
+                'access_type': 'offline',
+                'prompt': 'consent',
+                'include_granted_scopes': 'true',
+            })
 
-        params = {
-            'client_id': auth_config['clientId'],
-            'redirect_uri': redirect_uri,
-            'response_type': 'code',
-            'scope': scope,
-            'state': state,
-            'access_type': 'offline',
-            'prompt': 'consent'
-        }
+        auth_url = await oauth_provider.start_authorization(**extra_params)
+
+        # Clean up OAuth provider
+        await oauth_provider.close()
 
         # Add tenant-specific parameters for Microsoft
         if app_name.upper() == 'ONEDRIVE':
-            params['response_mode'] = 'query'
+            # Add Microsoft-specific parameters
+            from urllib.parse import parse_qs, urlencode, urlparse
+            parsed_url = urlparse(auth_url)
+            params = parse_qs(parsed_url.query)
+            params['response_mode'] = ['query']
             if connector_config.get('authType') == 'OAUTH_ADMIN_CONSENT':
-                params['prompt'] = 'admin_consent'
+                params['prompt'] = ['admin_consent']
 
-        auth_url = f"{authorize_url}?{urlencode(params)}"
+            # Rebuild URL with additional parameters
+            auth_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}?{urlencode(params, doseq=True)}"
+
+        # Extract state from the authorization URL for response
+        from urllib.parse import parse_qs, urlparse
+        parsed_url = urlparse(auth_url)
+        query_params = parse_qs(parsed_url.query)
+        state = query_params.get('state', [None])[0]
 
         return {
             "success": True,
@@ -2366,112 +2379,89 @@ async def handle_oauth_callback_get(
 
         auth_config = config['auth']
 
-        # Get OAuth URLs based on connector type
-        if app_name.upper() == 'DRIVE':
-            # Google Drive OAuth
-            scope = 'https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.metadata.readonly'
-            token_url = 'https://oauth2.googleapis.com/token'
-        elif app_name.upper() == 'GMAIL':
-            # Gmail OAuth
-            scope = 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.modify'
-            token_url = 'https://oauth2.googleapis.com/token'
-        elif app_name.upper() == 'ONEDRIVE':
-            # OneDrive OAuth
-            tenant_id = auth_config.get('tenantId', 'common')
-            scope = 'https://graph.microsoft.com/Files.Read https://graph.microsoft.com/Files.ReadWrite'
-            token_url = f'https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token'
-        else:
-            # Generic OAuth - use configured values
-            scope = auth_config.get('scope', '')
-            token_url = auth_config.get('tokenUrl', '')
-
-            if not token_url:
-                return RedirectResponse(f"{frontend_url}/account/company-settings/settings/connector/{connector_name}?oauth_error=token_url_not_configured")
-
-        # Get redirect URI from connector config
+        # Get OAuth configuration from connector config
         connector_auth_config = connector_config.get('config', {}).get('auth', {})
         redirect_uri = connector_auth_config.get('redirectUri', '')
+        authorize_url = connector_auth_config.get('authorizeUrl', '')
+        token_url = connector_auth_config.get('tokenUrl', '')
+        scopes = connector_auth_config.get('scopes', [])
 
         if not redirect_uri:
             return RedirectResponse(f"{frontend_url}/account/company-settings/settings/connector/{connector_name}?oauth_error=redirect_uri_not_configured")
 
-        logger.info(f"Using redirect URI for token exchange: {redirect_uri}")
+        if not authorize_url or not token_url:
+            return RedirectResponse(f"{frontend_url}/account/company-settings/settings/connector/{connector_name}?oauth_error=oauth_urls_not_configured")
 
-        # Exchange code for token manually
-        import json
-        from datetime import datetime
-
-        import aiohttp
-
-        token_data = {
-            'client_id': auth_config['clientId'],
-            'client_secret': auth_config['clientSecret'],
-            'code': code,
-            'grant_type': 'authorization_code',
-            'redirect_uri': redirect_uri
-        }
-
-        logger.info(f"Exchanging code for token with data: client_id={auth_config['clientId']}, redirect_uri={redirect_uri}, token_url={token_url}")
-
-        async with aiohttp.ClientSession() as session:
-            async with session.post(token_url, data=token_data) as response:
-                response_text = await response.text()
-                logger.info(f"Token exchange response status: {response.status}, body: {response_text}")
-
-                if response.status != 200:
-                    return RedirectResponse(f"{frontend_url}/account/company-settings/settings/connector/{connector_name}?oauth_error=token_exchange_failed")
-
-                token_response = json.loads(response_text)
-
-        # Create token object for compatibility
-        from app.connectors.core.base.token_service.oauth_service import OAuthToken
-        token = OAuthToken(
-            access_token=token_response.get('access_token'),
-            refresh_token=token_response.get('refresh_token'),
-            token_type=token_response.get('token_type', 'Bearer'),
-            expires_in=token_response.get('expires_in'),
-            scope=token_response.get('scope', scope),
-            created_at=datetime.now()
+        # Create OAuth config using the OAuth service
+        from app.connectors.core.base.token_service.oauth_service import (
+            OAuthConfig,
+            OAuthProvider,
         )
+
+        oauth_config = OAuthConfig(
+            client_id=auth_config['clientId'],
+            client_secret=auth_config['clientSecret'],
+            redirect_uri=redirect_uri,
+            authorize_url=authorize_url,
+            token_url=token_url,
+            scope=' '.join(scopes) if scopes else ''
+        )
+
+        # Create OAuth provider and exchange code for token
+        oauth_provider = OAuthProvider(
+            config=oauth_config,
+            key_value_store=container.key_value_store(),
+            base_arango_service=arango_service,
+            credentials_path=f"/services/connectors/{app_name.lower()}/config"
+        )
+
+        # Exchange code for token using OAuth provider
+        token = await oauth_provider.handle_callback(code, state)
+
+        # Clean up OAuth provider
+        await oauth_provider.close()
 
         # Validate token before storing
         if not token or not token.access_token:
             logger.error(f"Invalid token received for {app_name}")
             return RedirectResponse(f"{frontend_url}/account/company-settings/settings/connector/{connector_name}?oauth_error=invalid_token")
 
-        # Store OAuth credentials in the existing config structure
+        # Log masked token details to confirm success without exposing secrets
         try:
-            config['credentials'] = {
-                "access_token": token.access_token,
-                "refresh_token": token.refresh_token,
-                "token_type": token.token_type,
-                "expires_in": token.expires_in,
-                "scope": token.scope,
-                "created_at": token.created_at.isoformat()
-            }
+            masked_access = f"***{token.access_token[-6:]}" if token.access_token and len(token.access_token) > 6 else "***"
+            logger.info(
+                "OAuth token received for %s | access_token=%s, refresh_token_present=%s, expires_in=%s, scope=%s",
+                app_name,
+                masked_access,
+                bool(token.refresh_token),
+                str(token.expires_in),
+                token.scope,
+            )
+        except Exception:
+            # Best-effort debug log
+            logger.info("OAuth token received for %s", app_name)
 
-            # Clean up any legacy OAuth state remnants in config
-            if 'oauth' in config and isinstance(config['oauth'], dict) and 'state' in config['oauth']:
-                try:
-                    del config['oauth']['state']
-                except Exception:
-                    pass
+        # OAuth credentials are already stored by the OAuth provider's handle_callback method
+        # No need to store them again here
+        logger.info(f"OAuth tokens stored successfully for {app_name}")
 
-            # Save config
-            await config_service.set_config(config_key, config)
+        # Refresh configuration cache so subsequent reads see latest credentials
+        try:
+            config_service = container.config_service()
+            kv_store = container.key_value_store()
+            updated_config = await kv_store.get_key(f"/services/connectors/{app_name.lower()}/config")
+            if isinstance(updated_config, dict):
+                await config_service.set_config(f"/services/connectors/{app_name.lower()}/config", updated_config)
+                logger.info(f"Refreshed config cache for {app_name} after OAuth callback")
+        except Exception as cache_err:
+            logger.warning(f"Could not refresh config cache for {app_name}: {cache_err}")
 
-            # Verify the save was successful
-            saved_config = await config_service.get_config(config_key)
-            if not saved_config or 'credentials' not in saved_config:
-                raise Exception("Failed to verify token storage")
-
-            logger.info(f"OAuth tokens stored successfully for {app_name}")
-        except Exception as e:
-            logger.error(f"Failed to store OAuth tokens for {app_name}: {str(e)}")
-            return RedirectResponse(f"{frontend_url}/account/company-settings/settings/connector/{connector_name}?oauth_error=token_storage_failed")
+        # Log the redirect URL for debugging
+        redirect_url = f"{frontend_url}/account/company-settings/settings/connector/{connector_name}?oauth_success=true"
+        logger.info(f"Redirecting to frontend: {redirect_url}")
 
         # Redirect to frontend with success
-        return RedirectResponse(f"{frontend_url}/account/company-settings/settings/connector/{connector_name}?oauth_success=true")
+        return RedirectResponse(redirect_url)
 
     except Exception as e:
         logger.error(f"Error handling OAuth GET callback for {app_name}: {str(e)}")
@@ -2523,73 +2513,47 @@ async def handle_oauth_callback(
 
         auth_config = config['auth']
 
-        # Get OAuth URLs based on connector type
-        if app_name.upper() == 'DRIVE':
-            # Google Drive OAuth
-            scope = 'https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.metadata.readonly'
-            token_url = 'https://oauth2.googleapis.com/token'
-        elif app_name.upper() == 'GMAIL':
-            # Gmail OAuth
-            scope = 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.modify'
-            token_url = 'https://oauth2.googleapis.com/token'
-        elif app_name.upper() == 'ONEDRIVE':
-            # OneDrive OAuth
-            tenant_id = auth_config.get('tenantId', 'common')
-            scope = 'https://graph.microsoft.com/Files.Read https://graph.microsoft.com/Files.ReadWrite'
-            token_url = f'https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token'
-        else:
-            # Generic OAuth - use configured values
-            scope = auth_config.get('scope', '')
-            token_url = auth_config.get('tokenUrl', '')
-
-            if not token_url:
-                raise HTTPException(status_code=400, detail=f"Token URL not configured for {app_name}")
-
-        # Get redirect URI from connector config - this should match what was used in authorization
+        # Get OAuth configuration from connector config
         connector_auth_config = connector_config.get('config', {}).get('auth', {})
         redirect_uri = connector_auth_config.get('redirectUri', '')
+        authorize_url = connector_auth_config.get('authorizeUrl', '')
+        token_url = connector_auth_config.get('tokenUrl', '')
+        scopes = connector_auth_config.get('scopes', [])
 
         if not redirect_uri:
             raise HTTPException(status_code=400, detail=f"Redirect URI not configured for {app_name}")
 
-        logger.info(f"Using redirect URI for token exchange: {redirect_uri}")
+        if not token_url:
+            raise HTTPException(status_code=400, detail=f"Token URL not configured for {app_name}")
 
-        # Exchange code for token manually
-        import json
-        from datetime import datetime
-
-        import aiohttp
-
-        token_data = {
-            'client_id': auth_config['clientId'],
-            'client_secret': auth_config['clientSecret'],
-            'code': code,
-            'grant_type': 'authorization_code',
-            'redirect_uri': redirect_uri
-        }
-
-        logger.info(f"Exchanging code for token with data: client_id={auth_config['clientId']}, redirect_uri={redirect_uri}, token_url={token_url}")
-
-        async with aiohttp.ClientSession() as session:
-            async with session.post(token_url, data=token_data) as response:
-                response_text = await response.text()
-                logger.info(f"Token exchange response status: {response.status}, body: {response_text}")
-
-                if response.status != 200:
-                    raise HTTPException(status_code=400, detail=f"Token exchange failed: {response_text}")
-
-                token_response = json.loads(response_text)
-
-        # Create token object for compatibility
-        from app.connectors.core.base.token_service.oauth_service import OAuthToken
-        token = OAuthToken(
-            access_token=token_response.get('access_token'),
-            refresh_token=token_response.get('refresh_token'),
-            token_type=token_response.get('token_type', 'Bearer'),
-            expires_in=token_response.get('expires_in'),
-            scope=token_response.get('scope', scope),
-            created_at=datetime.now()
+        # Create OAuth config using the OAuth service
+        from app.connectors.core.base.token_service.oauth_service import (
+            OAuthConfig,
+            OAuthProvider,
         )
+
+        oauth_config = OAuthConfig(
+            client_id=auth_config['clientId'],
+            client_secret=auth_config['clientSecret'],
+            redirect_uri=redirect_uri,
+            authorize_url=authorize_url,
+            token_url=token_url,
+            scope=' '.join(scopes) if scopes else ''
+        )
+
+        # Create OAuth provider and exchange code for token
+        oauth_provider = OAuthProvider(
+            config=oauth_config,
+            key_value_store=container.key_value_store(),
+            base_arango_service=arango_service,
+            credentials_path=f"/services/connectors/{app_name.lower()}/config"
+        )
+
+        # Exchange code for token using OAuth provider
+        token = await oauth_provider.handle_callback(code, state)
+
+        # Clean up OAuth provider
+        await oauth_provider.close()
 
         # Store OAuth credentials in the existing config structure
         if 'credentials' not in config:
@@ -2613,6 +2577,16 @@ async def handle_oauth_callback(
 
         # Save updated config
         await config_service.set_config(config_key, config)
+
+        # Schedule token refresh
+        try:
+            from app.connectors.core.base.token_service.token_refresh_service import (
+                TokenRefreshService,
+            )
+            refresh_service = TokenRefreshService(container.key_value_store(), arango_service)
+            await refresh_service.schedule_token_refresh(app_name, token)
+        except Exception as e:
+            logger.warning(f"Could not schedule token refresh for {app_name}: {e}")
 
         # Get filter options from configured endpoints
         filter_options = await get_connector_filter_options_from_config(app_name, connector_config, token, config_service)
@@ -3039,7 +3013,28 @@ async def update_connector_config(
     try:
         config_service = container.config_service()
         config_key: str = f"/services/connectors/{app_name.lower()}/config"
-        await config_service.set_config(config_key, body_dict)
+
+        # Load existing (unused now; we overwrite sections and clear auth artifacts)
+        try:
+            await config_service.get_config(config_key)
+        except Exception:
+            pass
+
+        # Build new config from incoming sections only
+        merged_config: Dict[str, Any] = {}
+
+        for section in ["auth", "sync", "filters"]:
+            if section in body_dict and isinstance(body_dict[section], dict):
+                merged_config[section] = body_dict[section]
+            elif section in body_dict:
+                merged_config[section] = body_dict[section]
+
+        # Explicitly clear credentials and oauth state on config updates so
+        # the UI will require re-auth and we avoid stale secrets
+        merged_config["credentials"] = None
+        merged_config["oauth"] = None
+
+        await config_service.set_config(config_key, merged_config)
         logger.info(f"Config stored in etcd for {app_name}")
         updates = {
             "isConfigured": True,
@@ -3047,7 +3042,7 @@ async def update_connector_config(
         }
         await connector_registry.update_connector(app_name, updates)
         logger.info(f"Connector updated in database for {app_name}")
-        return {"success": True, "config": body_dict}
+        return {"success": True, "config": merged_config}
     except Exception as e:
         logger.error(f"Failed to store config in etcd for {app_name}: {e}")
         raise HTTPException(
