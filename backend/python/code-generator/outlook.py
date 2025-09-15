@@ -137,7 +137,7 @@ EXCLUDED_PATHS = [
     '/communications',
     '/education',
     '/identity',
-    '/photo'
+    '/photo',
     '/inferenceClassification',
     '/extensions'
 ]

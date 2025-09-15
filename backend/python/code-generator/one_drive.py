@@ -1039,7 +1039,7 @@ class {class_name}:
             raise ValueError("Client must be a Microsoft Graph SDK client")
         logger.info("OneDrive client initialized with {len(ops)} methods")
 
-    def _handle_onedrive_response(self, response: Any) -> OneDriveResponse:
+    def _handle_onedrive_response(self, response: object) -> OneDriveResponse:
         \"\"\"Handle OneDrive API response with comprehensive error handling.\"\"\"
         try:
             if response is None:

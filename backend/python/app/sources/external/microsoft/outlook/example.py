@@ -29,7 +29,7 @@ async def main():
     print(response.success)
 
     #getting messages with select and expand
-    response: OutlookResponse = await outlook_data_source.users_list_messages(user_id=user_id_or_upn, select=["id", "name", "createdBy"])
+    response: OutlookResponse = await outlook_data_source.users_list_messages(user_id=user_id_or_upn, select=["id", "subject", "from", "receivedDateTime"])
     print(response.data)
     print(response.error)
     print(response.success)

@@ -110,7 +110,7 @@ class OutlookDataSource:
             raise ValueError("Client must be a Microsoft Graph SDK client")
         logger.info("Outlook client initialized with 681 methods")
 
-    def _handle_outlook_response(self, response: Any) -> OutlookResponse:
+    def _handle_outlook_response(self, response: object) -> OutlookResponse:
         """Handle Outlook API response with comprehensive error handling."""
         try:
             if response is None:
