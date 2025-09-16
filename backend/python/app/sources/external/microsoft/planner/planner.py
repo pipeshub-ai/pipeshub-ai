@@ -5,22 +5,22 @@ import logging
 from dataclasses import asdict
 from typing import Any, Dict, List, Mapping, Optional
 
-from kiota_abstractions.base_request_configuration import (
-    RequestConfiguration,  # type: ignore
+from kiota_abstractions.base_request_configuration import (  # type: ignore
+    RequestConfiguration,
 )
-from msgraph.generated.planner.buckets.buckets_request_builder import (
-    BucketsRequestBuilder,  # type: ignore
+from msgraph.generated.planner.buckets.buckets_request_builder import (  # type: ignore
+    BucketsRequestBuilder,
 )
 
 # Import MS Graph specific query parameter classes for Planner
-from msgraph.generated.planner.plans.plans_request_builder import (
-    PlansRequestBuilder,  # type: ignore
+from msgraph.generated.planner.plans.plans_request_builder import (  # type: ignore
+    PlansRequestBuilder,
 )
-from msgraph.generated.planner.tasks.tasks_request_builder import (
-    TasksRequestBuilder,  # type: ignore
+from msgraph.generated.planner.tasks.tasks_request_builder import (  # type: ignore
+    TasksRequestBuilder,
 )
-from msgraph.generated.users.item.planner.planner_request_builder import (
-    PlannerRequestBuilder,  # type: ignore
+from msgraph.generated.users.item.planner.planner_request_builder import (  # type: ignore
+    PlannerRequestBuilder,
 )
 
 from app.sources.client.microsoft.microsoft import MSGraphClient
