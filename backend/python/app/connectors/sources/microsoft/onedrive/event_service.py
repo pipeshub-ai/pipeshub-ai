@@ -6,6 +6,7 @@ from typing import Any, Dict
 
 from dependency_injector import providers
 
+from app.connectors.core.base.data_store.arango_data_store import ArangoDataStore
 from app.connectors.core.base.event_service.event_service import BaseEventService
 from app.connectors.sources.google.common.arango_service import ArangoService
 from app.connectors.sources.microsoft.onedrive.connector import (
@@ -57,7 +58,8 @@ class OneDriveEventService(BaseEventService):
             self.logger.info(f"Initializing OneDrive init sync service for org_id: {org_id}")
             config_service = self.app_container.config_service()
             arango_service = await self.app_container.arango_service()
-            onedrive_connector = await OneDriveConnector.create_connector(self.logger, arango_service, config_service)
+            data_store_provider = ArangoDataStore(self.logger, arango_service)
+            onedrive_connector = await OneDriveConnector.create_connector(self.logger, data_store_provider, config_service)
             await onedrive_connector.init()
             # Override the container's onedrive_connector provider with the initialized instance
             self.app_container.onedrive_connector.override(providers.Object(onedrive_connector))

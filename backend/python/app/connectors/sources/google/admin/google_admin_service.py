@@ -11,7 +11,6 @@ from app.config.constants.http_status_code import (
     HttpStatusCode,
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
-from app.connectors.sources.google.calendar.gcal_user_service import GCalUserService
 from app.connectors.sources.google.common.connector_google_exceptions import (
     AdminAuthError,
     AdminDelegationError,
@@ -882,47 +881,6 @@ class GoogleAdminService:
             raise
         except Exception as e:
             raise GoogleMailError(
-                "Unexpected error creating user service: " + str(e),
-                details={"user_email": user_email, "error": str(e)},
-            )
-
-    async def create_gcal_user_service(
-        self, user_email: str
-    ) -> Optional[GCalUserService]:
-        """Get or create a GCalUserService for a specific user"""
-        try:
-            # Create delegated credentials for the user
-            try:
-                user_key = await self.arango_service.get_entity_id_by_email(user_email)
-                user = await self.arango_service.get_document(user_key, CollectionNames.USERS.value)
-                if self.credentials is None:
-                    await self.connect_admin(user.get("orgId"))
-                user_credentials = self.credentials.with_subject(user_email)
-            except Exception as e:
-                raise AdminDelegationError(
-                    "Failed to create delegated credentials for user: " + str(e),
-                    details={"user_email": user_email, "error": str(e)},
-                )
-
-            # Create new user service
-            user_service = GCalUserService(
-                config_service=self.config_service,
-                rate_limiter=self.rate_limiter,
-                credentials=user_credentials,
-            )
-
-            org_id = user.get("orgId")
-            user_id = user.get("userId")
-            if not await user_service.connect_enterprise_user(org_id, user_id):
-                return None
-
-            return user_service
-
-        except Exception as e:
-            self.logger.error(
-                f"❌ Failed to create user service for {user_email}: {str(e)}"
-            )
-            raise AdminServiceError(
                 "Unexpected error creating user service: " + str(e),
                 details={"user_email": user_email, "error": str(e)},
             )

@@ -5,11 +5,12 @@ from typing import Dict, Optional
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
+from app.config.constants.arangodb import Connectors
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
+from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.interfaces.connector.apps import App, AppGroup
-from app.connectors.services.base_arango_service import BaseArangoService
 from app.models.entities import Record
 
 
@@ -17,16 +18,18 @@ class BaseConnector(ABC):
     """Base abstract class for all connectors"""
     logger: Logger
     data_entities_processor: DataSourceEntitiesProcessor
-    arango_service: BaseArangoService
+    data_store_provider: DataStoreProvider
     config_service: ConfigurationService
     app: App
+    connector_name: Connectors
 
     def __init__(self, app: App, logger, data_entities_processor: DataSourceEntitiesProcessor,
-        arango_service: BaseArangoService, config_service: ConfigurationService) -> None:
+        data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> None:
         self.logger = logger
         self.data_entities_processor = data_entities_processor
         self.app = app
-        self.arango_service = arango_service
+        self.connector_name = app.get_app_name()
+        self.data_store_provider = data_store_provider
         self.config_service = config_service
 
     @abstractmethod
@@ -63,7 +66,7 @@ class BaseConnector(ABC):
 
     @classmethod
     @abstractmethod
-    async def create_connector(cls, logger, arango_service: BaseArangoService, config_service: ConfigurationService) -> "BaseConnector":
+    async def create_connector(cls, logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> "BaseConnector":
         NotImplementedError("This method should be implemented by the subclass")
 
     def get_app(self) -> App:

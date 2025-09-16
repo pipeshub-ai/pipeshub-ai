@@ -16,6 +16,8 @@ from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
     DepartmentNames,
+    GraphNames,
+    LegacyGraphNames,
     OriginTypes,
     RecordTypes,
 )
@@ -201,7 +203,7 @@ class BaseArangoService:
 
     async def _create_graph(self) -> None:
         """Create the knowledge base graph with all required edge definitions"""
-        graph_name = CollectionNames.KNOWLEDGE_GRAPH.value
+        graph_name = GraphNames.KNOWLEDGE_GRAPH.value
 
         try:
             self.logger.info("🚀 Creating knowledge base graph...")
@@ -282,7 +284,7 @@ class BaseArangoService:
                 await self._initialize_new_collections()
 
                 # Initialize or update the file access graph
-                if not self.db.has_graph(CollectionNames.FILE_ACCESS_GRAPH.value) and not self.db.has_graph(CollectionNames.KNOWLEDGE_GRAPH.value):
+                if not self.db.has_graph(LegacyGraphNames.FILE_ACCESS_GRAPH.value) and not self.db.has_graph(GraphNames.KNOWLEDGE_GRAPH.value):
                     # No graph exists, create new graph (Knowledge Graph)
                     await self._create_graph()
                 else:
@@ -1563,6 +1565,12 @@ class BaseArangoService:
                 "reason": f"Internal error: {str(e)}"
             }
 
+    # Todo: This implementation should work irrespective of the connector type. It should not depend on the connector type.
+    # We need to remove Record node, all edges coming to this record or going from this record
+    # also, delete node of isOfType Record
+    # if this record has children, we need to delete them as well
+    # a flag should be passed whether children should be deleted or not
+    # it should also return the records that were deleted
     async def delete_record(self, record_id: str, user_id: str) -> Dict:
         """
         Main entry point for record deletion - routes to connector-specific methods
@@ -1603,6 +1611,27 @@ class BaseArangoService:
                 "code": 500,
                 "reason": f"Internal error: {str(e)}"
             }
+
+    async def delete_record_by_external_id(self, connector_name: Connectors, external_id: str) -> None:
+        """
+        Delete a record by external ID
+        """
+        try:
+            self.logger.info(f"🗂️ Deleting record {external_id} from {connector_name}")
+
+            # Get record
+            record = await self.get_record_by_external_id(connector_name, external_id)
+            if not record:
+                self.logger.warning(f"⚠️ Record {external_id} not found in {connector_name}")
+                return
+
+            # Delete record
+            await self.delete_record(record["key"])
+
+            self.logger.info(f"✅ Record {external_id} deleted from {connector_name}")
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete record {external_id} from {connector_name}: {str(e)}")
+            raise
 
     async def delete_knowledge_base_record(self, record_id: str, user_id: str, record: Dict) -> Dict:
         """
@@ -2919,7 +2948,7 @@ class BaseArangoService:
             return False
 
     async def get_record_by_external_id(
-        self, connector_name: str, external_id: str, transaction: Optional[TransactionDatabase] = None
+        self, connector_name: Connectors, external_id: str, transaction: Optional[TransactionDatabase] = None
     ) -> Optional[Record]:
         """
         Get internal file key using the external file ID
@@ -2944,7 +2973,7 @@ class BaseArangoService:
 
             db = transaction if transaction else self.db
             cursor = db.aql.execute(
-                query, bind_vars={"external_id": external_id, "connector_name": connector_name}
+                query, bind_vars={"external_id": external_id, "connector_name": connector_name.value}
             )
             result = next(cursor, None)
 
@@ -3012,7 +3041,7 @@ class BaseArangoService:
             )
             return None
 
-    async def get_record_group_by_external_id(self, connector_name: str, external_id: str, transaction: Optional[TransactionDatabase] = None) -> Optional[RecordGroup]:
+    async def get_record_group_by_external_id(self, connector_name: Connectors, external_id: str, transaction: Optional[TransactionDatabase] = None) -> Optional[RecordGroup]:
         """
         Get internal record group key using the external record group ID
         """
@@ -3026,7 +3055,7 @@ class BaseArangoService:
                 RETURN record_group
             """
             db = transaction if transaction else self.db
-            cursor = db.aql.execute(query, bind_vars={"external_id": external_id, "connector_name": connector_name})
+            cursor = db.aql.execute(query, bind_vars={"external_id": external_id, "connector_name": connector_name.value})
             result = next(cursor, None)
             if result:
                 self.logger.info(
@@ -3064,7 +3093,7 @@ class BaseArangoService:
                 self.logger.info(
                     "✅ Successfully retrieved internal key for email %s", email
                 )
-                return User.from_arango_base_user(result)
+                return User.from_arango_user(result)
             else:
                 self.logger.warning(
                     "⚠️ No internal key found for email %s", email
@@ -3110,7 +3139,7 @@ class BaseArangoService:
             self.logger.error("❌ Failed to fetch users: %s", str(e))
             return []
 
-    async def upsert_sync_point_node(self, sync_point_key: str, sync_point_data: Dict, collection: str, transaction: Optional[TransactionDatabase] = None) -> bool:
+    async def upsert_sync_point(self, sync_point_key: str, sync_point_data: Dict, collection: str, transaction: Optional[TransactionDatabase] = None) -> bool:
         """
         Upsert a sync point node based on sync_point_key
         """
@@ -3151,7 +3180,7 @@ class BaseArangoService:
             self.logger.error("❌ Failed to upsert sync point node: %s: %s", sync_point_key, str(e))
             return False
 
-    async def get_sync_point_node(self, key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> Optional[Dict]:
+    async def get_sync_point(self, key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> Optional[Dict]:
         """
         Get a node by key
         """
@@ -3175,7 +3204,7 @@ class BaseArangoService:
             self.logger.error("❌ Failed to retrieve node by key: %s: %s", key, str(e))
             return None
 
-    async def remove_sync_point_node(self, key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> bool:
+    async def remove_sync_point(self, key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> bool:
         """
         Remove a node by key
         """

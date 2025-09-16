@@ -1,4 +1,4 @@
-from app.config.constants.arangodb import Connectors
+from app.config.constants.arangodb import Connectors, OriginTypes
 from app.models.entities import RecordGroupType, RecordType
 
 # User schema for ArangoDB
@@ -483,7 +483,7 @@ record_schema = {
                 "enum": [record_type.value for record_type in RecordType],
             },
             "version": {"type": "number", "default": 0},
-            "origin": {"type": "string", "enum": ["UPLOAD", "CONNECTOR"]},
+            "origin": {"type": "string", "enum": [origin.value for origin in OriginTypes]},
             "connectorName": {
                 "type": "string",
                 "enum": [connector.value for connector in Connectors],

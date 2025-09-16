@@ -11,6 +11,9 @@ from typing import Dict, List, Optional
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
+    GraphNames,
+    LegacyCollectionNames,
+    LegacyGraphNames,
 )
 from app.connectors.sources.localKB.core.arango_service import (
     KnowledgeBaseArangoService,
@@ -28,9 +31,9 @@ class KnowledgeBaseMigrationService:
         self.db = arango_service.db
 
         # Old collection names (Node.js system)
-        self.OLD_KB_COLLECTION = CollectionNames.KNOWLEDGE_BASE.value
-        self.OLD_USER_TO_KB_EDGES = CollectionNames.PERMISSIONS_TO_KNOWLEDGE_BASE.value  # Direct user→kb permissions
-        self.OLD_KB_TO_RECORD_EDGES = CollectionNames.BELONGS_TO_KNOWLEDGE_BASE.value  # KB→record relationships
+        self.OLD_KB_COLLECTION = LegacyCollectionNames.KNOWLEDGE_BASE.value
+        self.OLD_USER_TO_KB_EDGES = LegacyCollectionNames.PERMISSIONS_TO_KNOWLEDGE_BASE.value  # Direct user→kb permissions
+        self.OLD_KB_TO_RECORD_EDGES = LegacyCollectionNames.BELONGS_TO_KNOWLEDGE_BASE.value  # KB→record relationships
 
         # New collection names (Python system)
         self.NEW_KB_COLLECTION = CollectionNames.RECORD_GROUPS.value
@@ -38,8 +41,8 @@ class KnowledgeBaseMigrationService:
         self.NEW_RECORD_TO_KB_EDGES = CollectionNames.BELONGS_TO.value
         self.NEW_RECORD_RELATION_EDGES = CollectionNames.RECORD_RELATIONS.value
 
-        self.OLD_GRAPH_NAME = CollectionNames.FILE_ACCESS_GRAPH.value
-        self.NEW_GRAPH_NAME = CollectionNames.KNOWLEDGE_GRAPH.value
+        self.OLD_GRAPH_NAME = LegacyGraphNames.FILE_ACCESS_GRAPH.value
+        self.NEW_GRAPH_NAME = GraphNames.KNOWLEDGE_GRAPH.value
 
     async def run_migration(self) -> Dict:
         """
