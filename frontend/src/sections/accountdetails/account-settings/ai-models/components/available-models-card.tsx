@@ -345,19 +345,6 @@ const ProviderCards: React.FC<ProviderCardsProps> = ({ onProviderSelect, configu
                       >
                         {provider.name}
                       </Typography>
-
-                      {/* Provider ID - Small gray text */}
-                      <Typography
-                        variant="caption"
-                        align="center"
-                        sx={{
-                          color: theme.palette.text.secondary,
-                          fontSize: '0.7rem',
-                          fontFamily: 'monospace',
-                        }}
-                      >
-                        {provider.id}
-                      </Typography>
                     </Box>
 
                     {/* Capabilities - Compact */}

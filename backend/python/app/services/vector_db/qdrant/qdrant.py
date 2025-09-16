@@ -231,8 +231,9 @@ class QdrantService(IVectorDBService):
             field_schema = KeywordIndexParams(
                 type=KeywordIndexType.KEYWORD,
             )
+
+        # TODO: Add handling for Async client
         self.client.create_payload_index(collection_name, field_name, field_schema)
-        logger.info(f"✅ Created index {field_name} on collection {collection_name}")
 
     async def filter_collection(
         self,

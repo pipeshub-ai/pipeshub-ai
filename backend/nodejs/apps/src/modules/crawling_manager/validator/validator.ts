@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ConnectorType, CrawlingScheduleType } from '../schema/enums';
+import { CrawlingScheduleType } from '../schema/enums';
 
 // Base Schedule Configuration Schemas
 const BaseScheduleConfigSchema = z.object({
@@ -60,14 +60,14 @@ const ScheduleConfigSchema = z.discriminatedUnion('scheduleType', [
 // connector type schema
 export const ConnectorTypeSchema = z.object({
   params: z.object({
-    connectorType: z.nativeEnum(ConnectorType),
+    connector: z.string(),
   }),
 });
 
 // Main API Request Schema
 export const CrawlingScheduleRequestSchema = z.object({
   params: z.object({
-    connectorType: z.nativeEnum(ConnectorType),
+    connector: z.string(),
   }),
   body: z.object({
     scheduleConfig: ScheduleConfigSchema,
@@ -83,7 +83,7 @@ export const CrawlingScheduleRequestSchema = z.object({
 // Job Status Request Schema
 export const JobStatusRequestSchema = z.object({
   params: z.object({
-    connectorType: z.nativeEnum(ConnectorType),
+    connector: z.string(),
   }),
   headers: z.object({
     authorization: z.string(),

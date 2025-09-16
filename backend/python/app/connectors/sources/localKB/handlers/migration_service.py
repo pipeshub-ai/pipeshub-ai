@@ -11,6 +11,9 @@ from typing import Dict, List, Optional
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
+    GraphNames,
+    LegacyCollectionNames,
+    LegacyGraphNames,
 )
 from app.connectors.sources.localKB.core.arango_service import (
     KnowledgeBaseArangoService,
@@ -28,9 +31,9 @@ class KnowledgeBaseMigrationService:
         self.db = arango_service.db
 
         # Old collection names (Node.js system)
-        self.OLD_KB_COLLECTION = CollectionNames.KNOWLEDGE_BASE.value
-        self.OLD_USER_TO_KB_EDGES = CollectionNames.PERMISSIONS_TO_KNOWLEDGE_BASE.value  # Direct user→kb permissions
-        self.OLD_KB_TO_RECORD_EDGES = CollectionNames.BELONGS_TO_KNOWLEDGE_BASE.value  # KB→record relationships
+        self.OLD_KB_COLLECTION = LegacyCollectionNames.KNOWLEDGE_BASE.value
+        self.OLD_USER_TO_KB_EDGES = LegacyCollectionNames.PERMISSIONS_TO_KNOWLEDGE_BASE.value  # Direct user→kb permissions
+        self.OLD_KB_TO_RECORD_EDGES = LegacyCollectionNames.BELONGS_TO_KNOWLEDGE_BASE.value  # KB→record relationships
 
         # New collection names (Python system)
         self.NEW_KB_COLLECTION = CollectionNames.RECORD_GROUPS.value
@@ -38,8 +41,8 @@ class KnowledgeBaseMigrationService:
         self.NEW_RECORD_TO_KB_EDGES = CollectionNames.BELONGS_TO.value
         self.NEW_RECORD_RELATION_EDGES = CollectionNames.RECORD_RELATIONS.value
 
-        self.OLD_GRAPH_NAME = CollectionNames.FILE_ACCESS_GRAPH.value
-        self.NEW_GRAPH_NAME = CollectionNames.KNOWLEDGE_GRAPH.value
+        self.OLD_GRAPH_NAME = LegacyGraphNames.FILE_ACCESS_GRAPH.value
+        self.NEW_GRAPH_NAME = GraphNames.KNOWLEDGE_GRAPH.value
 
     async def run_migration(self) -> Dict:
         """
@@ -691,25 +694,31 @@ class KnowledgeBaseMigrationService:
         self.logger.info("🧹 Starting cleanup of old collections")
 
         try:
-            # Create cleanup transaction
-            cleanup_transaction = self.db.begin_transaction(
-                write=[
-                    self.OLD_KB_COLLECTION,
-                    self.OLD_USER_TO_KB_EDGES,
-                    self.OLD_KB_TO_RECORD_EDGES,
-                ]
-            )
+            # Determine which old collections still exist
+            target_collections = [
+                self.OLD_KB_TO_RECORD_EDGES,
+                self.OLD_USER_TO_KB_EDGES,
+                self.OLD_KB_COLLECTION,
+            ]
+
+            existing_collections = [
+                name for name in target_collections if self.db.has_collection(name)
+            ]
+
+            if not existing_collections:
+                self.logger.info("⏭️ No old collections found - skipping cleanup")
+                return
+
+            # Create cleanup transaction only for existing collections
+            cleanup_transaction = self.db.begin_transaction(write=existing_collections)
 
             try:
                 # Delete old data
 
-                for collection_name in [self.OLD_KB_TO_RECORD_EDGES, self.OLD_USER_TO_KB_EDGES, self.OLD_KB_COLLECTION]:
-                    if self.db.has_collection(collection_name):
-                        delete_query = f"FOR doc IN {collection_name} REMOVE doc IN {collection_name}"
-                        cleanup_transaction.aql.execute(delete_query)
-                        self.logger.info(f"🗑️ Deleted data from {collection_name}")
-                    else:
-                        self.logger.info(f"⏭️ Collection '{collection_name}' does not exist - skipping deletion")
+                for collection_name in existing_collections:
+                    delete_query = f"FOR doc IN {collection_name} REMOVE doc IN {collection_name}"
+                    cleanup_transaction.aql.execute(delete_query)
+                    self.logger.info(f"🗑️ Deleted data from {collection_name}")
 
                 await asyncio.to_thread(lambda: cleanup_transaction.commit_transaction())
                 self.logger.info("✅ Old data deleted successfully")
@@ -721,11 +730,7 @@ class KnowledgeBaseMigrationService:
 
             # Step 2: Drop the now-empty collections (non-transactional)
             self.logger.info("🗑️ Dropping empty old collections")
-            collections_to_drop = [
-                self.OLD_KB_COLLECTION,                # "knowledgeBase"
-                self.OLD_USER_TO_KB_EDGES,            # "permissionsToKnowledgeBase"
-                self.OLD_KB_TO_RECORD_EDGES,          # "belongsToKnowledgeBase"
-            ]
+            collections_to_drop = existing_collections
 
             for collection_name in collections_to_drop:
                 try:

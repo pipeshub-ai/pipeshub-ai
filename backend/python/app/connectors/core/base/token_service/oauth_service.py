@@ -2,7 +2,6 @@ import base64
 import hashlib
 import os
 import secrets
-from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
@@ -12,7 +11,6 @@ from urllib.parse import urlencode
 from aiohttp import ClientSession
 
 from app.config.key_value_store import KeyValueStore
-from app.connectors.services.base_arango_service import BaseArangoService
 
 
 class GrantType(Enum):
@@ -96,16 +94,16 @@ class OAuthToken:
         return cls(**data)
 
 
-class OAuthProvider(ABC):
-    """Abstract OAuth Provider interface"""
+class OAuthProvider:
+    """OAuth Provider for handling OAuth 2.0 flows"""
 
-    def __init__(self, config: OAuthConfig, key_value_store: KeyValueStore, base_arango_service: BaseArangoService, credentials_path: str) -> None:
+    def __init__(self, config: OAuthConfig, key_value_store: KeyValueStore, credentials_path: str) -> None:
         self.config = config
         self.key_value_store = key_value_store
-        self.base_arango_service = base_arango_service
         self._session: Optional[ClientSession] = None
         self.credentials_path = credentials_path
         self.token = None
+
     @property
     async def session(self) -> ClientSession:
         """Get or create aiohttp session"""
@@ -126,11 +124,6 @@ class OAuthProvider(ABC):
         """Async context manager exit"""
         await self.close()
 
-    @abstractmethod
-    def get_provider_name(self) -> str:
-        """Get provider name"""
-        pass
-
     def _get_authorization_url(self,state: str, **kwargs) -> str:
         """Generate authorization URL"""
         params = {
@@ -149,8 +142,8 @@ class OAuthProvider(ABC):
         return f"{self.config.authorize_url}?{urlencode(params)}"
 
     async def exchange_code_for_token(self, code: str, state: Optional[str] = None, code_verifier: Optional[str] = None) -> OAuthToken:
-        if state and self.config.state and state != self.config.state:
-            raise ValueError("Invalid state parameter - possible CSRF attack")
+        # Note: State validation is handled in handle_callback, not here
+        # This method only exchanges the code for a token
 
         data = {
             "grant_type": GrantType.AUTHORIZATION_CODE.value,
@@ -184,10 +177,15 @@ class OAuthProvider(ABC):
             response.raise_for_status()
             token_data = await response.json()
 
+        # Create new token with current timestamp
         token = OAuthToken(**token_data)
 
-        # Store token
-        await self.key_value_store.create_key(self.credentials_path, token.to_dict())
+        # Update the stored credentials with the new token
+        config = await self.key_value_store.get_key(self.credentials_path)
+        if not isinstance(config, dict):
+            config = {}
+        config['credentials'] = token.to_dict()
+        await self.key_value_store.create_key(self.credentials_path, config)
 
         return token
 
@@ -207,7 +205,11 @@ class OAuthProvider(ABC):
     async def revoke_token(self) -> bool:
         """Revoke access token"""
         # Default implementation - override in specific providers
-        await self.key_value_store.delete_key(self.credentials_path)
+        config = await self.key_value_store.get_key(self.credentials_path)
+        if not isinstance(config, dict):
+            config = {}
+        config['credentials'] = None
+        await self.key_value_store.create_key(self.credentials_path, config)
         return True
 
 
@@ -221,7 +223,10 @@ class OAuthProvider(ABC):
 
     async def start_authorization(self, *, return_to: Optional[str] = None, use_pkce: bool = True, **extra) -> str:
         state = self.config.generate_state()
-        session_data: Dict[str, Any] = {"created_at": datetime.utcnow().isoformat()}
+        session_data: Dict[str, Any] = {
+            "created_at": datetime.utcnow().isoformat(),
+            "state": state
+        }
         if use_pkce:
             code_verifier = self._gen_code_verifier()
             code_challenge = self._gen_code_challenge(code_verifier)
@@ -234,16 +239,31 @@ class OAuthProvider(ABC):
                 "code_challenge": code_challenge,
                 "code_challenge_method": "S256"
             })
-        await self.key_value_store.create_key(f"oauth_state/{self.get_provider_name()}/{state}", session_data)
+        config = await self.key_value_store.get_key(self.credentials_path)
+        if not isinstance(config, dict):
+            config = {}
+        config['oauth'] = session_data
+        await self.key_value_store.create_key(self.credentials_path, config)
         return self._get_authorization_url(state=state, **extra)
 
     async def handle_callback(self, code: str, state: str) -> OAuthToken:
-        data = await self.key_value_store.get_key(f"oauth_state/{self.get_provider_name()}/{state}")
-        if not data:
+        config = await self.key_value_store.get_key(self.credentials_path)
+        if not isinstance(config, dict):
+            config = {}
+
+        oauth_data = config.get('oauth', {}) or {}
+        stored_state = oauth_data.get("state")
+
+        # Validate state
+        if not stored_state or stored_state != state:
             raise ValueError("Invalid or expired state")
-        token = await self.exchange_code_for_token(code=code, state=state, code_verifier=data.get("code_verifier"))
-        await self.key_value_store.delete_key(f"oauth_state/{self.get_provider_name()}/{state}")
+
+        token = await self.exchange_code_for_token(code=code, state=state, code_verifier=oauth_data.get("code_verifier"))
         self.token = token
-        await self.key_value_store.create_key(f"{self.credentials_path}", token.to_dict())
+
+        # Clean up OAuth state and store credentials
+        config['oauth'] = None  # remove transient state after successful exchange
+        config['credentials'] = token.to_dict()
+        await self.key_value_store.create_key(self.credentials_path, config)
 
         return token

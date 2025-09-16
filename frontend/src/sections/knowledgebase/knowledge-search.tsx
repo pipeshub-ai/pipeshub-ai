@@ -2,21 +2,13 @@ import type { IconifyIcon } from '@iconify/react';
 
 import { Icon } from '@iconify/react';
 import { useNavigate } from 'react-router';
-import jiraIcon from '@iconify-icons/mdi/jira';
-import slackIcon from '@iconify-icons/mdi/slack';
-// Import all the required icons at the top of your file
-import gmailIcon from '@iconify-icons/mdi/gmail';
 import closeIcon from '@iconify-icons/mdi/close';
 import refreshIcon from '@iconify-icons/mdi/refresh';
 import eyeIcon from '@iconify-icons/mdi/eye-outline';
 import magnifyIcon from '@iconify-icons/mdi/magnify';
-import databaseIcon from '@iconify-icons/mdi/database';
-import googleDriveIcon from '@iconify-icons/mdi/google-drive';
 import lightBulbIcon from '@iconify-icons/mdi/lightbulb-outline';
-import microsoftTeamsIcon from '@iconify-icons/mdi/microsoft-teams';
 import fileSearchIcon from '@iconify-icons/mdi/file-search-outline';
 import React, { useRef, useState, useEffect, useCallback } from 'react';
-import microsoftOnedriveIcon from '@iconify-icons/mdi/microsoft-onedrive';
 
 import {
   Box,
@@ -38,7 +30,7 @@ import {
 } from '@mui/material';
 
 import { ORIGIN } from './constants/knowledge-search';
-import {createScrollableContainerStyle} from '../qna/chatbot/utils/styles/scrollbar';
+import { createScrollableContainerStyle } from '../qna/chatbot/utils/styles/scrollbar';
 
 import type { SearchResult, KnowledgeSearchProps } from './types/search-response';
 
@@ -90,30 +82,25 @@ export const getContentPreview = (content: string, maxLength: number = 220): str
   return content.length > maxLength ? `${content.substring(0, maxLength)}...` : content;
 };
 
-// Get source icon based on origin/connector
-export const getSourceIcon = (result: SearchResult, theme: any): { icon: any; color: string } => {
+// Get source icon based on origin/connector - now uses dynamic connector data
+export const getSourceIcon = (result: SearchResult, allConnectors: any[]): string => {
   if (!result?.metadata) {
-    return { icon: databaseIcon, color: theme.palette.text.secondary };
+    return '/assets/icons/connectors/default.svg';
   }
 
-  if (result.metadata.recordType === 'MAIL' || result.metadata.connector === 'GMAIL') {
-    return { icon: gmailIcon, color: '#EA4335' };
+  // Find connector data dynamically
+  const connector = allConnectors.find(
+    (c) =>
+      c.name.toUpperCase() === result.metadata.connector?.toUpperCase() ||
+      c.name === result.metadata.connector
+  );
+
+  // If connector found, use its iconPath and color
+  if (connector && connector.iconPath) {
+    return connector.iconPath;
   }
 
-  switch (result.metadata.connector) {
-    case 'DRIVE':
-      return { icon: googleDriveIcon, color: '#4285F4' };
-    case 'SLACK':
-      return { icon: slackIcon, color: '#4A154B' };
-    case 'JIRA':
-      return { icon: jiraIcon, color: '#0052CC' };
-    case 'TEAMS':
-      return { icon: microsoftTeamsIcon, color: '#6264A7' };
-    case 'ONEDRIVE':
-      return { icon: microsoftOnedriveIcon, color: '#0078D4' };
-    default:
-      return { icon: databaseIcon, color: theme.palette.text.secondary };
-  }
+  return '/assets/icons/connectors/default.svg';
 };
 
 // Helper for highlighting search text
@@ -182,6 +169,7 @@ const KnowledgeSearch = ({
   onTopKChange,
   onViewCitations,
   recordsMap,
+  allConnectors,
 }: KnowledgeSearchProps) => {
   const theme = useTheme();
   const scrollableStyles = createScrollableContainerStyle(theme);
@@ -463,7 +451,7 @@ const KnowledgeSearch = ({
             flexGrow: 1,
             display: 'flex',
             overflow: 'hidden',
-            ...scrollableStyles
+            ...scrollableStyles,
           }}
         >
           {/* Results Column */}
@@ -473,7 +461,7 @@ const KnowledgeSearch = ({
               overflow: 'auto',
               transition: 'width 0.25s ease-in-out',
               pr: 1,
-              ...scrollableStyles
+              ...scrollableStyles,
             }}
           >
             {/* Loading State */}
@@ -618,7 +606,7 @@ const KnowledgeSearch = ({
                 {searchResults.map((result, index) => {
                   if (!result?.metadata) return null;
 
-                  const sourceInfo = getSourceIcon(result, theme);
+                  const iconPath = getSourceIcon(result, allConnectors);
                   const fileType = result.metadata.extension?.toUpperCase() || 'DOC';
                   const isViewable = isDocViewable(result.metadata.extension);
                   // result.metadata.extension === 'pdf' ||
@@ -672,10 +660,25 @@ const KnowledgeSearch = ({
                                     'Document'
                               }
                             >
-                              <Icon
-                                icon={sourceInfo.icon}
-                                style={{ fontSize: 26, color: sourceInfo.color }}
-                              />
+                              <Box sx={{ position: 'relative' }}>
+                                <img
+                                  src={iconPath}
+                                  alt={result.metadata.connector || 'Connector'}
+                                  style={{
+                                    width: 26,
+                                    height: 26,
+                                    objectFit: 'contain',
+                                  }}
+                                  onError={(e) => {
+                                    // Fallback to database icon if image fails to load
+                                    e.currentTarget.style.display = 'none';
+                                    e.currentTarget.nextElementSibling?.setAttribute(
+                                      'style',
+                                      'display: block'
+                                    );
+                                  }}
+                                />
+                              </Box>
                             </Tooltip>
                           </Box>
 
@@ -782,7 +785,10 @@ const KnowledgeSearch = ({
                                   <>
                                     <Divider orientation="vertical" flexItem sx={{ height: 12 }} />
                                     <Typography variant="caption" color="text.secondary">
-                                      Row {result.metadata?.extension === 'csv' ? result.metadata.blockNum[0] + 1 : result.metadata.blockNum[0]}
+                                      Row{' '}
+                                      {result.metadata?.extension === 'csv'
+                                        ? result.metadata.blockNum[0] + 1
+                                        : result.metadata.blockNum[0]}
                                     </Typography>
                                   </>
                                 )}

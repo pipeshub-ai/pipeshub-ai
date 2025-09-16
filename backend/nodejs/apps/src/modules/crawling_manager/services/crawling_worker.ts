@@ -38,11 +38,11 @@ export class CrawlingWorkerService {
   }
 
   private async processJob(job: Job<CrawlingJobData>): Promise<void> {
-    const { connectorType, orgId, userId, scheduleConfig } = job.data;
+    const {  orgId, userId, scheduleConfig, connector } = job.data;
 
     this.logger.info('Processing crawling job', {
       jobId: job.id,
-      connectorType,
+      connector,
       orgId,
       userId,
     });
@@ -52,25 +52,30 @@ export class CrawlingWorkerService {
       await job.updateProgress(10);
 
       // Get the appropriate task service for this connector type
-      const taskService = this.taskFactory.getTaskService(connectorType);
+      const taskService = this.taskFactory.getTaskService(connector);
 
       await job.updateProgress(20);
 
-      // Execute the crawling task
-      const result = await taskService.crawl(orgId, userId, scheduleConfig);
+      // Execute the crawling task with connector information
+      const result = await taskService.crawl(
+        orgId, 
+        userId, 
+        scheduleConfig, 
+        connector
+      );
 
       await job.updateProgress(100);
 
       this.logger.info('Crawling job completed successfully', {
         jobId: job.id,
-        connectorType,
+        connector,
         orgId,
         result,
       });
     } catch (error) {
       this.logger.error('Crawling job failed', {
         jobId: job.id,
-        connectorType,
+        connector,
         orgId,
         error: error instanceof Error ? error.message : 'Unknown error',
       });
@@ -82,14 +87,14 @@ export class CrawlingWorkerService {
     this.worker.on('completed', (job: Job) => {
       this.logger.info('Job completed', {
         jobId: job.id,
-        connectorType: job.data.connectorType,
+        connector: job.data.connector,
       });
     });
 
     this.worker.on('failed', (job: Job | undefined, err: Error) => {
       this.logger.error('Job failed', {
         jobId: job?.id,
-        connectorType: job?.data.connectorType,
+        connector: job?.data.connector,
         error: err.message,
       });
     });

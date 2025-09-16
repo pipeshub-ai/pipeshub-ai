@@ -12,6 +12,7 @@ from app.config.providers.in_memory_store import InMemoryKeyValueStore
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
+from app.connectors.core.base.data_store.arango_data_store import ArangoDataStore
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.connectors.sources.atlassian.jira.jira_cloud import (
     OAUTH_CONFIG_PATH,
@@ -30,8 +31,9 @@ async def test_run() -> None:
     kafka_service = KafkaConsumerManager(logger, config_service, None, None)
 
     arango_service = BaseArangoService(logger, ArangoClient(), config_service, kafka_service)
+    data_store_provider = ArangoDataStore(logger, arango_service)
     await arango_service.connect()
-    data_entities_processor = DataSourceEntitiesProcessor(logger, arango_service, config_service)
+    data_entities_processor = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
     await data_entities_processor.initialize()
     await key_value_store.create_key(f"{OAUTH_CONFIG_PATH}/{data_entities_processor.org_id}", {
         "client_id":os.getenv("ATLASSIAN_CLIENT_ID"),
@@ -39,7 +41,7 @@ async def test_run() -> None:
         "redirect_uri": os.getenv("ATLASSIAN_REDIRECT_URI")
     })
 
-    jira_connector = JiraConnector(logger, data_entities_processor, config_service)
+    jira_connector = JiraConnector(logger, data_entities_processor, data_store_provider, config_service)
     await jira_connector.initialize()
 
 

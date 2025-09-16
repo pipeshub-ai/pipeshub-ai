@@ -12,6 +12,25 @@ from app.api.middlewares.auth import authMiddleware
 from app.api.routes.entity import router as entity_router
 from app.config.constants.arangodb import AccountType, Connectors
 from app.connectors.api.router import router
+from app.connectors.core.base.data_store.arango_data_store import ArangoDataStore
+from app.connectors.core.base.token_service.startup_service import startup_service
+from app.connectors.core.registry.connector import (
+    ConfluenceConnector as ConfluenceConnectorDecorator,
+)
+from app.connectors.core.registry.connector import (
+    GmailConnector,
+    GoogleDriveConnector,
+    SlackConnector,
+)
+from app.connectors.core.registry.connector import (
+    OneDriveConnector as OneDriveConnectorDecorator,
+)
+from app.connectors.core.registry.connector import (
+    SharePointConnector as SharePointConnectorDecorator,
+)
+from app.connectors.core.registry.connector_registry import (
+    ConnectorRegistry,
+)
 from app.connectors.sources.localKB.api.kb_router import kb_router
 from app.connectors.sources.microsoft.onedrive.connector import (
     OneDriveConnector,
@@ -49,6 +68,11 @@ async def get_initialized_container() -> ConnectorAppContainer:
             ]
         )
         setattr(get_initialized_container, "_initialized", True)
+        # Start token refresh service at app startup
+        try:
+            await startup_service.initialize(container.key_value_store(), await container.arango_service())
+        except Exception as e:
+            container.logger().warning(f"Startup token refresh service failed to initialize: {e}")
     return container
 
 
@@ -119,7 +143,8 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
                 if app["name"].lower() == Connectors.ONEDRIVE.value.lower():
                     config_service = app_container.config_service()
                     arango_service = await app_container.arango_service()
-                    onedrive_connector = await OneDriveConnector.create_connector(logger, arango_service, config_service)
+                    data_store_provider = ArangoDataStore(logger, arango_service)
+                    onedrive_connector = await OneDriveConnector.create_connector(logger, data_store_provider, config_service)
                     await onedrive_connector.init()
                     app_container.onedrive_connector.override(providers.Object(onedrive_connector))
                     asyncio.create_task(onedrive_connector.run_sync())
@@ -128,8 +153,9 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
                 if app["name"].lower() == Connectors.SHAREPOINT_ONLINE.value.replace(" ", "").lower():
                     config_service = app_container.config_service()
                     arango_service = await app_container.arango_service()
+                    data_store_provider = ArangoDataStore(logger, arango_service)
 
-                    sharepoint_connector = await SharePointConnector.create_connector(logger, arango_service, config_service)
+                    sharepoint_connector = await SharePointConnector.create_connector(logger, data_store_provider, config_service)
                     await sharepoint_connector.init()
                     app_container.sharepoint_connector.override(providers.Object(sharepoint_connector))
                     asyncio.create_task(sharepoint_connector.run_sync())
@@ -170,6 +196,34 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
     except Exception as e:
         logger.error("❌ Error during sync service resumption: %s", str(e))
         return False
+
+async def initialize_connector_registry(app_container: ConnectorAppContainer) -> ConnectorRegistry:
+    """Initialize and sync connector registry with database"""
+    logger = app_container.logger()
+    logger.info("🔧 Initializing Connector Registry...")
+
+    try:
+        registry = ConnectorRegistry(app_container)
+
+        # Register connectors (in production, use discovery from modules)
+        registry.register_connector(SlackConnector)
+        registry.register_connector(GoogleDriveConnector)
+        registry.register_connector(GmailConnector)
+        registry.register_connector(OneDriveConnectorDecorator)
+        registry.register_connector(SharePointConnectorDecorator)
+        registry.register_connector(ConfluenceConnectorDecorator)
+
+        logger.info(f"Registered {len(registry._connectors)} connectors")
+
+        # Sync with database
+        await registry.sync_with_database()
+        logger.info("✅ Connector registry synchronized with database")
+
+        return registry
+
+    except Exception as e:
+        logger.error(f"❌ Error initializing connector registry: {str(e)}")
+        raise
 
 async def start_messaging_producer(app_container: ConnectorAppContainer) -> None:
     """Start messaging producer and attach it to container"""
@@ -285,6 +339,12 @@ async def shutdown_container_resources(container: ConnectorAppContainer) -> None
         # Stop messaging producer
         await stop_messaging_producer(container)
 
+        # Stop startup services (token refresh)
+        try:
+            await startup_service.shutdown()
+        except Exception as e:
+            logger.warning(f"Error shutting down startup services: {e}")
+
         logger.info("✅ All container resources shut down successfully")
 
     except Exception as e:
@@ -300,7 +360,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.config_service = app_container.config_service()
     app.state.arango_service = await app_container.arango_service()  # type: ignore
 
+    # Initialize connector registry
     logger = app_container.logger()
+    registry = await initialize_connector_registry(app_container)
+    app.state.connector_registry = registry
+    logger.info("✅ Connector registry initialized and synchronized with database")
+
+
     logger.debug("🚀 Starting application")
     # Start messaging producer first
     try:
@@ -341,13 +407,18 @@ app = FastAPI(
 )
 
 # List of paths to apply authentication to
-INCLUDE_PATHS = ["/api/v1/stream/record/", "/api/v1/delete/", "/api/v1/entity/"]
-
+INCLUDE_PATHS = ["/api/v1/stream/record/", "/api/v1/delete/", "/api/v1/entity/", "/api/v1/connectors/"]
 
 @app.middleware("http")
 async def authenticate_requests(request: Request, call_next)-> JSONResponse:
     logger = app.container.logger()  # type: ignore
     logger.info(f"Middleware request: {request.url.path}")
+
+    # Check if path should be excluded from authentication (OAuth callbacks)
+    if "/oauth/callback" in request.url.path:
+        # Skip authentication for OAuth callbacks
+        return await call_next(request)
+
     # Apply middleware only to specific paths
     if not any(request.url.path.startswith(path) for path in INCLUDE_PATHS):
         # Skip authentication for other paths

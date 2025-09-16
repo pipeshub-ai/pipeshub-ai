@@ -6,7 +6,7 @@ import axios from 'src/utils/axios';
 
 import { CONFIG } from 'src/config-global';
 
-import { searchKnowledgeBase } from './utils';
+import { KnowledgeBaseAPI } from './services/api';
 import KnowledgeSearch from './knowledge-search';
 import { ORIGIN } from './constants/knowledge-search';
 import KnowledgeSearchSideBar from './knowledge-search-sidebar';
@@ -18,6 +18,7 @@ import PdfHighlighterComp from '../qna/chatbot/components/pdf-highlighter';
 import MarkdownViewer from '../qna/chatbot/components/markdown-highlighter';
 import { createScrollableContainerStyle } from '../qna/chatbot/utils/styles/scrollbar';
 import { getConnectorPublicUrl } from '../accountdetails/account-settings/services/utils/services-configuration-service';
+import { useConnectors } from '../accountdetails/connectors/context';
 
 import type { Filters } from './types/knowledge-base';
 import type { PipesHub, SearchResult, AggregatedDocument } from './types/search-response';
@@ -68,6 +69,10 @@ export default function KnowledgeBaseSearch() {
     kb:[] 
   });
   const scrollableStyles = createScrollableContainerStyle(theme);
+
+  // Get connector data from the hook at parent level for optimal performance
+  const { activeConnectors, inactiveConnectors } = useConnectors();
+  const allConnectors = [...activeConnectors, ...inactiveConnectors];
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [topK, setTopK] = useState<number>(10);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
@@ -179,7 +184,7 @@ export default function KnowledgeBaseSearch() {
     setHasSearched(true);
 
     try {
-      const data = await searchKnowledgeBase(searchQuery, topK, filters);
+      const data = await KnowledgeBaseAPI.searchKnowledgeBases(searchQuery, topK, filters);
 
       // Extract search results from the response
       const results = data.searchResults || [];
@@ -700,6 +705,7 @@ export default function KnowledgeBaseSearch() {
             onTopKChange={handleTopKChange}
             onViewCitations={viewCitations}
             recordsMap={recordsMap}
+            allConnectors={allConnectors}
           />
         </Box>
         {(isPdf || isExcel || isTextFile || isHtml || isDocx || isMarkdown) && (

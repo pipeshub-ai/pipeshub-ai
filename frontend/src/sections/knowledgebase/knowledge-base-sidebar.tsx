@@ -2,8 +2,6 @@ import type { Icon as IconifyIcon } from '@iconify/react';
 
 import { Icon } from '@iconify/react';
 import closeIcon from '@iconify-icons/mdi/close';
-import gmailIcon from '@iconify-icons/mdi/gmail';
-import onedriveIcon from '@iconify-icons/mdi/onedrive';
 import upIcon from '@iconify-icons/mdi/chevron-up';
 import leftIcon from '@iconify-icons/mdi/chevron-left';
 import downIcon from '@iconify-icons/mdi/chevron-down';
@@ -12,8 +10,6 @@ import rightIcon from '@iconify-icons/mdi/chevron-right';
 import emailIcon from '@iconify-icons/mdi/email-outline';
 import { useLocation, useNavigate } from 'react-router-dom';
 import filterMenuIcon from '@iconify-icons/mdi/filter-menu';
-import googleDriveIcon from '@iconify-icons/mdi/google-drive';
-import sharepointIcon from '@iconify-icons/mdi/microsoft-sharepoint';
 import filterRemoveIcon from '@iconify-icons/mdi/filter-remove';
 import timerOffIcon from '@iconify-icons/mdi/timer-off-outline';
 import filterVariantIcon from '@iconify-icons/mdi/filter-variant';
@@ -52,6 +48,7 @@ import type { Departments } from './types/departments';
 import type { SearchTagsRecords } from './types/search-tags';
 import type { RecordCategories } from './types/record-categories';
 import type { Filters, FilterHeaderProps, KnowledgeBaseSideBarProps } from './types/knowledge-base';
+import { useConnectors } from '../accountdetails/connectors/context';
 
 // Constants
 const DRAWER_EXPANDED_WIDTH = 280;
@@ -409,6 +406,14 @@ export default function KnowledgeBaseSideBar({
   const [modules, setModules] = useState<Modules[]>([]);
   const [tags, setTags] = useState<SearchTagsRecords[]>([]);
 
+  // Use the connector hook for managing connector state
+  const {
+    activeConnectors,
+    inactiveConnectors,
+    loading: connectorsLoading,
+    error: connectorsError,
+  } = useConnectors();
+
   // Initialize expanded sections with all sections collapsed except status
   const [expandedSections, setExpandedSections] = useState<{ [key: string]: boolean }>({
     status: true,
@@ -473,19 +478,6 @@ export default function KnowledgeBaseSideBar({
     () => ({
       UPLOAD: cloudUploadIcon,
       CONNECTOR: cloudConnectorIcon,
-    }),
-    []
-  );
-
-  // Connector icon mapping
-  const connectorIcons = React.useMemo<
-    Record<string, React.ComponentProps<typeof IconifyIcon>['icon']>
-  >(
-    () => ({
-      GMAIL: gmailIcon,
-      DRIVE: googleDriveIcon,
-      ONEDRIVE: onedriveIcon,
-      "SHAREPOINT ONLINE": sharepointIcon,
     }),
     []
   );
@@ -1029,34 +1021,58 @@ export default function KnowledgeBaseSideBar({
         </FilterHeader>
         <FilterContent in={expandedSections.connector || false}>
           <FormGroup>
-            {Object.keys(connectorIcons).map((connector) => {
-              const isChecked = (localFilters.connectors || []).includes(connector);
+            {connectorsLoading ? (
+              <Box sx={{ display: 'flex', justifyContent: 'center', p: 2 }}>
+                <CircularProgress size={20} />
+              </Box>
+            ) : connectorsError ? (
+              <Box sx={{ display: 'flex', justifyContent: 'center', p: 2 }}>
+                <Typography variant="caption" color="error">
+                  Failed to load connectors
+                </Typography>
+              </Box>
+            ) : activeConnectors.length === 0 ? (
+              <Box sx={{ display: 'flex', justifyContent: 'center', p: 2 }}>
+                <Typography variant="caption" color="text.secondary">
+                  No Active connectors available
+                </Typography>
+              </Box>
+            ) : (
+              activeConnectors?.map((connector) => {
+                const isChecked = (localFilters.connectors || []).includes(connector.name);
 
-              return (
-                <FormControlLabelStyled
-                  key={connector}
-                  control={
-                    <FilterCheckbox
-                      checked={isChecked}
-                      onClick={() => handleFilterChange('connectors', connector)}
-                      size="small"
-                      disableRipple
-                    />
-                  }
-                  label={
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                      <Icon
-                        icon={connectorIcons[connector]}
-                        color={theme.palette.text.secondary}
-                        width={16}
-                        height={16}
+                return (
+                  <FormControlLabelStyled
+                    key={connector.name}
+                    control={
+                      <FilterCheckbox
+                        checked={isChecked}
+                        onClick={() => handleFilterChange('connectors', connector.name)}
+                        size="small"
+                        disableRipple
                       />
-                      {connector}
-                    </Box>
-                  }
-                />
-              );
-            })}
+                    }
+                    label={
+                      <Box sx={{ display: 'flex', alignItems: 'center', ml: 1, gap: 1 }}>
+                        <img
+                          src={connector.iconPath || '/assets/icons/connectors/default.svg'}
+                          alt={connector.name}
+                          width={16}
+                          height={16}
+                          style={{ objectFit: 'contain' }}
+                          onError={(e) => {
+                            e.currentTarget.src = '/assets/icons/connectors/default.svg';
+                          }}
+                        />
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                          <Typography variant="body2">{connector.name}</Typography>
+                        </Box>
+                      </Box>
+                    }
+                  />
+                );
+              })
+            )}
           </FormGroup>
         </FilterContent>
       </FilterSection>
@@ -1067,8 +1083,10 @@ export default function KnowledgeBaseSideBar({
       localFilters.connectors,
       theme,
       handleFilterChange,
-      connectorIcons,
       toggleSection,
+      activeConnectors,
+      connectorsLoading,
+      connectorsError,
     ]
   );
 

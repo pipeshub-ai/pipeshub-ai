@@ -16,6 +16,8 @@ from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
     DepartmentNames,
+    GraphNames,
+    LegacyGraphNames,
     OriginTypes,
     RecordTypes,
 )
@@ -202,7 +204,7 @@ class BaseArangoService:
 
     async def _create_graph(self) -> None:
         """Create the knowledge base graph with all required edge definitions"""
-        graph_name = CollectionNames.KNOWLEDGE_GRAPH.value
+        graph_name = GraphNames.KNOWLEDGE_GRAPH.value
 
         try:
             self.logger.info("🚀 Creating knowledge base graph...")
@@ -283,7 +285,7 @@ class BaseArangoService:
                 await self._initialize_new_collections()
 
                 # Initialize or update the file access graph
-                if not self.db.has_graph(CollectionNames.FILE_ACCESS_GRAPH.value) and not self.db.has_graph(CollectionNames.KNOWLEDGE_GRAPH.value):
+                if not self.db.has_graph(LegacyGraphNames.FILE_ACCESS_GRAPH.value) and not self.db.has_graph(GraphNames.KNOWLEDGE_GRAPH.value):
                     # No graph exists, create new graph (Knowledge Graph)
                     await self._create_graph()
                 else:
@@ -436,162 +438,57 @@ class BaseArangoService:
     async def get_connector_stats(
         self,
         org_id: str,
-        user_id: str,
+        connector: str,
     ) -> Dict:
         """
-        Get comprehensive connector statistics for an organization
-        Complete replacement for Node.js getConnectorStats - works with all connectors
+        Get connector statistics for a specific connector or knowledge base
+
+        Args:
+            org_id: Organization ID
+            connector: Specific connector name (e.g., "GOOGLE_DRIVE", "SLACK").
+                        If None, returns Knowledge Base stats
         """
         try:
-            self.logger.info(f"🔍 Getting connector stats for organization: {org_id}")
+            self.logger.info(f"Getting connector stats for organization: {org_id}, connector: {connector or 'KNOWLEDGE_BASE'}")
 
-            # Get user for permission filtering
-            user = await self.get_user_by_user_id(user_id=user_id)
-            if not user:
-                return {
-                    "success": False,
-                    "message": "User not found",
-                    "data": None
-                }
-
-            user_key = user.get('_key')
             db = self.db
 
-            # Single comprehensive query that handles all statistics
-            query = """
-            LET org_id = @org_id
-            LET user_from = @user_from
-            // Get all records that match the base filter (excluding DRIVE type)
-            LET all_org_records = (
-                FOR doc IN @@records
-                    FILTER doc.orgId == org_id AND doc.recordType != "DRIVE"
-                    RETURN doc
-            )
-            // Get accessible KB records (UPLOAD origin)
-            LET accessible_kb_records = (
-                FOR kbEdge IN @@permissions_to_kb
-                    FILTER kbEdge._from == user_from
-                    FILTER kbEdge.type == "USER"
-                    FILTER kbEdge.role IN ["OWNER", "READER", "FILEORGANIZER", "WRITER", "COMMENTER", "ORGANIZER"]
-                    LET kb = DOCUMENT(kbEdge._to)
-                    FILTER kb != null AND kb.orgId == org_id
-                    FOR belongsEdge IN @@belongs_to
-                        FILTER belongsEdge._to == kb._id
-                        LET record = DOCUMENT(belongsEdge._from)
-                        FILTER record != null
-                        FILTER record.isDeleted != true
-                        FILTER record.orgId == org_id
-                        FILTER record.origin == "UPLOAD"
-                        FILTER record.recordType != @drive_record_type
-                        RETURN {
-                            record: record,
-                            kb_id: kb._key,
-                            kb_name: kb.groupName
-                        }
-            )
-            // Get accessible connector records (CONNECTOR origin)
-            LET accessible_connector_records = (
-                FOR permissionEdge IN @@permissions
-                    FILTER permissionEdge._to == user_from
-                    LET record = DOCUMENT(permissionEdge._from)
-                    FILTER record != null
-                    FILTER record.isDeleted != true
-                    FILTER record.orgId == org_id
-                    FILTER record.origin == "CONNECTOR"
-                    FILTER record.recordType != @drive_record_type
-                    RETURN record
-            )
-            // Combine all accessible records
-            LET kb_records_only = accessible_kb_records[*].record
-            LET all_accessible_records = APPEND(kb_records_only, accessible_connector_records)
-            // Overall statistics (across all accessible records)
-            LET total_stats = {
-                total: LENGTH(all_accessible_records),
-                indexing_status: {
-                    NOT_STARTED: LENGTH(all_accessible_records[* FILTER CURRENT.indexingStatus == "NOT_STARTED"]),
-                    IN_PROGRESS: LENGTH(all_accessible_records[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"]),
-                    COMPLETED: LENGTH(all_accessible_records[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
-                    FAILED: LENGTH(all_accessible_records[* FILTER CURRENT.indexingStatus == "FAILED"]),
-                    FILE_TYPE_NOT_SUPPORTED: LENGTH(all_accessible_records[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
-                    AUTO_INDEX_OFF: LENGTH(all_accessible_records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"])
-                }
-            }
-            // Overall connector statistics (CONNECTOR origin only)
-            LET overall_connector_stats = {
-                total: LENGTH(accessible_connector_records),
-                indexing_status: {
-                    NOT_STARTED: LENGTH(accessible_connector_records[* FILTER CURRENT.indexingStatus == "NOT_STARTED"]),
-                    IN_PROGRESS: LENGTH(accessible_connector_records[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"]),
-                    COMPLETED: LENGTH(accessible_connector_records[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
-                    FAILED: LENGTH(accessible_connector_records[* FILTER CURRENT.indexingStatus == "FAILED"]),
-                    FILE_TYPE_NOT_SUPPORTED: LENGTH(accessible_connector_records[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
-                    AUTO_INDEX_OFF: LENGTH(accessible_connector_records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"])
-                }
-            }
-            // Upload statistics (UPLOAD origin only - KB records)
-            LET upload_stats = {
-                total: LENGTH(kb_records_only),
-                indexing_status: {
-                    NOT_STARTED: LENGTH(kb_records_only[* FILTER CURRENT.indexingStatus == "NOT_STARTED"]),
-                    IN_PROGRESS: LENGTH(kb_records_only[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"]),
-                    COMPLETED: LENGTH(kb_records_only[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
-                    FAILED: LENGTH(kb_records_only[* FILTER CURRENT.indexingStatus == "FAILED"]),
-                    FILE_TYPE_NOT_SUPPORTED: LENGTH(kb_records_only[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
-                    AUTO_INDEX_OFF: LENGTH(kb_records_only[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"])
-                }
-            }
-            // Enhanced connector stats with record type breakdowns
-            LET connector_data = (
-                // Regular connectors (CONNECTOR origin)
-                FOR connector_name IN UNIQUE(accessible_connector_records[*].connectorName)
-                    FILTER connector_name != null
-                    LET connector_records = accessible_connector_records[* FILTER CURRENT.connectorName == connector_name]
-                    // Record type breakdown for this connector
-                    LET record_types = (
-                        FOR record_type IN UNIQUE(connector_records[*].recordType)
-                            LET type_records = connector_records[* FILTER CURRENT.recordType == record_type]
-                            RETURN {
-                                record_type: record_type,
-                                total: LENGTH(type_records),
-                                indexing_status: {
-                                    NOT_STARTED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "NOT_STARTED"]),
-                                    IN_PROGRESS: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"]),
-                                    COMPLETED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
-                                    FAILED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "FAILED"]),
-                                    FILE_TYPE_NOT_SUPPORTED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
-                                    AUTO_INDEX_OFF: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"])
-                                }
-                            }
-                    )
-                    RETURN {
-                        connector: connector_name,
-                        total: LENGTH(connector_records),
-                        indexing_status: {
-                            NOT_STARTED: LENGTH(connector_records[* FILTER CURRENT.indexingStatus == "NOT_STARTED"]),
-                            IN_PROGRESS: LENGTH(connector_records[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"]),
-                            COMPLETED: LENGTH(connector_records[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
-                            FAILED: LENGTH(connector_records[* FILTER CURRENT.indexingStatus == "FAILED"]),
-                            FILE_TYPE_NOT_SUPPORTED: LENGTH(connector_records[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
-                            AUTO_INDEX_OFF: LENGTH(connector_records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"])
-                        },
-                        by_record_type: record_types
+            # Determine if we're querying Knowledge Base or a specific connector
+            is_knowledge_base = connector == "KB"
+
+            if is_knowledge_base:
+                # Query for Knowledge Base (UPLOAD origin)
+                query = """
+                LET org_id = @org_id
+
+                // Get all upload records for the organization
+                LET records = (
+                    FOR doc IN @@records
+                        FILTER doc.orgId == org_id
+                        FILTER doc.origin == "UPLOAD"
+                        FILTER doc.recordType != @drive_record_type
+                        FILTER doc.isDeleted != true
+                        RETURN doc
+                )
+
+                // Overall stats
+                LET total_stats = {
+                    total: LENGTH(records),
+                    indexing_status: {
+                        NOT_STARTED: LENGTH(records[* FILTER CURRENT.indexingStatus == "NOT_STARTED"]),
+                        IN_PROGRESS: LENGTH(records[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"]),
+                        COMPLETED: LENGTH(records[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
+                        FAILED: LENGTH(records[* FILTER CURRENT.indexingStatus == "FAILED"]),
+                        FILE_TYPE_NOT_SUPPORTED: LENGTH(records[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
+                        AUTO_INDEX_OFF: LENGTH(records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"])
                     }
-            )
-            // Add Knowledge Base as a connector if there are KB records
-            LET kb_connector_data = LENGTH(kb_records_only) > 0 ? [{
-                connector: "KNOWLEDGE_BASE",
-                total: LENGTH(kb_records_only),
-                indexing_status: {
-                    NOT_STARTED: LENGTH(kb_records_only[* FILTER CURRENT.indexingStatus == "NOT_STARTED"]),
-                    IN_PROGRESS: LENGTH(kb_records_only[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"]),
-                    COMPLETED: LENGTH(kb_records_only[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
-                    FAILED: LENGTH(kb_records_only[* FILTER CURRENT.indexingStatus == "FAILED"]),
-                    FILE_TYPE_NOT_SUPPORTED: LENGTH(kb_records_only[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
-                    AUTO_INDEX_OFF: LENGTH(kb_records_only[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"])
-                },
-                by_record_type: (
-                    FOR record_type IN UNIQUE(kb_records_only[*].recordType)
-                        LET type_records = kb_records_only[* FILTER CURRENT.recordType == record_type]
+                }
+
+                // Record type breakdown
+                LET by_record_type = (
+                    FOR record_type IN UNIQUE(records[*].recordType)
+                        FILTER record_type != null
+                        LET type_records = records[* FILTER CURRENT.recordType == record_type]
                         RETURN {
                             record_type: record_type,
                             total: LENGTH(type_records),
@@ -604,139 +501,125 @@ class BaseArangoService:
                                 AUTO_INDEX_OFF: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"])
                             }
                         }
-                ),
-                knowledge_bases: (
-                    FOR kb_item IN accessible_kb_records
-                        COLLECT kb_id = kb_item.kb_id, kb_name = kb_item.kb_name INTO kb_group = kb_item
-                        LET kb_records = kb_group[*].record
-                        // Record types within this KB
-                        LET kb_record_types = (
-                            FOR kb_record_type IN UNIQUE(kb_records[*].recordType)
-                                LET kb_type_records = kb_records[* FILTER CURRENT.recordType == kb_record_type]
-                                RETURN {
-                                    record_type: kb_record_type,
-                                    total: LENGTH(kb_type_records),
-                                    indexing_status: {
-                                        NOT_STARTED: LENGTH(kb_type_records[* FILTER CURRENT.indexingStatus == "NOT_STARTED"]),
-                                        IN_PROGRESS: LENGTH(kb_type_records[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"]),
-                                        COMPLETED: LENGTH(kb_type_records[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
-                                        FAILED: LENGTH(kb_type_records[* FILTER CURRENT.indexingStatus == "FAILED"]),
-                                        FILE_TYPE_NOT_SUPPORTED: LENGTH(kb_type_records[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
-                                        AUTO_INDEX_OFF: LENGTH(kb_type_records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"])
-                                    }
-                                }
-                        )
+                )
+
+                RETURN {
+                    org_id: org_id,
+                    connector: "KNOWLEDGE_BASE",
+                    origin: "UPLOAD",
+                    stats: total_stats,
+                    by_record_type: by_record_type
+                }
+                """
+
+                bind_vars = {
+                    "org_id": org_id,
+                    "@records": CollectionNames.RECORDS.value,
+                    "drive_record_type": RecordTypes.DRIVE.value,
+                }
+            else:
+                connector = connector.upper()
+                # Query for specific connector (CONNECTOR origin)
+                query = """
+                LET org_id = @org_id
+                LET connector = @connector
+
+                // Get all records for the specific connector
+                LET records = (
+                    FOR doc IN @@records
+                        FILTER doc.orgId == org_id
+                        FILTER doc.origin == "CONNECTOR"
+                        FILTER doc.connectorName == connector
+                        FILTER doc.recordType != @drive_record_type
+                        FILTER doc.isDeleted != true
+                        RETURN doc
+                )
+
+                // Overall stats
+                LET total_stats = {
+                    total: LENGTH(records),
+                    indexing_status: {
+                        NOT_STARTED: LENGTH(records[* FILTER CURRENT.indexingStatus == "NOT_STARTED"]),
+                        IN_PROGRESS: LENGTH(records[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"]),
+                        COMPLETED: LENGTH(records[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
+                        FAILED: LENGTH(records[* FILTER CURRENT.indexingStatus == "FAILED"]),
+                        FILE_TYPE_NOT_SUPPORTED: LENGTH(records[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
+                        AUTO_INDEX_OFF: LENGTH(records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"])
+                    }
+                }
+
+                // Record type breakdown
+                LET by_record_type = (
+                    FOR record_type IN UNIQUE(records[*].recordType)
+                        FILTER record_type != null
+                        LET type_records = records[* FILTER CURRENT.recordType == record_type]
                         RETURN {
-                            kb_id: kb_id,
-                            kb_name: kb_name,
-                            total: LENGTH(kb_records),
+                            record_type: record_type,
+                            total: LENGTH(type_records),
                             indexing_status: {
-                                NOT_STARTED: LENGTH(kb_records[* FILTER CURRENT.indexingStatus == "NOT_STARTED"]),
-                                IN_PROGRESS: LENGTH(kb_records[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"]),
-                                COMPLETED: LENGTH(kb_records[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
-                                FAILED: LENGTH(kb_records[* FILTER CURRENT.indexingStatus == "FAILED"]),
-                                FILE_TYPE_NOT_SUPPORTED: LENGTH(kb_records[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
-                                AUTO_INDEX_OFF: LENGTH(kb_records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"])
-                            },
-                            by_record_type: kb_record_types
+                                NOT_STARTED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "NOT_STARTED"]),
+                                IN_PROGRESS: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"]),
+                                COMPLETED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
+                                FAILED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "FAILED"]),
+                                FILE_TYPE_NOT_SUPPORTED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
+                                AUTO_INDEX_OFF: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"])
+                            }
                         }
                 )
-            }] : []
-            // Combine all connector data
-            LET all_connector_data = APPEND(connector_data, kb_connector_data)
-            // Stats by record type across all connectors
-            LET record_type_stats = (
-                FOR record_type IN UNIQUE(all_accessible_records[*].recordType)
-                    LET type_records = all_accessible_records[* FILTER CURRENT.recordType == record_type]
-                    // Connector breakdown for this record type
-                    LET connectors_for_type = (
-                        // Connector records
-                        FOR connector_name IN UNIQUE(accessible_connector_records[* FILTER CURRENT.recordType == record_type][*].connectorName)
-                            FILTER connector_name != null
-                            LET connector_type_records = accessible_connector_records[* FILTER CURRENT.recordType == record_type AND CURRENT.connectorName == connector_name]
-                            RETURN {
-                                connector: connector_name,
-                                total: LENGTH(connector_type_records),
-                                indexing_status: {
-                                    NOT_STARTED: LENGTH(connector_type_records[* FILTER CURRENT.indexingStatus == "NOT_STARTED"]),
-                                    IN_PROGRESS: LENGTH(connector_type_records[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"]),
-                                    COMPLETED: LENGTH(connector_type_records[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
-                                    FAILED: LENGTH(connector_type_records[* FILTER CURRENT.indexingStatus == "FAILED"]),
-                                    FILE_TYPE_NOT_SUPPORTED: LENGTH(connector_type_records[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
-                                    AUTO_INDEX_OFF: LENGTH(connector_type_records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"])
-                                }
-                            }
-                    )
-                    // Add Knowledge Base connector if there are KB records of this type
-                    LET kb_type_records = kb_records_only[* FILTER CURRENT.recordType == record_type]
-                    LET kb_connector_for_type = LENGTH(kb_type_records) > 0 ? [{
-                        connector: "KNOWLEDGE_BASE",
-                        total: LENGTH(kb_type_records),
-                        indexing_status: {
-                            NOT_STARTED: LENGTH(kb_type_records[* FILTER CURRENT.indexingStatus == "NOT_STARTED"]),
-                            IN_PROGRESS: LENGTH(kb_type_records[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"]),
-                            COMPLETED: LENGTH(kb_type_records[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
-                            FAILED: LENGTH(kb_type_records[* FILTER CURRENT.indexingStatus == "FAILED"]),
-                            FILE_TYPE_NOT_SUPPORTED: LENGTH(kb_type_records[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
-                            AUTO_INDEX_OFF: LENGTH(kb_type_records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"])
-                        }
-                    }] : []
-                    LET all_connectors_for_type = APPEND(connectors_for_type, kb_connector_for_type)
-                    RETURN {
-                        record_type: record_type,
-                        total: LENGTH(type_records),
-                        indexing_status: {
-                            NOT_STARTED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "NOT_STARTED"]),
-                            IN_PROGRESS: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"]),
-                            COMPLETED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
-                            FAILED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "FAILED"]),
-                            FILE_TYPE_NOT_SUPPORTED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
-                            AUTO_INDEX_OFF: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"])
-                        },
-                        by_connector: all_connectors_for_type
-                    }
-            )
-            // Return comprehensive stats (matching Node.js structure exactly)
-            RETURN {
-                org_id: org_id,
-                total: total_stats,
-                overall_connector: overall_connector_stats,
-                upload: upload_stats,
-                by_connector: all_connector_data,
-                by_record_type: record_type_stats
-            }
-            """
 
-            # Execute the comprehensive query
-            cursor = db.aql.execute(query, bind_vars={
-                "org_id": org_id,
-                "user_from": f"users/{user_key}",
-                "@records": CollectionNames.RECORDS.value,
-                "@permissions_to_kb": CollectionNames.PERMISSIONS_TO_KB.value,
-                "@belongs_to": CollectionNames.BELONGS_TO.value,
-                "@permissions": CollectionNames.PERMISSIONS.value,
-                "drive_record_type": RecordTypes.DRIVE.value,
-            })
+                RETURN {
+                    org_id: org_id,
+                    connector: connector,
+                    origin: "CONNECTOR",
+                    stats: total_stats,
+                    by_record_type: by_record_type
+                }
+                """
 
+                bind_vars = {
+                    "org_id": org_id,
+                    "connector": connector,
+                    "@records": CollectionNames.RECORDS.value,
+                    "drive_record_type": RecordTypes.DRIVE.value,
+                }
+
+            # Execute the query
+            cursor = db.aql.execute(query, bind_vars=bind_vars)
             result = next(cursor, None)
 
-            # Return the result in the same format as Node.js
             if result:
-                self.logger.info(f"✅ Retrieved enhanced connector stats for organization: {org_id}")
+                connector_display = connector or "KNOWLEDGE_BASE"
+                self.logger.info(f"Retrieved stats for {connector_display} in organization: {org_id}")
                 return {
                     "success": True,
                     "data": result
                 }
             else:
-                self.logger.warning(f"⚠️ No data found for organization: {org_id}")
+                self.logger.warning(f"No data found for connector: {connector or 'KNOWLEDGE_BASE'} in organization: {org_id}")
                 return {
                     "success": False,
-                    "message": "No data found",
-                    "data": None
+                    "message": "No data found for the specified connector",
+                    "data": {
+                        "org_id": org_id,
+                        "connector": connector or "KNOWLEDGE_BASE",
+                        "origin": "UPLOAD" if is_knowledge_base else "CONNECTOR",
+                        "stats": {
+                            "total": 0,
+                            "indexing_status": {
+                                "NOT_STARTED": 0,
+                                "IN_PROGRESS": 0,
+                                "COMPLETED": 0,
+                                "FAILED": 0,
+                                "FILE_TYPE_NOT_SUPPORTED": 0,
+                                "AUTO_INDEX_OFF": 0
+                            }
+                        },
+                        "by_record_type": []
+                    }
                 }
 
         except Exception as e:
-            self.logger.error(f"❌ Error getting connector stats: {str(e)}")
+            self.logger.error(f"Error getting connector stats: {str(e)}")
             return {
                 "success": False,
                 "message": str(e),
@@ -1683,6 +1566,12 @@ class BaseArangoService:
                 "reason": f"Internal error: {str(e)}"
             }
 
+    # Todo: This implementation should work irrespective of the connector type. It should not depend on the connector type.
+    # We need to remove Record node, all edges coming to this record or going from this record
+    # also, delete node of isOfType Record
+    # if this record has children, we need to delete them as well
+    # a flag should be passed whether children should be deleted or not
+    # it should also return the records that were deleted
     async def delete_record(self, record_id: str, user_id: str) -> Dict:
         """
         Main entry point for record deletion - routes to connector-specific methods
@@ -1723,6 +1612,27 @@ class BaseArangoService:
                 "code": 500,
                 "reason": f"Internal error: {str(e)}"
             }
+
+    async def delete_record_by_external_id(self, connector_name: Connectors, external_id: str) -> None:
+        """
+        Delete a record by external ID
+        """
+        try:
+            self.logger.info(f"🗂️ Deleting record {external_id} from {connector_name}")
+
+            # Get record
+            record = await self.get_record_by_external_id(connector_name, external_id)
+            if not record:
+                self.logger.warning(f"⚠️ Record {external_id} not found in {connector_name}")
+                return
+
+            # Delete record
+            await self.delete_record(record["key"])
+
+            self.logger.info(f"✅ Record {external_id} deleted from {connector_name}")
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete record {external_id} from {connector_name}: {str(e)}")
+            raise
 
     async def delete_knowledge_base_record(self, record_id: str, user_id: str, record: Dict) -> Dict:
         """
@@ -3039,7 +2949,7 @@ class BaseArangoService:
             return False
 
     async def get_record_by_external_id(
-        self, connector_name: str, external_id: str, transaction: Optional[TransactionDatabase] = None
+        self, connector_name: Connectors, external_id: str, transaction: Optional[TransactionDatabase] = None
     ) -> Optional[Record]:
         """
         Get internal file key using the external file ID
@@ -3064,7 +2974,7 @@ class BaseArangoService:
 
             db = transaction if transaction else self.db
             cursor = db.aql.execute(
-                query, bind_vars={"external_id": external_id, "connector_name": connector_name}
+                query, bind_vars={"external_id": external_id, "connector_name": connector_name.value}
             )
             result = next(cursor, None)
 
@@ -3132,7 +3042,7 @@ class BaseArangoService:
             )
             return None
 
-    async def get_record_group_by_external_id(self, connector_name: str, external_id: str, transaction: Optional[TransactionDatabase] = None) -> Optional[RecordGroup]:
+    async def get_record_group_by_external_id(self, connector_name: Connectors, external_id: str, transaction: Optional[TransactionDatabase] = None) -> Optional[RecordGroup]:
         """
         Get internal record group key using the external record group ID
         """
@@ -3146,7 +3056,7 @@ class BaseArangoService:
                 RETURN record_group
             """
             db = transaction if transaction else self.db
-            cursor = db.aql.execute(query, bind_vars={"external_id": external_id, "connector_name": connector_name})
+            cursor = db.aql.execute(query, bind_vars={"external_id": external_id, "connector_name": connector_name.value})
             result = next(cursor, None)
             if result:
                 self.logger.info(
@@ -3184,7 +3094,7 @@ class BaseArangoService:
                 self.logger.info(
                     "✅ Successfully retrieved internal key for email %s", email
                 )
-                return User.from_arango_base_user(result)
+                return User.from_arango_user(result)
             else:
                 self.logger.warning(
                     "⚠️ No internal key found for email %s", email
@@ -3230,7 +3140,7 @@ class BaseArangoService:
             self.logger.error("❌ Failed to fetch users: %s", str(e))
             return []
 
-    async def upsert_sync_point_node(self, sync_point_key: str, sync_point_data: Dict, collection: str, transaction: Optional[TransactionDatabase] = None) -> bool:
+    async def upsert_sync_point(self, sync_point_key: str, sync_point_data: Dict, collection: str, transaction: Optional[TransactionDatabase] = None) -> bool:
         """
         Upsert a sync point node based on sync_point_key
         """
@@ -3271,7 +3181,7 @@ class BaseArangoService:
             self.logger.error("❌ Failed to upsert sync point node: %s: %s", sync_point_key, str(e))
             return False
 
-    async def get_sync_point_node(self, key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> Optional[Dict]:
+    async def get_sync_point(self, key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> Optional[Dict]:
         """
         Get a node by key
         """
@@ -3295,7 +3205,7 @@ class BaseArangoService:
             self.logger.error("❌ Failed to retrieve node by key: %s: %s", key, str(e))
             return None
 
-    async def remove_sync_point_node(self, key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> bool:
+    async def remove_sync_point(self, key: str, collection: str, transaction: Optional[TransactionDatabase] = None) -> bool:
         """
         Remove a node by key
         """
@@ -3319,6 +3229,48 @@ class BaseArangoService:
         except Exception as e:
             self.logger.error("❌ Failed to remove node by key: %s: %s", key, str(e))
             return False
+
+    async def get_all_documents(self, collection: str, transaction: Optional[TransactionDatabase] = None) -> List[Dict]:
+        """
+        Get all documents from a collection
+        """
+        try:
+            self.logger.info("🚀 Getting all documents from collection: %s", collection)
+            query = """
+            FOR doc IN @@collection
+                RETURN doc
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"@collection": collection})
+            result = list(cursor)
+            return result
+        except Exception as e:
+            self.logger.error("❌ Failed to get all documents from collection: %s: %s", collection, str(e))
+            return []
+
+    async def get_app_by_name(self, name: str, transaction: Optional[TransactionDatabase] = None) -> Optional[Dict]:
+        """
+        Get an app by its name
+        """
+        try:
+            self.logger.info("🚀 Getting app by name: %s", name)
+            query = """
+            FOR app IN @@collection
+                FILTER app.name == @name
+                RETURN app
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"name": name, "@collection": CollectionNames.APPS.value})
+            result = next(cursor, None)
+            if result:
+                self.logger.info("✅ Successfully retrieved app by name: %s", name)
+                return result
+            else:
+                self.logger.warning("⚠️ No app found by name: %s", name)
+                return None
+        except Exception as e:
+            self.logger.error("❌ Failed to get app by name: %s: %s", name, str(e))
+            return None
 
     async def delete_nodes(self, keys: List[str], collection: str, transaction: Optional[TransactionDatabase] = None) -> bool:
         """

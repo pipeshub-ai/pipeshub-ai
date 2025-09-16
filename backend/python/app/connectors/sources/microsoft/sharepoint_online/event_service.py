@@ -6,6 +6,7 @@ from typing import Any, Dict
 
 from dependency_injector import providers
 
+from app.connectors.core.base.data_store.arango_data_store import ArangoDataStore
 from app.connectors.core.base.event_service.event_service import BaseEventService
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
@@ -57,8 +58,9 @@ class SharePointOnlineEventService(BaseEventService):
             self.logger.info(f"Initializing SharePoint Online init sync service for org_id: {org_id}")
             config_service = self.app_container.config_service()
             arango_service = await self.app_container.arango_service()
-
-            sharepoint_connector = await SharePointConnector.create_connector(self.logger, arango_service, config_service)
+            data_store_provider = ArangoDataStore(self.logger, arango_service)
+            sharepoint_connector = await SharePointConnector.create_connector(self.logger,
+                                            data_store_provider, config_service)
             await sharepoint_connector.init()
             # Override the container's sharepoint_connector provider with the initialized instance
             self.app_container.sharepoint_connector.override(providers.Object(sharepoint_connector))

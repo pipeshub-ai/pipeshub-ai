@@ -7,6 +7,7 @@ import emailIcon from '@iconify-icons/mdi/email';
 import apiIcon from '@iconify-icons/mdi/api';
 import sparklesIcon from '@iconify-icons/mdi/auto-awesome';
 import replyIcon from '@iconify-icons/mdi/reply';
+import { useConnectors } from '../../../../accountdetails/connectors/context';
 import {
   groupToolsByApp,
   getAppDisplayName,
@@ -21,8 +22,29 @@ export const useAgentBuilderNodeTemplates = (
   availableModels: any[],
   availableKnowledgeBases: any[]
 ): UseAgentBuilderNodeTemplatesReturn => {
+  // Get connector data from the hook
+  const { activeConnectors } = useConnectors();
+  
   const nodeTemplates: NodeTemplate[] = useMemo(() => {
     const groupedTools = groupToolsByApp(availableTools);
+    const allConnectors = [...activeConnectors];
+    
+    // Create dynamic app memory nodes from connector data
+    const dynamicAppMemoryNodes = allConnectors.map(connector => ({
+      type: `app-${connector.name.toLowerCase().replace(/\s+/g, '-')}`,
+      label: normalizeDisplayName(connector.name),
+      description: `Connect to ${connector.name} data and content`,
+      icon: databaseIcon, // Will be overridden by dynamic icon in sidebar
+      defaultConfig: {
+        appName: connector.name.toUpperCase(),
+        appDisplayName: connector.name,
+        searchScope: 'all',
+      },
+      inputs: ['query'],
+      outputs: ['context'],
+      category: 'memory' as const,
+    }));
+    
     const templates: NodeTemplate[] = [
       // Agent Node (central orchestrator)
       {
@@ -119,143 +141,27 @@ export const useAgentBuilderNodeTemplates = (
         category: 'tools' as const,
       })),
 
-      // App Memory Group Node - For connecting to all apps
+      // App Memory Group Node - For connecting to all apps (dynamic)
       {
         type: 'app-group',
         label: 'Apps',
-        description: 'Connect to data from integrated applications',
+        description: `Connect to data from integrated applications (${allConnectors.length} apps)`,
         icon: apiIcon,
         defaultConfig: {
-          apps: [
-            { name: 'Slack', type: 'SLACK', displayName: 'Slack' },
-            { name: 'Gmail', type: 'GMAIL', displayName: 'Gmail' },
-            { name: 'Google Drive', type: 'GOOGLE_DRIVE', displayName: 'Google Drive' },
-            { name: 'Google Workspace', type: 'GOOGLE_WORKSPACE', displayName: 'Google Workspace' },
-            { name: 'OneDrive', type: 'ONEDRIVE', displayName: 'OneDrive' },
-            { name: 'Jira', type: 'JIRA', displayName: 'Jira' },
-            { name: 'Confluence', type: 'CONFLUENCE', displayName: 'Confluence' },
-            { name: 'GitHub', type: 'GITHUB', displayName: 'GitHub' },
-          ],
-          selectedApps: ['SLACK', 'GMAIL', 'GOOGLE_DRIVE'], // Default selected apps
+          apps: allConnectors.map(connector => ({
+            name: connector.name,
+            type: connector.name.toUpperCase(),
+            displayName: connector.name,
+          })),
+          selectedApps: allConnectors.slice(0, 3).map(connector => connector.name.toUpperCase()), // Default to first 3 apps
         },
         inputs: ['query'],
         outputs: ['context'],
         category: 'memory' as const,
       },
 
-      // Individual App Memory Nodes - For connecting to specific app data
-      {
-        type: 'app-slack',
-        label: normalizeDisplayName('Slack'),
-        description: 'Connect to Slack messages and conversations',
-        icon: chatIcon,
-        defaultConfig: {
-          appName: 'SLACK',
-          appDisplayName: 'Slack',
-          searchScope: 'all', // all, channels, dms
-        },
-        inputs: ['query'],
-        outputs: ['context'],
-        category: 'memory' as const,
-      },
-      {
-        type: 'app-gmail',
-        label: normalizeDisplayName('Gmail'),
-        description: 'Connect to Gmail emails and conversations',
-        icon: emailIcon,
-        defaultConfig: {
-          appName: 'GMAIL',
-          appDisplayName: 'Gmail',
-          searchScope: 'all', // all, inbox, sent, drafts
-        },
-        inputs: ['query'],
-        outputs: ['context'],
-        category: 'memory' as const,
-      },
-      {
-        type: 'app-google-drive',
-        label: 'Google Drive',
-        description: 'Connect to Google Drive files and folders',
-        icon: databaseIcon,
-        defaultConfig: {
-          appName: 'GOOGLE_DRIVE',
-          appDisplayName: 'Google Drive',
-          fileTypes: ['all'], // all, documents, images, etc.
-        },
-        inputs: ['query'],
-        outputs: ['context'],
-        category: 'memory' as const,
-      },
-      {
-        type: 'app-google-workspace',
-        label: normalizeDisplayName('Google Workspace'),
-        description: 'Connect to Google Workspace (Docs, Sheets, Drive)',
-        icon: databaseIcon,
-        defaultConfig: {
-          appName: 'GOOGLE_WORKSPACE',
-          appDisplayName: 'Google Workspace',
-          services: ['drive', 'docs', 'sheets'], // which services to include
-        },
-        inputs: ['query'],
-        outputs: ['context'],
-        category: 'memory' as const,
-      },
-      {
-        type: 'app-onedrive',
-        label: normalizeDisplayName('OneDrive'),
-        description: 'Connect to OneDrive files and documents',
-        icon: databaseIcon,
-        defaultConfig: {
-          appName: 'ONEDRIVE',
-          appDisplayName: 'OneDrive',
-          fileTypes: ['all'], // all, documents, images, etc.
-        },
-        inputs: ['query'],
-        outputs: ['context'],
-        category: 'memory' as const,
-      },
-      {
-        type: 'app-jira',
-        label: normalizeDisplayName('Jira'),
-        description: 'Connect to Jira issues and project data',
-        icon: apiIcon,
-        defaultConfig: {
-          appName: 'JIRA',
-          appDisplayName: 'Jira',
-          searchScope: 'all', // all, issues, projects
-        },
-        inputs: ['query'],
-        outputs: ['context'],
-        category: 'memory' as const,
-      },
-      {
-        type: 'app-confluence',
-        label: normalizeDisplayName('Confluence'),
-        description: 'Connect to Confluence pages and spaces',
-        icon: databaseIcon,
-        defaultConfig: {
-          appName: 'CONFLUENCE',
-          appDisplayName: 'Confluence',
-          searchScope: 'all', // all, pages, spaces
-        },
-        inputs: ['query'],
-        outputs: ['context'],
-        category: 'memory' as const,
-      },
-      {
-        type: 'app-github',
-        label: normalizeDisplayName('GitHub'),
-        description: 'Connect to GitHub repositories and issues',
-        icon: apiIcon,
-        defaultConfig: {
-          appName: 'GITHUB',
-          appDisplayName: 'GitHub',
-          searchScope: 'all', // all, repos, issues
-        },
-        inputs: ['query'],
-        outputs: ['context'],
-        category: 'memory' as const,
-      },
+      // Individual App Memory Nodes - Dynamic from connector data
+      ...dynamicAppMemoryNodes,
 
       // Knowledge Base Group Node
       {
@@ -301,7 +207,7 @@ export const useAgentBuilderNodeTemplates = (
     ];
 
     return templates;
-  }, [availableTools, availableModels, availableKnowledgeBases]);
+  }, [availableTools, availableModels, availableKnowledgeBases, activeConnectors]);
 
   return { nodeTemplates };
 };

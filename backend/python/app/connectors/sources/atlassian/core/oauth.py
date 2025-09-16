@@ -8,7 +8,6 @@ from app.connectors.core.base.token_service.oauth_service import (
     OAuthProvider,
     OAuthToken,
 )
-from app.connectors.services.base_arango_service import BaseArangoService
 
 OAUTH_CONFIG_PATH = "/services/connectors/atlassian/config"
 OAUTH_CREDENTIALS_PATH = "/services/connectors/atlassian/credentials"
@@ -134,7 +133,6 @@ class AtlassianOAuthProvider(OAuthProvider):
         client_secret: str,
         redirect_uri: str,
         key_value_store: KeyValueStore,
-        base_arango_service: BaseArangoService,
         credentials_path: str,
         scopes: Optional[List[str]] = None,
     ) -> None:
@@ -163,7 +161,7 @@ class AtlassianOAuthProvider(OAuthProvider):
             }
         )
 
-        super().__init__(config, key_value_store, base_arango_service, credentials_path)
+        super().__init__(config, key_value_store, credentials_path)
         self._accessible_resources: Optional[List[AtlassianCloudResource]] = None
 
     @staticmethod

@@ -14,18 +14,18 @@ from msgraph.generated.models.drive_item import DriveItem
 from msgraph.generated.models.subscription import Subscription
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import Connectors, OriginTypes
+from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
+from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
     generate_record_sync_point_key,
 )
-from app.connectors.services.base_arango_service import BaseArangoService
 from app.connectors.sources.microsoft.common.apps import OneDriveApp
 from app.connectors.sources.microsoft.common.msgraph_client import (
     MSGraphClient,
@@ -33,13 +33,13 @@ from app.connectors.sources.microsoft.common.msgraph_client import (
     map_msgraph_role_to_permission_type,
 )
 from app.models.entities import (
+    AppUser,
     FileRecord,
     Record,
     RecordGroupType,
     RecordType,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-from app.models.users import User
 from app.utils.streaming import stream_content
 
 
@@ -52,22 +52,20 @@ class OneDriveCredentials:
 
 class OneDriveConnector(BaseConnector):
     def __init__(self, logger: Logger, data_entities_processor: DataSourceEntitiesProcessor,
-        arango_service: BaseArangoService, config_service: ConfigurationService) -> None:
-        super().__init__(OneDriveApp(), logger, data_entities_processor, arango_service, config_service)
-
-        self.connector_name = Connectors.ONEDRIVE.value
+        data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> None:
+        super().__init__(OneDriveApp(), logger, data_entities_processor, data_store_provider, config_service)
 
         def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
             return SyncPoint(
                 connector_name=self.connector_name,
                 org_id=self.data_entities_processor.org_id,
                 sync_data_point_type=sync_data_point_type,
-                arango_service=self.arango_service
+                data_store_provider=self.data_store_provider
             )
         # Initialize sync points
         self.drive_delta_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
         self.user_sync_point = _create_sync_point(SyncDataPointType.USERS)
-        self.user_group_sync_point = _create_sync_point(SyncDataPointType.USER_GROUPS)
+        self.user_group_sync_point = _create_sync_point(SyncDataPointType.GROUPS)
 
         # Batch processing configuration
         self.batch_size = 100
@@ -76,24 +74,24 @@ class OneDriveConnector(BaseConnector):
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
 
     async def init(self) -> bool:
-        credentials_config = await self.config_service.get_config(f"/services/connectors/onedrive/config/{self.data_entities_processor.org_id}")
-        if not credentials_config:
-            self.logger.error("OneDrive credentials not found")
+        config = await self.config_service.get_config("/services/connectors/onedrive/config") or await self.config_service.get_config(f"/services/connectors/onedrive/config/{self.data_entities_processor.org_id}")
+        if not config:
+            self.logger.error("OneDrive config not found")
             return False
 
-        self.config = {"credentials": credentials_config}
-        if not credentials_config:
-            self.logger.error("OneDrive credentials not found")
-            raise ValueError("OneDrive credentials not found")
-
-        tenant_id = credentials_config.get("tenantId")
-        client_id = credentials_config.get("clientId")
-        client_secret = credentials_config.get("clientSecret")
+        self.config = {"credentials": config}
+        if not config:
+            self.logger.error("OneDrive config not found")
+            raise ValueError("OneDrive config not found")
+        auth_config = config.get("auth", {}).get("values", {})
+        tenant_id = auth_config.get("tenantId")
+        client_id = auth_config.get("clientId")
+        client_secret = auth_config.get("clientSecret")
         if not all((tenant_id, client_id, client_secret)):
-            self.logger.error("Incomplete OneDrive credentials. Ensure tenantId, clientId, and clientSecret are configured.")
+            self.logger.error("Incomplete OneDrive config. Ensure tenantId, clientId, and clientSecret are configured.")
             raise ValueError("Incomplete OneDrive credentials. Ensure tenantId, clientId, and clientSecret are configured.")
 
-        has_admin_consent = credentials_config.get("hasAdminConsent", False)
+        has_admin_consent = auth_config.get("hasAdminConsent", False)
         credentials = OneDriveCredentials(
             tenant_id=tenant_id,
             client_id=client_id,
@@ -107,8 +105,7 @@ class OneDriveConnector(BaseConnector):
             client_secret=credentials.client_secret,
         )
         self.client = GraphServiceClient(credential, scopes=["https://graph.microsoft.com/.default"])
-        self.msgraph_client = MSGraphClient(self.client, self.logger)
-
+        self.msgraph_client = MSGraphClient(self.connector_name, self.client, self.logger)
         return True
 
     async def _process_delta_item(self, item: DriveItem) -> Optional[RecordUpdate]:
@@ -137,7 +134,8 @@ class OneDriveConnector(BaseConnector):
                 )
 
             # Get existing record if any
-            existing_record = await self.arango_service.get_record_by_external_id(
+            async with self.data_store_provider.transaction() as tx_store:
+                existing_record = await tx_store.get_record_by_external_id(
                 connector_name=self.connector_name,
                 external_id=item.id
             )
@@ -176,12 +174,12 @@ class OneDriveConnector(BaseConnector):
                 id=existing_record.id if existing_record else str(uuid.uuid4()),
                 record_name=item.name,
                 record_type=RecordType.FILE,
-                record_group_type=RecordGroupType.DRIVE.value,
-                parent_record_type=RecordType.FILE.value,
+                record_group_type=RecordGroupType.DRIVE,
+                parent_record_type=RecordType.FILE,
                 external_record_id=item.id,
                 external_revision_id=item.e_tag,
                 version=0 if is_new else existing_record.version + 1,
-                origin=OriginTypes.CONNECTOR.value,
+                origin=OriginTypes.CONNECTOR,
                 connector_name=self.connector_name,
                 created_at=int(item.created_date_time.timestamp() * 1000),
                 updated_at=int(item.last_modified_date_time.timestamp() * 1000),
@@ -189,7 +187,7 @@ class OneDriveConnector(BaseConnector):
                 source_updated_at=int(item.last_modified_date_time.timestamp() * 1000),
                 weburl=item.web_url,
                 signed_url=signed_url,
-                mime_type=item.file.mime_type if item.file else None,
+                mime_type=MimeTypes(item.file.mime_type) if item.file else MimeTypes.FOLDER,
                 parent_external_record_id=item.parent_reference.id if item.parent_reference else None,
                 external_record_group_id=item.parent_reference.drive_id if item.parent_reference else None,
                 size_in_bytes=item.size,
@@ -223,12 +221,12 @@ class OneDriveConnector(BaseConnector):
                 metadata_changed=metadata_changed,
                 content_changed=content_changed,
                 permissions_changed=permissions_changed,
-                old_permissions=existing_record.permissions if existing_record else None,
+                # old_permissions=existing_record.permissions if existing_record else None,
                 new_permissions=new_permissions
             )
 
         except Exception as ex:
-            self.logger.error(f"Error processing delta item {item.id}: {ex}", exc_info=True)
+            self.logger.error(f"❌ Error processing delta item {item.id}: {ex}", exc_info=True)
             return None
 
     async def _convert_to_permissions(self, msgraph_permissions: List) -> List[Permission]:
@@ -290,7 +288,7 @@ class OneDriveConnector(BaseConnector):
                         ))
 
             except Exception as e:
-                self.logger.error(f"Error converting permission: {e}", exc_info=True)
+                self.logger.error(f"❌ Error converting permission: {e}", exc_info=True)
                 continue
 
         return permissions
@@ -331,7 +329,7 @@ class OneDriveConnector(BaseConnector):
                 await asyncio.sleep(0)
 
             except Exception as e:
-                self.logger.error(f"Error processing item in generator: {e}", exc_info=True)
+                self.logger.error(f"❌ Error processing item in generator: {e}", exc_info=True)
                 continue
 
     async def _handle_record_updates(self, record_update: RecordUpdate) -> None:
@@ -368,7 +366,7 @@ class OneDriveConnector(BaseConnector):
                     )
 
         except Exception as e:
-            self.logger.error(f"Error handling record updates: {e}", exc_info=True)
+            self.logger.error(f"❌ Error handling record updates: {e}", exc_info=True)
 
     async def _sync_user_groups(self) -> None:
         """
@@ -403,13 +401,13 @@ class OneDriveConnector(BaseConnector):
                     )
 
                 except Exception as e:
-                    self.logger.error(f"Error processing group {group.name}: {e}", exc_info=True)
+                    self.logger.error(f"❌ Error processing group {group.name}: {e}", exc_info=True)
                     continue
 
             self.logger.info(f"Processed {len(user_groups)} user groups")
 
         except Exception as e:
-            self.logger.error(f"Error syncing user groups: {e}", exc_info=True)
+            self.logger.error(f"❌ Error syncing user groups: {e}", exc_info=True)
             raise
 
     async def _run_sync_with_yield(self, user_id: str) -> None:
@@ -497,10 +495,10 @@ class OneDriveConnector(BaseConnector):
             self.logger.info(f"Completed delta sync for user {user_id}")
 
         except Exception as ex:
-            self.logger.error(f"Error in delta sync for user {user_id}: {ex}")
+            self.logger.error(f"❌ Error in delta sync for user {user_id}: {ex}")
             raise
 
-    async def _process_users_in_batches(self, users: List[User]) -> None:
+    async def _process_users_in_batches(self, users: List[AppUser]) -> None:
         """
         Process users in concurrent batches for improved performance.
 
@@ -538,7 +536,7 @@ class OneDriveConnector(BaseConnector):
             self.logger.info("Completed processing all user batches")
 
         except Exception as e:
-            self.logger.error(f"Error processing users in batches: {e}")
+            self.logger.error(f"❌ Error processing users in batches: {e}")
             raise
 
     async def _detect_and_handle_permission_changes(self) -> None:
@@ -559,7 +557,7 @@ class OneDriveConnector(BaseConnector):
             self.logger.info("Completed permission change detection")
 
         except Exception as e:
-            self.logger.error(f"Error detecting permission changes: {e}")
+            self.logger.error(f"❌ Error detecting permission changes: {e}")
 
     async def _handle_reindex_event(self, record_id: str) -> None:
         """
@@ -572,13 +570,15 @@ class OneDriveConnector(BaseConnector):
             self.logger.info(f"Handling reindex event for record {record_id}")
 
             # Get the record from database
-            record = await self.arango_service.get_record_by_external_id(
+            record = None
+            async with self.data_store_provider.transaction() as tx_store:
+                record = await tx_store.get_record_by_external_id(
                 connector_name=Connectors.ONEDRIVE.value,
                 external_id=record_id
             )
 
             if not record:
-                self.logger.warning(f"Record {record_id} not found for reindexing")
+                self.logger.warning(f"⚠️ Record {record_id} not found for reindexing")
                 return
 
             # Get fresh data from OneDrive
@@ -607,7 +607,7 @@ class OneDriveConnector(BaseConnector):
             self.logger.info(f"Completed reindex for record {record_id}")
 
         except Exception as e:
-            self.logger.error(f"Error handling reindex event: {e}")
+            self.logger.error(f"❌ Error handling reindex event: {e}")
 
     async def handle_webhook_notification(self, notification: Dict) -> None:
         """
@@ -636,7 +636,7 @@ class OneDriveConnector(BaseConnector):
             self.logger.info("Webhook notification processed successfully")
 
         except Exception as e:
-            self.logger.error(f"Error handling webhook notification: {e}")
+            self.logger.error(f"❌ Error handling webhook notification: {e}")
 
     async def run_sync(self) -> None:
         """
@@ -649,7 +649,7 @@ class OneDriveConnector(BaseConnector):
             # Step 1: Sync users
             self.logger.info("Syncing users...")
             users = await self.msgraph_client.get_all_users()
-            await self.data_entities_processor.on_new_users(users)
+            await self.data_entities_processor.on_new_app_users(users)
 
             # Step 2: Sync user groups and their members
             self.logger.info("Syncing user groups...")
@@ -666,7 +666,7 @@ class OneDriveConnector(BaseConnector):
             self.logger.info("OneDrive connector sync completed successfully")
 
         except Exception as e:
-            self.logger.error(f"Error in OneDrive connector run: {e}")
+            self.logger.error(f"❌ Error in OneDrive connector run: {e}")
             raise
 
     async def run_incremental_sync(self) -> None:
@@ -687,7 +687,7 @@ class OneDriveConnector(BaseConnector):
             self.logger.info("Incremental sync completed")
 
         except Exception as e:
-            self.logger.error(f"Error in incremental sync: {e}")
+            self.logger.error(f"❌ Error in incremental sync: {e}")
             raise
 
     async def cleanup(self) -> None:
@@ -709,7 +709,7 @@ class OneDriveConnector(BaseConnector):
             self.logger.info("OneDrive connector cleanup completed")
 
         except Exception as e:
-            self.logger.error(f"Error during cleanup: {e}")
+            self.logger.error(f"❌ Error during cleanup: {e}")
 
     async def get_signed_url(self, record: Record) -> str:
         """
@@ -718,7 +718,7 @@ class OneDriveConnector(BaseConnector):
         try:
             return await self.msgraph_client.get_signed_url(record.external_record_group_id, record.external_record_id)
         except Exception as e:
-            self.logger.error(f"Error creating signed URL for record {record.id}: {e}")
+            self.logger.error(f"❌ Error creating signed URL for record {record.id}: {e}")
             raise
 
     async def stream_record(self, record: Record) -> StreamingResponse:
@@ -729,7 +729,7 @@ class OneDriveConnector(BaseConnector):
 
         return StreamingResponse(
             stream_content(signed_url),
-            media_type=record.mime_type,
+            media_type=record.mime_type.value if record.mime_type else "application/octet-stream",
             headers={
                 "Content-Disposition": f"attachment; filename={record.record_name}"
             }
@@ -742,16 +742,16 @@ class OneDriveConnector(BaseConnector):
             self.logger.info("Testing connection and access to OneDrive")
             return True
         except Exception as e:
-            self.logger.error(f"Error testing connection and access to OneDrive: {e}")
+            self.logger.error(f"❌ Error testing connection and access to OneDrive: {e}")
             return False
 
     @classmethod
     async def create_connector(cls, logger: Logger,
-        arango_service: BaseArangoService, config_service: ConfigurationService) -> BaseConnector:
-        data_entities_processor = DataSourceEntitiesProcessor(logger, arango_service, config_service)
+                               data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> BaseConnector:
+        data_entities_processor = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
         await data_entities_processor.initialize()
 
-        return OneDriveConnector(logger, data_entities_processor, arango_service, config_service)
+        return OneDriveConnector(logger, data_entities_processor, data_store_provider, config_service)
 
 
 # Additional helper class for managing OneDrive subscriptions
@@ -798,7 +798,7 @@ class OneDriveSubscriptionManager:
             return None
 
         except Exception as e:
-            self.logger.error(f"Error creating subscription for user {user_id}: {e}")
+            self.logger.error(f"❌ Error creating subscription for user {user_id}: {e}")
             return None
 
     async def renew_subscription(self, subscription_id: str) -> bool:
@@ -825,7 +825,7 @@ class OneDriveSubscriptionManager:
             return True
 
         except Exception as e:
-            self.logger.error(f"Error renewing subscription {subscription_id}: {e}")
+            self.logger.error(f"❌ Error renewing subscription {subscription_id}: {e}")
             return False
 
     async def delete_subscription(self, subscription_id: str) -> bool:
@@ -851,7 +851,7 @@ class OneDriveSubscriptionManager:
             return True
 
         except Exception as e:
-            self.logger.error(f"Error deleting subscription {subscription_id}: {e}")
+            self.logger.error(f"❌ Error deleting subscription {subscription_id}: {e}")
             return False
 
     async def renew_all_subscriptions(self) -> None:
@@ -870,7 +870,7 @@ class OneDriveSubscriptionManager:
             self.logger.info("Completed subscription renewal")
 
         except Exception as e:
-            self.logger.error(f"Error renewing subscriptions: {e}")
+            self.logger.error(f"❌ Error renewing subscriptions: {e}")
 
     async def cleanup_subscriptions(self) -> None:
         """
@@ -886,4 +886,4 @@ class OneDriveSubscriptionManager:
             self.logger.info("Subscription cleanup completed")
 
         except Exception as e:
-            self.logger.error(f"Error during subscription cleanup: {e}")
+            self.logger.error(f"❌ Error during subscription cleanup: {e}")

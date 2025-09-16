@@ -165,7 +165,12 @@ class GoogleClient(IClient):
                 raise GoogleAuthError("Failed to get individual token: " + str(e)) from e
         else:
             try:
-                saved_credentials = await GoogleClient.get_enterprise_token(org_id, config_service)
+                # Use the specific connector name from service_name to fetch the right credentials
+                # Map common service_name to connector key
+                connector_name = "DRIVE" if service_name.lower() == "drive" else (
+                    "GMAIL" if service_name.lower() == "gmail" else service_name.upper()
+                )
+                saved_credentials = await GoogleClient.get_enterprise_token(org_id, config_service, app_name=connector_name)
                 if not saved_credentials:
                     raise AdminAuthError(
                         "Failed to get enterprise credentials",
@@ -281,11 +286,8 @@ class GoogleClient(IClient):
     async def get_enterprise_token(
         org_id: str,
         config_service: ConfigurationService,
+        app_name: str = "DRIVE",
     ) -> dict[str, Any]:
-        """Handle enterprise token."""
-        return await GoogleClient._fetch_credentials(
-            org_id=org_id,
-            config_service=config_service,
-            route=Routes.BUSINESS_CREDENTIALS,
-            scopes=[TokenScopes.FETCH_CONFIG.value],
-        )
+        """Handle enterprise token for a specific connector."""
+        config = await config_service.get_config(f"/services/connectors/{app_name.lower()}/config")
+        return config.get("auth", {})

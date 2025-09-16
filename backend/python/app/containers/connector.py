@@ -417,7 +417,8 @@ async def initialize_enterprise_google_account_services_fn(org_id, container) ->
             if app["appGroup"] == AppGroups.GOOGLE_WORKSPACE.value:
                 logger.info("Caching Google Workspace service credentials")
                 await cache_google_workspace_service_credentials(org_id, arango_service, logger, container)
-                await google_admin_service.connect_admin(org_id)
+                # Initialize admin service with a generic app context (Drive by default)
+                await google_admin_service.connect_admin(org_id, app_name="DRIVE")
                 await google_admin_service.create_admin_watch(org_id)
                 logger.info("✅ Google Workspace service credentials cached")
                 break

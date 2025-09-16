@@ -2876,3 +2876,40 @@ export const updateDefaultAIModel =
       next(error);
     }
   };
+
+// Generic, parameterized connector config getter
+export const getConnectorConfig =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (
+    req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      const { connector } = req.params as { connector: string };
+      if (!connector || typeof connector !== 'string') {
+        throw new BadRequestError('connector path parameter is required');
+      }
+
+      const configManagerConfig = loadConfigurationManagerConfig();
+      const key = `/services/connectors/${connector}/config`;
+      const encryptedConfig = await keyValueStoreService.get<string>(key);
+
+      if (!encryptedConfig) {
+        res.status(200).json({}).end();
+        return;
+      }
+
+      const config = JSON.parse(
+        EncryptionService.getInstance(
+          configManagerConfig.algorithm,
+          configManagerConfig.secretKey,
+        ).decrypt(encryptedConfig),
+      );
+
+      res.status(200).json(config).end();
+    } catch (error: any) {
+      logger.error('Error getting connector config by name', { error });
+      next(error);
+    }
+  };

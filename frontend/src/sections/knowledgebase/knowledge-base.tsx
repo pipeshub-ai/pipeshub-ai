@@ -30,10 +30,7 @@ import { KnowledgeBaseAPI } from './services/api';
 import DashboardComponent from './components/dashboard';
 import AllRecordsView from './components/all-records-view';
 import { EditFolderDialog } from './components/dialogs/edit-dialogs';
-import {
-  CreateFolderDialog,
-  DeleteConfirmDialog,
-} from './components/dialogs';
+import { CreateFolderDialog, DeleteConfirmDialog } from './components/dialogs';
 import KbPermissionsDialog from './components/dialogs/kb-permissions-dialog';
 import { renderKBDetail } from './components/kb-details';
 
@@ -46,6 +43,7 @@ import type {
   UpdatePermissionRequest,
   RemovePermissionRequest,
 } from './types/kb';
+import { ORIGIN } from './constants/knowledge-search';
 
 type ViewMode = 'grid' | 'list';
 
@@ -280,9 +278,9 @@ export default function KnowledgeBaseComponent() {
 
   useEffect(() => {
     const loadContents = async () => {
-    if (isViewInitiallyLoading.current) return;
+      if (isViewInitiallyLoading.current) return;
 
-    if (currentKB && viewMode === 'list' && !searchQuery) {
+      if (currentKB && viewMode === 'list' && !searchQuery) {
         await loadKBContents(currentKB.id, stableRoute.folderId);
       }
     };
@@ -361,7 +359,7 @@ export default function KnowledgeBaseComponent() {
     setCurrentKB(null);
     setNavigationPath([]);
     navigate({ view: 'dashboard' });
-    
+
     // Reset all state
     setItems([]);
     setSearchQuery('');
@@ -486,7 +484,7 @@ export default function KnowledgeBaseComponent() {
     stableRoute.folderId,
     loadKBContents,
     navigate,
-    stableRoute
+    stableRoute,
   ]);
 
   const handleCreateFolder = async (name: string) => {
@@ -734,7 +732,7 @@ export default function KnowledgeBaseComponent() {
 
   const handleDownload = async (externalRecordId: string, recordName: string) => {
     try {
-      await KnowledgeBaseAPI.handleDownloadDocument(externalRecordId, recordName);
+      await KnowledgeBaseAPI.handleDownloadDocument(externalRecordId, recordName, ORIGIN.UPLOAD);
       setSuccess('Download started successfully');
     } catch (err: any) {
       console.error('Failed to download document', err);

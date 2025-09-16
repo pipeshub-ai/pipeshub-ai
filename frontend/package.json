@@ -86,7 +86,7 @@
     "autosuggest-highlight": "^3.3.4",
     "aws-amplify": "^6.5.1",
     "axios": "^1.7.4",
-    "dayjs": "^1.11.13",
+    "dayjs": "^1.11.18",
     "docx-preview": "^0.3.5",
     "dompurify": "^3.2.5",
     "embla-carousel": "^8.2.0",
