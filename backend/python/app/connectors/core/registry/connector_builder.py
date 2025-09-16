@@ -1,6 +1,6 @@
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Type
+from typing import Any, Callable, Dict, List, Optional, Type, Union
 
 
 @dataclass
@@ -57,10 +57,10 @@ class DocumentationLink:
 class ConnectorConfigBuilder:
     """Generic builder for creating connector configurations"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._reset()
 
-    def _reset(self):
+    def _reset(self) -> 'ConnectorConfigBuilder':
         """Reset the builder to default state"""
         self.config = {
             "iconPath": "/assets/icons/connectors/default.svg",
@@ -115,24 +115,24 @@ class ConnectorConfigBuilder:
         }
         return self
 
-    def with_icon(self, icon_path: str):
+    def with_icon(self, icon_path: str) -> 'ConnectorConfigBuilder':
         """Set the icon path"""
         self.config["iconPath"] = icon_path
         return self
 
-    def with_realtime_support(self, supported: bool = True, connection_type: str = "WEBSOCKET"):
+    def with_realtime_support(self, supported: bool = True, connection_type: str = "WEBSOCKET") -> 'ConnectorConfigBuilder':
         """Enable or disable realtime support"""
         self.config["supportsRealtime"] = supported
         self.config["sync"]["realtimeConfig"]["supported"] = supported
         self.config["sync"]["realtimeConfig"]["connectionType"] = connection_type
         return self
 
-    def with_sync_support(self, supported: bool = True):
+    def with_sync_support(self, supported: bool = True) -> 'ConnectorConfigBuilder':
         """Enable or disable sync support"""
         self.config["supportsSync"] = supported
         return self
 
-    def add_documentation_link(self, link: DocumentationLink):
+    def add_documentation_link(self, link: DocumentationLink) -> 'ConnectorConfigBuilder':
         """Add documentation link"""
         self.config["documentationLinks"].append({
             "title": link.title,
@@ -141,18 +141,18 @@ class ConnectorConfigBuilder:
         })
         return self
 
-    def with_auth_type(self, auth_type: str):
+    def with_auth_type(self, auth_type: str) -> 'ConnectorConfigBuilder':
         """Set authentication type"""
         self.config["auth"]["type"] = auth_type
         return self
 
-    def with_redirect_uri(self, redirect_uri: str, display: bool = True):
+    def with_redirect_uri(self, redirect_uri: str, display: bool = True) -> 'ConnectorConfigBuilder':
         """Set redirect URI configuration"""
         self.config["auth"]["redirectUri"] = redirect_uri
         self.config["auth"]["displayRedirectUri"] = display
         return self
 
-    def add_auth_field(self, field: AuthField):
+    def add_auth_field(self, field: AuthField) -> 'ConnectorConfigBuilder':
         """Add an authentication field"""
         field_config = {
             "name": field.name,
@@ -171,7 +171,7 @@ class ConnectorConfigBuilder:
         self.config["auth"]["schema"]["fields"].append(field_config)
         return self
 
-    def with_oauth_urls(self, authorize_url: str, token_url: str, scopes: List[str] = None):
+    def with_oauth_urls(self, authorize_url: str, token_url: str, scopes: Optional[List[str]] = None) -> 'ConnectorConfigBuilder':
         """Set OAuth URLs and scopes for OAuth connectors"""
         self.config["auth"]["authorizeUrl"] = authorize_url
         self.config["auth"]["tokenUrl"] = token_url
@@ -179,13 +179,13 @@ class ConnectorConfigBuilder:
             self.config["auth"]["scopes"] = scopes
         return self
 
-    def with_sync_strategies(self, strategies: List[str], selected: str = "MANUAL"):
+    def with_sync_strategies(self, strategies: List[str], selected: str = "MANUAL") -> 'ConnectorConfigBuilder':
         """Configure sync strategies"""
         self.config["sync"]["supportedStrategies"] = strategies
         self.config["sync"]["selectedStrategy"] = selected
         return self
 
-    def with_webhook_config(self, supported: bool = True, events: List[str] = None):
+    def with_webhook_config(self, supported: bool = True, events: Optional[List[str]] = None) -> 'ConnectorConfigBuilder':
         """Configure webhook support"""
         self.config["sync"]["webhookConfig"]["supported"] = supported
         if events:
@@ -194,7 +194,7 @@ class ConnectorConfigBuilder:
             self.config["sync"]["supportedStrategies"].append("WEBHOOK")
         return self
 
-    def with_scheduled_config(self, supported: bool = True, interval_minutes: int = 60):
+    def with_scheduled_config(self, supported: bool = True, interval_minutes: int = 60) -> 'ConnectorConfigBuilder':
         """Configure scheduled sync"""
         if supported:
             self.config["sync"]["scheduledConfig"]["intervalMinutes"] = interval_minutes
@@ -202,7 +202,7 @@ class ConnectorConfigBuilder:
                 self.config["sync"]["supportedStrategies"].append("SCHEDULED")
         return self
 
-    def add_sync_custom_field(self, field: CustomField):
+    def add_sync_custom_field(self, field: CustomField) -> 'ConnectorConfigBuilder':
         """Add a custom field to sync configuration"""
         field_config = {
             "name": field.name,
@@ -226,7 +226,7 @@ class ConnectorConfigBuilder:
         self.config["sync"]["customFields"].append(field_config)
         return self
 
-    def add_filter_field(self, field: FilterField, endpoint: str = "static"):
+    def add_filter_field(self, field: FilterField, endpoint: str = "static") -> 'ConnectorConfigBuilder':
         """Add a filter field"""
         field_config = {
             "name": field.name,
@@ -243,7 +243,7 @@ class ConnectorConfigBuilder:
         self.config["filters"]["endpoints"][field.name] = endpoint
         return self
 
-    def add_conditional_display(self, field_name: str, show_when_field: str, operator: str, value: Any):
+    def add_conditional_display(self, field_name: str, show_when_field: str, operator: str, value: Union[str, bool, int, float]) -> 'ConnectorConfigBuilder':
         """Add conditional display logic for auth fields"""
         self.config["auth"]["conditionalDisplay"][field_name] = {
             "showWhen": {
@@ -264,7 +264,7 @@ class ConnectorConfigBuilder:
 class ConnectorBuilder:
     """Main builder for creating connectors with the decorator"""
 
-    def __init__(self, name: str):
+    def __init__(self, name: str) -> None:
         self.name = name
         self.app_group = ""
         self.auth_type = "OAUTH"
@@ -272,27 +272,27 @@ class ConnectorBuilder:
         self.app_categories = []
         self.config_builder = ConnectorConfigBuilder()
 
-    def in_group(self, app_group: str):
+    def in_group(self, app_group: str) -> 'ConnectorBuilder':
         """Set the app group"""
         self.app_group = app_group
         return self
 
-    def with_auth_type(self, auth_type: str):
+    def with_auth_type(self, auth_type: str) -> 'ConnectorBuilder':
         """Set the authentication type"""
         self.auth_type = auth_type
         return self
 
-    def with_description(self, description: str):
+    def with_description(self, description: str) -> 'ConnectorBuilder':
         """Set the app description"""
         self.app_description = description
         return self
 
-    def with_categories(self, categories: List[str]):
+    def with_categories(self, categories: List[str]) -> 'ConnectorBuilder':
         """Set the app categories"""
         self.app_categories = categories
         return self
 
-    def configure(self, config_func: Callable[[ConnectorConfigBuilder], ConnectorConfigBuilder]):
+    def configure(self, config_func: Callable[[ConnectorConfigBuilder], ConnectorConfigBuilder]) -> 'ConnectorBuilder':
         """Configure the connector using a configuration function"""
         self.config_builder = config_func(self.config_builder)
         return self

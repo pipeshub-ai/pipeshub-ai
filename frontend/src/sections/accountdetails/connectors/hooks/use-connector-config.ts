@@ -631,6 +631,7 @@ export const useConnectorConfig = ({
     jsonData,
     isBusinessGoogleOAuthValid,
     customGoogleBusinessOAuth,
+    adminEmailError
   ]);
 
   // Admin email change handler

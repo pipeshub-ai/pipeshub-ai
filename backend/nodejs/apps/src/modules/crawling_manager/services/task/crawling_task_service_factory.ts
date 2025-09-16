@@ -16,28 +16,19 @@ export class CrawlingTaskFactory {
   }
 
   getTaskService(connector: string): ICrawlingTaskService {
-    switch (connector) {
-      case "gmail":
-        return this.connectorsService;
-      
-      case "drive":
-        return this.connectorsService;
-      
-      case "onedrive":
-        return this.connectorsService;
+    const supportedConnectors = [
+      "gmail",
+      "drive",
+      "onedrive",
+      "sharepoint",
+      "confluence",
+      "slack",
+    ];
 
-      case "sharepoint":
-        return this.connectorsService;
-
-      case "confluence":
-        return this.connectorsService;
-
-      case "slack":
-        return this.connectorsService;
-
-      
-      default:
-        throw new Error(`Unknown connector type: ${connector}`);
+    if (supportedConnectors.includes(connector)) {
+      return this.connectorsService;
     }
+
+    throw new Error(`Unknown connector type: ${connector}`);
   }
 }

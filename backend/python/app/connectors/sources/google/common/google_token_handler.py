@@ -1,4 +1,5 @@
 from enum import Enum
+from typing import Dict
 
 import aiohttp
 import jwt
@@ -16,7 +17,6 @@ from app.config.constants.service import (
     TokenScopes,
     config_node_constants,
 )
-from typing import Optional, Dict
 
 
 class CredentialKeys(Enum):

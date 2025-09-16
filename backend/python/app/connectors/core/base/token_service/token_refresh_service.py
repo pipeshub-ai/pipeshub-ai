@@ -16,14 +16,14 @@ from app.connectors.services.base_arango_service import BaseArangoService
 class TokenRefreshService:
     """Service for managing token refresh across all connectors"""
 
-    def __init__(self, key_value_store: KeyValueStore, arango_service: BaseArangoService):
+    def __init__(self, key_value_store: KeyValueStore, arango_service: BaseArangoService) -> None:
         self.key_value_store = key_value_store
         self.arango_service = arango_service
         self.logger = logging.getLogger(__name__)
         self._refresh_tasks: Dict[str, asyncio.Task] = {}
         self._running = False
 
-    async def start(self):
+    async def start(self) -> None:
         """Start the token refresh service"""
         if self._running:
             return
@@ -37,7 +37,7 @@ class TokenRefreshService:
         # Start periodic refresh check
         asyncio.create_task(self._periodic_refresh_check())
 
-    async def stop(self):
+    async def stop(self) -> None:
         """Stop the token refresh service"""
         self._running = False
 
@@ -48,7 +48,7 @@ class TokenRefreshService:
         self._refresh_tasks.clear()
         self.logger.info("Token refresh service stopped")
 
-    async def _refresh_all_tokens(self):
+    async def _refresh_all_tokens(self) -> None:
         """Refresh tokens for all active connectors"""
         try:
             # Get all active connectors from database
@@ -66,7 +66,7 @@ class TokenRefreshService:
         except Exception as e:
             self.logger.error(f"Error refreshing tokens: {e}")
 
-    async def _refresh_connector_token(self, connector_name: str):
+    async def _refresh_connector_token(self, connector_name: str) -> None:
         """Refresh token for a specific connector"""
         try:
             config_key = f"/services/connectors/{connector_name.lower()}/config"
@@ -137,7 +137,7 @@ class TokenRefreshService:
         except Exception as e:
             self.logger.error(f"Error refreshing token for {connector_name}: {e}")
 
-    async def _periodic_refresh_check(self):
+    async def _periodic_refresh_check(self) -> None:
         """Periodically check and refresh tokens"""
         while self._running:
             try:
@@ -148,11 +148,11 @@ class TokenRefreshService:
             except Exception as e:
                 self.logger.error(f"Error in periodic refresh check: {e}")
 
-    async def refresh_connector_token(self, connector_name: str):
+    async def refresh_connector_token(self, connector_name: str) -> None:
         """Manually refresh token for a specific connector"""
         await self._refresh_connector_token(connector_name)
 
-    async def schedule_token_refresh(self, connector_name: str, token: OAuthToken):
+    async def schedule_token_refresh(self, connector_name: str, token: OAuthToken) -> None:
         """Schedule token refresh for a specific connector"""
         if not token.expires_in:
             return
@@ -172,7 +172,7 @@ class TokenRefreshService:
                 self._delayed_refresh(connector_name, delay)
             )
 
-    async def _delayed_refresh(self, connector_name: str, delay: float):
+    async def _delayed_refresh(self, connector_name: str, delay: float) -> None:
         """Delayed token refresh"""
         await asyncio.sleep(delay)
         await self._refresh_connector_token(connector_name)

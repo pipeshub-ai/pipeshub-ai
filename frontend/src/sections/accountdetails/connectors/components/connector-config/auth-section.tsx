@@ -73,9 +73,7 @@ const AuthSection: React.FC<AuthSectionProps> = ({
   if (!connectorConfig) return null;
 
   const { auth } = connectorConfig.config;
-  console.log(connectorConfig);
   const { documentationLinks } = connectorConfig.config;
-  console.log(documentationLinks);
   // Simplified helper function for business OAuth support
   const customGoogleBusinessOAuth = (connectorParam: Connector, accountType: string): boolean => 
     accountType === 'business' && 

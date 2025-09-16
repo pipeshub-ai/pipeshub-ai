@@ -7,17 +7,13 @@ export const constructSyncConnectorEvent = (
   orgId: string,
   connector: string,
 ) : Event => {
-  let eventType: EventType;
-  if (connector === 'drive') {
-    eventType = EventType.SyncDriveEvent;
-  } else if (connector === 'gmail') {
-    eventType = EventType.SyncGmailEvent;
-  } else if (connector === 'onedrive') {
-    eventType = EventType.SyncOneDriveEvent;
-  } else {
-    // Default to ReindexAllRecordEvent for unsupported connectors like 'slack'
-    eventType = EventType.ReindexAllRecordEvent;
-  }
+  const eventTypeMap: Record<string, EventType> = {
+    'drive': EventType.SyncDriveEvent,
+    'gmail': EventType.SyncGmailEvent,
+    'onedrive': EventType.SyncOneDriveEvent,
+  };
+
+  const eventType = eventTypeMap[connector] || EventType.ReindexAllRecordEvent;
 
   const payload = {
     orgId: orgId,

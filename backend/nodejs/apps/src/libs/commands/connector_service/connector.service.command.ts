@@ -29,16 +29,15 @@ export class ConnectorServiceCommand<T> extends BaseCommand<ConnectorServiceResp
     super(options.uri, options.queryParams, options.headers);
     this.method = options.method;
     this.body = this.sanitizeBody(options.body);
-    this.headers = this.sanitizeHeaders(options.headers!);
+    this.headers = this.sanitizeHeaders(options.headers || {});
   }
   
   // Execute the HTTP request based on the provided options.
   public async execute(): Promise<ConnectorServiceResponse<T>> {
     const url = this.buildUrl();
-    const sanitizedHeaders = this.sanitizeHeaders(this.headers);
     const requestOptions: RequestInit = {
       method: this.method,
-      headers: sanitizedHeaders,
+      headers: this.headers,
       body: this.body,
     };
 
@@ -75,10 +74,9 @@ export class ConnectorServiceCommand<T> extends BaseCommand<ConnectorServiceResp
   // Execute streaming request
   public async executeStream(): Promise<Readable> {
     const url = this.buildUrl();
-    const sanitizedHeaders = this.sanitizeHeaders(this.headers);
     const requestOptions: RequestInit = {
       method: this.method,
-      headers: sanitizedHeaders,
+      headers: this.headers,
       body: this.body,
     };
 

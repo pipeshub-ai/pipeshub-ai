@@ -223,7 +223,7 @@ class ConnectorRegistry:
                 return False
 
             # for having same app group id for same app group
-            app_group_id = str(hashlib.sha256(metadata['appGroup'].encode()).hexdigest())
+            app_group_id = hashlib.sha256(metadata['appGroup'].encode()).hexdigest()
 
             doc = {
                 '_key': f"{org_id}_{app_name.replace(' ', '_').upper()}",
@@ -293,11 +293,14 @@ class ConnectorRegistry:
                     RETURN NEW
                 """
                 db = arango_service.db
-                db.aql.execute(query, bind_vars={
+                cursor = db.aql.execute(query, bind_vars={
                     "name": app_name,
                     "node_updates": updated_doc,
                     "@collection": self.collection_name
                 })
+                if not list(cursor):
+                    self.logger.warning(f"Failed to deactivate app {app_name}: app not found.")
+                    return False
 
                 self.logger.info(f"Deactivated app {app_name} (not in registry)")
                 return True
@@ -483,11 +486,14 @@ class ConnectorRegistry:
                 RETURN NEW
             """
             db = arango_service.db
-            db.aql.execute(query, bind_vars={
+            cursor = db.aql.execute(query, bind_vars={
                 "name": app_name,
                 "node_updates": updated_doc,
                 "@collection": self.collection_name
             })
+            if not list(cursor):
+                self.logger.warning(f"Failed to update connector for app {app_name}: app not found.")
+                return False
 
             self.logger.info(f"Updated connector for app {app_name}")
             return True

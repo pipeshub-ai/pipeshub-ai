@@ -2886,7 +2886,7 @@ export const getConnectorConfig =
     next: NextFunction,
   ) => {
     try {
-      const { connector } = (req as any).params || {};
+      const { connector } = req.params as { connector: string };
       if (!connector || typeof connector !== 'string') {
         throw new BadRequestError('connector path parameter is required');
       }

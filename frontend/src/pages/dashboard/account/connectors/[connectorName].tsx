@@ -16,9 +16,7 @@ const metadata = { title: `Connector Management` };
 // Generic connector management page
 export default function Page() {
   const { connectorName } = useParams<{ connectorName: string }>();
-  
-  console.log('ConnectorManagementPage rendered with connectorName:', connectorName);
-  
+    
   return (
     <>
       <Helmet>

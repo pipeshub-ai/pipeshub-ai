@@ -13,6 +13,7 @@ from app.api.routes.entity import router as entity_router
 from app.config.constants.arangodb import AccountType, Connectors
 from app.connectors.api.router import router
 from app.connectors.core.base.data_store.arango_data_store import ArangoDataStore
+from app.connectors.core.base.token_service.startup_service import startup_service
 from app.connectors.core.registry.connector import (
     ConfluenceConnector as ConfluenceConnectorDecorator,
 )
@@ -46,7 +47,6 @@ from app.containers.connector import (
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.connectors.core.base.token_service.startup_service import startup_service
 
 container = ConnectorAppContainer.init("connector_service")
 

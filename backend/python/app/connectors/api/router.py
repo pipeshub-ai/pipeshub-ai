@@ -43,6 +43,7 @@ from app.config.constants.http_status_code import (
 )
 from app.config.constants.service import config_node_constants
 from app.connectors.api.middleware import WebhookAuthVerifier
+from app.connectors.core.base.token_service.oauth_service import OAuthToken
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.connectors.sources.google.admin.admin_webhook_handler import (
     AdminWebhookHandler,
@@ -2338,7 +2339,7 @@ async def handle_oauth_callback_get(
     state: Optional[str] = Query(None),
     error: Optional[str] = Query(None),
     arango_service: BaseArangoService = Depends(get_arango_service),
-):
+) -> RedirectResponse:
     """GET callback handler for OAuth redirects.
     This endpoint processes the OAuth callback and redirects to the frontend with the result.
     """
@@ -2442,23 +2443,6 @@ async def handle_oauth_callback_get(
             logger.error(f"Invalid token received for {app_name}")
             return RedirectResponse(f"{frontend_url}{settings_base_path}/{connector_name}?oauth_error=invalid_token")
 
-        # Log masked token details to confirm success without exposing secrets
-        try:
-            masked_access = f"***{token.access_token[-6:]}" if token.access_token and len(token.access_token) > 6 else "***"
-            logger.info(
-                "OAuth token received for %s | access_token=%s, refresh_token_present=%s, expires_in=%s, scope=%s",
-                app_name,
-                masked_access,
-                bool(token.refresh_token),
-                str(token.expires_in),
-                token.scope,
-            )
-        except Exception:
-            # Best-effort debug log
-            logger.info("OAuth token received for %s", app_name)
-
-        # OAuth credentials are already stored by the OAuth provider's handle_callback method
-        # No need to store them again here
         logger.info(f"OAuth tokens stored successfully for {app_name}")
 
         # Refresh configuration cache so subsequent reads see latest credentials
@@ -2635,7 +2619,7 @@ async def handle_oauth_callback(
         raise HTTPException(status_code=500, detail=f"Failed to handle OAuth callback: {str(e)}")
 
 
-async def get_connector_filter_options_from_config(app_name: str, connector_config: Dict[str, Any], token_or_credentials: Any, config_service) -> Dict[str, Any]:
+async def get_connector_filter_options_from_config(app_name: str, connector_config: Dict[str, Any], token_or_credentials: OAuthToken | Dict[str, Any], config_service) -> Dict[str, Any]:
     """
     Get filter options for a connector based on its configuration by calling dynamic endpoints.
 
@@ -2682,7 +2666,7 @@ async def get_connector_filter_options_from_config(app_name: str, connector_conf
         return await _get_fallback_filter_options(app_name)
 
 
-async def _fetch_filter_options_from_api(endpoint: str, filter_type: str, token_or_credentials: Any, app_name: str) -> List[Dict[str, str]]:
+async def _fetch_filter_options_from_api(endpoint: str, filter_type: str, token_or_credentials: OAuthToken | Dict[str, Any], app_name: str) -> List[Dict[str, str]]:
     """
     Fetch filter options from a dynamic API endpoint.
 
@@ -2715,7 +2699,7 @@ async def _fetch_filter_options_from_api(endpoint: str, filter_type: str, token_
 
     async with aiohttp.ClientSession() as session:
         async with session.get(endpoint, headers=headers) as response:
-            if response.status == 200:
+            if response.status == HttpStatusCode.SUCCESS.value:
                 data = await response.json()
                 return _parse_filter_response(data, filter_type, app_name)
             else:
@@ -2924,7 +2908,6 @@ async def get_connector_filters(
                 raise HTTPException(status_code=400, detail=f"OAuth credentials not found for {app_name}. Please authenticate first.")
 
             # Create token object
-            from app.connectors.core.base.token_service.oauth_service import OAuthToken
             token_or_credentials = OAuthToken.from_dict(config['credentials'])
 
         elif auth_type == 'OAUTH_ADMIN_CONSENT':

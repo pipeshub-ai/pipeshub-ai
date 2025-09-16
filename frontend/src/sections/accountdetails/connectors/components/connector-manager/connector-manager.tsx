@@ -13,6 +13,7 @@ import {
 } from '@mui/material';
 import { Iconify } from 'src/components/iconify';
 import infoIcon from '@iconify-icons/eva/info-outline';
+import { useAccountType } from 'src/hooks/use-account-type';
 import ConnectorStatistics from '../connector-stats';
 import ConnectorConfigForm from '../connector-config/connector-config-form';
 import FilterSelectionDialog from '../filter-selection-dialog';
@@ -21,7 +22,6 @@ import ConnectorHeader from './connector-header';
 import ConnectorStatusCard from './connector-status-card';
 import ConnectorActionsSidebar from './connector-actions-sidebar';
 import ConnectorLoadingSkeleton from './connector-loading-skeleton';
-import { useAccountType } from 'src/hooks/use-account-type';
 
 interface ConnectorManagerProps {
   showStats?: boolean;
