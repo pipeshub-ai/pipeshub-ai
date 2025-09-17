@@ -3115,14 +3115,25 @@ async def toggle_connector(
                 # - OAUTH: require credentials.access_token
                 # - OAUTH_ADMIN_CONSENT: no user token required; must be configured
                 # - Others (API_TOKEN, USERNAME_PASSWORD, etc.): must be configured
-                if auth_type == "OAUTH" and not (app_name.lower() == "gmail" or app_name.lower() == "drive"):
-                    creds = (cfg or {}).get("credentials") if cfg else None
-                    if not creds or not creds.get("access_token"):
-                        logger.error(f"Connector {app_name} cannot be enabled until OAuth authentication is completed")
-                        raise HTTPException(
-                            status_code=HttpStatusCode.BAD_REQUEST.value,
-                            detail="Connector cannot be enabled until OAuth authentication is completed",
-                        )
+                org_account_type = str(org.get("accountType", "")).lower()
+                custom_google_business_logic = org_account_type == "enterprise" and app_name.upper() in ["GMAIL", "DRIVE"]
+                if auth_type == "OAUTH":
+                    if custom_google_business_logic:
+                        auth_creds = cfg.get("auth")
+                        if not auth_creds or not (auth_creds.get("client_id") and auth_creds.get("adminEmail")):
+                            logger.error(f"Connector {app_name} cannot be enabled until OAuth authentication is completed")
+                            raise HTTPException(
+                                status_code=HttpStatusCode.BAD_REQUEST.value,
+                                detail="Connector cannot be enabled until OAuth authentication is completed",
+                            )
+                    else:
+                        creds = (cfg or {}).get("credentials") if cfg else None
+                        if not creds or not creds.get("access_token"):
+                            logger.error(f"Connector {app_name} cannot be enabled until OAuth authentication is completed")
+                            raise HTTPException(
+                                status_code=HttpStatusCode.BAD_REQUEST.value,
+                                detail="Connector cannot be enabled until OAuth authentication is completed",
+                            )
                 elif auth_type == "OAUTH_ADMIN_CONSENT":
                     if not app.get("isConfigured", False):
                         logger.error(f"Connector {app_name} must be configured before enabling")

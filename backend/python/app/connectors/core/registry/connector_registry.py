@@ -386,14 +386,14 @@ class ConnectorRegistry:
                         'isActive': db_status.get('isActive', False),
                         'isConfigured': db_status.get('isConfigured', False),
                         'createdAtTimestamp': db_status.get('createdAtTimestamp'),
-                        'updatedAtTimestamp': db_status.get('updatedAtTimestamp'),
-                        # Override description and categories if they exist in DB
-                        'appDescription': db_status.get('appDescription', connector_info['appDescription']),
-                        'appCategories': db_status.get('appCategories', connector_info['appCategories']),
-                        'iconPath': db_status.get('iconPath', connector_info['iconPath']),
-                        'supportsRealtime': db_status.get('supportsRealtime', connector_info['supportsRealtime']),
-                        'supportsSync': db_status.get('supportsSync', connector_info['supportsSync'])
+                        'updatedAtTimestamp': db_status.get('updatedAtTimestamp')
                     })
+                    fields_to_override = [
+                        'appDescription', 'appCategories', 'iconPath',
+                        'supportsRealtime', 'supportsSync'
+                    ]
+                    for field in fields_to_override:
+                        connector_info[field] = db_status.get(field, connector_info[field])
             except Exception as e:
                 self.logger.debug(f"Could not get DB status for {app_name}: {e}")
 
@@ -448,15 +448,14 @@ class ConnectorRegistry:
                         'createdAtTimestamp': db_status.get('createdAtTimestamp'),
                         'updatedAtTimestamp': db_status.get('updatedAtTimestamp'),
                         'appGroupId': db_status.get('appGroupId'),
-                        # Override description and categories if they exist in DB
-                        'appDescription': db_status.get('appDescription', connector_info['appDescription']),
-                        'appCategories': db_status.get('appCategories', connector_info['appCategories']),
-                        'authType': db_status.get('authType', connector_info['authType']),
-                        'config': db_status.get('config', connector_info['config']),
-                        'iconPath': db_status.get('iconPath', connector_info['iconPath']),
-                        'supportsRealtime': db_status.get('supportsRealtime', connector_info['supportsRealtime']),
-                        'supportsSync': db_status.get('supportsSync', connector_info['supportsSync'])
                     })
+                    # Override description and categories if they exist in DB
+                    fields_to_override = [
+                        'appDescription', 'appCategories', 'iconPath',
+                        'supportsRealtime', 'supportsSync', 'authType', 'config'
+                    ]
+                    for field in fields_to_override:
+                        connector_info[field] = db_status.get(field, connector_info[field])
             except Exception as e:
                 self.logger.debug(f"Could not get DB status for {app_name}: {e}")
 
