@@ -1,5 +1,6 @@
 from typing import Any, Dict, List, Optional
-from boxsdk import OAuth2, Client
+
+from boxsdk import Client, OAuth2
 
 
 def _to_dict(obj: Any) -> Dict[str, Any]:
