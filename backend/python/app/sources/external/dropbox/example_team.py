@@ -15,6 +15,7 @@ from app.config.providers.in_memory_store import InMemoryKeyValueStore
 from app.utils.logger import create_logger
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors
+from app.models.entities import AppUser
 
 ACCESS_TOKEN = os.getenv("DROPBOX_TEAM_TOKEN")
 
@@ -26,26 +27,48 @@ async def main() -> None:
     # #list all team members
     print("\nListing team members:")
     team_members = await data_source.team_members_list()
+    # print(team_members.data.members)
 
-    print(team_members)
+    users = []
+    for member in team_members.data.members:
+        profile = member.profile
+        print(member)
+        print("\n")
+        users.append(
+            AppUser(
+                # source_user_id=member.team_member_id,
+                app_name="DROPBOX",
+                source_user_id=profile.team_member_id,
+                first_name=profile.name.given_name,
+                last_name=profile.name.surname,
+                full_name=profile.name.display_name,
+                email=profile.email,
+                is_active=(profile.status._tag == "active"),
+                title=member.role._tag,
+                
+            )
+        )
+    # print(users)
+    
+
     # for member in team_members.data["members"]:
     #     print(member)
     #     print()
     #     print()
 
-    if not team_members or not team_members.data.get("members"):
-        print("Could not find any team members.")
-        return
+    # if not team_members or not team_members.data.get("members"):
+    #     print("Could not find any team members.")
+    #     return
 
-    members = team_members.data["members"]
-    print(f"Found {len(members)} team members.")
+    # members = team_members.data["members"]
+    # print(f"Found {len(members)} team members.")
     
     #list my personal fodler
-    print("\nListing my personal folder:")
-    my_personal_folder = await data_source.files_list_folder(path="", 
-    team_member_id=members[2].source_user_id, 
-    recursive=True)
-    print(to_pretty_json(my_personal_folder))
+    # print("\nListing my personal folder:")
+    # my_personal_folder = await data_source.files_list_folder(path="", 
+    # team_member_id=members[2].source_user_id, 
+    # recursive=True)
+    # print(to_pretty_json(my_personal_folder))
 
     #list team folder
     # print("\nListing team folder:")

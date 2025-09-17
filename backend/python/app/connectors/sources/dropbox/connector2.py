@@ -32,7 +32,7 @@ from app.connectors.services.base_arango_service import BaseArangoService
 
 # App-specific Dropbox client imports
 from app.connectors.sources.dropbox.common.apps import DropboxApp
-from app.sources.client.dropbox.dropbox_ import DropboxClient, DropboxTokenConfig
+from app.sources.client.dropbox.dropbox_ import DropboxClient, DropboxResponse, DropboxTokenConfig
 
 from app.sources.external.dropbox.dropbox_ import DropboxDataSource
 
@@ -690,20 +690,43 @@ class DropboxConnector(BaseConnector):
             # step 1: fetch ans sync all users
             users = await self.data_source.team_members_list()
 
-            await self.data_entities_processor.on_new_app_users(users.data["members"])
+            app_users = self.get_app_users(users)
+
+            await self.data_entities_processor.on_new_app_users(app_users)
 
             # Step 2: fetch and sync all user groups
             #for later
 
             # Step 3: fetch and sync all user drives
             self.logger.info("Syncing User Drives")
-            await self._process_users_in_batches(users.data["members"])
+            await self._process_users_in_batches(app_users)
             
             self.logger.info("Dropbox full sync completed.")
         except Exception as ex:
-            self.logger.error("❌ Error in DropBox connector run: {ex}")
+            self.logger.error(f"❌ Error in DropBox connector run: {ex}")
             raise
+    
 
+    def get_app_users(self, users: DropboxResponse):
+        app_users: List[AppUser] = []
+        for member in users.data.members:
+            profile = member.profile
+            app_users.append(
+                AppUser(
+                    # source_user_id=member.team_member_id,
+                    app_name="DROPBOX",
+                    source_user_id=profile.team_member_id,
+                    first_name=profile.name.given_name,
+                    last_name=profile.name.surname,
+                    full_name=profile.name.display_name,
+                    email=profile.email,
+                    is_active=(profile.status._tag == "active"),
+                    title=member.role._tag,
+                    
+                )
+            )
+        return app_users
+    
     async def run_incremental_sync(self) -> None:
         """Runs an incremental sync using the last known cursor."""
         self.logger.info("Starting Dropbox incremental sync.")

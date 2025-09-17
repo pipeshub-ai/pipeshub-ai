@@ -24,7 +24,7 @@ from dropbox.paper import (  # type: ignore
 from dropbox.sharing import AccessInheritance, AccessLevel  # type: ignore
 
 from app.sources.client.dropbox.dropbox_ import DropboxClient, DropboxResponse
-from app.models.entities import AppUser, User, UserGroup
+
 
 class DropboxDataSource:
     """
@@ -9286,7 +9286,7 @@ class DropboxDataSource:
         self,
         limit: str = 1000,
         include_removed: str = False
-    ) -> List[AppUser]:
+    ) -> DropboxResponse:
         """Lists members of a team. Permission : Team information.
 
         API Endpoint: /2/team/members/list
@@ -9316,39 +9316,11 @@ class DropboxDataSource:
         client = await self._get_team_client()
         try:
             loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(
+            response = await loop.run_in_executor(
                 None,
                 lambda: client.team_members_list(limit=limit, include_removed=include_removed)
             )
-            # return result
-            # return result.cursor
-            users: List[AppUser] = []
-            for member in result.members:
-                profile = member.profile
-                users.append(
-                    AppUser(
-                        # source_user_id=member.team_member_id,
-                        app_name="DROPBOX",
-                        source_user_id=profile.team_member_id,
-                        first_name=profile.name.given_name,
-                        last_name=profile.name.surname,
-                        full_name=profile.name.display_name,
-                        email=profile.email,
-                        is_active=(profile.status._tag == "active"),
-                        title=member.role._tag,
-                        
-                    )
-                )
-
-            return DropboxResponse(
-                success=True,
-                data={
-                    "members": users,
-                    "cursor": result.cursor,
-                    "has_more": result.has_more
-                }
-            )
-            # return users
+            return DropboxResponse(success=True, data=response)
 
         except Exception as e:
             return DropboxResponse(success=False, error=str(e))
