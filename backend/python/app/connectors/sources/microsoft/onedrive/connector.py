@@ -26,6 +26,12 @@ from app.connectors.core.base.sync_point.sync_point import (
     SyncPoint,
     generate_record_sync_point_key,
 )
+from app.connectors.core.registry.connector_builder import (
+    AuthField,
+    CommonFields,
+    ConnectorBuilder,
+    DocumentationLink,
+)
 from app.connectors.sources.microsoft.common.apps import OneDriveApp
 from app.connectors.sources.microsoft.common.msgraph_client import (
     MSGraphClient,
@@ -50,6 +56,63 @@ class OneDriveCredentials:
     client_secret: str
     has_admin_consent: bool = False
 
+@ConnectorBuilder("OneDrive")\
+    .in_group("Microsoft 365")\
+    .with_auth_type("OAUTH_ADMIN_CONSENT")\
+    .with_description("Sync files and folders from OneDrive")\
+    .with_categories(["Storage"])\
+    .configure(lambda builder: builder
+        .with_icon("/assets/icons/connectors/onedrive.svg")
+        .add_documentation_link(DocumentationLink(
+            "Azure AD App Registration Setup",
+            "https://docs.microsoft.com/en-us/azure/active-directory/develop/quickstart-register-app"
+        ))
+        .with_redirect_uri("http://localhost:3000/OneDrive/oauth/callback", False)
+        .add_auth_field(AuthField(
+            name="clientId",
+            display_name="Application (Client) ID",
+            placeholder="Enter your Azure AD Application ID",
+            description="The Application (Client) ID from Azure AD App Registration"
+        ))
+        .add_auth_field(AuthField(
+            name="clientSecret",
+            display_name="Client Secret",
+            placeholder="Enter your Azure AD Client Secret",
+            description="The Client Secret from Azure AD App Registration",
+            field_type="PASSWORD",
+            is_secret=True
+        ))
+        .add_auth_field(AuthField(
+            name="tenantId",
+            display_name="Directory (Tenant) ID",
+            placeholder="Enter your Azure AD Tenant ID",
+            description="The Directory (Tenant) ID from Azure AD"
+        ))
+        .add_auth_field(AuthField(
+            name="hasAdminConsent",
+            display_name="Has Admin Consent",
+            description="Check if admin consent has been granted for the application",
+            field_type="CHECKBOX",
+            required=True,
+            default_value=False
+        ))
+        .add_auth_field(AuthField(
+            name="redirectUri",
+            display_name="Redirect URI",
+            placeholder="http://localhost:3000/OneDrive/oauth/callback",
+            description="The redirect URI for OAuth authentication",
+            field_type="URL",
+            required=False,
+            max_length=2000
+        ))
+        .add_conditional_display("redirectUri", "hasAdminConsent", "equals", False)
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_scheduled_config(True, 60)
+        .add_filter_field(CommonFields.file_types_filter(), "static")
+        .add_filter_field(CommonFields.folders_filter(),
+                          "https://graph.microsoft.com/v1.0/me/drive/root/children")
+    )\
+    .build_decorator()
 class OneDriveConnector(BaseConnector):
     def __init__(self, logger: Logger, data_entities_processor: DataSourceEntitiesProcessor,
         data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> None:
@@ -83,7 +146,7 @@ class OneDriveConnector(BaseConnector):
         if not config:
             self.logger.error("OneDrive config not found")
             raise ValueError("OneDrive config not found")
-        auth_config = config.get("auth", {}).get("values", {})
+        auth_config = config.get("auth", {})
         tenant_id = auth_config.get("tenantId")
         client_id = auth_config.get("clientId")
         client_secret = auth_config.get("clientSecret")

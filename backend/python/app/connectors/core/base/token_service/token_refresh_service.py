@@ -69,7 +69,8 @@ class TokenRefreshService:
     async def _refresh_connector_token(self, connector_name: str) -> None:
         """Refresh token for a specific connector"""
         try:
-            config_key = f"/services/connectors/{connector_name.lower()}/config"
+            filtered_app_name = connector_name.replace(" ", "").lower()
+            config_key = f"/services/connectors/{filtered_app_name}/config"
             config = await self.key_value_store.get_key(config_key)
 
             if not config or not config.get('credentials'):
@@ -105,7 +106,7 @@ class TokenRefreshService:
                 config=oauth_config,
                 key_value_store=self.key_value_store,
                 base_arango_service=self.arango_service,
-                credentials_path=f"/services/connectors/{connector_name.lower()}/config"
+                credentials_path=f"/services/connectors/{filtered_app_name}/config"
             )
 
             # Create token from stored credentials

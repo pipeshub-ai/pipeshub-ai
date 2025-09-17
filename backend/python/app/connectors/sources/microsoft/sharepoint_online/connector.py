@@ -36,6 +36,13 @@ from app.connectors.core.base.sync_point.sync_point import (
     SyncPoint,
     generate_record_sync_point_key,
 )
+from app.connectors.core.registry.connector_builder import (
+    AuthField,
+    CommonFields,
+    ConnectorBuilder,
+    DocumentationLink,
+    FilterField,
+)
 from app.connectors.sources.microsoft.common.apps import SharePointOnlineApp
 from app.connectors.sources.microsoft.common.msgraph_client import (
     MSGraphClient,
@@ -92,7 +99,69 @@ class SiteMetadata:
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
-
+@ConnectorBuilder("SharePoint Online")\
+    .in_group("Microsoft 365")\
+    .with_auth_type("OAUTH_ADMIN_CONSENT")\
+    .with_description("Sync documents and lists from SharePoint Online")\
+    .with_categories(["Storage", "Documentation"])\
+    .configure(lambda builder: builder
+        .with_icon("/assets/icons/connectors/sharepoint.svg")
+        .add_documentation_link(DocumentationLink(
+            "SharePoint Online API Setup",
+            "https://docs.microsoft.com/en-us/sharepoint/dev/sp-add-ins/register-sharepoint-add-ins"
+        ))
+        .with_redirect_uri("http://localhost:3000/SharePoint Online/oauth/callback", False)
+        .add_auth_field(AuthField(
+            name="clientId",
+            display_name="Application (Client) ID",
+            placeholder="Enter your Azure AD Application ID",
+            description="The Application (Client) ID from Azure AD App Registration"
+        ))
+        .add_auth_field(AuthField(
+            name="clientSecret",
+            display_name="Client Secret",
+            placeholder="Enter your Azure AD Client Secret",
+            description="The Client Secret from Azure AD App Registration",
+            field_type="PASSWORD",
+            is_secret=True
+        ))
+        .add_auth_field(AuthField(
+            name="tenantId",
+            display_name="Directory (Tenant) ID (Optional)",
+            placeholder="Enter your Azure AD Tenant ID",
+            description="The Directory (Tenant) ID from Azure AD"
+        ))
+        .add_auth_field(AuthField(
+            name="hasAdminConsent",
+            display_name="Has Admin Consent",
+            description="Check if admin consent has been granted for the application",
+            field_type="CHECKBOX",
+            required=True,
+            default_value=False
+        ))
+        .add_auth_field(AuthField(
+            name="sharepointDomain",
+            display_name="SharePoint Domain",
+            placeholder="https://your-domain.sharepoint.com",
+            description="Your SharePoint domain URL",
+            field_type="URL",
+            max_length=2000
+        ))
+        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_scheduled_config(True, 60)
+        .add_filter_field(FilterField(
+            name="sites",
+            display_name="SharePoint Sites",
+            description="Select SharePoint sites to sync content from"
+        ), "https://graph.microsoft.com/v1.0/sites")
+        .add_filter_field(FilterField(
+            name="documentLibraries",
+            display_name="Document Libraries",
+            description="Select document libraries to sync from"
+        ), "https://graph.microsoft.com/v1.0/sites/{siteId}/drives")
+        .add_filter_field(CommonFields.file_types_filter(), "static")
+    )\
+    .build_decorator()
 class SharePointConnector(BaseConnector):
     """
     Complete SharePoint Online Connector implementation with robust error handling,
@@ -147,12 +216,15 @@ class SharePointConnector(BaseConnector):
         }
 
     async def init(self) -> None:
-        credentials_config = await self.config_service.get_config("/services/connectors/sharepoint/config") or \
-                            await self.config_service.get_config(f"/services/connectors/sharepoint/config/{self.data_entities_processor.org_id}")
+        config = await self.config_service.get_config("/services/connectors/sharepointonline/config") or \
+                            await self.config_service.get_config(f"/services/connectors/sharepointonline/config/{self.data_entities_processor.org_id}")
+        if not config:
+            self.logger.error("❌ SharePoint Online credentials not found")
+            raise ValueError("SharePoint Online credentials not found")
+        credentials_config = config.get("auth",{})
         if not credentials_config:
             self.logger.error("❌ SharePoint Online credentials not found")
             raise ValueError("SharePoint Online credentials not found")
-
         tenant_id = credentials_config.get("tenantId")
         client_id = credentials_config.get("clientId")
         client_secret = credentials_config.get("clientSecret")

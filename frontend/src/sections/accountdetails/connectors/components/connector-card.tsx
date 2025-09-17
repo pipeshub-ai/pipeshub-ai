@@ -96,7 +96,7 @@ const ConnectorCard = ({ connector }: ConnectorCardProps) => {
       return;
     }
     // If already configured, navigate to the management page
-    navigate(`${connector.name.toLowerCase()}`);
+    navigate(`${connector.name}`);
   };
 
   const handleConfigFormClose = () => {
@@ -106,7 +106,7 @@ const ConnectorCard = ({ connector }: ConnectorCardProps) => {
   const handleConfigSuccess = () => {
     setIsConfigFormOpen(false);
     // Optionally refresh the connector data or show success message
-    navigate(`${connector.name.toLowerCase()}`);
+    navigate(`${connector.name}`);
   };
 
   return (

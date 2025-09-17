@@ -2076,7 +2076,8 @@ async def get_connector_config(
         # Load config from etcd (may be empty on first load)
         try:
             config_service = container.config_service()
-            config_key: str = f"/services/connectors/{app_name.lower()}/config"
+            filtered_app_name = app_name.replace(" ", "").lower()
+            config_key: str = f"/services/connectors/{filtered_app_name}/config"
             config: Optional[Dict[str, Any]] = await config_service.get_config(config_key)
         except Exception as e:
             logger.error(f"Failed to load config from etcd for {app_name}: {e}")
@@ -2224,7 +2225,8 @@ async def get_oauth_authorization_url(
 
         # Get OAuth configuration from etcd
         config_service = container.config_service()
-        config_key = f"/services/connectors/{app_name.lower()}/config"
+        filtered_app_name = app_name.replace(" ", "").lower()
+        config_key = f"/services/connectors/{filtered_app_name}/config"
         config = await config_service.get_config(config_key)
 
         if not config or not config.get('auth'):
@@ -2265,7 +2267,7 @@ async def get_oauth_authorization_url(
             config=oauth_config,
             key_value_store=container.key_value_store(),
             base_arango_service=arango_service,
-            credentials_path=f"/services/connectors/{app_name.lower()}/config"
+            credentials_path=f"/services/connectors/{filtered_app_name}/config"
         )
 
         # Generate authorization URL using OAuth provider
@@ -2370,7 +2372,8 @@ async def handle_oauth_callback_get(
 
         # Get OAuth configuration
         config_service = container.config_service()
-        config_key = f"/services/connectors/{app_name.lower()}/config"
+        filtered_app_name = app_name.replace(" ", "").lower()
+        config_key = f"/services/connectors/{filtered_app_name}/config"
         config = await config_service.get_config(config_key)
 
         if not config or not config.get('auth'):
@@ -2412,7 +2415,7 @@ async def handle_oauth_callback_get(
             config=oauth_config,
             key_value_store=container.key_value_store(),
             base_arango_service=arango_service,
-            credentials_path=f"/services/connectors/{app_name.lower()}/config"
+            credentials_path=f"/services/connectors/{filtered_app_name}/config"
         )
 
         # Exchange code for token using OAuth provider
@@ -2432,9 +2435,9 @@ async def handle_oauth_callback_get(
         try:
             config_service = container.config_service()
             kv_store = container.key_value_store()
-            updated_config = await kv_store.get_key(f"/services/connectors/{app_name.lower()}/config")
+            updated_config = await kv_store.get_key(f"/services/connectors/{filtered_app_name}/config")
             if isinstance(updated_config, dict):
-                await config_service.set_config(f"/services/connectors/{app_name.lower()}/config", updated_config)
+                await config_service.set_config(f"/services/connectors/{filtered_app_name}/config", updated_config)
                 logger.info(f"Refreshed config cache for {app_name} after OAuth callback")
         except Exception as cache_err:
             logger.warning(f"Could not refresh config cache for {app_name}: {cache_err}")
@@ -2445,7 +2448,7 @@ async def handle_oauth_callback_get(
                 TokenRefreshService,
             )
             refresh_service = TokenRefreshService(container.key_value_store(), arango_service)
-            await refresh_service.schedule_token_refresh(app_name, token)
+            await refresh_service.schedule_token_refresh(app_name.replace(" ", "").lower(), token)
             logger.info(f"Scheduled token refresh for {app_name}")
         except Exception as sched_err:
             logger.warning(f"Could not schedule token refresh for {app_name}: {sched_err}")
@@ -2504,7 +2507,8 @@ async def handle_oauth_callback(
 
         # Get OAuth configuration
         config_service = container.config_service()
-        config_key = f"/services/connectors/{app_name.lower()}/config"
+        filtered_app_name = app_name.replace(" ", "").lower()
+        config_key = f"/services/connectors/{filtered_app_name}/config"
         config = await config_service.get_config(config_key)
 
         if not config or not config.get('auth'):
@@ -2546,7 +2550,7 @@ async def handle_oauth_callback(
             config=oauth_config,
             key_value_store=container.key_value_store(),
             base_arango_service=arango_service,
-            credentials_path=f"/services/connectors/{app_name.lower()}/config"
+            credentials_path=f"/services/connectors/{filtered_app_name}/config"
         )
 
         # Exchange code for token using OAuth provider
@@ -2584,7 +2588,7 @@ async def handle_oauth_callback(
                 TokenRefreshService,
             )
             refresh_service = TokenRefreshService(container.key_value_store(), arango_service)
-            await refresh_service.schedule_token_refresh(app_name, token)
+            await refresh_service.schedule_token_refresh(app_name.replace(" ", "").lower(), token)
         except Exception as e:
             logger.warning(f"Could not schedule token refresh for {app_name}: {e}")
 
@@ -2880,7 +2884,8 @@ async def get_connector_filters(
         # Get credentials based on auth type
         config_service = container.config_service()
         auth_type = connector_config.get('authType', '').upper()
-        config_key = f"/services/connectors/{app_name.lower()}/config"
+        filtered_app_name = app_name.replace(" ", "").lower()
+        config_key = f"/services/connectors/{filtered_app_name}/config"
         config = await config_service.get_config(config_key)
 
         token_or_credentials = None
@@ -2956,7 +2961,8 @@ async def save_connector_filters(
 
         # Get current config
         config_service = container.config_service()
-        config_key = f"/services/connectors/{app_name.lower()}/config"
+        filtered_app_name = app_name.replace(" ", "").lower()
+        config_key = f"/services/connectors/{filtered_app_name}/config"
         config = await config_service.get_config(config_key)
 
         if not config:
@@ -3011,7 +3017,8 @@ async def update_connector_config(
 
     try:
         config_service = container.config_service()
-        config_key: str = f"/services/connectors/{app_name.lower()}/config"
+        filtered_app_name = app_name.replace(" ", "").lower()
+        config_key: str = f"/services/connectors/{filtered_app_name}/config"
 
         # Load existing (unused now; we overwrite sections and clear auth artifacts)
         try:
@@ -3109,7 +3116,8 @@ async def toggle_connector(
             if not current_status:  # enabling
                 auth_type = (app.get("authType") or "").upper()
                 config_service = container.config_service()
-                config_key = f"/services/connectors/{app_name.lower()}/config"
+                filtered_app_name = app_name.replace(" ", "").lower()
+                config_key = f"/services/connectors/{filtered_app_name}/config"
                 cfg = await config_service.get_config(config_key)
                 # Allow enabling rules:
                 # - OAUTH: require credentials.access_token
@@ -3179,10 +3187,11 @@ async def toggle_connector(
             raise HTTPException(status_code=500, detail=f"Failed to update connector {app_name}")
 
         # Prepare event messaging
-        event_type: str = "app_enabled" if new_status else "app_disabled"
+        event_type: str = "appEnabled" if new_status else "appDisabled"
 
         # Determine credentials routes based on account type
-        credentials_route: str = f"api/v1/configurationManager/internal/connectors/{app_name.lower()}/config"
+        filtered_app_name = app_name.replace(" ", "").lower()
+        credentials_route: str = f"api/v1/configurationManager/internal/connectors/{filtered_app_name}/config"
 
         # Build message payload
         payload: Dict[str, Any] = {
@@ -3190,7 +3199,7 @@ async def toggle_connector(
             "appGroup": app["appGroup"],
             "appGroupId": app["appGroupId"],
             "credentialsRoute": credentials_route,
-            "apps": [app_name],
+            "apps": [app_name.replace(" ", "").lower()],
             "syncAction": "immediate",
         }
 
@@ -3201,7 +3210,7 @@ async def toggle_connector(
         }
 
         # Send message to sync-events topic
-        await producer.send_message(topic='sync-events', message=message)
+        await producer.send_message(topic='entity-events', message=message)
 
         return {"success": True, "message": f"Connector {app_name} toggled successfully"}
 

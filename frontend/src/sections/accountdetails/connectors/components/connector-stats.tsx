@@ -122,7 +122,7 @@ const ConnectorStatistics = ({
     return list
       .map((n) => String(n).trim())
       .filter((n) => n.length > 0)
-      .map((n) => n.toUpperCase());
+      .map((n) => n);
   }, [connectorNames]);
 
   // Stable key built from content, not reference
@@ -152,7 +152,7 @@ const ConnectorStatistics = ({
         const responses = await Promise.all(
           connectorsToFetch.map(async (name) => {
             try {
-              const key = name.toUpperCase();
+              const key = name;
               const apiUrl =
                 key === 'KNOWLEDGE_BASE' || key === 'UPLOAD'
                   ? '/api/v1/knowledgeBase/stats/KB'

@@ -259,8 +259,8 @@ export const useConnectorConfig = ({
 
         // Fetch both config and schema
         const [configResponse, schemaResponse] = await Promise.all([
-          ConnectorApiService.getConnectorConfig(connector.name.toUpperCase()),
-          ConnectorApiService.getConnectorSchema(connector.name.toUpperCase()),
+          ConnectorApiService.getConnectorConfig(connector.name),
+          ConnectorApiService.getConnectorSchema(connector.name),
         ]);
 
         // Use simplified config merger
@@ -585,7 +585,7 @@ export const useConnectorConfig = ({
       }
 
       await ConnectorApiService.updateConnectorConfig(
-        connector.name.toUpperCase(),
+        connector.name,
         configToSave as any
       );
 

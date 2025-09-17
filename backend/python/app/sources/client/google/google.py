@@ -289,5 +289,5 @@ class GoogleClient(IClient):
         app_name: str = "DRIVE",
     ) -> dict[str, Any]:
         """Handle enterprise token for a specific connector."""
-        config = await config_service.get_config(f"/services/connectors/{app_name.lower()}/config")
+        config = await config_service.get_config(f"/services/connectors/{app_name.replace(" ", "").lower()}/config")
         return config.get("auth", {})

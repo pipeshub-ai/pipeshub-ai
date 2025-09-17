@@ -89,7 +89,7 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
 
       // Fetch connector configuration
       try {
-        const config = await ConnectorApiService.getConnectorConfig(connectorName.toUpperCase());
+        const config = await ConnectorApiService.getConnectorConfig(connectorName);
         setConnectorConfig(config);
 
         // Use simplified authentication check
@@ -195,7 +195,7 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
           if (event.data.type === 'OAUTH_SUCCESS' && event.data.connector === connector.name) {
             try {
               // OAuth completed successfully
-              const refreshed = await ConnectorApiService.getConnectorConfig(connector.name.toUpperCase());
+              const refreshed = await ConnectorApiService.getConnectorConfig(connector.name);
               setConnectorConfig(refreshed);
               setIsAuthenticated(true);
               
@@ -322,7 +322,7 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
       // OAuth was successful, refresh the connector data and show filter dialog
       const handleOAuthSuccess = async () => {
         try {
-          const refreshed = await ConnectorApiService.getConnectorConfig(urlConnectorName.toUpperCase());
+          const refreshed = await ConnectorApiService.getConnectorConfig(urlConnectorName);
           setConnectorConfig(refreshed);
           setIsAuthenticated(true);
           
