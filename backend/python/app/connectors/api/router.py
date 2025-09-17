@@ -3192,7 +3192,7 @@ async def toggle_connector(
         event_type: str = "appEnabled" if new_status else "appDisabled"
 
         # Determine credentials routes based on account type
-        filtered_app_name = app_name.replace(" ", "").lower()
+        filtered_app_name = _sanitize_app_name(app_name)
         credentials_route: str = f"api/v1/configurationManager/internal/connectors/{filtered_app_name}/config"
 
         # Build message payload
@@ -3201,7 +3201,7 @@ async def toggle_connector(
             "appGroup": app["appGroup"],
             "appGroupId": app["appGroupId"],
             "credentialsRoute": credentials_route,
-            "apps": [app_name.replace(" ", "").lower()],
+            "apps": [filtered_app_name],
             "syncAction": "immediate",
         }
 
