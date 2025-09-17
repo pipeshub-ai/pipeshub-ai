@@ -33,14 +33,14 @@ def convert_record_dict_to_record(record_dict: dict) -> Record:
             if conn_name_value is not None
             else Connectors.KNOWLEDGE_BASE
         )
-    except Exception:
+    except ValueError:
         # Fallback to KB if an unexpected value is present
         connector_name = Connectors.KNOWLEDGE_BASE
 
     origin_value = record_dict.get("origin", OriginTypes.UPLOAD.value)
     try:
         origin = OriginTypes(origin_value)
-    except Exception:
+    except ValueError:
         origin = OriginTypes.UPLOAD
 
     mime_value = record_dict.get("mimeType")
@@ -48,7 +48,7 @@ def convert_record_dict_to_record(record_dict: dict) -> Record:
     if mime_value is not None:
         try:
             mime_type = MimeTypes(mime_value)
-        except Exception:
+        except ValueError:
             mime_type = None
 
     record = Record(
