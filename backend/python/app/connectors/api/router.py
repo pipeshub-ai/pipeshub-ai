@@ -104,6 +104,8 @@ def _parse_comma_separated_str(value: Optional[str]) -> Optional[List[str]]:
         return None
     return [item.strip() for item in value.split(',') if item.strip()]
 
+def _sanitize_app_name(app_name: str) -> str:
+    return app_name.replace(" ", "").lower()
 
 @router.post("/drive/webhook")
 @inject
@@ -2076,7 +2078,7 @@ async def get_connector_config(
         # Load config from etcd (may be empty on first load)
         try:
             config_service = container.config_service()
-            filtered_app_name = app_name.replace(" ", "").lower()
+            filtered_app_name = _sanitize_app_name(app_name)
             config_key: str = f"/services/connectors/{filtered_app_name}/config"
             config: Optional[Dict[str, Any]] = await config_service.get_config(config_key)
         except Exception as e:
@@ -2225,7 +2227,7 @@ async def get_oauth_authorization_url(
 
         # Get OAuth configuration from etcd
         config_service = container.config_service()
-        filtered_app_name = app_name.replace(" ", "").lower()
+        filtered_app_name = _sanitize_app_name(app_name)
         config_key = f"/services/connectors/{filtered_app_name}/config"
         config = await config_service.get_config(config_key)
 
@@ -2372,7 +2374,7 @@ async def handle_oauth_callback_get(
 
         # Get OAuth configuration
         config_service = container.config_service()
-        filtered_app_name = app_name.replace(" ", "").lower()
+        filtered_app_name = _sanitize_app_name(app_name)
         config_key = f"/services/connectors/{filtered_app_name}/config"
         config = await config_service.get_config(config_key)
 
@@ -2448,7 +2450,7 @@ async def handle_oauth_callback_get(
                 TokenRefreshService,
             )
             refresh_service = TokenRefreshService(container.key_value_store(), arango_service)
-            await refresh_service.schedule_token_refresh(app_name.replace(" ", "").lower(), token)
+            await refresh_service.schedule_token_refresh(_sanitize_app_name(app_name), token)
             logger.info(f"Scheduled token refresh for {app_name}")
         except Exception as sched_err:
             logger.warning(f"Could not schedule token refresh for {app_name}: {sched_err}")
@@ -2507,7 +2509,7 @@ async def handle_oauth_callback(
 
         # Get OAuth configuration
         config_service = container.config_service()
-        filtered_app_name = app_name.replace(" ", "").lower()
+        filtered_app_name = _sanitize_app_name(app_name)
         config_key = f"/services/connectors/{filtered_app_name}/config"
         config = await config_service.get_config(config_key)
 
@@ -2884,7 +2886,7 @@ async def get_connector_filters(
         # Get credentials based on auth type
         config_service = container.config_service()
         auth_type = connector_config.get('authType', '').upper()
-        filtered_app_name = app_name.replace(" ", "").lower()
+        filtered_app_name = _sanitize_app_name(app_name)
         config_key = f"/services/connectors/{filtered_app_name}/config"
         config = await config_service.get_config(config_key)
 
@@ -2961,7 +2963,7 @@ async def save_connector_filters(
 
         # Get current config
         config_service = container.config_service()
-        filtered_app_name = app_name.replace(" ", "").lower()
+        filtered_app_name = _sanitize_app_name(app_name)
         config_key = f"/services/connectors/{filtered_app_name}/config"
         config = await config_service.get_config(config_key)
 
@@ -3017,7 +3019,7 @@ async def update_connector_config(
 
     try:
         config_service = container.config_service()
-        filtered_app_name = app_name.replace(" ", "").lower()
+        filtered_app_name = _sanitize_app_name(app_name)
         config_key: str = f"/services/connectors/{filtered_app_name}/config"
 
         # Load existing (unused now; we overwrite sections and clear auth artifacts)
@@ -3116,7 +3118,7 @@ async def toggle_connector(
             if not current_status:  # enabling
                 auth_type = (app.get("authType") or "").upper()
                 config_service = container.config_service()
-                filtered_app_name = app_name.replace(" ", "").lower()
+                filtered_app_name = _sanitize_app_name(app_name)
                 config_key = f"/services/connectors/{filtered_app_name}/config"
                 cfg = await config_service.get_config(config_key)
                 # Allow enabling rules:
