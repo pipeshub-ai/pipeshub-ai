@@ -1,282 +1,147 @@
-import json
-from typing import Any, Dict, Optional, Union
-
-from app.sources.client.box.box import BoxClient
-from app.sources.client.http.http_request import HTTPRequest
-from app.sources.client.http.http_response import HTTPResponse
+from typing import Any, Dict, List, Optional
+from boxsdk import OAuth2, Client
 
 
-class BoxDataSource:
-    def __init__(self, client: BoxClient) -> None:
-        self._client = client.get_client()
-        if self._client is None:
-            raise ValueError("HTTP client is not initialized")
-        try:
-            self.base_url = self._client.get_base_url().rstrip("/")
-        except AttributeError as exc:
-            raise ValueError("HTTP client does not have get_base_url method") from exc
+def _to_dict(obj: Any) -> Dict[str, Any]:
+    """Convert Box SDK object to dict safely."""
+    if hasattr(obj, "id") and hasattr(obj, "type"):
+        return {
+            "id": getattr(obj, "id", None),
+            "type": getattr(obj, "type", None),
+            "name": getattr(obj, "name", None),
+            "login": getattr(obj, "login", None),
+        }
+    return {"raw": str(obj)}
 
-    def _auth_headers(self, headers: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        if self._client is None:
-            raise ValueError("HTTP client is not initialized")
-        _headers: Dict[str, Any] = dict(headers or {})
-        _headers["Authorization"] = f"Bearer {self._client.access_token}"
-        return _headers
 
-    def get_data_source(self) -> "BoxDataSource":
-        return self
+class BoxDataSourceBase:
+    """
+    Base class containing all Box API operations.
+    Auth is handled by child classes.
+    """
 
-    # ---------------- Core Requests ----------------
-    async def _request(
-        self,
-        method: str,
-        endpoint: str,
-        headers: Optional[Dict[str, Any]] = None,
-        query_params: Optional[Dict[str, Any]] = None,
-        body: Optional[dict] = None,
-        multipart: Optional[dict] = None,
-    ) -> HTTPResponse:
-        url = f"{self.base_url}{endpoint}"
-        req_kwargs = dict(
-            method=method,
-            url=url,
-            headers=self._auth_headers(headers),
-            path_params={},
-            query_params=query_params or {},
-        )
-        if multipart:
-            req_kwargs["multipart"] = multipart
-        else:
-            req_kwargs["body"] = body
-        req = HTTPRequest(**req_kwargs)
-        return await self._client.execute(req)
+    def __init__(self, client: Client):
+        self.client = client
 
     # ---------------- Users ----------------
-    async def get_user_info(self, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("GET", "/users/me", headers)
+    def get_user_info(self) -> Dict[str, Any]:
+        return _to_dict(self.client.user().get())
 
-    async def list_users(self, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("GET", "/users", headers)
+    def get_user(self, user_id: str) -> Dict[str, Any]:
+        return _to_dict(self.client.user(user_id=user_id).get())
 
-    async def get_user(self, user_id: str, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("GET", f"/users/{user_id}", headers)
-
-    async def update_user(self, user_id: str, data: dict, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("PUT", f"/users/{user_id}", headers, body=data)
+    def list_users(self, limit: int = 100) -> List[Dict[str, Any]]:
+        return [_to_dict(u) for u in self.client.users(limit=limit)]
 
     # ---------------- Folders ----------------
-    async def list_folder_items(self, folder_id: str = "0", headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("GET", f"/folders/{folder_id}/items", headers)
+    def list_folder_items(self, folder_id: str = "0", limit: int = 100) -> List[Dict[str, Any]]:
+        return [_to_dict(item) for item in self.client.folder(folder_id).get_items(limit=limit)]
 
-    async def create_folder(self, name: str, parent_id: str = "0", headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        body = {"name": name, "parent": {"id": parent_id}}
-        return await self._request("POST", "/folders", headers, body=body)
+    def create_folder(self, name: str, parent_id: str = "0") -> Dict[str, Any]:
+        return _to_dict(self.client.folder(parent_id).create_subfolder(name))
 
-    async def get_folder_info(self, folder_id: str, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("GET", f"/folders/{folder_id}", headers)
+    def get_folder_info(self, folder_id: str) -> Dict[str, Any]:
+        return _to_dict(self.client.folder(folder_id).get())
 
-    async def update_folder(self, folder_id: str, data: dict, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("PUT", f"/folders/{folder_id}", headers, body=data)
-
-    async def delete_folder(self, folder_id: str, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("DELETE", f"/folders/{folder_id}", headers)
-
-    async def copy_folder(self, folder_id: str, parent_id: str, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        body = {"parent": {"id": parent_id}}
-        return await self._request("POST", f"/folders/{folder_id}/copy", headers, body=body)
-
-    async def move_folder(self, folder_id: str, parent_id: str, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        body = {"parent": {"id": parent_id}}
-        return await self._request("PUT", f"/folders/{folder_id}", headers, body=body)
+    def delete_folder(self, folder_id: str, recursive: bool = True) -> None:
+        self.client.folder(folder_id).delete(recursive=recursive)
 
     # ---------------- Files ----------------
-    async def upload_file(
-        self,
-        folder_id: str,
-        file_name: str,
-        file_content: bytes,
-        headers: Optional[Dict[str, Any]] = None
-    ) -> HTTPResponse:
-        url = f"{self.base_url}/files/content"
-        multipart = {
-            "attributes": json.dumps({
-                "name": file_name,
-                "parent": {"id": folder_id}
-            }),
-            # This matches the (filename, bytes, content_type) convention in HTTPClient
-            "file": (file_name, file_content, "application/octet-stream"),
-        }
+    def upload_file(self, folder_id: str, file_path: str) -> Dict[str, Any]:
+        return _to_dict(self.client.folder(folder_id).upload(file_path))
 
-        req = HTTPRequest(
-            method="POST",
-            url=url,
-            headers=self._auth_headers(headers),
-            multipart=multipart,
-        )
-        return await self._client.execute(req)
+    def download_file(self, file_id: str, destination_path: str) -> None:
+        with open(destination_path, "wb") as f:
+            self.client.file(file_id).download_to(f)
 
-    # ---------------- Create Collaboration (missing in original) ----------------
-    async def create_collaboration(self, folder_id: str, accessible_by: dict, role: str, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        body = {
-            "item": {"type": "folder", "id": folder_id},
-            "accessible_by": accessible_by,
-            "role": role
-        }
-        return await self._request("POST", "/collaborations", headers, body=body)
+    def get_file_info(self, file_id: str) -> Dict[str, Any]:
+        return _to_dict(self.client.file(file_id).get())
 
-    # ---------------- Helper to extract response body ----------------
-    @staticmethod
-    def extract_body(response: HTTPResponse) -> Union[dict, str, bytes]:
-        """
-        Usage:
-            resp = await data_source.get_user_info()
-            print(BoxDataSource.extract_body(resp))
-            # Or pretty:
-            # import json; print(json.dumps(BoxDataSource.extract_body(resp), indent=2))
-        """
-        if hasattr(response, 'json') and response.is_json:
-            try:
-                return response.json()
-            except Exception:
-                return response.text()
-        try:
-            return response.text()
-        except Exception:
-            return response.bytes()
-
-    async def download_file(self, file_id: str, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("GET", f"/files/{file_id}/content", headers)
-
-    async def delete_file(self, file_id: str, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("DELETE", f"/files/{file_id}", headers)
-
-    async def get_file_info(self, file_id: str, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("GET", f"/files/{file_id}", headers)
-
-    async def update_file(self, file_id: str, data: dict, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("PUT", f"/files/{file_id}", headers, body=data)
-
-    async def copy_file(self, file_id: str, parent_id: str, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        body = {"parent": {"id": parent_id}}
-        return await self._request("POST", f"/files/{file_id}/copy", headers, body=body)
-
-    async def move_file(self, file_id: str, parent_id: str, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        body = {"parent": {"id": parent_id}}
-        return await self._request("PUT", f"/files/{file_id}", headers, body=body)
-
-    async def lock_file(self, file_id: str, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        body = {"lock": {"type": "lock"}}
-        return await self._request("PUT", f"/files/{file_id}", headers, body=body)
-
-    async def unlock_file(self, file_id: str, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        body = {"lock": None}
-        return await self._request("PUT", f"/files/{file_id}", headers, body=body)
-
-    # ---------------- Collaborations ----------------
-    async def add_collaborator(self, item_id: str, item_type: str, data: dict, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        body = {"item": {"id": item_id, "type": item_type}, **data}
-        return await self._request("POST", "/collaborations", headers, body=body)
-
-    async def update_collaborator(self, collaboration_id: str, data: dict, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("PUT", f"/collaborations/{collaboration_id}", headers, body=data)
-
-    async def remove_collaborator(self, collaboration_id: str, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("DELETE", f"/collaborations/{collaboration_id}", headers)
-
-    # ---------------- Comments ----------------
-    async def add_comment(self, item_id: str, item_type: str, message: str, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        body = {"item": {"id": item_id, "type": item_type}, "message": message}
-        return await self._request("POST", "/comments", headers, body=body)
-
-    async def get_comment(self, comment_id: str, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("GET", f"/comments/{comment_id}", headers)
-
-    async def delete_comment(self, comment_id: str, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("DELETE", f"/comments/{comment_id}", headers)
-
-    # ---------------- Tasks ----------------
-    async def create_task(self, item_id: str, item_type: str, action: str, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        body = {"item": {"id": item_id, "type": item_type}, "action": action}
-        return await self._request("POST", "/tasks", headers, body=body)
-
-    async def get_task(self, task_id: str, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("GET", f"/tasks/{task_id}", headers)
-
-    async def update_task(self, task_id: str, data: dict, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("PUT", f"/tasks/{task_id}", headers, body=data)
-
-    async def delete_task(self, task_id: str, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("DELETE", f"/tasks/{task_id}", headers)
-
-    # ---------------- Webhooks ----------------
-    async def create_webhook(self, data: dict, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("POST", "/webhooks", headers, body=data)
-
-    async def get_webhook(self, webhook_id: str, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("GET", f"/webhooks/{webhook_id}", headers)
-
-    async def update_webhook(self, webhook_id: str, data: dict, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("PUT", f"/webhooks/{webhook_id}", headers, body=data)
-
-    async def delete_webhook(self, webhook_id: str, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("DELETE", f"/webhooks/{webhook_id}", headers)
-
-    # ---------------- Metadata ----------------
-    async def get_metadata(self, file_id: str, scope: str, template_key: str, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("GET", f"/files/{file_id}/metadata/{scope}/{template_key}", headers)
-
-    async def create_metadata(self, file_id: str, scope: str, template_key: str, data: dict, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("POST", f"/files/{file_id}/metadata/{scope}/{template_key}", headers, body=data)
-
-    async def update_metadata(self, file_id: str, scope: str, template_key: str, data: dict, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("PUT", f"/files/{file_id}/metadata/{scope}/{template_key}", headers, body=data)
-
-    async def delete_metadata(self, file_id: str, scope: str, template_key: str, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("DELETE", f"/files/{file_id}/metadata/{scope}/{template_key}", headers)
-
-    # ---------------- Search ----------------
-    async def search(self, query: str, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("GET", "/search", headers, query_params={"query": query})
+    def delete_file(self, file_id: str) -> None:
+        self.client.file(file_id).delete()
 
     # ---------------- Groups ----------------
-    async def list_groups(self, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("GET", "/groups", headers)
+    def list_groups(self, limit: int = 100) -> List[Dict[str, Any]]:
+        return [_to_dict(g) for g in self.client.groups(limit=limit)]
 
-    async def get_group(self, group_id: str, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("GET", f"/groups/{group_id}", headers)
+    def get_group(self, group_id: str) -> Dict[str, Any]:
+        return _to_dict(self.client.group(group_id=group_id).get())
 
-    # ---------------- Collections ----------------
-    async def list_collections(self, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("GET", "/collections", headers)
+    # ---------------- Collaborations ----------------
+    def list_collaborations(self, item_id: str, item_type: str = "folder") -> List[Dict[str, Any]]:
+        if item_type == "folder":
+            return [_to_dict(c) for c in self.client.folder(item_id).get_collaborations()]
+        elif item_type == "file":
+            return [_to_dict(c) for c in self.client.file(item_id).get_collaborations()]
+        else:
+            raise ValueError("item_type must be 'file' or 'folder'")
 
-    # ---------------- Shared Links ----------------
-    async def create_shared_link(self, file_id: str, data: dict, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("PUT", f"/files/{file_id}", headers, body=data)
+    def add_collaboration(self, item_id: str, user_login: str, role: str, item_type: str = "folder") -> Dict[str, Any]:
+        if item_type == "folder":
+            return _to_dict(self.client.folder(item_id).collaborate(user_login, role))
+        elif item_type == "file":
+            return _to_dict(self.client.file(item_id).collaborate(user_login, role))
+        else:
+            raise ValueError("item_type must be 'file' or 'folder'")
 
-    # ---------------- Events ----------------
-    async def get_events(self, stream_position: str = "now", headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("GET", "/events", headers, query_params={"stream_position": stream_position})
+    # ---------------- Tasks ----------------
+    def list_file_tasks(self, file_id: str) -> List[Dict[str, Any]]:
+        return [_to_dict(t) for t in self.client.file(file_id).get_tasks()]
 
-    # ---------------- Retention ----------------
-    async def get_retention_policy(self, policy_id: str, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("GET", f"/retention_policies/{policy_id}", headers)
+    def create_task(self, file_id: str, message: str, due_at: Optional[str] = None) -> Dict[str, Any]:
+        return _to_dict(self.client.file(file_id).add_task(message=message, due_at=due_at))
 
-    # ---------------- Legal Holds ----------------
-    async def get_legal_hold(self, legal_hold_id: str, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("GET", f"/legal_holds/{legal_hold_id}", headers)
+    # ---------------- Comments ----------------
+    def list_file_comments(self, file_id: str) -> List[Dict[str, Any]]:
+        return [_to_dict(c) for c in self.client.file(file_id).get_comments()]
 
-    # ---------------- Watermarking ----------------
-    async def apply_watermark(self, file_id: str, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        body = {"watermark": {"imprint": "default"}}
-        return await self._request("PUT", f"/files/{file_id}/watermark", headers, body=body)
+    def add_comment(self, file_id: str, message: str) -> Dict[str, Any]:
+        return _to_dict(self.client.file(file_id).add_comment(message))
 
-    async def remove_watermark(self, file_id: str, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("DELETE", f"/files/{file_id}/watermark", headers)
+    # ---------------- Web Links ----------------
+    def create_web_link(self, parent_id: str, url: str, name: str, description: str = "") -> Dict[str, Any]:
+        return _to_dict(self.client.folder(parent_id).create_web_link(url=url, name=name, description=description))
 
-    # ---------------- Skills ----------------
-    async def get_skill_invocation(self, skill_id: str, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("GET", f"/skill_invocations/{skill_id}", headers)
+    def get_web_link(self, link_id: str) -> Dict[str, Any]:
+        return _to_dict(self.client.web_link(link_id).get())
 
-    # ---------------- AI ----------------
-    async def ai_ask_question(self, data: dict, headers: Optional[Dict[str, Any]] = None) -> HTTPResponse:
-        return await self._request("POST", "/ai/ask", headers, body=data)
+    def delete_web_link(self, link_id: str) -> None:
+        self.client.web_link(link_id).delete()
+
+    # ---------------- Webhooks ----------------
+    def create_webhook(self, target_id: str, target_type: str, triggers: List[str], address: str) -> Dict[str, Any]:
+        return _to_dict(self.client.create_webhook(target=(target_type, target_id), triggers=triggers, address=address))
+
+    def delete_webhook(self, webhook_id: str) -> None:
+        self.client.webhook(webhook_id).delete()
+
+    # ---------------- Search ----------------
+    def search(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+        return [_to_dict(item) for item in self.client.search().query(query, limit=limit)]
+
+
+class BoxDataSourceWithRefresh(BoxDataSourceBase):
+    """Authenticate using client_id, client_secret, and refresh_token"""
+
+    def __init__(self, client_id: str, client_secret: str, refresh_token: str):
+        oauth2 = OAuth2(
+            client_id=client_id,
+            client_secret=client_secret,
+            access_token=None,
+            refresh_token=refresh_token,
+        )
+        client = Client(oauth2)
+        super().__init__(client)
+
+
+class BoxDataSourceWithToken(BoxDataSourceBase):
+    """Authenticate using a plain access token (short-lived, for testing)"""
+
+    def __init__(self, access_token: str):
+        oauth2 = OAuth2(
+            client_id=None,
+            client_secret=None,
+            access_token=access_token,
+        )
+        client = Client(oauth2)
+        super().__init__(client)
