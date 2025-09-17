@@ -121,61 +121,78 @@ class DataSourceEntitiesProcessor:
     async def _handle_new_record(self, record: Record, tx_store: TransactionStore) -> None:
         # Set org_id for the record
         record.org_id = self.org_id
-
+        self.logger.info("Upserting new record: %s", record.record_name)
         await tx_store.batch_upsert_records([record])
 
 
     async def _handle_record_permissions(self, record: Record, permissions: List[Permission], tx_store: TransactionStore) -> None:
         record_permissions = []
 
-        for permission in permissions:
-            from_collection = f"{CollectionNames.RECORDS.value}/{record.id}"
-            to_collection = None
-            if permission.entity_type == EntityType.USER.value:
-                user = None
-                if permission.email:
-                    user = await tx_store.get_user_by_email(permission.email)
-                if user:
-                    to_collection = f"{CollectionNames.USERS.value}/{user.id}"
-            # elif permission.entity_type == EntityType.GROUP.value:
-            #     if permission.external_id:
-            #         user_group = await self.data_store.get_user_group_by_external_id(permission.external_id)
-            #     else:
-            #         user_group = await self.data_store.get_user_group_by_email(permission.email)
+        try:
 
-            #     if user_group:
-            #         to_collection = f"{CollectionNames.GROUPS.value}/{user_group.id}"
+            print("!!!!!!!!!! Handling records permissions !!!!!!!!")
+            print(permissions)
+            print(record)
 
-            # if permission.entity_type == EntityType.ORG.value:
-            #     org = await self.data_store.get_org_by_external_id(permission.external_id)
-            #     if org:
-            #         to_collection = f"{CollectionNames.ORGS.value}/{org.id}"
+            for permission in permissions:
+                from_collection = f"{CollectionNames.RECORDS.value}/{record.id}"
+                to_collection = None
+                print("!!!!!!! C1")
+                if permission.entity_type == EntityType.USER.value:
+                    user = None
+                    if permission.email:
+                        user = await tx_store.get_user_by_email(permission.email)
+                    print("!!!!!!! C2")
+                    if user:
+                        to_collection = f"{CollectionNames.USERS.value}/{user.id}"
+                    print("!!!!!!! C3")
+                # elif permission.entity_type == EntityType.GROUP.value:
+                #     if permission.external_id:
+                #         user_group = await self.data_store.get_user_group_by_external_id(permission.external_id)
+                #     else:
+                #         user_group = await self.data_store.get_user_group_by_email(permission.email)
 
-            # if permission.entity_type == EntityType.DOMAIN.value:
-            #     domain = await self.data_store.get_domain_by_external_id(permission.external_id)
-            #     if domain:
-            #         to_collection = f"{CollectionNames.DOMAINS.value}/{domain.id}"
+                #     if user_group:
+                #         to_collection = f"{CollectionNames.GROUPS.value}/{user_group.id}"
 
-            # if permission.entity_type == EntityType.ANYONE.value:
-            #     to_collection = f"{CollectionNames.ANYONE.value}"
+                # if permission.entity_type == EntityType.ORG.value:
+                #     org = await self.data_store.get_org_by_external_id(permission.external_id)
+                #     if org:
+                #         to_collection = f"{CollectionNames.ORGS.value}/{org.id}"
 
-            # if permission.entity_type == EntityType.ANYONE_WITH_LINK.value:
-            #     to_collection = f"{CollectionNames.ANYONE_WITH_LINK.value}"
+                # if permission.entity_type == EntityType.DOMAIN.value:
+                #     domain = await self.data_store.get_domain_by_external_id(permission.external_id)
+                #     if domain:
+                #         to_collection = f"{CollectionNames.DOMAINS.value}/{domain.id}"
 
-            if to_collection:
-                record_permissions.append(permission.to_arango_permission(from_collection, to_collection))
+                # if permission.entity_type == EntityType.ANYONE.value:
+                #     to_collection = f"{CollectionNames.ANYONE.value}"
 
-        if record_permissions:
-            await tx_store.batch_create_edges(
-                record_permissions, collection=CollectionNames.PERMISSIONS.value
-            )
+                # if permission.entity_type == EntityType.ANYONE_WITH_LINK.value:
+                #     to_collection = f"{CollectionNames.ANYONE_WITH_LINK.value}"
 
+                if to_collection:
+                    record_permissions.append(permission.to_arango_permission(from_collection, to_collection))
+                    print("!!!!!!! C4")
+
+            print("!!!!! Out of permission loop !!!!!!!")
+            if record_permissions:
+                
+                print("!!!! create permision edge")
+                await tx_store.batch_create_edges(
+                    record_permissions, collection=CollectionNames.PERMISSIONS.value
+                )
+                print("!!!! created permision edge")
+        except Exception as e:
+            self.logger.error("Failed to create permission edge: %s", e)
+           
 
     async def _process_record(self, record: Record, permissions: List[Permission], tx_store: TransactionStore) -> Optional[Record]:
         existing_record = await tx_store.get_record_by_external_id(connector_name=record.connector_name,
                                                                    external_id=record.external_record_id)
 
         if existing_record is None:
+            self.logger.info("New record: %s", record)
             await self._handle_new_record(record, tx_store)
         else:
             record.id = existing_record.id
@@ -204,10 +221,12 @@ class DataSourceEntitiesProcessor:
 
     async def on_new_records(self, records_with_permissions: List[Tuple[Record, List[Permission]]]) -> None:
         try:
+            self.logger.info("on_new_records for:", records_with_permissions)
             records_to_publish = []
 
             async with self.data_store_provider.transaction() as tx_store:
                 for record, permissions in records_with_permissions:
+                    print("!!!!! going to process_record")
                     processed_record = await self._process_record(record, permissions, tx_store)
                     if processed_record:
                         records_to_publish.append(processed_record)
@@ -238,6 +257,9 @@ class DataSourceEntitiesProcessor:
     async def on_record_deleted(self, record_id: str) -> None:
         async with self.data_store_provider.transaction() as tx_store:
             await tx_store.delete_record_by_key(record_id)
+            print("should be deleted by now !! ")
+    
+    
 
     async def on_new_record_groups(self, record_groups: List[Tuple[RecordGroup, List[Permission]]]) -> None:
         try:
