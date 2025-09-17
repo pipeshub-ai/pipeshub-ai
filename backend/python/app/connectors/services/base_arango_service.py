@@ -24,7 +24,7 @@ from app.config.constants.arangodb import (
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.services.kafka_service import KafkaService
-from app.models.entities import Record, RecordGroup, User
+from app.models.entities import Record, RecordGroup, User, FileRecord
 from app.schema.arango.documents import (
     agent_schema,
     agent_template_schema,
@@ -2992,6 +2992,58 @@ class BaseArangoService:
                 raise
             return False
 
+    async def get_record_by_path(
+        self, connector_name: Connectors, path: str, transaction: Optional[TransactionDatabase] = None
+    ) -> Optional[Record]:
+        """
+        Get a record from the FILES collection using its path.
+
+        Args:
+            connector_name (Connectors): The name of the connector.
+            path (str): The path of the file to look up.
+            transaction (Optional[TransactionDatabase]): Optional database transaction.
+
+        Returns:
+            Optional[Record]: The Record object if found, otherwise None.
+        """
+        try:
+            self.logger.info(
+                "🚀 Retrieving record by path for connector %s and path %s", connector_name.value, path
+            )
+
+            query = f"""
+            FOR fileRecord IN {CollectionNames.FILES.value}
+                FILTER fileRecord.path == @path
+                RETURN fileRecord
+            """
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(
+                query, bind_vars={"path": path}
+            )
+            result = next(cursor, None)
+            
+            if result:
+                
+                self.logger.info(
+                    "✅ Successfully retrieved file record for path: %s", path
+                )
+                # record = await self.get_record_by_id(result["_key"])
+                
+                # return record.id 
+                return result
+            else:
+                self.logger.warning(
+                    "⚠️ No record found for path: %s", path
+                )
+                return None
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to retrieve record for path %s: %s", path, str(e)
+            )
+            return None
+            
     async def get_record_by_external_id(
         self, connector_name: Connectors, external_id: str, transaction: Optional[TransactionDatabase] = None
     ) -> Optional[Record]:
