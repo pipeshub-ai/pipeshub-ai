@@ -1,6 +1,5 @@
 from io import BytesIO
 
-from docling.datamodel.base_models import DocumentStream
 from docling.datamodel.document import DoclingDocument
 from docling.document_converter import DocumentConverter
 
@@ -9,7 +8,7 @@ class HTMLParser:
     def __init__(self) -> None:
         self.converter = DocumentConverter()
 
-    def parse_string(self, html_content: str) -> DoclingDocument:
+    def parse_string(self, html_content: str) -> bytes:
         """
         Parse HTML content from a string.
 
@@ -24,20 +23,8 @@ class HTMLParser:
         """
         # Convert string to bytes
         html_bytes = html_content.encode("utf-8")
-
-        # Create a BytesIO object from the bytes
-        stream = BytesIO(html_bytes)
-
-        # Create a DocumentStream
-        source = DocumentStream(name="content.html", stream=stream)
-
-        # Convert the document
-        result = self.converter.convert(source)
-
-        if result.status.value != "success":
-            raise ValueError(f"Failed to parse HTML: {result.status}")
-
-        return result.document
+        return html_bytes
+       
 
     def parse_file(self, file_path: str) -> DoclingDocument:
         """
@@ -74,7 +61,7 @@ if __name__ == "__main__":
         </body>
     </html>
     """
-
+    
     try:
         # Parse HTML string
         doc = parser.parse_string(html_content)

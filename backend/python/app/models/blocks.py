@@ -179,6 +179,7 @@ class GroupType(str, Enum):
     TABLE = "table"
     CODE = "code"
     MEDIA = "media"
+    SHEET = "sheet"
 
 class SemanticMetadata(BaseModel):
     entities: Optional[List[Dict[str, Any]]] = None

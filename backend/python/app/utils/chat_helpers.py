@@ -1,3 +1,4 @@
+import json
 import re
 from collections import defaultdict
 from typing import Any, Dict, List, Tuple
@@ -41,16 +42,18 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
 
         if virtual_record_id not in virtual_record_id_to_result:
             adjacent_chunks[virtual_record_id] = []
-            await get_blocks(meta,virtual_record_id,virtual_record_id_to_result,blob_store,org_id)
+            await get_record(meta,virtual_record_id,virtual_record_id_to_result,blob_store,org_id)
 
         index = meta.get("blockIndex")
         is_block_group = meta.get("isBlockGroup")
         if is_block_group:
-           chunk_id = f"{virtual_record_id}-{index}-block_group"
+            chunk_id = f"{virtual_record_id}-{index}-block_group"
         else:
             chunk_id = f"{virtual_record_id}-{index}"
 
         if chunk_id in seen_chunks:
+            print(chunk_id,"chunk_id")
+            print(seen_chunks,"seen_chunks")
             continue
         seen_chunks.add(chunk_id)
 
@@ -257,7 +260,8 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         enhanced_metadata = get_enhanced_metadata(record,block,meta)
         result["metadata"] = enhanced_metadata
         flattened_results.append(result)
-
+    
+    print(json.dumps(flattened_results),"flattened_resultssssssssssssssssssssssssssssssssssssssss")
     return flattened_results
 
 def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[str, Any]) -> Dict[str, Any]:
@@ -358,7 +362,7 @@ def extract_bounding_boxes(citation_metadata) -> List[Dict[str, float]]:
         except Exception as e:
             raise e
 
-async def get_blocks(meta: Dict[str, Any],virtual_record_id: str,virtual_record_id_to_result: Dict[str, Dict[str, Any]],blob_store: BlobStorage,org_id: str) -> None:
+async def get_record(meta: Dict[str, Any],virtual_record_id: str,virtual_record_id_to_result: Dict[str, Dict[str, Any]],blob_store: BlobStorage,org_id: str) -> None:
     try:
         record = await blob_store.get_record_from_storage(virtual_record_id=virtual_record_id, org_id=org_id)
         if record:
@@ -381,7 +385,7 @@ async def create_record_from_vector_metadata(metadata: Dict[str, Any], org_id: s
         departments = metadata.get("departments", "")
         semantic_metadata = {
             "summary": summary,
-            "categories": categories,
+            "categories": [categories],
             "topics": topics,
             "sub_category_level_1": sub_category_level_1,
             "sub_category_level_2": sub_category_level_2,
@@ -508,7 +512,7 @@ def checkForLargeTable(markdown: str) -> bool:
     return len(words) > MAX_WORDS_IN_TABLE_THRESHOLD
 
 
-def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_id_to_result: Dict[str, Any], user_data: str, query: str) -> str:
+def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_id_to_result: Dict[str, Any], user_data: str, query: str,citation_to_index: Dict[str, int]) -> str:
     content = []
 
     template = Template(qna_prompt_instructions_1)

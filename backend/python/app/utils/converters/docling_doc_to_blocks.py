@@ -261,7 +261,7 @@ class DoclingDocToBlocksConverter():
                     id=str(uuid.uuid4()),
                     index=index,
                     type=BlockType.TABLE_ROW,
-                    format=DataFormat.TXT,
+                    format=DataFormat.JSON,
                     comments=[],
                     source_creation_date=None,
                     source_update_date=None,

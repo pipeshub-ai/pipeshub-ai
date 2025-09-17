@@ -137,7 +137,7 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
     return normalized_answer, new_citations
 
 
-def process_citations(llm_response, documents: List[Dict[str, Any]]) -> Dict[str, Any]:
+def process_citations(llm_response, documents: List[Dict[str, Any]],citation_to_index: Dict[str, int]) -> Dict[str, Any]:
     """
     Process the LLM response and extract citations from relevant documents with normalization.
     """
@@ -198,12 +198,12 @@ def process_citations(llm_response, documents: List[Dict[str, Any]]) -> Dict[str
 
         # Normalize citations in the answer if it exists
         if "answer" in result:
-            normalized_answer, citations = normalize_citations_and_chunks(result["answer"], documents)
+            normalized_answer, citations = normalize_citations_and_chunks(result["answer"], documents,citation_to_index)
             result["answer"] = normalized_answer
             result["citations"] = citations
         else:
             # Fallback for cases where answer is not in a structured format
-            normalized_answer, citations = normalize_citations_and_chunks(str(response_data), documents)
+            normalized_answer, citations = normalize_citations_and_chunks(str(response_data), documents,citation_to_index)
             result = {
                 "answer": normalized_answer,
                 "citations": citations

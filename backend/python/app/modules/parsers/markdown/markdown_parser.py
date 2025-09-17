@@ -1,6 +1,7 @@
 from io import BytesIO
 
 import markdown
+from app.modules.parsers.pdf.docling import DoclingProcessor
 from docling.datamodel.base_models import DocumentStream
 from docling.datamodel.document import DoclingDocument
 from docling.document_converter import DocumentConverter
@@ -10,7 +11,7 @@ class MarkdownParser:
     def __init__(self) -> None:
         self.converter = DocumentConverter()
 
-    def parse_string(self, md_content: str) -> DoclingDocument:
+    def parse_string(self, md_content: str) -> bytes:
         """
         Parse Markdown content from a string.
 
@@ -27,20 +28,7 @@ class MarkdownParser:
 
         html = markdown.markdown(md_content, extensions=["md_in_html"])
         md_bytes = html.encode("utf-8")
-
-        # Create a BytesIO object from the bytes
-        stream = BytesIO(md_bytes)
-
-        # Create a DocumentStream
-        source = DocumentStream(name="content.md", stream=stream)
-
-        # Convert the document
-        result = self.converter.convert(source)
-
-        if result.status.value != "success":
-            raise ValueError(f"Failed to parse Markdown: {result.status}")
-
-        return result.document
+        return md_bytes
 
     def parse_file(self, file_path: str) -> DoclingDocument:
         """
