@@ -2268,7 +2268,6 @@ async def get_oauth_authorization_url(
         oauth_provider = OAuthProvider(
             config=oauth_config,
             key_value_store=container.key_value_store(),
-            base_arango_service=arango_service,
             credentials_path=f"/services/connectors/{filtered_app_name}/config"
         )
 
@@ -2416,7 +2415,6 @@ async def handle_oauth_callback_get(
         oauth_provider = OAuthProvider(
             config=oauth_config,
             key_value_store=container.key_value_store(),
-            base_arango_service=arango_service,
             credentials_path=f"/services/connectors/{filtered_app_name}/config"
         )
 
