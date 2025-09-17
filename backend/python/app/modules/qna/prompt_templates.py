@@ -217,3 +217,11 @@ qna_prompt_instructions_2 = """
 """
 
 
+table_prompt = """* Block Type: table
+                  * Table Summary: {{ table_summary }}
+                  * Table Rows/Blocks:
+                    {% for row in table_rows %}
+                    - Block Number: R{{record_number}}-{{row.block_index}}
+                    - Block Content: {{row.content}}
+                    {% endfor %}
+"""

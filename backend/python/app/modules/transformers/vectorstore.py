@@ -387,12 +387,23 @@ class VectorStore(Transformer):
                             ]
                         }
 
-                        response = co.embed(
-                            model=self.cohere_embedding_model_name,
-                            input_type="image",
-                            embedding_types=["float"],
-                            inputs=[image_input]
-                        )
+                        try:
+                            response = co.embed(
+                                model=self.cohere_embedding_model_name,
+                                input_type="image",
+                                embedding_types=["float"],
+                                inputs=[image_input]
+                            )
+                        except Exception as cohere_error:
+                            # Skip images that exceed provider limits or any bad input; continue with others
+                            error_text = str(cohere_error)
+                            if "image size must be at most" in error_text:
+                                self.logger.warning(
+                                    f"Skipping image embedding due to size limit: {error_text}"
+                                )
+                                continue
+                            # Re-raise unknown errors
+                            raise
 
                         chunk = image_chunks[i]
 
@@ -407,12 +418,17 @@ class VectorStore(Transformer):
                         )
                         points.append(point)
 
-                    self.vector_db_service.upsert_points(
-                            collection_name=self.collection_name, points=points
+                    if points:
+                        self.vector_db_service.upsert_points(
+                                collection_name=self.collection_name, points=points
+                            )
+                        self.logger.info(
+                                        "✅ Successfully added image embeddings to vector store"
+                                    )
+                    else:
+                        self.logger.info(
+                            "No image embeddings to upsert; all images were skipped or failed to embed"
                         )
-                    self.logger.info(
-                                    "✅ Successfully added image embeddings to vector store"
-                                )
 
             if langchain_document_chunks:
                 try:
@@ -617,8 +633,9 @@ class VectorStore(Transformer):
                     for block in image_blocks:
                         # Get image data from metadata
                         image_data = block.data
-                        image_uri = image_data.get("uri")
-                        images_uris.append(image_uri)
+                        if image_data:
+                            image_uri = image_data.get("uri")
+                            images_uris.append(image_uri)
 
                     if images_uris:
                         if is_multimodal_embedding:
@@ -635,7 +652,6 @@ class VectorStore(Transformer):
                                 documents_to_embed.append(
                                     {"image_uri": image_uri, "metadata": metadata}
                                 )
-
                         elif is_multimodal_llm:
                             description_results = await self.describe_images(
                                 images_uris,llm

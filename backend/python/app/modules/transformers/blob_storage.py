@@ -27,7 +27,7 @@ class BlobStorage(Transformer):
         org_id = record.org_id
         record_id = record.id
         virtual_record_id = record.virtual_record_id
-        record_dict = record.model_dump()
+        record_dict = record.model_dump(mode='json')
         document_id = await self.save_record_to_storage(org_id, record_id, virtual_record_id, record_dict)
 
         # Store the mapping if we have both IDs and arango_service is available

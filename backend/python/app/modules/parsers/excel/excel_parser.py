@@ -568,9 +568,9 @@ class ExcelParser:
             # Get table summary
             table_summary = await self.get_table_summary(table)
 
-            # Process rows in batches of 20 in parallel
+            # Process rows in batches of 50 in parallel
             processed_rows = []
-            batch_size = 20
+            batch_size = 50
 
             # Create batches
             batches = []
@@ -578,13 +578,20 @@ class ExcelParser:
                 batch = table["data"][i : i + batch_size]
                 batches.append((i, batch))  # Store start index and batch data
 
-            # Process all batches in parallel using asyncio.gather
+            # Limit parallel processing to at most 10 concurrent batches
+            semaphore = asyncio.Semaphore(10)
+
+            async def limited_get_rows_text(batch) -> List[str]:
+                async with semaphore:
+                    return await self.get_rows_text(batch, table_summary)
+
+            # Create throttled tasks for all batches
             batch_tasks = []
             for start_idx, batch in batches:
-                task = self.get_rows_text(batch, table_summary)
+                task = limited_get_rows_text(batch)
                 batch_tasks.append((start_idx, batch, task))
 
-            # Wait for all batches to complete in parallel
+            # Wait for all batches to complete (max 10 running concurrently)
             task_results = await asyncio.gather(*[task for _, _, task in batch_tasks])
 
             # Combine results with their metadata and process

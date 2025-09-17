@@ -3,6 +3,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
 
+from app.models.blocks import GroupType
+
 
 @dataclass
 class ChatDocCitation:
@@ -59,7 +61,7 @@ def fix_json_string(json_str) -> str:
 
 
 
-def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[str, Any]], citation_to_index: Dict[str, int]) -> Tuple[str, List[Dict[str, Any]]]:
+def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[str, Any]]) -> Tuple[str, List[Dict[str, Any]]]:
     """
     Normalize citation numbers in answer text to be sequential (1,2,3...)
     and create corresponding citation chunks with correct mapping
@@ -71,8 +73,7 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
     if not matches:
         return answer_text, []
 
-    # Convert tuples to string format that matches citation_to_index keys
-    # Assuming citation_to_index uses format like "R1-2" as keys
+
     unique_citations = []
     seen = set()
 
@@ -82,19 +83,44 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
             unique_citations.append(citation_key)
             seen.add(citation_key)
 
-    # Create mapping from old citation keys to new sequential numbers
     citation_mapping = {}
     new_citations = []
+    record_number = 0
+    block_number_to_index = {}
+    flattened_final_results = []
+    seen = set()
+    for i,doc in enumerate(final_results):
+        virtual_record_id = doc.get("virtual_record_id")
+        if virtual_record_id not in seen:
+            record_number += 1
+            seen.add(virtual_record_id)
+        block_index = doc.get("block_index")
+        block_type = doc.get("block_type")
+        if block_type == GroupType.TABLE.value:
+            _,child_results = doc.get("content")
+            if child_results:
+                for child in child_results:
+                    child_block_index = child.get("block_index")
+                    flattened_final_results.append(child)
+                    block_number_to_index[f"R{record_number}-{child_block_index}"] = i
+            else:
+                flattened_final_results.append(doc)
+                block_number_to_index[f"R{record_number}-{block_index}"] = i
+        else:
+            flattened_final_results.append(doc)
+            block_number_to_index[f"R{record_number}-{block_index}"] = i
 
+    # Create mapping from old citation keys to new sequential numbers
     for i, old_citation_key in enumerate(unique_citations):
         new_citation_num = i + 1
         citation_mapping[old_citation_key] = new_citation_num
 
         # Get the corresponding chunk from final_results
-        if old_citation_key in citation_to_index:
-            chunk_index = citation_to_index[old_citation_key]
-            if 0 <= chunk_index < len(final_results):
-                doc = final_results[chunk_index]
+        if old_citation_key in block_number_to_index:
+            chunk_index = block_number_to_index[old_citation_key]
+
+            if 0 <= chunk_index < len(flattened_final_results):
+                doc = flattened_final_results[chunk_index]
                 new_citations.append({
                     "content": doc.get("content", ""),
                     "chunkIndex": new_citation_num,  # Use new sequential number
@@ -108,11 +134,10 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
         return f"[{citation_mapping[old_key]}]" if old_key in citation_mapping else ""
 
     normalized_answer = re.sub(citation_pattern, replace_citation, answer_text)
-
     return normalized_answer, new_citations
 
 
-def process_citations(llm_response, documents: List[Dict[str, Any]],citation_to_index: Dict[str, int]) -> Dict[str, Any]:
+def process_citations(llm_response, documents: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Process the LLM response and extract citations from relevant documents with normalization.
     """
@@ -173,12 +198,12 @@ def process_citations(llm_response, documents: List[Dict[str, Any]],citation_to_
 
         # Normalize citations in the answer if it exists
         if "answer" in result:
-            normalized_answer, citations = normalize_citations_and_chunks(result["answer"], documents,citation_to_index)
+            normalized_answer, citations = normalize_citations_and_chunks(result["answer"], documents)
             result["answer"] = normalized_answer
             result["citations"] = citations
         else:
             # Fallback for cases where answer is not in a structured format
-            normalized_answer, citations = normalize_citations_and_chunks(str(response_data), documents,citation_to_index)
+            normalized_answer, citations = normalize_citations_and_chunks(str(response_data), documents)
             result = {
                 "answer": normalized_answer,
                 "citations": citations

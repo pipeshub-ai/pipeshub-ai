@@ -23,6 +23,7 @@ import {
 } from '../constants/record.constants';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { AppConfig } from '../../tokens_manager/config/config';
+import { getMimeType } from '../../storage/mimetypes/mimetypes';
 import axios from 'axios';
 
 const logger = Logger.getInstance({
@@ -618,6 +619,9 @@ export const uploadRecordsToKB =
           ? fileName.substring(fileName.lastIndexOf('.') + 1).toLowerCase()
           : null;
 
+        // Use correct MIME type mapping instead of browser detection
+        const correctMimeType = extension ? getMimeType(extension) : mimetype;
+
         // Generate unique ID for the record
         const key: string = uuidv4();
         const webUrl = `/record/${key}`;
@@ -644,7 +648,7 @@ export const uploadRecordsToKB =
           indexingStatus: INDEXING_STATUS.NOT_STARTED,
           version: 1,
           webUrl: webUrl,
-          mimeType: mimetype,
+          mimeType: correctMimeType,
         };
 
         const fileRecord: IFileRecordDocument = {
@@ -653,7 +657,7 @@ export const uploadRecordsToKB =
           name: fileName,
           isFile: true,
           extension: extension,
-          mimeType: mimetype,
+          mimeType: correctMimeType,
           sizeInBytes: size,
           webUrl: webUrl,
           // path: filePath,
@@ -817,6 +821,9 @@ export const uploadRecordsToFolder =
           ? fileName.substring(fileName.lastIndexOf('.') + 1).toLowerCase()
           : null;
 
+        // Use correct MIME type mapping instead of browser detection
+        const correctMimeType = extension ? getMimeType(extension) : mimetype;
+
         // Generate unique ID for the record
         const key: string = uuidv4();
         const webUrl = `/record/${key}`;
@@ -843,7 +850,7 @@ export const uploadRecordsToFolder =
           indexingStatus: INDEXING_STATUS.NOT_STARTED,
           version: 1,
           webUrl: webUrl,
-          mimeType: mimetype,
+          mimeType: correctMimeType,
         };
 
         const fileRecord: IFileRecordDocument = {
@@ -852,7 +859,7 @@ export const uploadRecordsToFolder =
           name: fileName,
           isFile: true,
           extension: extension,
-          mimeType: mimetype,
+          mimeType: correctMimeType,
           sizeInBytes: size,
           webUrl: webUrl,
           // path: filePath,

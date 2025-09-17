@@ -190,9 +190,6 @@ class EventProcessor:
             record_type = event_data.get("recordType", "unknown")
             record_name = event_data.get("recordName", f"Untitled-{record_id}")
 
-            if extension is None and mime_type != "text/gmail_content":
-                extension = event_data["recordName"].split(".")[-1]
-
             if mime_type == "text/gmail_content":
                 self.logger.info("🚀 Processing Gmail Message")
                 result = await self.processor.process_gmail_message(
@@ -391,7 +388,7 @@ class EventProcessor:
                     version=record_version,
                     source=connector,
                     orgId=org_id,
-                    docx_binary=BytesIO(file_content),
+                    docx_binary=file_content,
                     virtual_record_id = virtual_record_id
                 )
 

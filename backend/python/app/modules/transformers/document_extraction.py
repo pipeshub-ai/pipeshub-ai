@@ -105,7 +105,7 @@ class DocumentExtraction(Transformer):
         """
         Extract metadata from document content.
         """
-        self.logger.info("🎯 Extracting domain metadata using VLM")
+        self.logger.info("🎯 Extracting domain metadata")
         self.llm, config= await get_llm(self.config_service)
         is_multimodal_llm = config.get("isMultimodal")
         try:

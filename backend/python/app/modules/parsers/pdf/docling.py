@@ -1,17 +1,23 @@
 import asyncio
+import json
 from io import BytesIO
 
 from docling.datamodel.base_models import DocumentStream, InputFormat
 from docling.datamodel.document import ConversionResult
 from docling.datamodel.pipeline_options import PdfPipelineOptions
-from docling.document_converter import DocumentConverter, PdfFormatOption
+from docling.document_converter import (
+    DocumentConverter,
+    MarkdownFormatOption,
+    PdfFormatOption,
+    WordFormatOption,
+)
 
 from app.models.blocks import BlocksContainer
 from app.utils.converters.docling_doc_to_blocks import DoclingDocToBlocksConverter
 
 SUCCESS_STATUS = "success"
 
-class DoclingPDFProcessor():
+class DoclingProcessor():
     def __init__(self, logger, config) -> None:
         self.logger = logger
         self.config = config
@@ -20,7 +26,9 @@ class DoclingPDFProcessor():
         pipeline_options.do_ocr = False
 
         self.converter = DocumentConverter(format_options={
-            InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
+            InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options),
+             InputFormat.DOCX: WordFormatOption(),
+                 InputFormat.MD: MarkdownFormatOption(),
         })
         self.doc_to_blocks_converter = DoclingDocToBlocksConverter(logger=logger,config=config)
 
@@ -32,9 +40,12 @@ class DoclingPDFProcessor():
             raise ValueError(f"Failed to parse PDF: {conv_res.status}")
 
         doc = conv_res.document
+        doc_dict = doc.export_to_dict()
+        self.logger.info(f"Docling document exported to dict: {json.dumps(doc_dict, indent=4)}")
         block_containers = await self.doc_to_blocks_converter.convert(doc)
         if block_containers is False:
             return False
+
         return block_containers
 
     def process_document(self) -> None:

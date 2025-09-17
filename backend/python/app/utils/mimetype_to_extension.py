@@ -42,6 +42,7 @@ mime_to_extension = {
     "application/x-java-archive": "jar",
     "text/csv": "csv",
     "application/csv": "csv",
+    "text/markdown": "md",
 }
 
 

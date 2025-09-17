@@ -8,12 +8,14 @@ from app.config.constants.ai_models import (
 )
 from app.config.constants.arangodb import (
     CollectionNames,
+    Connectors,
     ExtensionTypes,
     MimeTypes,
+    OriginTypes,
 )
 from app.config.constants.service import config_node_constants
 from app.models.entities import Record, RecordStatus, RecordType
-from app.modules.parsers.pdf.docling import DoclingPDFProcessor
+from app.modules.parsers.pdf.docling import DoclingProcessor
 from app.modules.parsers.pdf.ocr_handler import OCRHandler
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import TransformContext
@@ -24,6 +26,31 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 def convert_record_dict_to_record(record_dict: dict) -> Record:
 
     # Map the database fields to Record model fields
+    conn_name_value = record_dict.get("connectorName")
+    try:
+        connector_name = (
+            Connectors(conn_name_value)
+            if conn_name_value is not None
+            else Connectors.KNOWLEDGE_BASE
+        )
+    except Exception:
+        # Fallback to KB if an unexpected value is present
+        connector_name = Connectors.KNOWLEDGE_BASE
+
+    origin_value = record_dict.get("origin", OriginTypes.UPLOAD.value)
+    try:
+        origin = OriginTypes(origin_value)
+    except Exception:
+        origin = OriginTypes.UPLOAD
+
+    mime_value = record_dict.get("mimeType")
+    mime_type = None
+    if mime_value is not None:
+        try:
+            mime_type = MimeTypes(mime_value)
+        except Exception:
+            mime_type = None
+
     record = Record(
         id=record_dict.get("_key"),
         org_id=record_dict.get("orgId"),
@@ -32,20 +59,19 @@ def convert_record_dict_to_record(record_dict: dict) -> Record:
         record_status=RecordStatus(record_dict.get("indexingStatus", "NOT_STARTED")),
         external_record_id=record_dict.get("externalRecordId"),
         version=record_dict.get("version", 1),
-        origin=record_dict.get("origin"),
+        origin=origin,
         summary_document_id=record_dict.get("summaryDocumentId"),
         created_at=record_dict.get("createdAtTimestamp"),
         updated_at=record_dict.get("updatedAtTimestamp"),
         source_created_at=record_dict.get("sourceCreatedAtTimestamp"),
         source_updated_at=record_dict.get("sourceLastModifiedTimestamp"),
         weburl=record_dict.get("webUrl"),
-        mime_type=record_dict.get("mimeType"),
+        mime_type=mime_type,
         external_revision_id=record_dict.get("externalRevisionId"),
-        connector_name = record_dict.get("connectorName"),
+        connector_name=connector_name,
     )
 
     return record
-
 
 class Processor:
     def __init__(
@@ -723,7 +749,7 @@ class Processor:
         self.logger.info(f"🚀 Starting PDF document processing for record: {recordName}")
         try:
             self.logger.debug("📄 Processing PDF binary content")
-            processor = DoclingPDFProcessor(logger=self.logger,config=self.config_service)
+            processor = DoclingProcessor(logger=self.logger,config=self.config_service)
             block_containers = await processor.load_document(recordName, pdf_binary)
             if block_containers is False:
                 return False
@@ -874,6 +900,7 @@ class Processor:
                     if s.get("content")
                 ]
 
+
             # Index sentences if available
             if sentence_data:
                 pipeline = self.indexing_pipeline
@@ -952,136 +979,28 @@ class Processor:
             # Convert binary to string if necessary
             # Initialize DocxParser and parse content
             self.logger.debug("📄 Processing DOCX content")
-            parser = self.parsers[ExtensionTypes.DOCX.value]
-            docx_result = parser.parse(docx_binary)
 
-            # Get the full document structure
-            doc_dict = docx_result.export_to_dict()
+            processor = DoclingProcessor(logger=self.logger,config=self.config_service)
+            block_containers = await processor.load_document(recordName, docx_binary)
+            if block_containers is False:
+                raise Exception("Failed to process DOCX document. It might contain scanned pages.")
 
-            # Process content in reading order
-            self.logger.debug("📑 Processing document structure in reading order")
-            ordered_content = self._process_content_in_order(doc_dict)
 
-            # Extract text in reading order
-            text_content = "\n".join(
-                item["text"].strip() for item in ordered_content if item["text"].strip()
+
+            record = await self.arango_service.get_document(
+                recordId, CollectionNames.RECORDS.value
             )
+            if record is None:
+                self.logger.error(f"❌ Record {recordId} not found in database")
+                raise Exception(f"Record {recordId} not found in graph db")
+            record = convert_record_dict_to_record(record)
+            record.block_containers = block_containers
+            record.virtual_record_id = virtual_record_id
+            ctx = TransformContext(record=record)
+            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            await pipeline.apply(ctx)
+            self.logger.info("✅ Docx/Doc processing completed successfully using docling")
 
-            # Extract domain metadata
-            self.logger.info("🎯 Extracting domain metadata")
-            domain_metadata = None
-            if text_content:
-                try:
-                    self.logger.info("🎯 Extracting metadata from DOCX content")
-                    metadata = await self.domain_extractor.extract_metadata(
-                        text_content, orgId
-                    )
-                    record = await self.domain_extractor.save_metadata_to_db(
-                        orgId, recordId, metadata, virtual_record_id
-                    )
-                    file = await self.arango_service.get_document(
-                        recordId, CollectionNames.FILES.value
-                    )
-                    domain_metadata = {**record, **file}
-                except Exception as e:
-                    self.logger.error(f"❌ Error extracting metadata: {str(e)}")
-                    domain_metadata = None
-
-            # Create sentence data for indexing
-            self.logger.debug("📑 Creating semantic sentences")
-            sentence_data = []
-
-            # Keep track of previous items for context
-            context_window = []
-            context_window_size = 3  # Number of previous items to include for context
-
-            for idx, item in enumerate(ordered_content, 1):
-                if item["text"].strip():
-                    context = item["context"]
-
-                    # Create context text from previous items
-                    previous_context = " ".join(
-                        [prev["text"].strip() for prev in context_window]
-                    )
-
-                    # Current item's context with previous items
-                    full_context = {
-                        "previous": previous_context,
-                        "current": item["text"].strip(),
-                    }
-
-                    sentence_data.append(
-                        {
-                            "text": item["text"].strip(),
-                            "metadata": {
-                                **(domain_metadata or {}),
-                                "recordId": recordId,
-                                "blockType": context.get("label", "text"),
-                                "blockNum": [idx],
-                                "blockText": json.dumps(full_context),
-                                "virtualRecordId": virtual_record_id,
-                            },
-                        }
-                    )
-
-                    # Update context window
-                    context_window.append(item)
-                    if len(context_window) > context_window_size:
-                        context_window.pop(0)
-
-            # Index sentences if available
-            if sentence_data:
-                self.logger.debug(f"📑 Indexing {len(sentence_data)} sentences")
-                pipeline = self.indexing_pipeline
-                await pipeline.index_documents(sentence_data)
-
-            # Prepare metadata
-            metadata = {
-                "recordId": recordId,
-                "recordName": recordName,
-                "orgId": orgId,
-                "version": version,
-                "source": source,
-                "domain_metadata": domain_metadata,
-                "document_info": {
-                    "schema_name": doc_dict.get("schema_name"),
-                    "version": doc_dict.get("version"),
-                    "name": doc_dict.get("name"),
-                    "origin": doc_dict.get("origin"),
-                },
-                "structure_info": {
-                    "text_count": len(doc_dict.get("texts", [])),
-                    "group_count": len(doc_dict.get("groups", [])),
-                    "list_count": len(
-                        [
-                            item
-                            for item in ordered_content
-                            if item.get("context", {}).get("list_info")
-                        ]
-                    ),
-                    "heading_count": len(
-                        [
-                            item
-                            for item in ordered_content
-                            if item.get("context", {}).get("label") == "heading"
-                        ]
-                    ),
-                },
-            }
-
-            self.logger.info("✅ DOCX processing completed successfully")
-            return {
-                "docx_result": {
-                    "document_structure": {
-                        "body": doc_dict.get("body"),
-                        "groups": doc_dict.get("groups", []),
-                    },
-                    "metadata": domain_metadata,
-                },
-                "formatted_content": text_content,
-                "numbered_items": ordered_content,
-                "metadata": metadata,
-            }
 
         except Exception as e:
             self.logger.error(f"❌ Error processing DOCX document: {str(e)}")

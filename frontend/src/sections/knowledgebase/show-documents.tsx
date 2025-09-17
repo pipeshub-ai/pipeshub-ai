@@ -110,6 +110,7 @@ function getDocumentType(extension: string) {
   if (extension === 'html') return 'html';
   if (extension === 'txt') return 'text';
   if (extension === 'md') return 'md';
+  if (extension === 'mdx') return 'mdx';
   return 'other';
 }
 
@@ -592,7 +593,7 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
           }));
         }, 800);
 
-        if (!['pdf', 'excel', 'docx', 'html', 'text', 'md'].includes(documentType)) {
+        if (!['pdf', 'excel', 'docx', 'html', 'text', 'md','mdx'].includes(documentType)) {
           setSnackbar({
             open: true,
             message: `Unsupported document type: ${record.fileRecord.extension}`,
@@ -694,6 +695,15 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
             buffer={fileBuffer}
           />
         );
+        case 'mdx':
+          return (
+            <MarkdownViewer
+              {...commonProps}
+              url={fileUrl}
+              citations={recordCitations?.documents || []}
+              buffer={fileBuffer}
+            />
+          );
       default:
         return null;
     }

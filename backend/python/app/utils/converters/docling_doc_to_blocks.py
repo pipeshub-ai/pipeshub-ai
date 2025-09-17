@@ -150,22 +150,23 @@ class DoclingDocToBlocksConverter():
 
 
         async def _handle_text_block(item: dict, doc_dict: dict, parent_index: int, ref_path: str,level: int,doc: DoclingDocument) -> Block:
-            block = Block(
-                    id=str(uuid.uuid4()),
-                    index=len(blocks),
-                    type=BlockType.TEXT,
-                    format=DataFormat.TXT,
-                    data=item.get("text", ""),
-                    comments=[],
-                    source_creation_date=None,
-                    source_update_date=None,
-                    source_id=ref_path,
-                    source_name=None,
-                    source_type=None,
-                    parent_index=parent_index,
-                )
-            _enrich_metadata(block, item, doc_dict)
-            blocks.append(block)
+            if item.get("text") != "":
+                block = Block(
+                        id=str(uuid.uuid4()),
+                        index=len(blocks),
+                        type=BlockType.TEXT,
+                        format=DataFormat.TXT,
+                        data=item.get("text", ""),
+                        comments=[],
+                        source_creation_date=None,
+                        source_update_date=None,
+                        source_id=ref_path,
+                        source_name=None,
+                        source_type=None,
+                        parent_index=parent_index,
+                    )
+                _enrich_metadata(block, item, doc_dict)
+                blocks.append(block)
             children = item.get("children", [])
             for child in children:
                 await _process_item(child, doc, level + 1)
@@ -336,7 +337,7 @@ class DoclingDocToBlocksConverter():
             elif item_type == DOCLING_TABLE_BLOCK_TYPE:
                 tables = doc.tables
                 table = tables[item_index]
-                table_markdown = table.export_to_markdown()
+                table_markdown = table.export_to_markdown(doc=doc)
                 await _handle_table_block(item, doc_dict, parent_index, ref_path,table_markdown,level,doc)
             else:
                 self.logger.error(f"❌ Unknown item type: {item_type} {item}")
