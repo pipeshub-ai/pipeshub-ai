@@ -21,7 +21,7 @@ class BoxDataSourceBase:
     Auth is handled by child classes.
     """
 
-    def __init__(self, client: Client):
+    def __init__(self, client: Client) -> None:
         self.client = client
 
     # ---------------- Users ----------------
@@ -124,7 +124,7 @@ class BoxDataSourceBase:
 class BoxDataSourceWithRefresh(BoxDataSourceBase):
     """Authenticate using client_id, client_secret, and refresh_token"""
 
-    def __init__(self, client_id: str, client_secret: str, refresh_token: str):
+    def __init__(self, client_id: str, client_secret: str, refresh_token: str) -> None:
         oauth2 = OAuth2(
             client_id=client_id,
             client_secret=client_secret,
@@ -138,7 +138,7 @@ class BoxDataSourceWithRefresh(BoxDataSourceBase):
 class BoxDataSourceWithToken(BoxDataSourceBase):
     """Authenticate using a plain access token (short-lived, for testing)"""
 
-    def __init__(self, access_token: str):
+    def __init__(self, access_token: str) -> None:
         oauth2 = OAuth2(
             client_id=None,
             client_secret=None,
