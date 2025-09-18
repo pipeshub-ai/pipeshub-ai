@@ -97,9 +97,8 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
             result["block_index"] = first_block_index
             if first_block_index is not None:
                 adjacent_chunks[virtual_record_id].append(first_block_index-1)
-                last_block_index = children[-1].get("block_index") if children and len(children) > 1 else None
-                if last_block_index is not None:
-                    adjacent_chunks[virtual_record_id].append(last_block_index+1)
+                last_block_index = children[-1].get("block_index")
+                adjacent_chunks[virtual_record_id].append(last_block_index+1)
 
                 is_large_table = checkForLargeTable(table_markdown)
                 table_summary = table_data.get("table_summary","")

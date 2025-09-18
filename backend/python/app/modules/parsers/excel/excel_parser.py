@@ -48,7 +48,7 @@ class ExcelParser:
         self.min_wait = 1  # seconds
         self.max_wait = 10  # seconds
 
-    async def parse(self, file_binary: bytes, llm: BaseChatModel) -> Dict[str, Any]:
+    async def parse(self, file_binary: bytes, llm: BaseChatModel) -> BlocksContainer:
         """
         Parse Excel file and extract all content including sheets, cells, formulas, etc.
 
@@ -74,70 +74,6 @@ class ExcelParser:
                 self.workbook = load_workbook(self.file_path, data_only=True)
 
             return await self.get_blocks_from_workbook(llm)
-
-            sheets_data = []
-            total_rows = 0
-            total_cells = 0
-            all_text = []
-
-            # Process each sheet
-            for sheet_name in self.workbook.sheetnames:
-                sheet = self.workbook[sheet_name]
-                sheet_data = self._process_sheet(sheet)
-
-                sheets_data.append(
-                    {
-                        "name": sheet_name,
-                        "data": sheet_data["data"],
-                        "headers": sheet_data["headers"],
-                        "row_count": sheet.max_row,
-                        "column_count": sheet.max_column,
-                        "merged_cells": [
-                            str(merged_range)
-                            for merged_range in sheet.merged_cells.ranges
-                        ],
-                    }
-                )
-
-                total_rows += sheet.max_row
-                total_cells += sum(
-                    1 for row in sheet_data["data"] for cell in row if cell["value"]
-                )
-
-                all_text.extend(
-                    [
-                        str(cell["value"])
-                        for row in sheet_data["data"]
-                        for cell in row
-                        if cell["value"] is not None
-                    ]
-                )
-
-            # Prepare metadata
-            metadata = {
-                "creator": self.workbook.properties.creator,
-                "created": (
-                    self.workbook.properties.created.isoformat()
-                    if self.workbook.properties.created
-                    else None
-                ),
-                "modified": (
-                    self.workbook.properties.modified.isoformat()
-                    if self.workbook.properties.modified
-                    else None
-                ),
-                "last_modified_by": self.workbook.properties.lastModifiedBy,
-                "sheet_count": len(self.workbook.sheetnames),
-            }
-
-            return {
-                "sheets": sheets_data,
-                "metadata": metadata,
-                "text_content": "\n".join(all_text),
-                "sheet_names": self.workbook.sheetnames,
-                "total_rows": total_rows,
-                "total_cells": total_cells,
-            }
 
         except Exception:
             raise
