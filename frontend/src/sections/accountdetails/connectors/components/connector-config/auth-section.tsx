@@ -77,7 +77,7 @@ const AuthSection: React.FC<AuthSectionProps> = ({
   // Simplified helper function for business OAuth support
   const customGoogleBusinessOAuth = (connectorParam: Connector, accountType: string): boolean => 
     accountType === 'business' && 
-    (connectorParam.name === 'DRIVE' || connectorParam.name === 'GMAIL') && 
+    (connectorParam.name === 'Drive' || connectorParam.name === 'Gmail') && 
     connectorParam.authType === 'OAUTH';
 
   return (

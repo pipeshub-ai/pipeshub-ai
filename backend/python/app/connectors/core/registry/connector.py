@@ -1,14 +1,12 @@
 from app.connectors.core.registry.connector_builder import (
-    AuthField,
     CommonFields,
     ConnectorBuilder,
-    CustomField,
     DocumentationLink,
     FilterField,
 )
 
 
-@ConnectorBuilder("DRIVE")\
+@ConnectorBuilder("Drive")\
     .in_group("Google Workspace")\
     .with_auth_type("OAUTH")\
     .with_description("Sync files and folders from Google Drive")\
@@ -18,9 +16,9 @@ from app.connectors.core.registry.connector_builder import (
         .with_realtime_support(True)
         .add_documentation_link(DocumentationLink(
             "Google Drive API Setup",
-            "https://developers.google.com/drive/api/quickstart"
+            "https://developers.google.com/workspace/guides/auth-overview"
         ))
-        .with_redirect_uri("http://localhost:8088/api/v1/connectors/DRIVE/oauth/callback", True)
+        .with_redirect_uri("http://localhost:3000/api/v1/connectors/Drive/oauth/callback", True)
         .with_oauth_urls(
             "https://accounts.google.com/o/oauth2/v2/auth",
             "https://oauth2.googleapis.com/token",
@@ -40,7 +38,7 @@ class GoogleDriveConnector:
     """Google Drive connector built with the builder pattern"""
 
     def __init__(self) -> None:
-        self.name = "DRIVE"
+        self.name = "Drive"
 
     def connect(self) -> bool:
         """Connect to Google Drive"""
@@ -48,161 +46,161 @@ class GoogleDriveConnector:
         return True
 
 
-@ConnectorBuilder("SHAREPOINT ONLINE")\
-    .in_group("Microsoft 365")\
-    .with_auth_type("OAUTH_ADMIN_CONSENT")\
-    .with_description("Sync documents and lists from SharePoint Online")\
-    .with_categories(["Storage", "Documentation"])\
-    .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/sharepoint.svg")
-        .add_documentation_link(DocumentationLink(
-            "SharePoint Online API Setup",
-            "https://docs.microsoft.com/en-us/sharepoint/dev/sp-add-ins/register-sharepoint-add-ins"
-        ))
-        .with_redirect_uri("http://localhost:3001/sharepoint/oauth/callback", False)
-        .add_auth_field(AuthField(
-            name="clientId",
-            display_name="Application (Client) ID",
-            placeholder="Enter your Azure AD Application ID",
-            description="The Application (Client) ID from Azure AD App Registration"
-        ))
-        .add_auth_field(AuthField(
-            name="clientSecret",
-            display_name="Client Secret",
-            placeholder="Enter your Azure AD Client Secret",
-            description="The Client Secret from Azure AD App Registration",
-            field_type="PASSWORD",
-            is_secret=True
-        ))
-        .add_auth_field(AuthField(
-            name="tenantId",
-            display_name="Directory (Tenant) ID (Optional)",
-            placeholder="Enter your Azure AD Tenant ID",
-            description="The Directory (Tenant) ID from Azure AD"
-        ))
-        .add_auth_field(AuthField(
-            name="hasAdminConsent",
-            display_name="Has Admin Consent",
-            description="Check if admin consent has been granted for the application",
-            field_type="CHECKBOX",
-            required=True,
-            default_value=False
-        ))
-        .add_auth_field(AuthField(
-            name="sharepointDomain",
-            display_name="SharePoint Domain",
-            placeholder="https://your-domain.sharepoint.com",
-            description="Your SharePoint domain URL",
-            field_type="URL",
-            max_length=2000
-        ))
-        .add_auth_field(AuthField(
-            name="redirectUri",
-            display_name="Redirect URI",
-            placeholder="http://localhost:3001/sharepoint/oauth/callback",
-            description="The redirect URI for OAuth authentication",
-            field_type="URL",
-            required=False,
-            max_length=2000
-        ))
-        .add_conditional_display("redirectUri", "hasAdminConsent", "equals", False)
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
-        .with_scheduled_config(True, 60)
-        .add_filter_field(FilterField(
-            name="sites",
-            display_name="SharePoint Sites",
-            description="Select SharePoint sites to sync content from"
-        ), "https://graph.microsoft.com/v1.0/sites")
-        .add_filter_field(FilterField(
-            name="documentLibraries",
-            display_name="Document Libraries",
-            description="Select document libraries to sync from"
-        ), "https://graph.microsoft.com/v1.0/sites/{siteId}/drives")
-        .add_filter_field(CommonFields.file_types_filter(), "static")
-    )\
-    .build_decorator()
-class SharePointConnector:
-    """SharePoint connector built with the builder pattern"""
+# @ConnectorBuilder("SharePoint Online")\
+#     .in_group("Microsoft 365")\
+#     .with_auth_type("OAUTH_ADMIN_CONSENT")\
+#     .with_description("Sync documents and lists from SharePoint Online")\
+#     .with_categories(["Storage", "Documentation"])\
+#     .configure(lambda builder: builder
+#         .with_icon("/assets/icons/connectors/sharepoint.svg")
+#         .add_documentation_link(DocumentationLink(
+#             "SharePoint Online API Setup",
+#             "https://docs.microsoft.com/en-us/sharepoint/dev/sp-add-ins/register-sharepoint-add-ins"
+#         ))
+#         .with_redirect_uri("http://localhost:3001/sharepoint/oauth/callback", False)
+#         .add_auth_field(AuthField(
+#             name="clientId",
+#             display_name="Application (Client) ID",
+#             placeholder="Enter your Azure AD Application ID",
+#             description="The Application (Client) ID from Azure AD App Registration"
+#         ))
+#         .add_auth_field(AuthField(
+#             name="clientSecret",
+#             display_name="Client Secret",
+#             placeholder="Enter your Azure AD Client Secret",
+#             description="The Client Secret from Azure AD App Registration",
+#             field_type="PASSWORD",
+#             is_secret=True
+#         ))
+#         .add_auth_field(AuthField(
+#             name="tenantId",
+#             display_name="Directory (Tenant) ID (Optional)",
+#             placeholder="Enter your Azure AD Tenant ID",
+#             description="The Directory (Tenant) ID from Azure AD"
+#         ))
+#         .add_auth_field(AuthField(
+#             name="hasAdminConsent",
+#             display_name="Has Admin Consent",
+#             description="Check if admin consent has been granted for the application",
+#             field_type="CHECKBOX",
+#             required=True,
+#             default_value=False
+#         ))
+#         .add_auth_field(AuthField(
+#             name="sharepointDomain",
+#             display_name="SharePoint Domain",
+#             placeholder="https://your-domain.sharepoint.com",
+#             description="Your SharePoint domain URL",
+#             field_type="URL",
+#             max_length=2000
+#         ))
+#         .add_auth_field(AuthField(
+#             name="redirectUri",
+#             display_name="Redirect URI",
+#             placeholder="http://localhost:3001/sharepoint/oauth/callback",
+#             description="The redirect URI for OAuth authentication",
+#             field_type="URL",
+#             required=False,
+#             max_length=2000
+#         ))
+#         .add_conditional_display("redirectUri", "hasAdminConsent", "equals", False)
+#         .with_sync_strategies(["SCHEDULED", "MANUAL"])
+#         .with_scheduled_config(True, 60)
+#         .add_filter_field(FilterField(
+#             name="sites",
+#             display_name="SharePoint Sites",
+#             description="Select SharePoint sites to sync content from"
+#         ), "https://graph.microsoft.com/v1.0/sites")
+#         .add_filter_field(FilterField(
+#             name="documentLibraries",
+#             display_name="Document Libraries",
+#             description="Select document libraries to sync from"
+#         ), "https://graph.microsoft.com/v1.0/sites/{siteId}/drives")
+#         .add_filter_field(CommonFields.file_types_filter(), "static")
+#     )\
+#     .build_decorator()
+# class SharePointConnector:
+#     """SharePoint connector built with the builder pattern"""
 
-    def __init__(self) -> None:
-        self.name = "SHAREPOINT"
+#     def __init__(self) -> None:
+#         self.name = "SharePoint Online"
 
-    def connect(self) -> bool:
-        """Connect to SharePoint"""
-        print(f"Connecting to {self.name}")
-        return True
-
-
-@ConnectorBuilder("ONEDRIVE")\
-    .in_group("Microsoft 365")\
-    .with_auth_type("OAUTH_ADMIN_CONSENT")\
-    .with_description("Sync files and folders from OneDrive")\
-    .with_categories(["Storage"])\
-    .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/onedrive.svg")
-        .add_documentation_link(DocumentationLink(
-            "Azure AD App Registration Setup",
-            "https://docs.microsoft.com/en-us/azure/active-directory/develop/quickstart-register-app"
-        ))
-        .with_redirect_uri("http://localhost:3001/onedrive/oauth/callback", False)
-        .add_auth_field(AuthField(
-            name="clientId",
-            display_name="Application (Client) ID",
-            placeholder="Enter your Azure AD Application ID",
-            description="The Application (Client) ID from Azure AD App Registration"
-        ))
-        .add_auth_field(AuthField(
-            name="clientSecret",
-            display_name="Client Secret",
-            placeholder="Enter your Azure AD Client Secret",
-            description="The Client Secret from Azure AD App Registration",
-            field_type="PASSWORD",
-            is_secret=True
-        ))
-        .add_auth_field(AuthField(
-            name="tenantId",
-            display_name="Directory (Tenant) ID",
-            placeholder="Enter your Azure AD Tenant ID",
-            description="The Directory (Tenant) ID from Azure AD"
-        ))
-        .add_auth_field(AuthField(
-            name="hasAdminConsent",
-            display_name="Has Admin Consent",
-            description="Check if admin consent has been granted for the application",
-            field_type="CHECKBOX",
-            required=True,
-            default_value=False
-        ))
-        .add_auth_field(AuthField(
-            name="redirectUri",
-            display_name="Redirect URI",
-            placeholder="http://localhost:3001/onedrive/oauth/callback",
-            description="The redirect URI for OAuth authentication",
-            field_type="URL",
-            required=False,
-            max_length=2000
-        ))
-        .add_conditional_display("redirectUri", "hasAdminConsent", "equals", False)
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
-        .with_scheduled_config(True, 60)
-        .add_filter_field(CommonFields.file_types_filter(), "static")
-        .add_filter_field(CommonFields.folders_filter(),
-                          "https://graph.microsoft.com/v1.0/me/drive/root/children")
-    )\
-    .build_decorator()
-class OneDriveConnector:
-    """OneDrive connector built with the builder pattern"""
-
-    def __init__(self) -> None:
-        self.name = "ONEDRIVE"
-
-    def connect(self) -> bool:
-        """Connect to OneDrive"""
-        print(f"Connecting to {self.name}")
-        return True
+#     def connect(self) -> bool:
+#         """Connect to SharePoint"""
+#         print(f"Connecting to {self.name}")
+#         return True
 
 
-@ConnectorBuilder("GMAIL")\
+# @ConnectorBuilder("OneDrive")\
+#     .in_group("Microsoft 365")\
+#     .with_auth_type("OAUTH_ADMIN_CONSENT")\
+#     .with_description("Sync files and folders from OneDrive")\
+#     .with_categories(["Storage"])\
+#     .configure(lambda builder: builder
+#         .with_icon("/assets/icons/connectors/onedrive.svg")
+#         .add_documentation_link(DocumentationLink(
+#             "Azure AD App Registration Setup",
+#             "https://docs.microsoft.com/en-us/azure/active-directory/develop/quickstart-register-app"
+#         ))
+#         .with_redirect_uri("http://localhost:3001/onedrive/oauth/callback", False)
+#         .add_auth_field(AuthField(
+#             name="clientId",
+#             display_name="Application (Client) ID",
+#             placeholder="Enter your Azure AD Application ID",
+#             description="The Application (Client) ID from Azure AD App Registration"
+#         ))
+#         .add_auth_field(AuthField(
+#             name="clientSecret",
+#             display_name="Client Secret",
+#             placeholder="Enter your Azure AD Client Secret",
+#             description="The Client Secret from Azure AD App Registration",
+#             field_type="PASSWORD",
+#             is_secret=True
+#         ))
+#         .add_auth_field(AuthField(
+#             name="tenantId",
+#             display_name="Directory (Tenant) ID",
+#             placeholder="Enter your Azure AD Tenant ID",
+#             description="The Directory (Tenant) ID from Azure AD"
+#         ))
+#         .add_auth_field(AuthField(
+#             name="hasAdminConsent",
+#             display_name="Has Admin Consent",
+#             description="Check if admin consent has been granted for the application",
+#             field_type="CHECKBOX",
+#             required=True,
+#             default_value=False
+#         ))
+#         .add_auth_field(AuthField(
+#             name="redirectUri",
+#             display_name="Redirect URI",
+#             placeholder="http://localhost:3001/onedrive/oauth/callback",
+#             description="The redirect URI for OAuth authentication",
+#             field_type="URL",
+#             required=False,
+#             max_length=2000
+#         ))
+#         .add_conditional_display("redirectUri", "hasAdminConsent", "equals", False)
+#         .with_sync_strategies(["SCHEDULED", "MANUAL"])
+#         .with_scheduled_config(True, 60)
+#         .add_filter_field(CommonFields.file_types_filter(), "static")
+#         .add_filter_field(CommonFields.folders_filter(),
+#                           "https://graph.microsoft.com/v1.0/me/drive/root/children")
+#     )\
+#     .build_decorator()
+# class OneDriveConnector:
+#     """OneDrive connector built with the builder pattern"""
+
+#     def __init__(self) -> None:
+#         self.name = "OneDrive"
+
+#     def connect(self) -> bool:
+#         """Connect to OneDrive"""
+#         print(f"Connecting to {self.name}")
+#         return True
+
+
+@ConnectorBuilder("Gmail")\
     .in_group("Google Workspace")\
     .with_auth_type("OAUTH")\
     .with_description("Sync emails and messages from Gmail")\
@@ -212,9 +210,9 @@ class OneDriveConnector:
         .with_realtime_support(True)
         .add_documentation_link(DocumentationLink(
             "Gmail API Setup",
-            "https://developers.google.com/gmail/api/quickstart"
+            "https://developers.google.com/workspace/guides/auth-overview"
         ))
-        .with_redirect_uri("http://localhost:8088/api/v1/connectors/GMAIL/oauth/callback", True)
+        .with_redirect_uri("http://localhost:3000/api/v1/connectors/Gmail/oauth/callback", True)
         .with_oauth_urls(
             "https://accounts.google.com/o/oauth2/v2/auth",
             "https://oauth2.googleapis.com/token",
@@ -235,7 +233,7 @@ class GmailConnector:
     """Gmail connector built with the builder pattern"""
 
     def __init__(self) -> None:
-        self.name = "GMAIL"
+        self.name = "Gmail"
 
     def connect(self) -> bool:
         """Connect to Gmail"""
@@ -243,109 +241,40 @@ class GmailConnector:
         return True
 
 
-@ConnectorBuilder("SLACK")\
-    .in_group("Slack")\
-    .with_auth_type("API_TOKEN")\
-    .with_description("Sync messages and channels from Slack")\
-    .with_categories(["Messaging"])\
-    .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/slack.svg")
-        .add_documentation_link(DocumentationLink(
-            "Slack Bot Token Setup",
-            "https://api.slack.com/authentication/basics"
-        ))
-        .with_redirect_uri("", False)
-        .add_auth_field(AuthField(
-            name="botToken",
-            display_name="Bot Token",
-            placeholder="xoxb-...",
-            description="The Bot User OAuth Access Token from Slack App settings",
-            field_type="PASSWORD",
-            max_length=2000,
-            is_secret=True
-        ))
-        .with_scheduled_config(True, 60)
-        .add_filter_field(CommonFields.channels_filter(),
-                          "https://slack.com/api/conversations.list")
-    )\
-    .build_decorator()
-class SlackConnector:
-    """Slack connector built with the builder pattern"""
+# @ConnectorBuilder("SLACK")\
+#     .in_group("Slack")\
+#     .with_auth_type("API_TOKEN")\
+#     .with_description("Sync messages and channels from Slack")\
+#     .with_categories(["Messaging"])\
+#     .configure(lambda builder: builder
+#         .with_icon("/assets/icons/connectors/slack.svg")
+#         .add_documentation_link(DocumentationLink(
+#             "Slack Bot Token Setup",
+#             "https://api.slack.com/authentication/basics"
+#         ))
+#         .with_redirect_uri("", False)
+#         .add_auth_field(AuthField(
+#             name="botToken",
+#             display_name="Bot Token",
+#             placeholder="xoxb-...",
+#             description="The Bot User OAuth Access Token from Slack App settings",
+#             field_type="PASSWORD",
+#             max_length=2000,
+#             is_secret=True
+#         ))
+#         .with_scheduled_config(True, 60)
+#         .add_filter_field(CommonFields.channels_filter(),
+#                           "https://slack.com/api/conversations.list")
+#     )\
+#     .build_decorator()
+# class SlackConnector:
+#     """Slack connector built with the builder pattern"""
 
-    def __init__(self) -> None:
-        self.name = "SLACK"
+#     def __init__(self) -> None:
+#         self.name = "SLACK"
 
-    def connect(self) -> bool:
-        """Connect to Slack"""
-        print(f"Connecting to {self.name}")
-        return True
+#     def connect(self) -> bool:
+#         """Connect to Slack"""
+#         print(f"Connecting to {self.name}")
+#         return True
 
-
-@ConnectorBuilder("CONFLUENCE")\
-    .in_group("Atlassian")\
-    .with_auth_type("USERNAME_PASSWORD")\
-    .with_description("Sync pages and spaces from Confluence")\
-    .with_categories(["Documentation"])\
-    .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/confluence.svg")
-        .add_documentation_link(DocumentationLink(
-            "Confluence API Authentication",
-            "https://developer.atlassian.com/cloud/confluence/basic-auth-for-rest-apis/"
-        ))
-        .with_redirect_uri("", False)
-        .add_auth_field(CommonFields.username())
-        .add_auth_field(CommonFields.password())
-        .add_auth_field(CommonFields.base_url("confluence"))
-        .add_auth_field(AuthField(
-            name="useApiToken",
-            display_name="Use API Token",
-            description="Check if you're using an API token instead of password",
-            field_type="CHECKBOX",
-            required=False,
-            default_value=False
-        ))
-        .add_auth_field(AuthField(
-            name="apiToken",
-            display_name="API Token",
-            placeholder="Enter your Confluence API token",
-            description="Your Confluence API token (if using API token instead of password)",
-            field_type="PASSWORD",
-            required=False,
-            max_length=2000,
-            is_secret=True
-        ))
-        .add_conditional_display("password", "useApiToken", "equals", False)
-        .add_conditional_display("apiToken", "useApiToken", "equals", True)
-        .with_scheduled_config(True, 60)
-        .add_sync_custom_field(CustomField(
-            name="pageLimit",
-            display_name="Page Limit",
-            description="Maximum number of pages to sync per batch",
-            field_type="NUMBER",
-            default_value=100,
-            min_length=1,
-            max_length=1000
-        ))
-        .add_filter_field(FilterField(
-            name="spaces",
-            display_name="Confluence Spaces",
-            description="Select Confluence spaces to sync content from"
-        ), "https://{baseUrl}/wiki/rest/api/space")
-        .add_filter_field(FilterField(
-            name="contentTypes",
-            display_name="Content Types",
-            description="Select types of content to sync",
-            options=["page", "blogpost", "comment", "attachment"]
-        ), "static")
-    )\
-    .build_decorator()
-class ConfluenceConnector:
-    """Confluence connector built with the builder pattern"""
-
-    def __init__(self) -> None:
-        self.name = "CONFLUENCE"
-
-    def connect(self) -> bool:
-        """Connect to Confluence"""
-        print(f"Connecting to {self.name}")
-        return True

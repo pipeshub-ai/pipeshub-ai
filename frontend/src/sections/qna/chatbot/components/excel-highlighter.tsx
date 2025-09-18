@@ -575,7 +575,7 @@ const ExcelViewer = ({
           }
 
           const actualCols = range.e.c + 1;
-          const maxAllowedCols = 26;
+          const maxAllowedCols = 1000;
           const totalCols = Math.min(Math.max(actualCols, 13), maxAllowedCols);
 
           // Get visible columns (no hidden column detection for now)
@@ -598,7 +598,7 @@ const ExcelViewer = ({
 
           // Process all rows including the header row
           const data: TableRowType[] = [];
-          const MAX_ROWS_TO_DISPLAY = 1000; // Adjust as needed
+          const MAX_ROWS_TO_DISPLAY = 100000; // Adjust as needed
           const maxRows = Math.min(range.e.r + 2, headerRowIndex + MAX_ROWS_TO_DISPLAY);
           let displayIndex = 0;
 

@@ -186,7 +186,7 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({
               <Box>
                 <ConnectorStatistics
                   title="Performance Statistics"
-                  connectorNames={[connector.name.toUpperCase()]}
+                  connectorNames={[connector.name]}
                   showUploadTab={false}
                 />
               </Box>

@@ -315,8 +315,8 @@ class ConnectorRegistry:
     async def sync_with_database(self) -> bool:
         """
         Sync registry with database:
-        1. Create missing apps from registry (as inactive)
-        2. Deactivate apps in DB that are not in registry
+        1. Only deactivate apps in DB that are not in registry
+        2. Do NOT create apps during startup - they will be created when configured
 
         Returns:
             True if successful
@@ -328,28 +328,19 @@ class ConnectorRegistry:
             db_docs = await arango_service.get_all_documents(self.collection_name)
             db_apps = {doc['name']: doc for doc in db_docs}
 
-            created_apps = []
             deactivated_apps = []
 
-            # 1. Create missing apps from registry
-            for app_name, metadata in self._connectors.items():
-                if app_name not in db_apps:
-                    if await self._create_app_in_db(app_name, metadata):
-                        created_apps.append(app_name)
-
-            # 2. Deactivate apps in DB that are not in registry
+            # Only deactivate apps in DB that are not in registry
             for app_name, doc in db_apps.items():
                 if app_name not in self._connectors and doc.get('isActive', False):
                     if await self._deactivate_app_in_db(app_name):
                         deactivated_apps.append(app_name)
 
             # Log summary
-            if created_apps:
-                self.logger.info(f"Created {len(created_apps)} new apps: {created_apps}")
             if deactivated_apps:
                 self.logger.info(f"Deactivated {len(deactivated_apps)} apps not in registry: {deactivated_apps}")
 
-            if not created_apps and not deactivated_apps:
+            if not deactivated_apps:
                 self.logger.info("Registry and database are already in sync")
 
             return True
@@ -369,19 +360,43 @@ class ConnectorRegistry:
         """
         connectors = []
         for app_name, metadata in self._connectors.items():
-            db_status = await self._get_db_status(app_name)
-
+            # Use registry metadata as the primary source
             connector_info = {
                 'name': app_name,
                 'appGroup': metadata['appGroup'],
                 'authType': metadata['authType'],
-                'appDescription': db_status.get('appDescription', ''),
-                'appCategories': db_status.get('appCategories', []),
-                'iconPath': db_status.get('iconPath', '/assets/icons/connectors/default.svg'),
-                'supportsRealtime': db_status.get('config', {}).get('supportsRealtime', False),
-                'supportsSync': db_status.get('config', {}).get('supportsSync', False),
-                **db_status
+                'appDescription': metadata.get('appDescription', ''),
+                'appCategories': metadata.get('appCategories', []),
+                'iconPath': metadata.get('config', {}).get('iconPath', '/assets/icons/connectors/default.svg'),
+                'supportsRealtime': metadata.get('config', {}).get('supportsRealtime', False),
+                'supportsSync': metadata.get('config', {}).get('supportsSync', False),
+                'config': metadata.get('config', {}),
+                # Default values for DB-specific fields
+                'isActive': False,
+                'isConfigured': False,
+                'createdAtTimestamp': None,
+                'updatedAtTimestamp': None
             }
+
+            # Only override with DB status if the app exists in database
+            try:
+                db_status = await self._get_db_status(app_name)
+                if db_status.get('createdAtTimestamp'):  # If app exists in DB
+                    connector_info.update({
+                        'isActive': db_status.get('isActive', False),
+                        'isConfigured': db_status.get('isConfigured', False),
+                        'createdAtTimestamp': db_status.get('createdAtTimestamp'),
+                        'updatedAtTimestamp': db_status.get('updatedAtTimestamp')
+                    })
+                    fields_to_override = [
+                        'appDescription', 'appCategories', 'iconPath',
+                        'supportsRealtime', 'supportsSync'
+                    ]
+                    for field in fields_to_override:
+                        connector_info[field] = db_status.get(field, connector_info[field])
+            except Exception as e:
+                self.logger.debug(f"Could not get DB status for {app_name}: {e}")
+
             connectors.append(connector_info)
         return connectors
 
@@ -407,12 +422,45 @@ class ConnectorRegistry:
         """
         if app_name in self._connectors:
             metadata = self._connectors[app_name]
-            db_status = await self._get_db_status(app_name)
-            return {
+            connector_info = {
                 'name': app_name,
-                **metadata,
-                **db_status
+                'appGroup': metadata['appGroup'],
+                'authType': metadata['authType'],
+                'appDescription': metadata.get('appDescription', ''),
+                'appCategories': metadata.get('appCategories', []),
+                'iconPath': metadata.get('config', {}).get('iconPath', '/assets/icons/connectors/default.svg'),
+                'supportsRealtime': metadata.get('config', {}).get('supportsRealtime', False),
+                'supportsSync': metadata.get('config', {}).get('supportsSync', False),
+                'config': metadata.get('config', {}),
+                'isActive': False,
+                'isConfigured': False,
+                'createdAtTimestamp': None,
+                'updatedAtTimestamp': None
             }
+
+            # Only override with DB status if the app exists in database
+            try:
+                db_status = await self._get_db_status(app_name)
+                if db_status.get('createdAtTimestamp'):  # If app exists in DB
+                    connector_info.update({
+                        'isActive': db_status.get('isActive', False),
+                        'isConfigured': db_status.get('isConfigured', False),
+                        'createdAtTimestamp': db_status.get('createdAtTimestamp'),
+                        'updatedAtTimestamp': db_status.get('updatedAtTimestamp'),
+                        'appGroupId': db_status.get('appGroupId'),
+                    })
+                    # Override description and categories if they exist in DB
+                    fields_to_override = [
+                        'appDescription', 'appCategories', 'iconPath',
+                        'supportsRealtime', 'supportsSync', 'authType', 'config'
+                    ]
+                    for field in fields_to_override:
+                        connector_info[field] = db_status.get(field, connector_info[field])
+            except Exception as e:
+                self.logger.debug(f"Could not get DB status for {app_name}: {e}")
+
+            return connector_info
+
         return None
 
     async def get_connectors_by_group(self, app_group: str) -> List[Dict[str, Any]]:
@@ -458,6 +506,36 @@ class ConnectorRegistry:
             'permissions': Permissions.values()
         }
 
+    async def create_app_when_configured(self, app_name: str) -> bool:
+        """
+        Create an app in the database when it's actually configured.
+        This method should be called when a connector is being configured for the first time.
+        If the app already exists, it will skip creation.
+
+        Args:
+            app_name: Name of the application to create
+
+        Returns:
+            True if successful or if app already exists
+        """
+        if app_name not in self._connectors:
+            self.logger.error(f"App {app_name} not found in registry")
+            return False
+
+        # Check if app already exists in database
+        try:
+            arango_service = await self._get_arango_service()
+            existing_app = await arango_service.get_app_by_name(app_name)
+            if existing_app:
+                self.logger.info(f"App {app_name} already exists in database, skipping creation")
+                return True
+        except Exception as e:
+            self.logger.debug(f"Could not check if app {app_name} exists: {e}")
+
+        # Create the app if it doesn't exist
+        metadata = self._connectors[app_name]
+        return await self._create_app_in_db(app_name, metadata)
+
     async def update_connector(self, app_name: str, updates: Dict[str, Any]) -> bool:
         """
         Update connector in database.
@@ -474,10 +552,10 @@ class ConnectorRegistry:
 
             existing_doc = await arango_service.get_app_by_name(app_name)
             if not existing_doc:
-                self.logger.error(f"App {app_name} not found in database")
+                self.logger.error(f"App {app_name} not found in database. Please configure the connector first.")
                 return False
-            updated_doc = {**existing_doc, **updates}
 
+            updated_doc = {**existing_doc, **updates}
 
             query = """
             FOR node IN @@collection

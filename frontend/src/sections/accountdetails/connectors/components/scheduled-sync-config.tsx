@@ -70,7 +70,7 @@ const ScheduledSyncConfig: React.FC<ScheduledSyncConfigProps> = ({
     intervalMinutes: 60,
     timezone: 'UTC',
     startTime: 0,
-    maxRepetitions: 0,
+    maxRepetitions: undefined,
     ...value,
   });
 
@@ -88,7 +88,7 @@ const ScheduledSyncConfig: React.FC<ScheduledSyncConfigProps> = ({
         intervalMinutes: value.intervalMinutes || 60,
         timezone: value.timezone || 'UTC',
         startTime,
-        maxRepetitions: value.maxRepetitions || 0,
+        maxRepetitions: value.maxRepetitions ?? undefined,
         nextTime: value.nextTime || 0,
         endTime: value.endTime || 0,
         repetitionCount: value.repetitionCount || 0,
@@ -141,7 +141,7 @@ const ScheduledSyncConfig: React.FC<ScheduledSyncConfigProps> = ({
           startTime: calculation.startTime,
           nextTime: calculation.nextTime,
           endTime: calculation.endTime,
-          maxRepetitions: calculation.totalRepetitions,
+          // do not override maxRepetitions here; leave as user provided (undefined means not set)
           repetitionCount: 0,
         };
 
@@ -408,12 +408,16 @@ const ScheduledSyncConfig: React.FC<ScheduledSyncConfigProps> = ({
             <TextField
               fullWidth
               size="small"
-              placeholder="0 = infinite"
+              placeholder="Leave empty if not set"
               type="number"
-              value={localValue.maxRepetitions || 0}
-              onChange={(e) => handleFieldChange('maxRepetitions', parseInt(e.target.value, 10) || 0)}
+              value={localValue.maxRepetitions ?? ''}
+              onChange={(e) => {
+                const raw = e.target.value;
+                const parsed = raw === '' ? undefined : parseInt(raw, 10);
+                handleFieldChange('maxRepetitions', Number.isNaN(parsed as number) ? undefined : (parsed as number | undefined));
+              }}
               disabled={disabled}
-              inputProps={{ min: 0 }}
+              inputProps={{ min: 1 }}
               sx={{
                 '& .MuiOutlinedInput-root': {
                   borderRadius: 1.25,

@@ -36,8 +36,9 @@ class GoogleTokenHandler:
     async def _get_connector_config(self, app_name: str) -> Dict:
         """Fetch connector config from etcd for the given app."""
         try:
+            filtered_app_name = app_name.replace(" ", "").lower()
             config = await self.config_service.get_config(
-                f"/services/connectors/{app_name.lower()}/config"
+                f"/services/connectors/{filtered_app_name}/config"
             )
             return config or {}
         except Exception as e:

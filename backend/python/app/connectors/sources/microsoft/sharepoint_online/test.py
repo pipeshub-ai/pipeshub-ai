@@ -73,7 +73,7 @@ async def test_run() -> None:
         "hasAdminConsent": True,
     }
 
-    await key_value_store.create_key("/services/connectors/sharepoint/config", config)
+    await key_value_store.create_key("/services/connectors/sharepointonline/config", config)
 
     sharepoint_connector = await SharePointConnector.create_connector(logger, data_store_provider, config_service)
     await sharepoint_connector.init()

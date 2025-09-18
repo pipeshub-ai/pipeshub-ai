@@ -15,18 +15,8 @@ from app.connectors.api.router import router
 from app.connectors.core.base.data_store.arango_data_store import ArangoDataStore
 from app.connectors.core.base.token_service.startup_service import startup_service
 from app.connectors.core.registry.connector import (
-    ConfluenceConnector as ConfluenceConnectorDecorator,
-)
-from app.connectors.core.registry.connector import (
     GmailConnector,
     GoogleDriveConnector,
-    SlackConnector,
-)
-from app.connectors.core.registry.connector import (
-    OneDriveConnector as OneDriveConnectorDecorator,
-)
-from app.connectors.core.registry.connector import (
-    SharePointConnector as SharePointConnectorDecorator,
 )
 from app.connectors.core.registry.connector_registry import (
     ConnectorRegistry,
@@ -206,12 +196,10 @@ async def initialize_connector_registry(app_container: ConnectorAppContainer) ->
         registry = ConnectorRegistry(app_container)
 
         # Register connectors (in production, use discovery from modules)
-        registry.register_connector(SlackConnector)
         registry.register_connector(GoogleDriveConnector)
         registry.register_connector(GmailConnector)
-        registry.register_connector(OneDriveConnectorDecorator)
-        registry.register_connector(SharePointConnectorDecorator)
-        registry.register_connector(ConfluenceConnectorDecorator)
+        registry.register_connector(OneDriveConnector)
+        registry.register_connector(SharePointConnector)
 
         logger.info(f"Registered {len(registry._connectors)} connectors")
 

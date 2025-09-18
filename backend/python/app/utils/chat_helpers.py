@@ -108,7 +108,6 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                     continue
                 else:
                     child_results=[]
-
                     for child in children:
                         child_block_index = child.get("block_index")
                         child_id = f"{virtual_record_id}-{child_block_index}"
@@ -379,7 +378,7 @@ async def create_record_from_vector_metadata(metadata: Dict[str, Any], org_id: s
         departments = metadata.get("departments", "")
         semantic_metadata = {
             "summary": summary,
-            "categories": [categories],
+            "categories": categories,
             "topics": topics,
             "sub_category_level_1": sub_category_level_1,
             "sub_category_level_2": sub_category_level_2,
