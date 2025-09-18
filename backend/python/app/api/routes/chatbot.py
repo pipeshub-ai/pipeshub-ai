@@ -1,4 +1,3 @@
-import json
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 from dependency_injector.wiring import inject
@@ -14,8 +13,6 @@ from app.containers.query import QueryAppContainer
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_arango import ArangoService
 from app.modules.retrieval.retrieval_service import RetrievalService
-from app.modules.transformers.blob_storage import BlobStorage
-from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
 from app.modules.transformers.blob_storage import BlobStorage
 from app.utils.aimodels import get_generator_model
 from app.utils.chat_helpers import get_flattened_results, get_message_content
@@ -275,7 +272,6 @@ async def askAIStream(
             virtual_record_id_to_result = {}
             flattened_results = []
 
-            print(json.dumps(result_set),"result_setttttttttttttttttttttttttttttttttttttttttttttttt")
             flattened_results = await get_flattened_results(result_set, blob_store, org_id, is_multimodal_llm,virtual_record_id_to_result)
             yield create_sse_event("results_ready", {"total_results": len(flattened_results)})
 
@@ -346,7 +342,7 @@ async def askAIStream(
             yield create_sse_event("status", {"status": "generating", "message": "Generating AI response..."})
 
             # Stream LLM response with real-time answer updates
-            async for stream_event in stream_llm_response(llm, messages, final_results,citation_to_index):
+            async for stream_event in stream_llm_response(llm, messages, final_results):
                 event_type = stream_event["event"]
                 event_data = stream_event["data"]
                 yield create_sse_event(event_type, event_data)
@@ -534,7 +530,7 @@ async def askAI(
         # Make async LLM call
         response = await llm.ainvoke(messages)
         # Process citations and return response
-        return process_citations(response, final_results,citation_to_index)
+        return process_citations(response, final_results)
 
     except HTTPException as he:
         # Re-raise HTTP exceptions with their original status codes

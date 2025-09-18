@@ -1,7 +1,6 @@
 import asyncio
 import json
 from io import BytesIO
-import json
 
 from docling.datamodel.base_models import DocumentStream, InputFormat
 from docling.datamodel.document import ConversionResult
@@ -39,7 +38,7 @@ class DoclingProcessor():
         conv_res: ConversionResult = await asyncio.to_thread(self.converter.convert, source)
         if conv_res.status.value != SUCCESS_STATUS:
             raise ValueError(f"Failed to parse PDF: {conv_res.status}")
-      
+
         doc = conv_res.document
         doc_dict = doc.export_to_dict()
         self.logger.info(f"Docling document exported to dict: {json.dumps(doc_dict, indent=4)}")

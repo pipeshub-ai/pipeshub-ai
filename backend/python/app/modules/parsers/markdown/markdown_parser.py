@@ -1,8 +1,5 @@
-from io import BytesIO
 
 import markdown
-from app.modules.parsers.pdf.docling import DoclingProcessor
-from docling.datamodel.base_models import DocumentStream
 from docling.datamodel.document import DoclingDocument
 from docling.document_converter import DocumentConverter
 

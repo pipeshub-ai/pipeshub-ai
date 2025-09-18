@@ -3,8 +3,8 @@ import io
 import json
 from datetime import datetime
 from typing import Any, Dict, List, Union
-from langchain.chat_models.base import BaseChatModel
 
+from langchain.chat_models.base import BaseChatModel
 from openpyxl import load_workbook
 from openpyxl.cell.cell import MergedCell
 from openpyxl.utils import get_column_letter
@@ -12,13 +12,6 @@ from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
-)
-
-from app.modules.parsers.excel.prompt_template import (
-    prompt,
-    row_text_prompt,
-    sheet_summary_prompt,
-    table_summary_prompt,
 )
 
 from app.models.blocks import (
@@ -30,6 +23,12 @@ from app.models.blocks import (
     DataFormat,
     GroupType,
     TableMetadata,
+)
+from app.modules.parsers.excel.prompt_template import (
+    prompt,
+    row_text_prompt,
+    sheet_summary_prompt,
+    table_summary_prompt,
 )
 
 
@@ -75,7 +74,7 @@ class ExcelParser:
                 self.workbook = load_workbook(self.file_path, data_only=True)
 
             return await self.get_blocks_from_workbook(llm)
-            
+
             sheets_data = []
             total_rows = 0
             total_cells = 0
@@ -145,6 +144,11 @@ class ExcelParser:
         finally:
             if self.workbook:
                 self.workbook.close()
+
+    def _json_default(self, obj) -> str:
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        return str(obj)
 
     def _process_sheet(self, sheet) -> Dict[str, List[List[Dict[str, Any]]]]:
         """Process individual sheet and extract cell data"""
@@ -416,13 +420,13 @@ class ExcelParser:
             # Prepare context for LLM with all tables
             tables_context = []
             for idx, table in enumerate(tables, 1):
-                table_data = [[cell["value"] for cell in row] for row in table["data"]]
+                table_data = [[cell["value"] for cell in row] for row in table["data"][:10]]
                 tables_context.append(f"Table {idx}:\n{table_data}")
 
             # Process each table with LLM
             processed_tables = []
             for idx, table in enumerate(tables, 1):
-                table_data = [[cell["value"] for cell in row] for row in table["data"]]
+                table_data = [[cell["value"] for cell in row] for row in table["data"][:10]]
 
                 # Use prompt from prompt_template.py
                 formatted_prompt = prompt.format(
@@ -713,7 +717,7 @@ class ExcelParser:
                             data={
                                 "row_natural_language_text": row.get("natural_language_text", ""),
                                 "row_number": int(row.get("row_num") or (i + 1)),
-                                "row": json.dumps(row_data),
+                                "row": json.dumps(row_data, default=self._json_default),
                                 "sheet_number": sheet_idx,
                                 "sheet_name": sheet_name,
                             },
@@ -773,4 +777,4 @@ class ExcelParser:
             markdown_lines.append(data_row)
 
         return "\n".join(markdown_lines)
-        
+

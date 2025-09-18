@@ -1,4 +1,3 @@
-from io import BytesIO
 
 from docling.datamodel.document import DoclingDocument
 from docling.document_converter import DocumentConverter
@@ -24,7 +23,7 @@ class HTMLParser:
         # Convert string to bytes
         html_bytes = html_content.encode("utf-8")
         return html_bytes
-       
+
 
     def parse_file(self, file_path: str) -> DoclingDocument:
         """
@@ -61,7 +60,7 @@ if __name__ == "__main__":
         </body>
     </html>
     """
-    
+
     try:
         # Parse HTML string
         doc = parser.parse_string(html_content)

@@ -1,4 +1,3 @@
-import json
 import re
 from collections import defaultdict
 from typing import Any, Dict, List, Tuple
@@ -20,7 +19,6 @@ from app.utils.mimetype_to_extension import get_extension_from_mimetype
 
 
 async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
-
     flattened_results = []
     seen_chunks = set()
     adjacent_chunks = {}
@@ -52,8 +50,6 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
             chunk_id = f"{virtual_record_id}-{index}"
 
         if chunk_id in seen_chunks:
-            print(chunk_id,"chunk_id")
-            print(seen_chunks,"seen_chunks")
             continue
         seen_chunks.add(chunk_id)
 
@@ -112,13 +108,14 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                     rows_to_be_included[f"{virtual_record_id}_{index}"]=[]
                     continue
                 else:
+                    child_results=[]
+
                     for child in children:
                         child_block_index = child.get("block_index")
                         child_id = f"{virtual_record_id}-{child_block_index}"
                         if child_id in seen_chunks:
                             continue
                         seen_chunks.add(child_id)
-                        child_results=[]
                         if child_block_index < len(blocks):
                             child_block = blocks[child_block_index]
                             row_text = child_block.get("data", {}).get("row_natural_language_text", "")
@@ -151,7 +148,6 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         enhanced_metadata = get_enhanced_metadata(record,block,meta)
         result["metadata"] = enhanced_metadata
         flattened_results.append(result)
-
 
     for key,rows_to_be_included_list in rows_to_be_included.items():
         virtual_record_id,block_group_index = key.split("_")
@@ -260,8 +256,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         enhanced_metadata = get_enhanced_metadata(record,block,meta)
         result["metadata"] = enhanced_metadata
         flattened_results.append(result)
-    
-    print(json.dumps(flattened_results),"flattened_resultssssssssssssssssssssssssssssssssssssssss")
+
     return flattened_results
 
 def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[str, Any]) -> Dict[str, Any]:
@@ -512,7 +507,7 @@ def checkForLargeTable(markdown: str) -> bool:
     return len(words) > MAX_WORDS_IN_TABLE_THRESHOLD
 
 
-def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_id_to_result: Dict[str, Any], user_data: str, query: str,citation_to_index: Dict[str, int]) -> str:
+def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_id_to_result: Dict[str, Any], user_data: str, query: str) -> str:
     content = []
 
     template = Template(qna_prompt_instructions_1)

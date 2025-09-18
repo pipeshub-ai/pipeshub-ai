@@ -22,85 +22,8 @@ from app.modules.transformers.transformer import TransformContext
 from app.utils.llm import get_llm
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
-def convert_record_dict_to_record(record_dict: dict) -> Record:
-
-    # Map the database fields to Record model fields
-    record = Record(
-        id=record_dict.get("_key"),
-        org_id=record_dict.get("orgId"),
-        record_name=record_dict.get("recordName"),
-        record_type=RecordType(record_dict.get("recordType", "FILE")),
-        record_status=RecordStatus(record_dict.get("indexingStatus", "NOT_STARTED")),
-        external_record_id=record_dict.get("externalRecordId"),
-        version=record_dict.get("version", 1),
-        origin=record_dict.get("origin"),
-        summary_document_id=record_dict.get("summaryDocumentId"),
-        created_at=record_dict.get("createdAtTimestamp"),
-        updated_at=record_dict.get("updatedAtTimestamp"),
-        source_created_at=record_dict.get("sourceCreatedAtTimestamp"),
-        source_updated_at=record_dict.get("sourceLastModifiedTimestamp"),
-        weburl=record_dict.get("webUrl"),
-        mime_type=record_dict.get("mimeType"),
-        external_revision_id=record_dict.get("externalRevisionId"),
-        connector_name = record_dict.get("connectorName"),
-    )
-
-    return record
-
 
 def convert_record_dict_to_record(record_dict: dict) -> Record:
-
-    # Map the database fields to Record model fields
-    conn_name_value = record_dict.get("connectorName")
-    try:
-        connector_name = (
-            Connectors(conn_name_value)
-            if conn_name_value is not None
-            else Connectors.KNOWLEDGE_BASE
-        )
-    except ValueError:
-        # Fallback to KB if an unexpected value is present
-        connector_name = Connectors.KNOWLEDGE_BASE
-
-    origin_value = record_dict.get("origin", OriginTypes.UPLOAD.value)
-    try:
-        origin = OriginTypes(origin_value)
-    except ValueError:
-        origin = OriginTypes.UPLOAD
-
-    mime_value = record_dict.get("mimeType")
-    mime_type = None
-    if mime_value is not None:
-        try:
-            mime_type = MimeTypes(mime_value)
-        except ValueError:
-            mime_type = None
-
-    record = Record(
-        id=record_dict.get("_key"),
-        org_id=record_dict.get("orgId"),
-        record_name=record_dict.get("recordName"),
-        record_type=RecordType(record_dict.get("recordType", "FILE")),
-        record_status=RecordStatus(record_dict.get("indexingStatus", "NOT_STARTED")),
-        external_record_id=record_dict.get("externalRecordId"),
-        version=record_dict.get("version", 1),
-        origin=origin,
-        summary_document_id=record_dict.get("summaryDocumentId"),
-        created_at=record_dict.get("createdAtTimestamp"),
-        updated_at=record_dict.get("updatedAtTimestamp"),
-        source_created_at=record_dict.get("sourceCreatedAtTimestamp"),
-        source_updated_at=record_dict.get("sourceLastModifiedTimestamp"),
-        weburl=record_dict.get("webUrl"),
-        mime_type=mime_type,
-        external_revision_id=record_dict.get("externalRevisionId"),
-        connector_name=connector_name,
-    )
-
-    return record
-
-def convert_record_dict_to_record(record_dict: dict) -> Record:
-
-    # Map the database fields to Record model fields
     conn_name_value = record_dict.get("connectorName")
     try:
         connector_name = (
@@ -1107,127 +1030,6 @@ class Processor:
             pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
             await pipeline.apply(ctx)
             self.logger.info("✅ Excel processing completed successfully.")
-            return
-
-            # Extract domain metadata from text content
-            self.logger.info("🎯 Extracting domain metadata")
-            if excel_result["text_content"]:
-                try:
-                    self.logger.info("🎯 Extracting metadata from Excel content")
-                    metadata = await self.domain_extractor.extract_metadata(
-                        excel_result["text_content"], orgId
-                    )
-                    record = await self.domain_extractor.save_metadata_to_db(
-                        orgId, recordId, metadata, virtual_record_id
-                    )
-                    file = await self.arango_service.get_document(
-                        recordId, CollectionNames.FILES.value
-                    )
-                    # Convert datetime objects to strings
-                    domain_metadata = {
-                        k: (v.isoformat() if isinstance(v, datetime) else v)
-                        for k, v in {**record, **file}.items()
-                    }
-                except Exception as e:
-                    self.logger.error(f"❌ Error extracting metadata: {str(e)}")
-                    domain_metadata = None
-
-            # Format content for output
-            formatted_content = ""
-            numbered_items = []
-            sentence_data = []
-
-            # Process each sheet
-            self.logger.debug("📝 Processing sheets")
-            for sheet_idx, sheet_name in enumerate(excel_result["sheet_names"], 1):
-                sheet_data = await parser.process_sheet_with_summaries(llm, sheet_name)
-                if sheet_data is None:
-                    continue
-                # Add sheet entry
-                sheet_entry = {
-                    "number": f"S{sheet_idx}",
-                    "name": sheet_data["sheet_name"],
-                    "type": "sheet",
-                    "row_count": len(sheet_data["tables"]),
-                    "column_count": max(
-                        (len(table["headers"]) for table in sheet_data["tables"]),
-                        default=0,
-                    ),
-                }
-                numbered_items.append(sheet_entry)
-
-                # Format content and sentence data
-                formatted_content += f"\n[Sheet]: {sheet_data['sheet_name']}\n"
-
-                for table in sheet_data["tables"]:
-                    formatted_content += f"\nTable Summary: {table['summary']}\n"
-                    for row in table["rows"]:
-                        # Convert datetime objects in row_data to strings
-                        row_data = {
-                            k: (v.isoformat() if isinstance(v, datetime) else v)
-                            for k, v in row["raw_data"].items()
-                        }
-                        formatted_content += f"Row Data: {row_data}\n"
-                        formatted_content += (
-                            f"Natural Text: {row['natural_language_text']}\n"
-                        )
-
-                        block_num = [int(row["row_num"])] if row["row_num"] else [0]
-
-                        # Add processed rows to sentence data
-                        sentence_data.append(
-                            {
-                                "text": row["natural_language_text"],
-                                "metadata": {
-                                    **(
-                                        {
-                                            k: (
-                                                v.isoformat()
-                                                if isinstance(v, datetime)
-                                                else v
-                                            )
-                                            for k, v in domain_metadata.items()
-                                        }
-                                    ),
-                                    "recordId": recordId,
-                                    "sheetName": sheet_name,
-                                    "sheetNum": sheet_idx,
-                                    "blockNum": block_num,
-                                    "blockType": "table_row",
-                                    "blockText": json.dumps(row_data),
-                                    "virtualRecordId": virtual_record_id,
-                                },
-                            }
-                        )
-            # Index sentences if available
-            if sentence_data:
-                self.logger.debug(f"📑 Indexing {len(sentence_data)} sentences")
-                pipeline = self.indexing_pipeline
-                await pipeline.index_documents(sentence_data, merge_documents=False)
-            # Prepare metadata
-            self.logger.debug("📋 Preparing metadata")
-            metadata = {
-                "recordId": recordId,
-                "recordName": recordName,
-                "orgId": orgId,
-                "version": version,
-                "source": source,
-                "domain_metadata": {
-                    k: (v.isoformat() if isinstance(v, datetime) else v)
-                    for k, v in excel_result.get("metadata", {}).items()
-                },
-                "sheet_count": len(excel_result["sheets"]),
-                "total_rows": excel_result["total_rows"],
-                "total_cells": excel_result["total_cells"],
-            }
-            self.logger.info("✅ Excel processing completed successfully")
-            return {
-                "excel_result": excel_result,
-                "formatted_content": formatted_content,
-                "numbered_items": numbered_items,
-                "metadata": metadata,
-            }
-
         except Exception as e:
             self.logger.error(f"❌ Error processing Excel document: {str(e)}")
             raise
@@ -1453,7 +1255,7 @@ class Processor:
             block_containers = await processor.load_document(record_name, html_bytes)
             if block_containers is False:
                 raise Exception("Failed to process HTML document. It might contain scanned pages.")
-            
+
             record = await self.arango_service.get_document(
                 recordId, CollectionNames.RECORDS.value
             )
@@ -1510,7 +1312,7 @@ class Processor:
         self.logger.info(
             f"🚀 Starting Markdown document processing for record: {recordName}"
         )
-       
+
         try:
             # Convert binary to string
             md_content = md_binary.decode("utf-8")
@@ -1523,7 +1325,7 @@ class Processor:
             block_containers = await processor.load_document(f"{recordName}.md", md_bytes)
             if block_containers is False:
                 raise Exception("Failed to process MD document. It might contain scanned pages.")
-            
+
             record = await self.arango_service.get_document(
                 recordId, CollectionNames.RECORDS.value
             )

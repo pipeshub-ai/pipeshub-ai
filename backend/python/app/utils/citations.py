@@ -102,13 +102,13 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
                 for child in child_results:
                     child_block_index = child.get("block_index")
                     flattened_final_results.append(child)
-                    block_number_to_index[f"R{record_number}-{child_block_index}"] = i
+                    block_number_to_index[f"R{record_number}-{child_block_index}"] = len(flattened_final_results) - 1
             else:
                 flattened_final_results.append(doc)
-                block_number_to_index[f"R{record_number}-{block_index}"] = i
+                block_number_to_index[f"R{record_number}-{block_index}"] = len(flattened_final_results) - 1
         else:
             flattened_final_results.append(doc)
-            block_number_to_index[f"R{record_number}-{block_index}"] = i
+            block_number_to_index[f"R{record_number}-{block_index}"] = len(flattened_final_results) - 1
 
     # Create mapping from old citation keys to new sequential numbers
     for i, old_citation_key in enumerate(unique_citations):
@@ -137,7 +137,7 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
     return normalized_answer, new_citations
 
 
-def process_citations(llm_response, documents: List[Dict[str, Any]],citation_to_index: Dict[str, int]) -> Dict[str, Any]:
+def process_citations(llm_response, documents: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Process the LLM response and extract citations from relevant documents with normalization.
     """
@@ -198,12 +198,12 @@ def process_citations(llm_response, documents: List[Dict[str, Any]],citation_to_
 
         # Normalize citations in the answer if it exists
         if "answer" in result:
-            normalized_answer, citations = normalize_citations_and_chunks(result["answer"], documents,citation_to_index)
+            normalized_answer, citations = normalize_citations_and_chunks(result["answer"], documents)
             result["answer"] = normalized_answer
             result["citations"] = citations
         else:
             # Fallback for cases where answer is not in a structured format
-            normalized_answer, citations = normalize_citations_and_chunks(str(response_data), documents,citation_to_index)
+            normalized_answer, citations = normalize_citations_and_chunks(str(response_data), documents)
             result = {
                 "answer": normalized_answer,
                 "citations": citations

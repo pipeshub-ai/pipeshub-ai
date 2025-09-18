@@ -6,7 +6,6 @@ from langchain.embeddings.base import Embeddings
 from langchain.schema import Document
 from langchain_qdrant import FastEmbedSparse, QdrantVectorStore, RetrievalMode
 from qdrant_client import models
-from collections import defaultdict
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import (
@@ -496,7 +495,7 @@ class RetrievalService:
                     )
                     score = point.score
                     all_results.append((doc, score))
-        
+
         return self._format_results(all_results)
 
     def _create_empty_response(self, message: str, status: Status) -> Dict[str, Any]:

@@ -64,38 +64,74 @@ class DocumentExtraction(Transformer):
         )
 
     def _prepare_content(self, blocks: List[Block], is_multimodal_llm: bool) -> List[dict]:
-
+        MAX_TOKENS = 4096
+        total_tokens = 0
         content = []
+
+        # Lazy import tiktoken; fall back to a rough heuristic if unavailable
+        enc = None
+        try:
+            import tiktoken  # type: ignore
+            try:
+                enc = tiktoken.get_encoding("cl100k_base")
+            except Exception:
+                enc = None
+        except Exception:
+            enc = None
+
+        def count_tokens(text: str) -> int:
+            if not text:
+                return 0
+            if enc is not None:
+                try:
+                    return len(enc.encode(text))
+                except Exception:
+                    pass
+            # Fallback heuristic: ~4 chars per token
+            return max(1, len(text) // 4)
 
         for block in blocks:
             if block.type.value == "text":
-                # Add text content
                 if block.data:
-                    content.append({
+                    candidate = {
                         "type": "text",
                         "text": block.data if block.data else ""
-                })
+                    }
+                    increment = count_tokens(candidate["text"])
+                    if total_tokens + increment > MAX_TOKENS:
+                        self.logger.info("✂️ Content exceeds %d tokens (%d). Truncating to head.", MAX_TOKENS, total_tokens + increment)
+                        break
+                    content.append(candidate)
+                    total_tokens += increment
             elif block.type.value == "image" and is_multimodal_llm:
                 if block.data and block.format.value == "base64":
                     image_data = block.data
                     image_data = image_data.get("uri")
 
-                    content.append({
+                    candidate = {
                         "type": "image_url",
                         "image_url": {
                             "url": image_data
                         }
-                    })
+                    }
+                    # Images are provider-specific for token accounting; treat as zero-text here
+                    content.append(candidate)
             elif block.type.value == "table_row":
                 if block.data:
                     if isinstance(block.data, dict):
                         table_row_text = block.data.get("row_natural_language_text")
                     else:
                         table_row_text = str(block.data)
-                    content.append({
+                    candidate = {
                         "type": "text",
                         "text": table_row_text if table_row_text else ""
-                    })
+                    }
+                    increment = count_tokens(candidate["text"])
+                    if total_tokens + increment > MAX_TOKENS:
+                        self.logger.info("✂️ Content exceeds %d tokens (%d). Truncating to head.", MAX_TOKENS, total_tokens + increment)
+                        break
+                    content.append(candidate)
+                    total_tokens += increment
 
         return content
 
