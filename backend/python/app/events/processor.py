@@ -45,7 +45,6 @@ def convert_record_dict_to_record(record_dict: dict) -> Record:
             mime_type = MimeTypes(mime_value)
         except ValueError:
             mime_type = None
-    
     record = Record(
         id=record_dict.get("_key"),
         org_id=record_dict.get("orgId"),
@@ -65,7 +64,6 @@ def convert_record_dict_to_record(record_dict: dict) -> Record:
         external_revision_id=record_dict.get("externalRevisionId"),
         connector_name=connector_name,
     )
-
     return record
 
 class Processor:
