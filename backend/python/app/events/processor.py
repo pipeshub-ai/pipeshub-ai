@@ -32,15 +32,12 @@ def convert_record_dict_to_record(record_dict: dict) -> Record:
             else Connectors.KNOWLEDGE_BASE
         )
     except ValueError:
-        # Fallback to KB if an unexpected value is present
         connector_name = Connectors.KNOWLEDGE_BASE
-
     origin_value = record_dict.get("origin", OriginTypes.UPLOAD.value)
     try:
         origin = OriginTypes(origin_value)
     except ValueError:
         origin = OriginTypes.UPLOAD
-
     mime_value = record_dict.get("mimeType")
     mime_type = None
     if mime_value is not None:
