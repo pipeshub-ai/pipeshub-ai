@@ -1,5 +1,4 @@
 import asyncio
-import json
 from io import BytesIO
 
 from docling.datamodel.base_models import DocumentStream, InputFormat
