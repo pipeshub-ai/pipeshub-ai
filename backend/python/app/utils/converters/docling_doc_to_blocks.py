@@ -193,11 +193,17 @@ class DoclingDocToBlocksConverter():
                 return item.get("text", "")
             return ""
 
+        def _resolve_ref_list(refs: list) -> list[str]:
+                return [
+                    _get_ref_text(ref.get(DOCLING_REF_NODE, ""), doc_dict) if isinstance(ref, dict) else str(ref)
+                    for ref in refs
+                ]
+
         async def _handle_image_block(item: dict, doc_dict: dict, parent_index: int, ref_path: str,level: int,doc: DoclingDocument) -> Block:
             _captions = item.get("captions", [])
-            _captions = [_get_ref_text(ref.get(DOCLING_REF_NODE, ""),doc_dict) for ref in _captions]
+            _captions = _resolve_ref_list(_captions)
             _footnotes = item.get("footnotes", [])
-            _footnotes = [_get_ref_text(ref.get(DOCLING_REF_NODE, ""),doc_dict) for ref in _footnotes]
+            _footnotes = _resolve_ref_list(_footnotes)
             item.get("prov", {})
             block = Block(
                     id=str(uuid.uuid4()),
@@ -233,16 +239,9 @@ class DoclingDocToBlocksConverter():
 
             # Convert caption and footnote references to text strings
             _captions = item.get("captions", [])
-            _captions = [
-                _get_ref_text(ref.get(DOCLING_REF_NODE, ""), doc_dict) if isinstance(ref, dict) else str(ref)
-                for ref in _captions
-            ]
+            _captions = _resolve_ref_list(_captions)
             _footnotes = item.get("footnotes", [])
-            _footnotes = [
-                _get_ref_text(ref.get(DOCLING_REF_NODE, ""), doc_dict) if isinstance(ref, dict) else str(ref)
-                for ref in _footnotes
-            ]
-            self.logger.info(f"Footnotes: {_footnotes}")
+            _footnotes = _resolve_ref_list(_footnotes)
             block_group = BlockGroup(
                 index=len(block_groups),
                 name=item.get("name", ""),
