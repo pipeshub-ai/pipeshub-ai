@@ -10,6 +10,7 @@ from app.config.constants.arangodb import (
     RecordTypes,
 )
 from app.config.constants.service import config_node_constants
+from app.models.entities import Record
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -1872,3 +1873,51 @@ class ArangoService:
         except Exception as e:
             self.logger.error(f"Failed to get agent permissions: {str(e)}")
             return None
+
+    async def get_record_by_id(
+        self, id: str, transaction: Optional[TransactionDatabase] = None
+    ) -> Optional[Record]:
+        """
+        Get internal file key using the id
+
+        Args:
+            id (str): The internal record ID (_key) to look up
+            transaction (Optional[TransactionDatabase]): Optional database transaction
+
+        Returns:
+            Optional[str]: Internal file key if found, None otherwise
+        """
+        try:
+            self.logger.info(
+                "🚀 Retrieving internal key for id %s", id
+            )
+
+            query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record._key == @id
+                RETURN record
+            """
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(
+                query, bind_vars={"id": id}
+            )
+            result = next(cursor, None)
+
+            if result:
+                self.logger.info(
+                    "✅ Successfully retrieved internal key for id %s", id
+                )
+                return Record.from_arango_base_record(result)
+            else:
+                self.logger.warning(
+                    "⚠️ No internal key found for id %s", id
+                )
+                return None
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed to retrieve internal key for id %s: %s", id, str(e)
+            )
+            return None
+
