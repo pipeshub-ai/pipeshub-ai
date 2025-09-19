@@ -231,6 +231,18 @@ class DoclingDocToBlocksConverter():
             column_headers = response.headers
             table_rows_text,table_rows = await self.get_rows_text(table_data, table_summary, column_headers)
 
+            # Convert caption and footnote references to text strings
+            _captions = item.get("captions", [])
+            _captions = [
+                _get_ref_text(ref.get(DOCLING_REF_NODE, ""), doc_dict) if isinstance(ref, dict) else str(ref)
+                for ref in _captions
+            ]
+            _footnotes = item.get("footnotes", [])
+            _footnotes = [
+                _get_ref_text(ref.get(DOCLING_REF_NODE, ""), doc_dict) if isinstance(ref, dict) else str(ref)
+                for ref in _footnotes
+            ]
+            self.logger.info(f"Footnotes: {_footnotes}")
             block_group = BlockGroup(
                 index=len(block_groups),
                 name=item.get("name", ""),
@@ -241,8 +253,8 @@ class DoclingDocToBlocksConverter():
                 table_metadata=TableMetadata(
                     num_of_rows=table_data.get("num_rows", 0),
                     num_of_cols=table_data.get("num_cols", 0),
-                    captions=item.get("captions", []),
-                    footnotes=item.get("footnotes", []),
+                    captions=_captions,
+                    footnotes=_footnotes,
                 ),
                 data={
                     "table_summary": table_summary,
