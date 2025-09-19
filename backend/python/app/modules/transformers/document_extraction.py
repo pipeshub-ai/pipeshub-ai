@@ -64,7 +64,7 @@ class DocumentExtraction(Transformer):
         )
 
     def _prepare_content(self, blocks: List[Block], is_multimodal_llm: bool) -> List[dict]:
-        MAX_TOKENS = 4096
+        MAX_TOKENS = 30000
         total_tokens = 0
         content = []
 
