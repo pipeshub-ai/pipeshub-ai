@@ -517,16 +517,13 @@ export const handleOAuthCallback =
       if (!code || !state) {
         throw new BadRequestError('Code and state are required');
       }
-      let callBackUrl = `${appConfig.connectorBackend}/api/v1/connectors/${connectorName}/oauth/callback?`;
-      if(code) {
-        callBackUrl += `code=${code}`;
-      }
-      if(state) {
-        callBackUrl += `&state=${state}`;
-      }
-      if(error) {
-        callBackUrl += `&error=${error}`;
-      }
+      
+      const queryParams = new URLSearchParams();
+      if (code) queryParams.set('code', String(code));
+      if (state) queryParams.set('state', String(state));
+      if (error) queryParams.set('error', String(error));
+      const callBackUrl = `${appConfig.connectorBackend}/api/v1/connectors/${connectorName}/oauth/callback?${queryParams.toString()}`;
+
       // Call Python backend to handle OAuth callback
       const connectorResponse = await executeConnectorCommand(
         callBackUrl,

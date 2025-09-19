@@ -2338,7 +2338,7 @@ async def handle_oauth_callback(
         connector_name = app_name
         endpoints_key = '/services/endpoints'
         endpoint_config = await config_service.get_config(endpoints_key)
-        frontend_url = endpoint_config.get("frontend").get("publickEndpoint",'http://localhost:3001')
+        frontend_url = endpoint_config.get("frontend").get("publicEndpoint",'http://localhost:3001')
 
         async def _get_settings_base_path() -> str:
             """Decide frontend settings base path by org account type.
@@ -2430,8 +2430,6 @@ async def handle_oauth_callback(
             token = await oauth_provider.handle_callback(code, state)
         finally:
             await oauth_provider.close()
-
-        logger.info(f"\n\n\n\nToken token: {token}\n\n\n\n")
 
         # Validate token before storing
         if not token or not token.access_token:

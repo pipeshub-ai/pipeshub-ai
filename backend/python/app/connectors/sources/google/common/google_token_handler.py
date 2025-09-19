@@ -127,8 +127,6 @@ class GoogleTokenHandler:
             finally:
                 await provider.close()
 
-            self.logger.info(f"\n\n\n\nNew token: {new_token}\n\n\n\n")
-
             # Persist updated credentials back to etcd
             config["credentials"] = new_token.to_dict()
             await self.config_service.set_config(config_key, config)
