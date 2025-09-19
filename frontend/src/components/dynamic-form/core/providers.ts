@@ -60,28 +60,34 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
     label: 'OpenAI API',
     description: 'Enter your OpenAI API credentials to get started.',
     modelPlaceholder: 'e.g., gpt-4o-mini, gpt-4o',
-    fields: ['apiKey', 'model'],
+    fields: ['apiKey', 'model', { name: 'isMultimodal', required: false, defaultValue: true }],
   },
   {
     id: 'gemini',
     label: 'Gemini API',
     description: 'Enter your Gemini API credentials to get started.',
     modelPlaceholder: 'e.g., gemini-2.5-flash',
-    fields: ['apiKey', 'model'],
+    fields: ['apiKey', 'model', { name: 'isMultimodal', required: false, defaultValue: true }],
   },
   {
     id: 'anthropic',
     label: 'Anthropic API',
     description: 'Enter your Anthropic API credentials to get started.',
     modelPlaceholder: 'e.g., claude-3-7-sonnet-20250219',
-    fields: ['apiKey', 'model'],
+    fields: ['apiKey', 'model', { name: 'isMultimodal', required: false, defaultValue: true }],
   },
   {
     id: 'azureOpenAI',
     label: 'Azure OpenAI',
     description: 'You need an active Azure subscription with Azure OpenAI Service enabled.',
     modelPlaceholder: 'e.g., gpt-4o-mini, gpt-4o',
-    fields: ['endpoint', 'apiKey', 'deploymentName', 'model'],
+    fields: [
+      'endpoint',
+      'apiKey',
+      'deploymentName',
+      'model',
+      { name: 'isMultimodal', required: false, defaultValue: true },
+    ],
     customFields: {
       endpoint: {
         placeholder: 'e.g., https://your-resource.openai.azure.com/',
@@ -102,6 +108,7 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
         defaultValue: 'http://host.docker.internal:11434',
         placeholder: 'e.g.http://localhost:11434',
       }, // Optional endpoint
+      { name: 'isMultimodal', required: false, defaultValue: true },
     ],
   },
   {
@@ -116,6 +123,7 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
       { name: 'region', required: true },
       { name: 'model', required: true, placeholder: 'model id/arn' },
       { name: 'provider', required: true, defaultValue: 'anthropic' },
+      { name: 'isMultimodal', required: false, defaultValue: true },
     ],
   },
   {
@@ -123,21 +131,26 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
     label: 'xAI',
     description: 'Enter your XAI API credentials to get started.',
     modelPlaceholder: 'e.g. grok-3-latest',
-    fields: ['apiKey', 'model'],
+    fields: ['apiKey', 'model', { name: 'isMultimodal', required: false, defaultValue: true }],
   },
   {
     id: 'mistral',
     label: 'Mistral',
     description: 'Enter your Mistral API credentials to get started.',
     modelPlaceholder: 'e.g. mistral-large-latest',
-    fields: ['apiKey', 'model'],
+    fields: ['apiKey', 'model', { name: 'isMultimodal', required: false, defaultValue: true }],
   },
   {
     id: 'together',
     label: 'Together',
     description: 'Enter your Together API credentials to get started.',
     modelPlaceholder: 'e.g., deepseek-ai/DeepSeek-V3',
-    fields: ['apiKey', 'model', 'endpoint'],
+    fields: [
+      'apiKey',
+      'model',
+      'endpoint',
+      { name: 'isMultimodal', required: false, defaultValue: true },
+    ],
     customFields: {
       endpoint: {
         placeholder: 'e.g., https://api.together.xyz/v1',
@@ -149,28 +162,33 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
     label: 'Groq',
     description: 'Enter your Groq API credentials to get started.',
     modelPlaceholder: 'e.g. meta-llama/llama-4-scout-17b-16e-instruct',
-    fields: ['apiKey', 'model'],
+    fields: ['apiKey', 'model', { name: 'isMultimodal', required: false, defaultValue: true }],
   },
   {
     id: 'fireworks',
     label: 'Fireworks',
     description: 'Enter your Fireworks API credentials to get started.',
     modelPlaceholder: 'e.g. accounts/fireworks/models/kimi-k2-instruct',
-    fields: ['apiKey', 'model'],
+    fields: ['apiKey', 'model', { name: 'isMultimodal', required: false, defaultValue: true }],
   },
   {
     id: 'cohere',
     label: 'Cohere',
     description: 'Enter your Cohere API credentials to get started.',
     modelPlaceholder: 'e.g. command-a-03-2025',
-    fields: ['apiKey', 'model'],
+    fields: ['apiKey', 'model', { name: 'isMultimodal', required: false, defaultValue: true }],
   },
   {
     id: 'openAICompatible',
     label: 'OpenAI API Compatible',
     description: 'Enter your OpenAI-compatible API credentials to get started.',
     modelPlaceholder: 'e.g. deepseek-ai/DeepSeek-V3',
-    fields: ['endpoint', 'apiKey', 'model'],
+    fields: [
+      'endpoint',
+      'apiKey',
+      'model',
+      { name: 'isMultimodal', required: false, defaultValue: true },
+    ],
     customFields: {
       endpoint: {
         placeholder: 'e.g., https://api.together.xyz/v1/',
@@ -193,28 +211,34 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
     label: 'OpenAI API',
     description: 'Enter your OpenAI API credentials for embeddings.',
     modelPlaceholder: 'e.g., text-embedding-3-small, text-embedding-3-large',
-    fields: ['apiKey', 'model'],
+    fields: ['apiKey', 'model', { name: 'isMultimodal', required: false, defaultValue: true }],
   },
   {
     id: 'gemini',
     label: 'Gemini API',
     description: 'Enter your Gemini API credentials for embeddings.',
     modelPlaceholder: 'e.g., gemini-embedding-001',
-    fields: ['apiKey', 'model'],
+    fields: ['apiKey', 'model', { name: 'isMultimodal', required: false, defaultValue: true }],
   },
   {
     id: 'cohere',
     label: 'Cohere',
     description: 'Enter your Cohere API credentials for embeddings.',
     modelPlaceholder: 'e.g., embed-v4.0',
-    fields: ['apiKey', 'model'],
+    fields: ['apiKey', 'model', { name: 'isMultimodal', required: false, defaultValue: true }],
   },
   {
     id: 'azureOpenAI',
     label: 'Azure OpenAI',
     description: 'Configure Azure OpenAI for embeddings.',
     modelPlaceholder: 'e.g., text-embedding-3-small',
-    fields: ['endpoint', 'apiKey', 'deploymentName', 'model'],
+    fields: [
+      'endpoint',
+      'apiKey',
+      'deploymentName',
+      'model',
+      { name: 'isMultimodal', required: false, defaultValue: true },
+    ],
     customFields: {
       endpoint: {
         placeholder: 'e.g., https://your-resource.openai.azure.com/',
@@ -226,7 +250,7 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
     label: 'Sentence Transformers',
     description: 'Use local Sentence Transformers models (no API key required).',
     modelPlaceholder: 'e.g., all-MiniLM-L6-v2',
-    fields: ['model'],
+    fields: ['model', { name: 'isMultimodal', required: false, defaultValue: true }],
   },
   {
     id: 'ollama',
@@ -241,6 +265,7 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
         defaultValue: 'http://host.docker.internal:11434',
         placeholder: 'e.g. http://localhost:11434',
       }, // Optional endpoint
+      { name: 'isMultimodal', required: false, defaultValue: true },
     ],
   },
   {
@@ -254,6 +279,7 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
       { name: 'region', required: true },
       { name: 'model', required: true, placeholder: 'Model ID/ARN' },
       { name: 'provider', required: true, defaultValue: 'cohere' },
+      { name: 'isMultimodal', required: false, defaultValue: true },
     ],
   },
   {
@@ -264,6 +290,7 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
     fields: [
       { name: 'model', required: true },
       { name: 'apiKey', required: true },
+      { name: 'isMultimodal', required: false, defaultValue: true },
     ],
   },
   {
@@ -271,7 +298,7 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
     label: 'Mistral',
     description: 'Enter your Mistral API credentials for embeddings.',
     modelPlaceholder: 'e.g., mistral-embed',
-    fields: ['apiKey', 'model'],
+    fields: ['apiKey', 'model', { name: 'isMultimodal', required: false, defaultValue: true }],
   },
   {
     id: 'voyage',
@@ -281,6 +308,7 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
     fields: [
       { name: 'model', required: true },
       { name: 'apiKey', required: true },
+      { name: 'isMultimodal', required: false, defaultValue: true },
     ],
   },
 ] as const;

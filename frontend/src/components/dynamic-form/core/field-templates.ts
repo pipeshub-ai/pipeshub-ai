@@ -5,6 +5,7 @@ import robotIcon from '@iconify-icons/mdi/robot';
 import serverIcon from '@iconify-icons/mdi/server';
 import cubeIcon from '@iconify-icons/mdi/cube-outline';
 import mailLineIcon from '@iconify-icons/ri/mail-line';
+import mediaIcon from '@iconify-icons/mdi/image';
 import type { IconifyIcon } from '@iconify/react';
 
 export interface FieldTemplate {
@@ -137,6 +138,18 @@ export const FIELD_TEMPLATES = {
     icon: keyIcon,
     required: false,
     validation: z.string().optional(),
+    gridSize: { xs: 12, sm: 6 },
+  },
+
+  // MODEL OPTIONS
+  isMultimodal: {
+    name: 'isMultimodal',
+    label: 'Is Multimodal',
+    type: 'checkbox' as const,
+    placeholder: 'Supports (text + image)',
+    icon: mediaIcon,
+    required: false,
+    validation: z.boolean().optional().default(true),
     gridSize: { xs: 12, sm: 6 },
   },
 
