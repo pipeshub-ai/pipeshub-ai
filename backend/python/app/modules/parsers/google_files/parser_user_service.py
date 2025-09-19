@@ -63,7 +63,7 @@ class ParserUserService:
 
             try:
                 creds_data = await self.google_token_handler.get_individual_token(
-                    org_id, user_id
+                    org_id, user_id, app_name="drive"
                 )
                 if not creds_data:
                     raise GoogleAuthError(
@@ -151,10 +151,11 @@ class ParserUserService:
         )
 
         if time_until_refresh.total_seconds() <= 0:
-            await self.google_token_handler.refresh_token(self.org_id, self.user_id)
+            # Parser uses Docs/Sheets/Slides; use Drive connector tokens for content access
+            await self.google_token_handler.refresh_token(self.org_id, self.user_id, app_name="drive")
 
             creds_data = await self.google_token_handler.get_individual_token(
-                self.org_id, self.user_id
+                self.org_id, self.user_id, app_name="drive"
             )
 
             creds = google.oauth2.credentials.Credentials(

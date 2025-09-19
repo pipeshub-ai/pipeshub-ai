@@ -472,18 +472,7 @@ export const useConnectorConfig = ({
         break;
       case 1: // Sync
         errors = validateSection('sync', connectorConfig.config.sync.customFields, formData.sync);
-
-        // Validate scheduled config if SCHEDULED strategy is selected
-        if (formData.sync.selectedStrategy === 'SCHEDULED') {
-          const scheduledConfig = formData.sync.scheduledConfig || {};
-          if (!scheduledConfig.startTime || scheduledConfig.startTime === 0) {
-            errors.scheduledConfig = 'Start date and time is required for scheduled sync';
-          } else if (scheduledConfig.intervalMinutes <= 0) {
-            errors.scheduledConfig = 'Sync interval must be greater than 0';
-          } else if (scheduledConfig.maxRepetitions < 0) {
-            errors.scheduledConfig = 'Max repetitions cannot be negative';
-          }
-        }
+        // Note: Start time and max repetitions are not supported currently; no validation required
         break;
       default:
         break;

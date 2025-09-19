@@ -20,12 +20,12 @@ export class CrawlingTaskFactory {
       "gmail",
       "drive",
       "onedrive",
-      "sharepoint",
+      "sharepointonline",
       "confluence",
       "slack",
     ];
 
-    if (supportedConnectors.includes(connector)) {
+    if (supportedConnectors.includes(connector.replace(' ', '').toLowerCase())) {
       return this.connectorsService;
     }
 

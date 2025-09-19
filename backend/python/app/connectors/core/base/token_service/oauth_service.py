@@ -179,12 +179,23 @@ class OAuthProvider:
 
         # Create new token with current timestamp
         token = OAuthToken(**token_data)
+        # Preserve refresh_token (Google omits it on refresh)
+        if not token.refresh_token:
+            token.refresh_token = refresh_token
 
         # Update the stored credentials with the new token
         config = await self.key_value_store.get_key(self.credentials_path)
         if not isinstance(config, dict):
             config = {}
-        config['credentials'] = token.to_dict()
+        stored_refresh = None
+        try:
+            stored_refresh = (config.get('credentials') or {}).get('refresh_token')
+        except Exception:
+            stored_refresh = None
+        token_dict = token.to_dict()
+        if not token_dict.get('refresh_token') and stored_refresh:
+            token_dict['refresh_token'] = stored_refresh
+        config['credentials'] = token_dict
         await self.key_value_store.create_key(self.credentials_path, config)
 
         return token
@@ -263,7 +274,15 @@ class OAuthProvider:
 
         # Clean up OAuth state and store credentials
         config['oauth'] = None  # remove transient state after successful exchange
-        config['credentials'] = token.to_dict()
+        existing_refresh = None
+        try:
+            existing_refresh = (config.get('credentials') or {}).get('refresh_token')
+        except Exception:
+            existing_refresh = None
+        token_dict = token.to_dict()
+        if not token_dict.get('refresh_token') and existing_refresh:
+            token_dict['refresh_token'] = existing_refresh
+        config['credentials'] = token_dict
         await self.key_value_store.create_key(self.credentials_path, config)
 
         return token

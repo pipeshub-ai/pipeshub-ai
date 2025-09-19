@@ -146,7 +146,7 @@ export function createConnectorRouter(container: Container) {
     getOAuthAuthorizationUrl(config)
   );
 
-  router.post(
+  router.get(
     '/:connectorName/oauth/callback',
     authMiddleware.authenticate,
     metricsMiddleware(container),

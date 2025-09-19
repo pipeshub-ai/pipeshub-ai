@@ -22,7 +22,7 @@ from fastapi import (
     Request,
     UploadFile,
 )
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
@@ -422,7 +422,7 @@ async def download_file(
                 creds = await get_service_account_credentials(org_id, user_id, logger, arango_service, google_token_handler, request.app.container)
             else:
                 # Individual account - use stored OAuth credentials
-                creds = await get_user_credentials(org_id, user_id, logger, google_token_handler, request.app.container)
+                creds = await get_user_credentials(org_id, user_id, logger, google_token_handler, request.app.container,connector=connector)
         elif connector.lower() == Connectors.CONFLUENCE.value.lower():
             from app.connectors.sources.atlassian.core.oauth import (
                 OAUTH_CREDENTIALS_PATH,
@@ -860,7 +860,7 @@ async def stream_record(
                 creds = await get_service_account_credentials(org_id, user_id, logger, arango_service, google_token_handler, request.app.container)
             else:
                 # Individual account - use stored OAuth credentials
-                creds = await get_user_credentials(org_id, user_id,logger, google_token_handler, request.app.container)
+                creds = await get_user_credentials(org_id, user_id,logger, google_token_handler, request.app.container,connector=connector)
 
         elif connector.lower() == Connectors.CONFLUENCE.value.lower():
             from app.connectors.sources.atlassian.core.oauth import (
@@ -1674,7 +1674,7 @@ async def get_service_account_credentials(org_id: str, user_id: str, logger, ara
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error accessing service account credentials"
         )
 
-async def get_user_credentials(org_id: str, user_id: str, logger, google_token_handler, container) -> google.oauth2.credentials.Credentials:
+async def get_user_credentials(org_id: str, user_id: str, logger, google_token_handler, container,connector: str) -> google.oauth2.credentials.Credentials:
     """Helper function to get cached user credentials"""
     try:
         cache_key = f"{org_id}_{user_id}"
@@ -1713,8 +1713,8 @@ async def get_user_credentials(org_id: str, user_id: str, logger, google_token_h
             # Create new credentials
             SCOPES = GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES
             # Refresh token
-            await google_token_handler.refresh_token(org_id, user_id)
-            creds_data = await google_token_handler.get_individual_token(org_id, user_id)
+            await google_token_handler.refresh_token(org_id, user_id,app_name=connector)
+            creds_data = await google_token_handler.get_individual_token(org_id, user_id,app_name=connector)
 
             if not creds_data.get("access_token"):
                 raise HTTPException(
@@ -2318,24 +2318,27 @@ async def get_oauth_authorization_url(
 
 
 @router.get("/api/v1/connectors/{app_name}/oauth/callback")
-async def handle_oauth_callback_get(
+async def handle_oauth_callback(
     app_name: str,
     request: Request,
     code: Optional[str] = Query(None),
     state: Optional[str] = Query(None),
     error: Optional[str] = Query(None),
     arango_service: BaseArangoService = Depends(get_arango_service),
-) -> RedirectResponse:
+) -> Dict[str, Any]:
     """GET callback handler for OAuth redirects.
     This endpoint processes the OAuth callback and redirects to the frontend with the result.
     """
     container = request.app.container
     logger = container.logger()
+    config_service = container.config_service()
 
     try:
         # Get connector name for redirect
-        connector_name = app_name.lower()
-        frontend_url = str(request.base_url).replace('8088', '3001').rstrip('/')
+        connector_name = app_name
+        endpoints_key = '/services/endpoints'
+        endpoint_config = await config_service.get_config(endpoints_key)
+        frontend_url = endpoint_config.get("frontend").get("publickEndpoint",'http://localhost:3001')
 
         async def _get_settings_base_path() -> str:
             """Decide frontend settings base path by org account type.
@@ -2353,14 +2356,19 @@ async def handle_oauth_callback_get(
 
         settings_base_path = await _get_settings_base_path()
 
+        # Normalize common non-errors coming from frontend as strings
+        if error in ["null", "undefined", "None", ""]:
+            error = None
+
         # Check for OAuth errors
         if error:
             logger.error(f"OAuth error for {app_name}: {error}")
-            return RedirectResponse(f"{frontend_url}{settings_base_path}/{connector_name}?oauth_error={error}")
+            return {"success": False, "error": error, "redirect_url": f"{frontend_url}/connectors/oauth/callback/{connector_name}?oauth_error={error}"}
+
 
         if not code or not state:
             logger.error(f"Missing OAuth parameters for {app_name}")
-            return RedirectResponse(f"{frontend_url}{settings_base_path}/{connector_name}?oauth_error=missing_parameters")
+            return {"success": False, "error": "missing_parameters", "redirect_url": f"{frontend_url}/connectors/oauth/callback/{connector_name}?oauth_error=missing_parameters"}
 
         # Process OAuth callback directly here
         logger.info(f"Processing OAuth callback for {app_name}")
@@ -2369,17 +2377,16 @@ async def handle_oauth_callback_get(
         connector_config = await arango_service.get_app_by_name(app_name)
         if not connector_config:
             logger.error(f"Connector {app_name} not found")
-            return RedirectResponse(f"{frontend_url}{settings_base_path}/{connector_name}?oauth_error=connector_not_found")
+            return {"success": False, "error": "connector_not_found", "redirect_url": f"{frontend_url}/connectors/oauth/callback/{connector_name}?oauth_error=connector_not_found"}
 
         # Get OAuth configuration
-        config_service = container.config_service()
         filtered_app_name = _sanitize_app_name(app_name)
         config_key = f"/services/connectors/{filtered_app_name}/config"
         config = await config_service.get_config(config_key)
 
         if not config or not config.get('auth'):
             logger.error(f"OAuth configuration not found for {app_name}")
-            return RedirectResponse(f"{frontend_url}{settings_base_path}/{connector_name}?oauth_error=config_not_found")
+            return {"success": False, "error": "config_not_found", "redirect_url": f"{frontend_url}/connectors/oauth/callback/{connector_name}?oauth_error=config_not_found"}
 
         auth_config = config['auth']
 
@@ -2391,10 +2398,10 @@ async def handle_oauth_callback_get(
         scopes = connector_auth_config.get('scopes', [])
 
         if not redirect_uri:
-            return RedirectResponse(f"{frontend_url}{settings_base_path}/{connector_name}?oauth_error=redirect_uri_not_configured")
+            return {"success": False, "error": "redirect_uri_not_configured", "redirect_url": f"{frontend_url}/connectors/oauth/callback/{connector_name}?oauth_error=redirect_uri_not_configured"}
 
         if not authorize_url or not token_url:
-            return RedirectResponse(f"{frontend_url}{settings_base_path}/{connector_name}?oauth_error=oauth_urls_not_configured")
+            return {"success": False, "error": "oauth_urls_not_configured", "redirect_url": f"{frontend_url}/connectors/oauth/callback/{connector_name}?oauth_error=oauth_urls_not_configured"}
 
         # Create OAuth config using the OAuth service
         from app.connectors.core.base.token_service.oauth_service import (
@@ -2418,16 +2425,18 @@ async def handle_oauth_callback_get(
             credentials_path=f"/services/connectors/{filtered_app_name}/config"
         )
 
-        # Exchange code for token using OAuth provider
-        token = await oauth_provider.handle_callback(code, state)
+        # Exchange code for token using OAuth provider (ensure cleanup)
+        try:
+            token = await oauth_provider.handle_callback(code, state)
+        finally:
+            await oauth_provider.close()
 
-        # Clean up OAuth provider
-        await oauth_provider.close()
+        logger.info(f"\n\n\n\nToken token: {token}\n\n\n\n")
 
         # Validate token before storing
         if not token or not token.access_token:
             logger.error(f"Invalid token received for {app_name}")
-            return RedirectResponse(f"{frontend_url}{settings_base_path}/{connector_name}?oauth_error=invalid_token")
+            return {"success": False, "error": "invalid_token", "redirect_url": f"{frontend_url}/connectors/oauth/callback/{connector_name}?oauth_error=invalid_token"}
 
         logger.info(f"OAuth tokens stored successfully for {app_name}")
 
@@ -2453,157 +2462,29 @@ async def handle_oauth_callback_get(
         except Exception as sched_err:
             logger.warning(f"Could not schedule token refresh for {app_name}: {sched_err}")
 
-        # Log the redirect URL for debugging
-        redirect_url = f"{frontend_url}{settings_base_path}/{connector_name}?oauth_success=true"
-        logger.info(f"Redirecting to frontend: {redirect_url}")
-
-        # Redirect to frontend with success
-        return RedirectResponse(redirect_url)
+        # Return redirect URL for frontend to follow
+        redirect_url = f"{frontend_url}{settings_base_path}/{app_name}"
+        logger.info(f"OAuth successful, redirecting to: {redirect_url}")
+        logger.info("app name: " + app_name)
+        logger.info("connector name: " + connector_name)
+        # Return appropriate response based on caller
+        return {"success": True, "redirect_url": redirect_url}
 
     except Exception as e:
         logger.error(f"Error handling OAuth GET callback for {app_name}: {str(e)}")
-        frontend_url = str(request.base_url).replace('8088', '3001').rstrip('/')
-        connector_name = app_name.lower()
+        endpoints_key = '/services/endpoints'
+        endpoint_config = await config_service.get_config(endpoints_key)
+        frontend_url = endpoint_config.get("frontend").get("publickEndpoint",'http://localhost:3001')
+        connector_name = app_name
         try:
             orgs = await arango_service.get_all_documents(CollectionNames.ORGS.value)
             account_type = str((orgs[0] or {}).get("accountType", "")).lower() if isinstance(orgs, list) and orgs else ""
             settings_base_path = "/account/company-settings/settings/connector" if account_type in ["business", "organization", "enterprise"] else "/account/individual/settings/connector"
         except Exception:
             settings_base_path = "/account/individual/settings/connector"
-        return RedirectResponse(f"{frontend_url}{settings_base_path}/{connector_name}?oauth_error=server_error")
+        error_url = f"{frontend_url}/connectors/oauth/callback/{connector_name}?oauth_error=server_error"
 
-# @router.post("/api/v1/connectors/{app_name}/oauth/callback")
-async def handle_oauth_callback(
-    app_name: str,
-    request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service),
-) -> Dict[str, Any]:
-    """
-    Handle OAuth callback and return filter options.
-
-    Args:
-        app_name: Name of the connector
-        request: FastAPI request object
-        arango_service: Injected ArangoService dependency
-
-    Returns:
-        Dict containing filter options and success status
-    """
-    container = request.app.container
-    logger = container.logger()
-
-    try:
-        body = await request.json()
-        code = body.get('code')
-        state = body.get('state')
-
-        if not code or not state:
-            raise HTTPException(status_code=400, detail="Missing code or state parameter")
-
-        # Get connector config
-        connector_config = await arango_service.get_app_by_name(app_name)
-        if not connector_config:
-            raise HTTPException(status_code=404, detail=f"Connector {app_name} not found")
-
-        # Get OAuth configuration
-        config_service = container.config_service()
-        filtered_app_name = _sanitize_app_name(app_name)
-        config_key = f"/services/connectors/{filtered_app_name}/config"
-        config = await config_service.get_config(config_key)
-
-        if not config or not config.get('auth'):
-            raise HTTPException(status_code=400, detail=f"OAuth configuration not found for {app_name}")
-        # Note: We do not persist or validate state server-side anymore. The client validates state locally.
-
-        auth_config = config['auth']
-
-        # Get OAuth configuration from connector config
-        connector_auth_config = connector_config.get('config', {}).get('auth', {})
-        redirect_uri = connector_auth_config.get('redirectUri', '')
-        authorize_url = connector_auth_config.get('authorizeUrl', '')
-        token_url = connector_auth_config.get('tokenUrl', '')
-        scopes = connector_auth_config.get('scopes', [])
-
-        if not redirect_uri:
-            raise HTTPException(status_code=400, detail=f"Redirect URI not configured for {app_name}")
-
-        if not token_url:
-            raise HTTPException(status_code=400, detail=f"Token URL not configured for {app_name}")
-
-        # Create OAuth config using the OAuth service
-        from app.connectors.core.base.token_service.oauth_service import (
-            OAuthConfig,
-            OAuthProvider,
-        )
-
-        oauth_config = OAuthConfig(
-            client_id=auth_config['clientId'],
-            client_secret=auth_config['clientSecret'],
-            redirect_uri=redirect_uri,
-            authorize_url=authorize_url,
-            token_url=token_url,
-            scope=' '.join(scopes) if scopes else ''
-        )
-
-        # Create OAuth provider and exchange code for token
-        oauth_provider = OAuthProvider(
-            config=oauth_config,
-            key_value_store=container.key_value_store(),
-            base_arango_service=arango_service,
-            credentials_path=f"/services/connectors/{filtered_app_name}/config"
-        )
-
-        # Exchange code for token using OAuth provider
-        token = await oauth_provider.handle_callback(code, state)
-
-        # Clean up OAuth provider
-        await oauth_provider.close()
-
-        # Store OAuth credentials in the existing config structure
-        if 'credentials' not in config:
-            config['credentials'] = {}
-
-        config['credentials'] = {
-            "access_token": token.access_token,
-            "refresh_token": token.refresh_token,
-            "token_type": token.token_type,
-            "expires_in": token.expires_in,
-            "scope": token.scope,
-            "created_at": token.created_at.isoformat()
-        }
-
-        # Clean up any legacy OAuth state remnants in config
-        if 'oauth' in config and isinstance(config['oauth'], dict) and 'state' in config['oauth']:
-            try:
-                del config['oauth']['state']
-            except Exception:
-                pass
-
-        # Save updated config
-        await config_service.set_config(config_key, config)
-
-        # Schedule token refresh
-        try:
-            from app.connectors.core.base.token_service.token_refresh_service import (
-                TokenRefreshService,
-            )
-            refresh_service = TokenRefreshService(container.key_value_store(), arango_service)
-            await refresh_service.schedule_token_refresh(app_name.replace(" ", "").lower(), token)
-        except Exception as e:
-            logger.warning(f"Could not schedule token refresh for {app_name}: {e}")
-
-        # Get filter options from configured endpoints
-        filter_options = await get_connector_filter_options_from_config(app_name, connector_config, token, config_service)
-
-        return {
-            "success": True,
-            "message": "OAuth authentication successful",
-            "filterOptions": filter_options
-        }
-
-    except Exception as e:
-        logger.error(f"Error handling OAuth callback for {app_name}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to handle OAuth callback: {str(e)}")
+        return {"success": False, "error": "server_error", "redirect_url": error_url}
 
 
 async def get_connector_filter_options_from_config(app_name: str, connector_config: Dict[str, Any], token_or_credentials: OAuthToken | Dict[str, Any], config_service) -> Dict[str, Any]:

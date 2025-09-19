@@ -99,7 +99,7 @@ class GoogleClient(IClient):
         is_individual: Optional[bool] = False,
         version: Optional[str] = "v3", # Version of the service to build the client for [v3, v1]
         scopes: Optional[List[str]] = None, # Scopes of the service to build the client
-        calendar_id: Optional[str] = 'primary' # Calendar ID to build the client for
+        calendar_id: Optional[str] = 'primary', # Calendar ID to build the client for
     ) -> 'GoogleClient':
         """
         Build GoogleClient using configuration service and arango service

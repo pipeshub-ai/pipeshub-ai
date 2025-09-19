@@ -99,7 +99,7 @@ class SiteMetadata:
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
-@ConnectorBuilder("SharePoint Online")\
+@ConnectorBuilder("SHAREPOINT ONLINE")\
     .in_group("Microsoft 365")\
     .with_auth_type("OAUTH_ADMIN_CONSENT")\
     .with_description("Sync documents and lists from SharePoint Online")\
@@ -110,7 +110,7 @@ class SiteMetadata:
             "SharePoint Online API Setup",
             "https://docs.microsoft.com/en-us/sharepoint/dev/sp-add-ins/register-sharepoint-add-ins"
         ))
-        .with_redirect_uri("http://localhost:3000/SharePoint Online/oauth/callback", False)
+        .with_redirect_uri("http://localhost:3001/connectors/oauth/callback/SharePoint Online", False)
         .add_auth_field(AuthField(
             name="clientId",
             display_name="Application (Client) ID",

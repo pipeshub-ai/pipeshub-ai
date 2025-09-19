@@ -509,22 +509,65 @@ export const handleOAuthCallback =
   ): Promise<void> => {
     try {
       const { connectorName } = req.params;
+      const {code, state, error} = req.query;
       if (!connectorName) {
         throw new BadRequestError('Connector name is required');
       }
       logger.info(`Handling OAuth callback for ${connectorName}`);
+      if (!code || !state) {
+        throw new BadRequestError('Code and state are required');
+      }
+      let callBackUrl = `${appConfig.connectorBackend}/api/v1/connectors/${connectorName}/oauth/callback?`;
+      if(code) {
+        callBackUrl += `code=${code}`;
+      }
+      if(state) {
+        callBackUrl += `&state=${state}`;
+      }
+      if(error) {
+        callBackUrl += `&error=${error}`;
+      }
+      // Call Python backend to handle OAuth callback
       const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/${connectorName}/oauth/callback`,
-        HttpMethod.POST,
-        req.headers as Record<string, string>
+        callBackUrl,
+        HttpMethod.GET,
+        req.headers as Record<string, string>,
       );
       
-      handleConnectorResponse(
-        connectorResponse,
-        res,
-        'OAuth callback not found',
-        'Failed to handle OAuth callback'
-      );
+          // Check if the response is a redirect (from Python backend)
+          if (connectorResponse && connectorResponse.statusCode === 302 && connectorResponse.headers?.location) {
+            // Python backend returned a redirect; send JSON so frontend navigates to avoid CORS
+            const redirectUrl = connectorResponse.headers?.location;
+            if (redirectUrl) {
+              res.status(200).json({ redirectUrl });
+              return;
+            }
+          }
+          
+          // Check if Python backend returned JSON response (success/error with redirect URL)
+          if (connectorResponse && connectorResponse.data) {
+            const responseData = connectorResponse.data as any;
+            // Normalize possible string values
+            const successFlag = Boolean(responseData.success);
+            const redirectUrlFromJson = responseData.redirect_url as string | undefined;
+            if (responseData.success && redirectUrlFromJson) {
+              // Return JSON for frontend navigation
+              res.status(200).json({ redirectUrl: redirectUrlFromJson });
+              return;
+            } else if (!successFlag && redirectUrlFromJson) {
+              // Return JSON error with redirect target
+              res.status(200).json({ redirectUrl: redirectUrlFromJson });
+              return;
+            }
+          }
+          
+          // If not a redirect, handle as normal response
+          handleConnectorResponse(
+            connectorResponse,
+            res,
+            'OAuth callback not found',
+            'Failed to handle OAuth callback'
+          );
     } catch (error: any) {
       logger.error('Error handling OAuth callback', {
         error: error.message,

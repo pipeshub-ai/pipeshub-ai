@@ -360,12 +360,12 @@ class EntityEventService(BaseEventService):
             self.logger.error(f"❌ Error deleting user: {str(e)}")
             return False
 
-    async def __handle_google_app_account_services(self, org_id: str, account_type: str) -> bool:
+    async def __handle_google_app_account_services(self, org_id: str, account_type: str, app_names: list[str]) -> bool:
         """Handle Google account services"""
         if account_type == AccountType.ENTERPRISE.value or account_type == AccountType.BUSINESS.value:
-            await initialize_enterprise_google_account_services_fn(org_id, self.app_container)
+            await initialize_enterprise_google_account_services_fn(org_id, self.app_container, app_names)
         elif account_type == AccountType.INDIVIDUAL.value:
-            await initialize_individual_google_account_services_fn(org_id, self.app_container)
+            await initialize_individual_google_account_services_fn(org_id, self.app_container, app_names)
         else:
             self.logger.error("Account Type not valid")
             return False
@@ -397,7 +397,7 @@ class EntityEventService(BaseEventService):
                 if self.app_container and "google" in app_group.lower():
                     accountType = org["accountType"]
                     # Use the existing app container to initialize services
-                    await self.__handle_google_app_account_services(org_id, accountType)
+                    await self.__handle_google_app_account_services(org_id, accountType, enabled_apps)
                     self.logger.info(
                         f"✅ Successfully initialized services for account type: {org['accountType']}"
                     )

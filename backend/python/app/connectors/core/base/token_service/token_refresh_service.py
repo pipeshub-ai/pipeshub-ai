@@ -105,7 +105,6 @@ class TokenRefreshService:
             oauth_provider = OAuthProvider(
                 config=oauth_config,
                 key_value_store=self.key_value_store,
-                base_arango_service=self.arango_service,
                 credentials_path=f"/services/connectors/{filtered_app_name}/config"
             )
 

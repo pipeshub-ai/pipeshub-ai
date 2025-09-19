@@ -3250,13 +3250,13 @@ class BaseArangoService:
 
     async def get_app_by_name(self, name: str, transaction: Optional[TransactionDatabase] = None) -> Optional[Dict]:
         """
-        Get an app by its name
+        Get an app by its name (case-insensitive, ignoring spaces)
         """
         try:
             self.logger.info("🚀 Getting app by name: %s", name)
             query = """
             FOR app IN @@collection
-                FILTER app.name == @name
+                FILTER LOWER(SUBSTITUTE(app.name, ' ', '')) == LOWER(SUBSTITUTE(@name, ' ', ''))
                 RETURN app
             """
             db = transaction if transaction else self.db

@@ -30,6 +30,7 @@ async def main() -> None:
         logger=logging.getLogger(__name__),
         config_service=config_service,
         graph_db_service=graph_db_service,
+        key_value_store=etcd3_encrypted_key_value_store,
     )
 
     google_admin_client = GoogleAdminDataSource(enterprise_google_client.get_client())
