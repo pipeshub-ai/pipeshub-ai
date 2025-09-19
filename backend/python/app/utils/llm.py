@@ -9,7 +9,7 @@ from app.utils.aimodels import get_generator_model
 
 async def get_llm(config_service: ConfigurationService, llm_configs = None) -> Tuple[BaseChatModel, dict]:
     if not llm_configs:
-        ai_models = await config_service.get_config(config_node_constants.AI_MODELS.value)
+        ai_models = await config_service.get_config(config_node_constants.AI_MODELS.value,use_cache=False)
         llm_configs = ai_models["llm"]
 
     if not llm_configs:

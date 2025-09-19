@@ -248,7 +248,7 @@ class VectorStore(Transformer):
             self.logger.info("Getting embedding model")
             dense_embeddings = None
             ai_models = await self.config_service.get_config(
-                config_node_constants.AI_MODELS.value
+                config_node_constants.AI_MODELS.value,use_cache=False
             )
             embedding_configs = ai_models["embedding"]
             is_multimodal = False
