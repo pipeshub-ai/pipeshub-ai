@@ -9,6 +9,11 @@
 <p align="center"></p>
 <p align="center">Workplace AI Platform</p>
 
+<p align="center" style="display: flex; justify-content: center; gap: 20px; align-items: center;">
+  <a href="https://trendshift.io/repositories/14618" target="_blank">
+    <img src="https://trendshift.io/api/badge/repositories/14618" alt="pipeshub-ai%2Fpipeshub-ai | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/>
+  </a>
+
 <!--Links in Readme-->
 <p align="center">
 <a href="https://docs.pipeshub.com/" target="_blank">
@@ -17,6 +22,42 @@
 <a href="https://discord.com/invite/K5RskzJBm2" target="_blank">
      <img src="https://img.shields.io/badge/discord-join-red?logo=discord&logoColor=white&style=for-the-badge" alt="Discord">
 </a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/pipeshub-ai/pipeshub-ai">
+    <img src="https://img.shields.io/github/stars/pipeshub-ai/pipeshub-ai?style=social" alt="GitHub Repo stars">
+  </a>
+  &nbsp;
+  <a href="https://github.com/pipeshub-ai/pipeshub-ai/network/members">
+    <img src="https://img.shields.io/github/forks/pipeshub-ai/pipeshub-ai?style=social" alt="GitHub forks">
+  </a>
+  &nbsp;
+  <a href="https://opensource.org/licenses/Apache-2.0">
+    <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache-2.0">
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/pipeshub-ai/pipeshub-ai/issues">
+    <img src="https://img.shields.io/github/issues/pipeshub-ai/pipeshub-ai" alt="GitHub issues">
+  </a>
+  &nbsp;
+  <a href="https://github.com/pipeshub-ai/pipeshub-ai/pulls">
+    <img src="https://img.shields.io/github/issues-pr/pipeshub-ai/pipeshub-ai" alt="GitHub pull requests">
+  </a>
+  &nbsp;
+  <a href="https://github.com/pipeshub-ai/pipeshub-ai/graphs/contributors">
+    <img src="https://img.shields.io/github/contributors/pipeshub-ai/pipeshub-ai" alt="Contributors">
+  </a>
+  &nbsp;
+  <img src="https://img.shields.io/github/last-commit/pipeshub-ai/pipeshub-ai" alt="Last commit">
+</p>
+
+<p align="center">
+  <a href="https://x.com/PipesHub">
+    <img src="https://img.shields.io/twitter/follow/PipesHub?style=social" alt="Twitter Follow">
+  </a>
 </p>
 
 <!--Intro-->
