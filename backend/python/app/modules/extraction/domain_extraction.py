@@ -14,7 +14,6 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from tenacity import (
     retry,
-    retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
 )
@@ -80,22 +79,7 @@ class DomainExtractor:
 
     async def _call_llm(self, messages) -> dict | None:
         """Wrapper for LLM calls with retry logic"""
-        try:
-            self.logger.debug("🤖 Making LLM call...")
-            response = await self.llm.ainvoke(messages)
-            self.logger.debug("✅ LLM call successful")
-            return response
-        except Exception as e:
-            error_type = type(e).__name__
-            self.logger.error(f"❌ LLM call failed ({error_type}): {str(e)}")
-            
-            # Log specific error details for debugging
-            if hasattr(e, 'response'):
-                self.logger.error(f"Response status: {getattr(e.response, 'status_code', 'N/A')}")
-                self.logger.error(f"Response headers: {getattr(e.response, 'headers', 'N/A')}")
-            
-            # Re-raise to trigger retry logic
-            raise
+        return await self.llm.ainvoke(messages)
 
     async def find_similar_topics(self, new_topic: str) -> str:
         """
@@ -299,13 +283,6 @@ class DomainExtractor:
 
         except Exception as e:
             self.logger.error(f"❌ Error during metadata extraction: {str(e)}")
-            if "APIConnectionError" in str(e) or "RetryError" in str(e):
-                self.logger.error("🔌 This appears to be a network/API connectivity issue")
-                self.logger.warning("⚠️ All retry attempts failed - this could be due to:")
-                self.logger.warning("   - Network connectivity issues")
-                self.logger.warning("   - API service unavailability")
-                self.logger.warning("   - Invalid API credentials or configuration")
-                self.logger.warning("   - Rate limiting or quota exceeded")
             raise
 
     async def save_metadata_to_db(
