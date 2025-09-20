@@ -170,3 +170,6 @@ class TransactionStore(BaseDataStore):
     async def rollback(self) -> None:
         """Rollback the transaction"""
         pass
+
+    # async def batch_upsert_records(self, records: List[Record]) -> None:
+        
