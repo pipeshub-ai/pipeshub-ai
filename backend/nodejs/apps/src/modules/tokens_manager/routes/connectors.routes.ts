@@ -89,9 +89,9 @@ export const handleOAuthCallbackSchema = z.object({
   }),
   query: z.object({
     baseUrl:z.string(),
-    code: z.string(),
-    state: z.string(),
-    error: z.string(),
+    code: z.string().optional(),
+    state: z.string().optional(),
+    error: z.string().optional(),
   }),
 });
 

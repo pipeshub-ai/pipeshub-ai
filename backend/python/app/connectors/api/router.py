@@ -1721,39 +1721,25 @@ async def get_user_credentials(org_id: str, user_id: str, logger, google_token_h
                     detail="Invalid credentials. Access token not found",
                 )
 
-            # Validate that all required fields are present
+            required_keys = {
+                CredentialKeys.ACCESS_TOKEN.value: "Access token not found",
+                CredentialKeys.REFRESH_TOKEN.value: "Refresh token not found",
+                CredentialKeys.CLIENT_ID.value: "Client ID not found",
+                CredentialKeys.CLIENT_SECRET.value: "Client secret not found",
+            }
+
+            for key, error_detail in required_keys.items():
+                if not creds_data.get(key):
+                    logger.error(f"Missing {key} in credentials")
+                    raise HTTPException(
+                        status_code=HttpStatusCode.UNAUTHORIZED.value,
+                        detail=f"Invalid credentials. {error_detail}",
+                    )
+
             access_token = creds_data.get(CredentialKeys.ACCESS_TOKEN.value)
             refresh_token = creds_data.get(CredentialKeys.REFRESH_TOKEN.value)
             client_id = creds_data.get(CredentialKeys.CLIENT_ID.value)
             client_secret = creds_data.get(CredentialKeys.CLIENT_SECRET.value)
-
-            if not access_token:
-                logger.error("Missing access_token in credentials")
-                raise HTTPException(
-                    status_code=HttpStatusCode.UNAUTHORIZED.value,
-                    detail="Invalid credentials. Access token not found",
-                )
-
-            if not refresh_token:
-                logger.error("Missing refresh_token in credentials")
-                raise HTTPException(
-                    status_code=HttpStatusCode.UNAUTHORIZED.value,
-                    detail="Invalid credentials. Refresh token not found",
-                )
-
-            if not client_id:
-                logger.error("Missing client_id in credentials")
-                raise HTTPException(
-                    status_code=HttpStatusCode.UNAUTHORIZED.value,
-                    detail="Invalid credentials. Client ID not found",
-                )
-
-            if not client_secret:
-                logger.error("Missing client_secret in credentials")
-                raise HTTPException(
-                    status_code=HttpStatusCode.UNAUTHORIZED.value,
-                    detail="Invalid credentials. Client secret not found",
-                )
 
             new_creds = google.oauth2.credentials.Credentials(
                 token=access_token,
@@ -2291,7 +2277,10 @@ async def get_oauth_authorization_url(
         if base_url and len(base_url) > 0:
             redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
         else:
-            redirect_uri = f"http://localhost:3001/{redirect_uri}"
+            endpoint_keys = '/services/endpoints'
+            endpoints = await config_service.get_config(endpoint_keys,use_cache=False)
+            base_url = endpoints.get('frontendPublicUrl', 'http://localhost:3001')
+            redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
 
         oauth_config = OAuthConfig(
             client_id=auth_config['clientId'],
@@ -2447,7 +2436,10 @@ async def handle_oauth_callback(
         if base_url and len(base_url) > 0:
             redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
         else:
-            redirect_uri = f"http://localhost:3001/{redirect_uri}"
+            endpoint_keys = '/services/endpoints'
+            endpoints = await config_service.get_config(endpoint_keys,use_cache=False)
+            base_url = endpoints.get('frontendPublicUrl', 'http://localhost:3001')
+            redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
 
         oauth_config = OAuthConfig(
             client_id=auth_config['clientId'],
@@ -2514,7 +2506,10 @@ async def handle_oauth_callback(
         if base_url and len(base_url) > 0:
             base_url = f"{base_url.rstrip('/')}/"
         else:
-            base_url = "http://localhost:3001/"
+            endpoint_keys = '/services/endpoints'
+            endpoints = await config_service.get_config(endpoint_keys,use_cache=False)
+            base_url = endpoints.get('frontendPublicUrl', 'http://localhost:3001')
+            base_url = f"{base_url.rstrip('/')}/"
         try:
             orgs = await arango_service.get_all_documents(CollectionNames.ORGS.value)
             account_type = str((orgs[0] or {}).get("accountType", "")).lower() if isinstance(orgs, list) and orgs else ""
@@ -2977,7 +2972,10 @@ async def update_connector_config(
         if base_url and len(base_url) > 0:
             redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
         else:
-            redirect_uri = f"http://localhost:3001/{redirect_uri}"
+            endpoint_keys = '/services/endpoints'
+            endpoints = await config_service.get_config(endpoint_keys,use_cache=False)
+            base_url = endpoints.get('frontendPublicUrl', 'http://localhost:3001')
+            redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
 
         merged_config["auth"]["redirectUri"] = redirect_uri
 
