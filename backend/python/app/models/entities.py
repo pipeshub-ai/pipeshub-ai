@@ -118,13 +118,14 @@ class Record(BaseModel):
             parent_external_record_id=arango_base_record.get("externalParentId", None),
             version=arango_base_record["version"],
             origin=OriginTypes(arango_base_record["origin"]),
-            connector_name=Connectors(arango_base_record["connectorName"]),
+            connector_name=Connectors(arango_base_record.get("connectorName", Connectors.KNOWLEDGE_BASE.value)),
             mime_type=arango_base_record.get("mimeType", None),
             weburl=arango_base_record.get("webUrl", None),
             created_at=arango_base_record.get("createdAtTimestamp", None),
             updated_at=arango_base_record.get("updatedAtTimestamp", None),
             source_created_at=arango_base_record.get("sourceCreatedAtTimestamp", None),
             source_updated_at=arango_base_record.get("sourceLastModifiedTimestamp", None),
+            virtual_record_id=arango_base_record.get("virtualRecordId", None),
         )
 
     def to_kafka_record(self) -> Dict:
