@@ -140,7 +140,7 @@ async def resume_sync_services(app_container: ConnectorAppContainer) -> bool:
                     asyncio.create_task(onedrive_connector.run_sync())
                     logger.info("OneDrive connector initialized for org %s", org_id)
 
-                if app["name"].lower() == Connectors.SHAREPOINT_ONLINE.value.replace(" ", "").lower():
+                if app["name"].lower() == Connectors.SHAREPOINT_ONLINE.value.lower():
                     config_service = app_container.config_service()
                     arango_service = await app_container.arango_service()
                     data_store_provider = ArangoDataStore(logger, arango_service)

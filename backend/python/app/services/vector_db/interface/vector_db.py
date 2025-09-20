@@ -65,7 +65,6 @@ class IVectorDBService(ABC):
         collection_name: str,
         field_name: str,
         field_schema: dict,
-        index_type: str = "persistent",
     ) -> None:
         raise NotImplementedError("create_index() is not implemented")
 

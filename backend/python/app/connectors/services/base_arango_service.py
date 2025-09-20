@@ -1484,6 +1484,8 @@ class BaseArangoService:
                     user_role = await self._check_gmail_permissions(record_id, user_key)
                 elif connector_name == Connectors.ONEDRIVE.value:
                     user_role = await self._check_drive_permissions(record_id, user_key)
+                elif connector_name == Connectors.SHAREPOINT_ONLINE.value:
+                    user_role = await self._check_drive_permissions(record_id, user_key)
                 else:
                     user_role = None
 

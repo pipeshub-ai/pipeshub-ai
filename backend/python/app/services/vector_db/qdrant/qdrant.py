@@ -221,7 +221,6 @@ class QdrantService(IVectorDBService):
         collection_name: str,
         field_name: str,
         field_schema: dict,
-        index_type: str = "persistent",
     ) -> None:
         """Create an index"""
         if self.client is None:

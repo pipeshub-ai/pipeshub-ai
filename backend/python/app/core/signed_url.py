@@ -137,13 +137,13 @@ class SignedUrlHandler:
     ) -> TokenPayload:
         """Validate the JWT token and optional required claims"""
         try:
-            self.logger.info(f"Validating token: {token}")
+            self.logger.debug(f"Validating token: {token}")
             payload = jwt.decode(
                 token,
                 self.signed_url_config.private_key,
                 algorithms=[self.signed_url_config.algorithm],
             )
-            self.logger.info(f"Payload: {payload}")
+            self.logger.debug(f"Payload: {payload}")
 
             # Convert timestamps back to datetime for validation
             if "exp" in payload:
@@ -152,7 +152,7 @@ class SignedUrlHandler:
                 payload["iat"] = datetime.fromtimestamp(payload["iat"])
 
             token_data = TokenPayload(**payload)
-            self.logger.info(f"Token data: {token_data}")
+            self.logger.debug(f"Token data: {token_data}")
 
             if required_claims:
                 for key, value in required_claims.items():

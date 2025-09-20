@@ -112,8 +112,8 @@ class DoclingDocToBlocksConverter():
 
         def _enrich_metadata(block: Block|BlockGroup, item: dict, doc_dict: dict) -> None:
             page_metadata = doc_dict.get("pages", {})
-            # print(f"Page metadata: {json.dumps(page_metadata, indent=4)}")
-            # print(f"Item: {json.dumps(item, indent=4)}")
+            # self.logger.debug(f"Page metadata: {json.dumps(page_metadata, indent=4)}")
+            # self.logger.debug(f"Item: {json.dumps(item, indent=4)}")
             if "prov" in item:
                 prov = item["prov"]
                 if isinstance(prov, list) and len(prov) > 0:
@@ -266,7 +266,7 @@ class DoclingDocToBlocksConverter():
 
             childBlocks = []
             for i,row in enumerate(table_rows):
-                print(f"Processing table row: {json.dumps(row, indent=4)}")
+                self.logger.debug(f"Processing table row: {json.dumps(row, indent=4)}")
                 index = len(blocks)
                 block = Block(
                     id=str(uuid.uuid4()),
@@ -332,7 +332,7 @@ class DoclingDocToBlocksConverter():
                 self.logger.error(f"Invalid item type: {item_type} {item}")
                 return None
 
-            print(f"Processing item: {item_type} {ref_path}")
+            self.logger.debug(f"Processing item: {item_type} {ref_path}")
 
             # Create block
             if item_type == DOCLING_TEXT_BLOCK_TYPE:
