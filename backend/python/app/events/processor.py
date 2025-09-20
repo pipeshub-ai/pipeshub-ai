@@ -20,7 +20,6 @@ from app.modules.parsers.pdf.ocr_handler import OCRHandler
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import TransformContext
 from app.utils.llm import get_llm
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 def convert_record_dict_to_record(record_dict: dict) -> Record:

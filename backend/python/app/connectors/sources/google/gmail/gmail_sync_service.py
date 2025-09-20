@@ -404,6 +404,7 @@ class BaseGmailSyncService(ABC):
                                 "isDirty": False,
                                 "reason": None,
                                 "webUrl": f"https://mail.google.com/mail?authuser={{user.email}}#all/{message_id}",
+                                "mimeType": "text/html",
                             }
 
                             # Create is_of_type edge
@@ -517,6 +518,7 @@ class BaseGmailSyncService(ABC):
                                 "isDirty": False,
                                 "reason": None,
                                 "webUrl": f"https://mail.google.com/mail?authuser={{user.email}}#all/{message_id}",
+                                "mimeType": attachment.get("mimeType"),
                             }
 
                             # Create is_of_type edge

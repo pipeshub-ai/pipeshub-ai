@@ -15,6 +15,9 @@ from app.connectors.sources.google.admin.admin_webhook_handler import (
 from app.connectors.sources.google.admin.google_admin_service import GoogleAdminService
 from app.connectors.sources.google.common.arango_service import ArangoService
 from app.connectors.sources.google.common.google_token_handler import GoogleTokenHandler
+from app.connectors.sources.google.common.scopes import (
+    GOOGLE_CONNECTOR_ENTERPRISE_SCOPES,
+)
 from app.connectors.sources.google.gmail.gmail_change_handler import GmailChangeHandler
 from app.connectors.sources.google.gmail.gmail_sync_service import (
     GmailSyncEnterpriseService,
@@ -60,9 +63,7 @@ from app.modules.parsers.google_files.google_sheets_parser import GoogleSheetsPa
 from app.modules.parsers.google_files.google_slides_parser import GoogleSlidesParser
 from app.modules.parsers.google_files.parser_user_service import ParserUserService
 from app.utils.logger import create_logger
-from app.connectors.sources.google.common.scopes import (
-    GOOGLE_CONNECTOR_ENTERPRISE_SCOPES
-)
+
 
 async def initialize_individual_google_account_services_fn(org_id, container, app_names: list[str]) -> None:
     """Initialize services for an individual account type."""

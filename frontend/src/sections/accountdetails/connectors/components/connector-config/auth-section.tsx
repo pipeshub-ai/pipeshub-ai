@@ -204,7 +204,7 @@ const AuthSection: React.FC<AuthSectionProps> = ({
                     cursor: 'text',
                   }}
                 >
-                  {auth.redirectUri}
+                  {window.location.origin + '/' + auth.redirectUri}
                 </Typography>
               </Box>
             </Box>

@@ -121,7 +121,7 @@ class ParserUserService:
 
 
             self.logger.info("✅ Token expiry time: %s", self.token_expiry)
-            
+
 
             try:
                 self.docs_service = build("docs", "v1", credentials=creds)

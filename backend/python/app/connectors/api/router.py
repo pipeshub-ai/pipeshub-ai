@@ -54,7 +54,6 @@ from app.connectors.sources.google.common.google_token_handler import (
 )
 from app.connectors.sources.google.common.scopes import (
     GOOGLE_CONNECTOR_ENTERPRISE_SCOPES,
-    GOOGLE_CONNECTOR_INDIVIDUAL_SCOPES,
 )
 from app.connectors.sources.google.gmail.gmail_webhook_handler import (
     AbstractGmailWebhookHandler,
@@ -1727,28 +1726,28 @@ async def get_user_credentials(org_id: str, user_id: str, logger, google_token_h
             refresh_token = creds_data.get(CredentialKeys.REFRESH_TOKEN.value)
             client_id = creds_data.get(CredentialKeys.CLIENT_ID.value)
             client_secret = creds_data.get(CredentialKeys.CLIENT_SECRET.value)
-            
+
             if not access_token:
                 logger.error("Missing access_token in credentials")
                 raise HTTPException(
                     status_code=HttpStatusCode.UNAUTHORIZED.value,
                     detail="Invalid credentials. Access token not found",
                 )
-            
+
             if not refresh_token:
                 logger.error("Missing refresh_token in credentials")
                 raise HTTPException(
                     status_code=HttpStatusCode.UNAUTHORIZED.value,
                     detail="Invalid credentials. Refresh token not found",
                 )
-            
+
             if not client_id:
                 logger.error("Missing client_id in credentials")
                 raise HTTPException(
                     status_code=HttpStatusCode.UNAUTHORIZED.value,
                     detail="Invalid credentials. Client ID not found",
                 )
-            
+
             if not client_secret:
                 logger.error("Missing client_secret in credentials")
                 raise HTTPException(
@@ -2515,7 +2514,7 @@ async def handle_oauth_callback(
         if base_url and len(base_url) > 0:
             base_url = f"{base_url.rstrip('/')}/"
         else:
-            base_url = f"http://localhost:3001/"
+            base_url = "http://localhost:3001/"
         try:
             orgs = await arango_service.get_all_documents(CollectionNames.ORGS.value)
             account_type = str((orgs[0] or {}).get("accountType", "")).lower() if isinstance(orgs, list) and orgs else ""
@@ -2970,21 +2969,21 @@ async def update_connector_config(
             logger.info(f"App created in database for {app_name} (if not already exists)")
         except Exception as e:
             logger.warning(f"App may already exist in database for {app_name}: {e}")
-        
+
         app_doc = await connector_registry.get_connector_by_name(app_name)
         connector_config = app_doc.get('config', {})
-        
+
         redirect_uri = connector_config.get('auth', {}).get('redirectUri', '')
         if base_url and len(base_url) > 0:
             redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
         else:
             redirect_uri = f"http://localhost:3001/{redirect_uri}"
-        
+
         merged_config["auth"]["redirectUri"] = redirect_uri
 
         await config_service.set_config(config_key, merged_config)
         logger.info(f"Config stored in etcd for {app_name}")
-                
+
         updates = {
             "isConfigured": True,
             "updatedAtTimestamp": get_epoch_timestamp_in_ms(),

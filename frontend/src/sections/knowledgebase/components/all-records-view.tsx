@@ -288,7 +288,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
       params.origins = filters.origin.join(','); // Note: API expects 'origins' not 'origin'
     }
     if (filters.connectors && filters.connectors.length > 0) {
-      params.connectors = filters.connectors.join(',');
+      params.connectors = filters.connectors.join(',').toUpperCase();
     }
     if (filters.permissions && filters.permissions.length > 0) {
       params.permissions = filters.permissions.join(',');
